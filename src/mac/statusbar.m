@@ -31,10 +31,11 @@ static void set_appearance(int connected, int sharing) {
     } else {
         sym = @"circle"; color = [NSColor systemGrayColor];
     }
-    NSImage *img = [NSImage imageWithSystemSymbolName:sym
+    NSImage *base = [NSImage imageWithSystemSymbolName:sym
                                 accessibilityDescription:nil];
-    [img setTintColor:color];
-    s_item.button.image = img;
+    NSImageSymbolConfiguration *cfg =
+        [NSImageSymbolConfiguration configurationWithPaletteColors:@[color]];
+    s_item.button.image = [base imageWithSymbolConfiguration:cfg];
 
     s_state.title = sharing ? @"键鼠在 Mac"
                   : connected ? @"已连接（Windows 主控）"

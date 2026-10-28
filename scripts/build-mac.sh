@@ -22,9 +22,11 @@ if [ -z "$CORE$MAC_C$MAC_M" ]; then
     exit 0
 fi
 
-FRAMEWORKS="-framework Cocoa -framework CoreGraphics -framework IOKit"
+INC="$ROOT/src/core"
+FRAMEWORKS="-framework Cocoa -framework ApplicationServices -framework CoreGraphics -framework IOKit"
 
 clang -O2 -Wall -Wextra -fobjc-arc \
+    -I "$INC" \
     -o "$BUILD/hopdesk" \
     $CORE $MAC_C $MAC_M \
     $FRAMEWORKS

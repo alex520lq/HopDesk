@@ -16,7 +16,7 @@ int main(int argc, char **argv) {
     hop_config_defaults(&g_mac.cfg);
     snprintf(g_mac.cfg.device_name, HOP_NAME_MAX, "%s", "Alex67deMac");
     snprintf(g_mac.cfg.peer_host, sizeof(g_mac.cfg.peer_host),
-             "%s", "192.168.31.1");
+             "%s", "192.168.31.8");
 
     /* 可选：exe 同目录 hopdesk.conf / hopdesk.log */
     hop_config_load(&g_mac.cfg, "hopdesk.conf");

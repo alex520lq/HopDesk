@@ -11,4 +11,5 @@
 - 单实例：`flock`
 
 ObjC 仅用于状态栏与剪贴板（约 200 行），其余为纯 C。
-构建：clang，见 `scripts/build-mac.sh`。
+构建：`sh scripts/build-mac.sh`（clang，需 Xcode Command Line Tools），
+产物 `build/hopdesk`。首次运行需在「系统设置 → 隐私与安全性 → 辅助功能」授权。

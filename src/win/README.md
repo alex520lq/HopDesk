@@ -9,4 +9,5 @@
 - 网络：Winsock2 TCP 服务端
 - 单实例：命名 Mutex
 
-构建：MSVC `/MT` 或 MinGW，见 `scripts/build-win.ps1`。
+构建：`pwsh scripts/build-win.ps1`（自动探测便携 w64devkit 的 gcc，
+也兼容系统 MinGW / MSVC），产物 `build/hopdesk.exe`。

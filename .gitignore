@@ -1,0 +1,41 @@
+# ---- Build artifacts ----
+# Windows
+*.exe
+*.obj
+*.o
+*.lib
+*.pdb
+*.ilk
+*.exp
+*.res
+*.idb
+Debug/
+Release/
+x64/
+x86/
+out/
+build/
+
+# macOS / Unix
+*.a
+*.dylib
+*.so
+*.app/
+*.dSYM/
+
+# ---- C IDE / editor ----
+.vs/
+.vscode/
+.idea/
+CMakeLists.txt.user
+compile_commands.json
+*.swp
+*~
+
+# ---- OS ----
+Thumbs.db
+.DS_Store
+
+# ---- Local runtime / config ----
+*.local
+*.log

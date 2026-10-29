@@ -25,9 +25,9 @@ static void set_appearance(int connected, int sharing) {
     NSString *sym;
     NSColor  *color;
     if (sharing) {
-        sym = @"mouse.fill"; color = [NSColor systemGreenColor];
+        sym = @"computermouse.fill"; color = [NSColor systemGreenColor];
     } else if (connected) {
-        sym = @"mouse"; color = [NSColor systemBlueColor];
+        sym = @"computermouse"; color = [NSColor systemBlueColor];
     } else {
         sym = @"circle"; color = [NSColor systemGrayColor];
     }

@@ -49,11 +49,11 @@ static HICON make_icon(COLORREF c) {
     return ic;
 }
 
-static const char *state_text(win_app *app) {
+static const wchar_t *state_text_w(win_app *app) {
     switch (app->state) {
-        case HOP_LINK_SHARING: return "HopDesk · 键鼠在 Mac";
-        case HOP_LINK_LOCAL:   return "HopDesk · 已连接（Windows）";
-        default:               return "HopDesk · 等待连接";
+        case HOP_LINK_SHARING: return L"HopDesk · 键鼠在 Mac";
+        case HOP_LINK_LOCAL:   return L"HopDesk · 已连接（Windows）";
+        default:               return L"HopDesk · 等待连接";
     }
 }
 
@@ -62,8 +62,7 @@ void ui_refresh(win_app *app) {
     int idx = app->state == HOP_LINK_SHARING ? 2
             : app->state == HOP_LINK_LOCAL   ? 1 : 0;
     app->nid.hIcon = app->icons[idx];
-    MultiByteToWideChar(CP_UTF8, 0, state_text(app), -1,
-                        app->nid.szTip, (int)(sizeof(app->nid.szTip) / 2));
+    wcscpy(app->nid.szTip, state_text_w(app));
     Shell_NotifyIconW(NIM_MODIFY, &app->nid);
 }
 
@@ -72,18 +71,17 @@ static void show_menu(win_app *app) {
     GetCursorPos(&pt);
 
     HMENU m = CreatePopupMenu();
-    char buf[96];
     EnableMenuItem(m, 0, MF_GRAYED | MF_BYPOSITION);
-    AppendMenuA(m, MF_GRAYED | MF_STRING, 0, state_text(app));
-    AppendMenuA(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_GRAYED | MF_STRING, 0, state_text_w(app));
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
 
-    const char *toggle = app->state == HOP_LINK_SHARING ? "收回键鼠（到 Windows）"
-                                                       : "切换键鼠到 Mac";
-    snprintf(buf, sizeof(buf), "%s", toggle);
+    const wchar_t *toggle = app->state == HOP_LINK_SHARING
+                                ? L"收回键鼠（到 Windows）"
+                                : L"切换键鼠到 Mac";
     int can = net_server_has_client(app->net);
-    AppendMenuA(m, (can ? 0 : MF_GRAYED) | MF_STRING, IDM_TOGGLE, buf);
-    AppendMenuA(m, MF_SEPARATOR, 0, NULL);
-    AppendMenuA(m, MF_STRING, IDM_EXIT, "退出");
+    AppendMenuW(m, (can ? 0 : MF_GRAYED) | MF_STRING, IDM_TOGGLE, toggle);
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING, IDM_EXIT, L"退出");
 
     SetForegroundWindow(app->hwnd);
     TrackPopupMenu(m, TPM_RIGHTBUTTON, pt.x, pt.y, 0, app->hwnd, NULL);

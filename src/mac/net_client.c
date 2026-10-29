@@ -62,6 +62,10 @@ static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
             break;
         case HOP_MSG_CLIP_TEXT:
             /* origin(4) + UTF-8；自己发出去的不写回 */
+            if (len > 4) {
+                hop_log(HOP_LOG_INFO, "clip recv origin=%u first=%02x %02x %02x",
+                        hop_get_be32(p), p[4], p[5], p[6]);
+            }
             if (len > 4 && hop_get_be32(p) != HOP_DEV_CLIENT) {
                 char *u = (char *)malloc((size_t)(len - 3));
                 if (u) {

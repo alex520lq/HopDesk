@@ -70,8 +70,12 @@ void clip_on_update(void) {
     if (n > 1 && n <= HOP_TEXT_MAX) {
         char *u = (char *)malloc((size_t)n);
         if (u) {
-            if (WideCharToMultiByte(CP_UTF8, 0, w, -1, u, n, NULL, NULL) > 0)
+            if (WideCharToMultiByte(CP_UTF8, 0, w, -1, u, n, NULL, NULL) > 0) {
+                hop_log(HOP_LOG_INFO, "send utf8 bytes: %02x %02x %02x",
+                        (unsigned char)u[0], (unsigned char)u[1],
+                        (unsigned char)u[2]);
                 send_text(u, (uint32_t)(n - 1));   /* 不含结尾 NUL */
+            }
             free(u);
         }
     } else if (n > HOP_TEXT_MAX) {

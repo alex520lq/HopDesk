@@ -60,6 +60,8 @@ static void enter_sharing(POINT anchor) {
     hop_log(HOP_LOG_INFO, "mouse -> Mac (y=%d)", mac_y);
 }
 static void enter_local(void) {
+    /* 先把仍按着的键在对端松开，再放开本机输入 —— 顺序不能反 */
+    kbd_release_all();
     s_sharing = 0;
     g_app.state = HOP_LINK_LOCAL;
     /* 把鼠标放回边缘内侧，避免立刻又触发移交 */

@@ -20,6 +20,23 @@ void hop_config_defaults(hop_config *c) {
     c->token[0]        = '\0';
     c->peer_host[0]    = '\0';
     c->device_name[0]  = '\0';
+
+    /* 显示切换默认值：VESA VCP 0x60 —— 0x0F = DP-1，0x11 = HDMI-1。
+     * 这两项与具体显示器型号强相关，必须按实际接线改。 */
+    c->disp_win_input  = 0x0F;
+    c->disp_mac_input  = 0x11;
+    c->disp_wake_sec   = 60;
+    snprintf(c->mac_input_cmd, sizeof(c->mac_input_cmd),
+             "%s", "m1ddc display 1 set input");
+    snprintf(c->mac_sleep_cmd, sizeof(c->mac_sleep_cmd),
+             "%s", "pmset displaysleepnow");
+}
+
+/* 支持 0x 前缀（DDC 值习惯写十六进制） */
+static int to_int(const char *v) {
+    if (v[0] == '0' && (v[1] == 'x' || v[1] == 'X'))
+        return (int)strtol(v + 2, NULL, 16);
+    return atoi(v);
 }
 
 static char *trim(char *s) {
@@ -37,6 +54,11 @@ static void set_kv(hop_config *c, const char *k, const char *v) {
     else if (!strcmp(k, "server_edge")) c->server_edge = atoi(v);
     else if (!strcmp(k, "client_edge")) c->client_edge = atoi(v);
     else if (!strcmp(k, "switch_push_ms")) c->switch_push_ms = atoi(v);
+    else if (!strcmp(k, "disp_win_input")) c->disp_win_input = (uint16_t)to_int(v);
+    else if (!strcmp(k, "disp_mac_input")) c->disp_mac_input = (uint16_t)to_int(v);
+    else if (!strcmp(k, "disp_wake_sec"))  c->disp_wake_sec = atoi(v);
+    else if (!strcmp(k, "mac_input_cmd"))  snprintf(c->mac_input_cmd, sizeof(c->mac_input_cmd), "%s", v);
+    else if (!strcmp(k, "mac_sleep_cmd"))  snprintf(c->mac_sleep_cmd, sizeof(c->mac_sleep_cmd), "%s", v);
 }
 
 int hop_config_load(hop_config *c, const char *path) {

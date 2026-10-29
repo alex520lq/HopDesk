@@ -171,6 +171,15 @@ int net_server_has_client(net_server *s) {
     return has;
 }
 
+void net_server_drop(net_server *s) {
+    if (!s) return;
+    EnterCriticalSection(&s->lock);
+    if (s->client != INVALID_SOCKET) {
+        shutdown(s->client, SD_BOTH);   /* 让接收线程的 recv 立刻返回 0 */
+    }
+    LeaveCriticalSection(&s->lock);
+}
+
 int net_server_send(net_server *s, uint8_t type, const void *payload, uint32_t len) {
     if (!s) return 0;
     uint8_t hdr[HOP_HEADER_SIZE];

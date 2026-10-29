@@ -61,6 +61,11 @@ typedef enum {
 #define HOP_MOD_CONTROL (1u << 1)
 #define HOP_MOD_ALT     (1u << 2)
 #define HOP_MOD_COMMAND (1u << 3)
+#define HOP_MOD_CAPS    (1u << 4)   /* 大写锁定：切换语义，不是按住 */
+
+/* ---- 剪贴板来源设备（回环抑制用） ---- */
+#define HOP_DEV_SERVER  1u
+#define HOP_DEV_CLIENT  2u
 
 /* ---- 连接 / 键鼠归属 ---- */
 typedef enum {
@@ -80,10 +85,22 @@ typedef struct {
     int      switch_push_ms;       /* 贴边缘持续推多久才移交 */
     int      screen_w;             /* 本机主屏宽（握手交换） */
     int      screen_h;
+
+    /* ---- 阶段 4：显示切换 ---- */
+    uint16_t disp_win_input;       /* DDC/CI 0x60 值：Windows 侧的输入源 */
+    uint16_t disp_mac_input;       /* DDC/CI 0x60 值：Mac 侧的输入源 */
+    int      disp_wake_sec;        /* DISP_WAKE 保持多久（秒） */
+    char     mac_input_cmd[96];    /* Mac 端切源命令前缀，DDC 值追加在后 */
+    char     mac_sleep_cmd[64];    /* Mac 端显示睡眠命令 */
 } hop_config;
 
 void hop_config_defaults(hop_config *c);
 int  hop_config_load(hop_config *c, const char *path);  /* 不存在返回 0 */
+
+/* ---- Windows VK -> macOS 虚拟键码（平台无关的表，阶段 2） ---- */
+#define HOP_KEY_NONE 0xFFFFu
+uint16_t hop_vk_to_mac(int vk);                 /* 不支持返回 HOP_KEY_NONE */
+int      hop_mac_key_is_mod(uint16_t mac_key);  /* 返回 HOP_MOD_* 位，非修饰键返回 0 */
 
 /* ---- 日志 ---- */
 typedef enum { HOP_LOG_INFO, HOP_LOG_WARN, HOP_LOG_ERROR } hop_log_level;

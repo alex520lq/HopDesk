@@ -26,6 +26,7 @@ int main(int argc, char **argv) {
     inject_init();
     net_loop_run();
     statusbar_init();
+    clipboard_init();
     app_run();
     return 0;
 }

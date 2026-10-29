@@ -11,6 +11,10 @@
 #define WM_APP_TRAY    (WM_APP + 3)
 #define WM_APP_STATE   (WM_APP + 4)   /* 状态变化，刷新 UI */
 
+/* 切到 Mac 显示时，先唤醒再切源；这两步之间要等一会儿 */
+#define IDT_DISP       1
+#define DISP_WAKE_DELAY_MS 1200
+
 typedef struct {
     hop_config     cfg;
     net_server    *net;
@@ -30,6 +34,21 @@ void capture_init(win_app *app);
 void capture_shutdown(void);
 void capture_set_sharing(int sharing);
 void capture_force_toggle(void);   /* 手动切换 */
+
+/* kbd_capture.c（阶段 2） */
+void kbd_init(win_app *app);
+void kbd_shutdown(void);
+void kbd_release_all(void);        /* 交还键鼠时松开对端仍按着的键 */
+
+/* clipboard.c（阶段 3） */
+void clip_init(HWND hwnd);
+void clip_shutdown(HWND hwnd);
+void clip_on_update(void);                              /* WM_CLIPBOARDUPDATE */
+void clip_apply_remote(const uint8_t *p, uint32_t len); /* 收到 CLIP_TEXT */
+
+/* display.c（阶段 4） */
+int disp_set_input(uint16_t vcp);      /* DDC/CI 0x60 写输入源 */
+int disp_get_input(uint16_t *out);     /* 读当前输入源，用于日志/排错 */
 
 /* ui.c */
 void ui_init(win_app *app);

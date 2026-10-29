@@ -45,32 +45,83 @@ static void on_link(int up) {
     ui_refresh(&g_app);
 }
 
-static void on_recv(hop_recv *r) {
-    const uint8_t *p = r->data;
-    uint32_t len = r->len;
-    switch (r->type) {
-        case HOP_MSG_HELLO: {
-            /* {tlen, token, nlen, name, w(4), h(4)} */
-            uint32_t off = 0;
-            if (len < 2) break;
-            off = 1 + p[0];                 /* 跳过 token */
-            if (off + 1 > len) break;
-            off += 1 + p[off];              /* 跳过 name  */
-            if (off + 8 <= len) {
-                g_app.peer_w = (int)hop_get_be32(p + off);
-                g_app.peer_h = (int)hop_get_be32(p + off + 4);
-                hop_log(HOP_LOG_INFO, "peer screen %dx%d", g_app.peer_w, g_app.peer_h);
-            } else {
-                hop_log(HOP_LOG_WARN, "HELLO too short (len=%u off=%u)", len, off);
-            }
-            break;
+/* HELLO: {tlen, token, nlen, name, w(4), h(4)} */
+static void on_hello(const uint8_t *p, uint32_t len) {
+    uint32_t off = 1;
+    uint8_t tlen, nlen;
+    const char *tok;
+
+    if (len < 1) return;
+    tlen = p[0];
+    if (off + tlen + 1 > len) { hop_log(HOP_LOG_WARN, "HELLO truncated"); return; }
+    tok = (const char *)(p + off);
+    off += tlen;
+    nlen = p[off++];
+    if (off + nlen + 8 > len) { hop_log(HOP_LOG_WARN, "HELLO truncated"); return; }
+    off += nlen;
+
+    g_app.peer_w = (int)hop_get_be32(p + off);
+    g_app.peer_h = (int)hop_get_be32(p + off + 4);
+
+    /* token 为空 = 不校验（局域网自用）；配置了就必须匹配 */
+    if (g_app.cfg.token[0]) {
+        size_t want = strlen(g_app.cfg.token);
+        if (want != (size_t)tlen || memcmp(tok, g_app.cfg.token, want) != 0) {
+            hop_log(HOP_LOG_ERROR, "HELLO token mismatch, dropping client");
+            net_server_drop(g_app.net);
+            return;
         }
+    }
+
+    hop_log(HOP_LOG_INFO, "peer screen %dx%d", g_app.peer_w, g_app.peer_h);
+}
+
+static void on_recv(hop_recv *r) {
+    switch (r->type) {
+        case HOP_MSG_HELLO:
+            on_hello(r->data, r->len);
+            break;
         case HOP_MSG_EDGE_LEAVE:
             if (g_app.state == HOP_LINK_SHARING) capture_set_sharing(0);
+            break;
+        case HOP_MSG_CLIP_TEXT:
+            clip_apply_remote(r->data, r->len);
             break;
         default:
             break;
     }
+}
+
+/* ---- 阶段 4：显示切换 ---- */
+
+/* 切到 Mac 显示：先让 Mac 醒，再切显示器输入源。
+ * 两步之间必须留时间 —— 输入源一切走，Windows 就看不到画面了。 */
+static void disp_switch_to_mac(void) {
+    uint8_t p[4];
+    if (!net_server_has_client(g_app.net)) {
+        hop_log(HOP_LOG_WARN, "no client, cannot switch display");
+        return;
+    }
+    hop_put_be32(p, (uint32_t)g_app.cfg.disp_wake_sec);
+    net_server_send(g_app.net, HOP_MSG_DISP_WAKE, p, 4);
+    capture_set_sharing(0);          /* 画面即将走掉，键鼠先收回本机 */
+    SetTimer(g_app.hwnd, IDT_DISP, DISP_WAKE_DELAY_MS, NULL);
+}
+
+/* 切回 Windows 显示：让 Mac 把输入源切回来；Mac 不可达就本机 DDC 硬切 */
+static void disp_switch_to_win(void) {
+    uint8_t p[2];
+    hop_put_be16(p, g_app.cfg.disp_win_input);
+    if (!net_server_send(g_app.net, HOP_MSG_DISP_INPUT, p, 2)) {
+        hop_log(HOP_LOG_WARN, "client unreachable, falling back to local DDC");
+        disp_set_input(g_app.cfg.disp_win_input);
+    }
+    capture_set_sharing(0);
+}
+
+static void disp_sleep_mac(void) {
+    net_server_send(g_app.net, HOP_MSG_DISP_SLEEP, NULL, 0);
+    capture_set_sharing(0);
 }
 
 static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
@@ -88,10 +139,23 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (LOWORD(lp) == WM_LBUTTONUP || LOWORD(lp) == WM_RBUTTONUP)
                 ui_show_menu(&g_app);
             return 0;
+        case WM_CLIPBOARDUPDATE:
+            clip_on_update();
+            return 0;
+        case WM_TIMER:
+            if (wp == IDT_DISP) {
+                KillTimer(h, IDT_DISP);
+                disp_set_input(g_app.cfg.disp_mac_input);
+                return 0;
+            }
+            break;
         case WM_COMMAND:
             switch (LOWORD(wp)) {
                 case 1001: capture_force_toggle(); return 0;
                 case 1002: DestroyWindow(h); return 0;
+                case 1003: disp_switch_to_mac(); return 0;
+                case 1004: disp_switch_to_win(); return 0;
+                case 1005: disp_sleep_mac(); return 0;
             }
             break;
         case WM_DESTROY:
@@ -144,7 +208,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
 
     ui_init(&g_app);
     g_app.net = net_server_start(g_app.hwnd, &g_app.cfg);
+    clip_init(g_app.hwnd);
     capture_init(&g_app);
+    kbd_init(&g_app);
 
     MSG m;
     while (GetMessageW(&m, NULL, 0, 0) > 0) {
@@ -152,7 +218,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
         DispatchMessageW(&m);
     }
 
+    kbd_shutdown();
     capture_shutdown();
+    clip_shutdown(g_app.hwnd);
     if (g_app.net) net_server_stop(g_app.net);
     ui_shutdown(&g_app);
     hop_log(HOP_LOG_INFO, "stopped");

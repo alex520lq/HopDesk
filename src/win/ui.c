@@ -8,6 +8,9 @@
 
 #define IDM_TOGGLE  1001
 #define IDM_EXIT    1002
+#define IDM_DISP_MAC   1003
+#define IDM_DISP_WIN   1004
+#define IDM_DISP_SLEEP 1005
 
 /* 用纯色圆生成一个 16x16 图标 */
 static HICON make_icon(COLORREF c) {
@@ -81,6 +84,16 @@ static void show_menu(win_app *app) {
     int can = net_server_has_client(app->net);
     AppendMenuW(m, (can ? 0 : MF_GRAYED) | MF_STRING, IDM_TOGGLE, toggle);
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+
+    /* 阶段 4：显示切换（替代原来的 display-switch.ps1 + SSH） */
+    AppendMenuW(m, (can ? 0 : MF_GRAYED) | MF_STRING, IDM_DISP_MAC,
+                L"显示器 → Mac（唤醒 + 切源）");
+    AppendMenuW(m, (can ? 0 : MF_GRAYED) | MF_STRING, IDM_DISP_WIN,
+                L"显示器 → Windows");
+    AppendMenuW(m, (can ? 0 : MF_GRAYED) | MF_STRING, IDM_DISP_SLEEP,
+                L"Mac 显示睡眠");
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+
     AppendMenuW(m, MF_STRING, IDM_EXIT, L"退出");
 
     SetForegroundWindow(app->hwnd);

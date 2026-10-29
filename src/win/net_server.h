@@ -29,4 +29,7 @@ int         net_server_send(net_server *s, uint8_t type,
                            const void *payload, uint32_t len);
 int         net_server_has_client(net_server *s);
 
+/* 主动断开当前客户端（例如握手 token 不匹配） */
+void        net_server_drop(net_server *s);
+
 #endif

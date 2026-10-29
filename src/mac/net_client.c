@@ -54,6 +54,33 @@ static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
                 inject_wheel((int16_t)hop_get_be16(p),
                             (int16_t)hop_get_be16(p + 2));
             break;
+        case HOP_MSG_KEY_DOWN:
+            if (len >= 2) inject_key(hop_get_be16(p), 1);
+            break;
+        case HOP_MSG_KEY_UP:
+            if (len >= 2) inject_key(hop_get_be16(p), 0);
+            break;
+        case HOP_MSG_CLIP_TEXT:
+            /* origin(4) + UTF-8；自己发出去的不写回 */
+            if (len > 4 && hop_get_be32(p) != HOP_DEV_CLIENT) {
+                char *u = (char *)malloc((size_t)(len - 3));
+                if (u) {
+                    memcpy(u, p + 4, len - 4);
+                    u[len - 4] = '\0';
+                    clipboard_apply(u);
+                    free(u);
+                }
+            }
+            break;
+        case HOP_MSG_DISP_WAKE:
+            if (len >= 4) disp_wake((int)hop_get_be32(p));
+            break;
+        case HOP_MSG_DISP_INPUT:
+            if (len >= 2) disp_set_input(hop_get_be16(p));
+            break;
+        case HOP_MSG_DISP_SLEEP:
+            disp_sleep();
+            break;
         default:
             break;
     }

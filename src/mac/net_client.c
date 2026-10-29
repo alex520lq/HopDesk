@@ -28,12 +28,13 @@ static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
             net_send(HOP_MSG_PONG, NULL, 0);
             break;
         case HOP_MSG_HELLO_ACK: {
-            /* {ok, nlen, name, w, h} */
+            /* {ok, nlen, name, w, h} —— w,h 是服务端（Windows）尺寸，
+             * 存进 peer_* 用于位移缩放，不能覆盖本端自己的 screen_*。 */
             if (len >= 2) {
                 uint32_t off = 2 + p[1];
                 if (off + 8 <= len) {
-                    g_mac.screen_w = hop_get_be32(p + off);
-                    g_mac.screen_h = hop_get_be32(p + off + 4);
+                    g_mac.peer_w = (double)hop_get_be32(p + off);
+                    g_mac.peer_h = (double)hop_get_be32(p + off + 4);
                 }
             }
             break;
@@ -62,10 +63,6 @@ static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
             break;
         case HOP_MSG_CLIP_TEXT:
             /* origin(4) + UTF-8；自己发出去的不写回 */
-            if (len > 4) {
-                hop_log(HOP_LOG_INFO, "clip recv origin=%u first=%02x %02x %02x",
-                        hop_get_be32(p), p[4], p[5], p[6]);
-            }
             if (len > 4 && hop_get_be32(p) != HOP_DEV_CLIENT) {
                 char *u = (char *)malloc((size_t)(len - 3));
                 if (u) {

@@ -19,6 +19,11 @@ static POINT   s_last;
 static int     s_have_last;
 static DWORD   s_push_start;
 
+/* 进入共享后，物理光标不钳在物理边缘，而是钳在边缘内侧这一段距离处。
+ * 这样用户继续向边缘方向推时能持续产生位移，鼠标不会"卡死"在边界，
+ * 也避免边界处的自然抖动被误判成反向移动。单位为物理像素。 */
+#define WARP_MARGIN 60
+
 /* ---- 枚举显示器：是否有 X<0 的屏 ---- */
 struct mon_ctx { int has_left; };
 static BOOL CALLBACK mon_proc(HMONITOR h, HDC hdc, LPRECT r, LPARAM lp) {
@@ -42,18 +47,26 @@ static void send_enter(int y) {
     net_server_send(g_app.net, HOP_MSG_MOUSE_ENTER, p, 2);
 }
 
-static void enter_sharing(POINT anchor) {
+static void enter_sharing(POINT trigger) {
+    int edge_x;
+
+    edge_active(&edge_x);
     s_sharing = 1;
-    s_anchor = anchor;
-    s_last = anchor;
+    s_anchor = trigger;
+    /* 钳制点内移到边缘内侧，留出继续推的空间 */
+    if (g_app.cfg.server_edge == HOP_EDGE_LEFT)
+        s_anchor.x = edge_x + WARP_MARGIN;
+    else
+        s_anchor.x = edge_x - WARP_MARGIN;
+    s_last = s_anchor;
     s_have_last = 1;
     g_app.state = HOP_LINK_SHARING;
-    SetCursorPos(anchor.x, anchor.y);
+    SetCursorPos(s_anchor.x, s_anchor.y);
 
     /* 把 Windows y 按屏幕高度比例换算成 Mac 坐标，让鼠标在对应高度进入 */
-    int mac_y = anchor.y;
+    int mac_y = trigger.y;
     if (g_app.peer_h > 0 && g_app.cfg.screen_h > 0)
-        mac_y = (int)((long)anchor.y * g_app.peer_h / g_app.cfg.screen_h);
+        mac_y = (int)((long)trigger.y * g_app.peer_h / g_app.cfg.screen_h);
     send_enter(mac_y);
 
     ui_refresh(&g_app);
@@ -122,10 +135,11 @@ static LRESULT CALLBACK mouse_proc_hook(int code, WPARAM wp, LPARAM lp) {
     if (s_sharing) {
         switch (wp) {
             case WM_MOUSEMOVE: {
+                /* SetCursorPos 钳回锚点会产生注入事件，必须忽略，
+                 * 否则会把"拉回"误当成真实移动，造成抖动/自动偏移。 */
+                if (m->flags & LLMHF_INJECTED) return 1;
                 int dx = pt.x - s_anchor.x;
                 int dy = pt.y - s_anchor.y;
-                hop_log(HOP_LOG_INFO, "mv pt=(%d,%d) inj=%d dx=%d dy=%d",
-                        pt.x, pt.y, (m->flags & LLMHF_INJECTED) ? 1 : 0, dx, dy);
                 if (dx || dy) {
                     send_move(dx, dy);
                     SetCursorPos(s_anchor.x, s_anchor.y);

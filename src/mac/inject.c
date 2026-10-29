@@ -18,6 +18,11 @@
 static double s_w, s_h;
 static int    s_inited;
 
+/* 进入时不贴死边缘，而是在内侧留出一段死区：进入后手部的小幅反向
+ * 抖动不会立刻触发 EDGE_LEAVE，必须真正推到边缘并继续向外才收回。
+ * 单位是本端逻辑点。 */
+#define ENTER_MARGIN 24.0
+
 /* 修饰键按下计数（左右各一，不能只用布尔 —— 同时按住两个同类修饰键时
  * 松开一个不能把整个修饰位清掉） */
 static uint8_t      s_modn[4];   /* shift / control / alt / command */
@@ -50,8 +55,24 @@ static void post(CGEventRef e) {
     CFRelease(e);
 }
 
-static double edge_x(void) {
+/* 离开边界：光标真正到达的物理边缘 */
+static double leave_x(void) {
     return g_mac.cfg.client_edge == HOP_EDGE_LEFT ? 0 : s_w - 1;
+}
+
+/* 进入位置：边缘内侧的死区点 */
+static double enter_x(void) {
+    return g_mac.cfg.client_edge == HOP_EDGE_LEFT ? ENTER_MARGIN
+                                                  : s_w - 1 - ENTER_MARGIN;
+}
+
+/* 服务端（Windows 物理像素）-> 本端（逻辑点）的位移缩放。
+ * peer 尺寸未知时退化为 1:1。 */
+static double scale_x(void) {
+    return g_mac.peer_w > 0 ? s_w / g_mac.peer_w : 1.0;
+}
+static double scale_y(void) {
+    return g_mac.peer_h > 0 ? s_h / g_mac.peer_h : 1.0;
 }
 
 void inject_init(void) {
@@ -111,10 +132,10 @@ static void post_move(CGPoint pt, CGMouseButton btn) {
     post(e);
 }
 
-/* 进入共享：edge 处、指定 y（已是本端坐标），并立即定位物理鼠标 */
+/* 进入共享：边缘内侧死区、指定 y（已是本端坐标），并立即定位物理鼠标 */
 void inject_enter(int y) {
     if (!s_inited) inject_init();
-    g_mac.mouse_x = edge_x();
+    g_mac.mouse_x = enter_x();
     g_mac.mouse_y = y;
     if (g_mac.mouse_y < 0) g_mac.mouse_y = 0;
     if (g_mac.mouse_y > s_h - 1) g_mac.mouse_y = s_h - 1;
@@ -131,26 +152,37 @@ static void leave_edge(void) {
 }
 
 void inject_move(int dx, int dy) {
+    double sx, sy, nx, ny;
+
     if (!g_mac.sharing) inject_enter((int)(s_h / 2));  /* 未收到 ENTER 的兜底 */
     if (!s_inited) inject_init();
 
-    /* 边缘离开判定（在更新位置前） */
+    /* 把 Windows 物理像素增量换算成本端逻辑点 */
+    sx = scale_x();
+    sy = scale_y();
+    nx = g_mac.mouse_x + dx * sx;
+    ny = g_mac.mouse_y + dy * sy;
+
+    /* 边缘离开：光标已到真实边缘，且本周期仍继续向外 */
     if (g_mac.cfg.client_edge == HOP_EDGE_LEFT) {
-        if (g_mac.mouse_x <= 0 && dx < 0) { leave_edge(); return; }
+        if (g_mac.mouse_x <= leave_x() && nx < g_mac.mouse_x) {
+            leave_edge();
+            return;
+        }
     } else {
-        if (g_mac.mouse_x >= s_w - 1 && dx > 0) { leave_edge(); return; }
+        if (g_mac.mouse_x >= leave_x() && nx > g_mac.mouse_x) {
+            leave_edge();
+            return;
+        }
     }
 
-    double before_x = g_mac.mouse_x;
-    g_mac.mouse_x += dx;
-    g_mac.mouse_y += dy;
+    g_mac.mouse_x = nx;
+    g_mac.mouse_y = ny;
     if (g_mac.mouse_x < 0) g_mac.mouse_x = 0;
     if (g_mac.mouse_x > s_w - 1) g_mac.mouse_x = s_w - 1;
     if (g_mac.mouse_y < 0) g_mac.mouse_y = 0;
     if (g_mac.mouse_y > s_h - 1) g_mac.mouse_y = s_h - 1;
 
-    hop_log(HOP_LOG_INFO, "inject_move dx=%d dy=%d x:%.0f->%.0f (screen %.0fx%.0f)",
-            dx, dy, before_x, g_mac.mouse_x, s_w, s_h);
     post_move(CGPointMake(g_mac.mouse_x, g_mac.mouse_y), kCGMouseButtonLeft);
 }
 

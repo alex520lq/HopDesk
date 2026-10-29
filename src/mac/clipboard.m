@@ -71,15 +71,12 @@ void clipboard_apply(const char *utf8) {
 
     if (!utf8 || !*utf8) return;
     s = [NSString stringWithUTF8String:utf8];
-    hop_log(HOP_LOG_INFO, "apply: in[0]=%02x str=%p len=%lu",
-            (unsigned char)utf8[0], s, s ? (unsigned long)s.length : 0UL);
     if (!s) return;
 
     dispatch_async(dispatch_get_main_queue(), ^{
         NSPasteboard *pb = [NSPasteboard generalPasteboard];
         [pb clearContents];
-        BOOL ok = [pb setString:s forType:NSPasteboardTypeString];
+        [pb setString:s forType:NSPasteboardTypeString];
         s_last_change = [pb changeCount];   /* 抑制回传 */
-        hop_log(HOP_LOG_INFO, "apply written=%d change=%ld", ok, (long)s_last_change);
     });
 }

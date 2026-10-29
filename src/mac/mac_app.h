@@ -12,7 +12,8 @@ typedef struct {
     int        connected;
     int        sharing;        /* 鼠标当前是否在 Mac（被服务端移交） */
     double     mouse_x, mouse_y;
-    double     screen_w, screen_h;
+    double     screen_w, screen_h;   /* 本端 CoreGraphics 坐标空间（逻辑点） */
+    double     peer_w, peer_h;       /* 服务端（Windows）坐标空间，用于位移缩放 */
     int        btn_held[3];
 } mac_app;
 

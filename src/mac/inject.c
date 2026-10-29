@@ -141,6 +141,7 @@ void inject_move(int dx, int dy) {
         if (g_mac.mouse_x >= s_w - 1 && dx > 0) { leave_edge(); return; }
     }
 
+    double before_x = g_mac.mouse_x;
     g_mac.mouse_x += dx;
     g_mac.mouse_y += dy;
     if (g_mac.mouse_x < 0) g_mac.mouse_x = 0;
@@ -148,6 +149,8 @@ void inject_move(int dx, int dy) {
     if (g_mac.mouse_y < 0) g_mac.mouse_y = 0;
     if (g_mac.mouse_y > s_h - 1) g_mac.mouse_y = s_h - 1;
 
+    hop_log(HOP_LOG_INFO, "inject_move dx=%d dy=%d x:%.0f->%.0f (screen %.0fx%.0f)",
+            dx, dy, before_x, g_mac.mouse_x, s_w, s_h);
     post_move(CGPointMake(g_mac.mouse_x, g_mac.mouse_y), kCGMouseButtonLeft);
 }
 

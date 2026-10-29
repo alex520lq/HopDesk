@@ -124,6 +124,8 @@ static LRESULT CALLBACK mouse_proc_hook(int code, WPARAM wp, LPARAM lp) {
             case WM_MOUSEMOVE: {
                 int dx = pt.x - s_anchor.x;
                 int dy = pt.y - s_anchor.y;
+                hop_log(HOP_LOG_INFO, "mv pt=(%d,%d) inj=%d dx=%d dy=%d",
+                        pt.x, pt.y, (m->flags & LLMHF_INJECTED) ? 1 : 0, dx, dy);
                 if (dx || dy) {
                     send_move(dx, dy);
                     SetCursorPos(s_anchor.x, s_anchor.y);

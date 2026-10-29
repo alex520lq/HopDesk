@@ -38,6 +38,9 @@ static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
             }
             break;
         }
+        case HOP_MSG_MOUSE_ENTER:
+            if (len >= 2) inject_enter((int)hop_get_be16(p));
+            break;
         case HOP_MSG_MOUSE_MOVE:
             if (len >= 4)
                 inject_move((int16_t)hop_get_be16(p),

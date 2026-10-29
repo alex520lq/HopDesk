@@ -10,6 +10,23 @@
 
 win_app g_app;
 
+/* 声明为 PerMonitorV2 DPI aware：统一使用物理像素，避免坐标虚拟化混乱。
+ * 必须在创建任何窗口 / 取坐标之前调用。 */
+static void set_dpi_aware(void) {
+    HMODULE u = GetModuleHandleW(L"user32.dll");
+    if (!u) return;
+    typedef BOOL (WINAPI *set_ctx_t)(void *);
+    set_ctx_t set_ctx = (set_ctx_t)GetProcAddress(u, "SetProcessDpiAwarenessContext");
+    if (set_ctx) {
+        if (set_ctx((void *)-4)) return;   /* PER_MONITOR_AWARE_V2 */
+        set_ctx((void *)-3);               /* PER_MONITOR_AWARE    */
+        return;
+    }
+    typedef BOOL (WINAPI *set_aware_t)(void);
+    set_aware_t set_aware = (set_aware_t)GetProcAddress(u, "SetProcessDPIAware");
+    if (set_aware) set_aware();
+}
+
 /* exe 同目录下的文件路径 */
 static void beside(wchar_t *out, int n, const wchar_t *name) {
     wchar_t *p;
@@ -29,7 +46,22 @@ static void on_link(int up) {
 }
 
 static void on_recv(hop_recv *r) {
+    const uint8_t *p = r->data;
+    uint32_t len = r->len;
     switch (r->type) {
+        case HOP_MSG_HELLO: {
+            /* {tlen, token, nlen, name, w(4), h(4)} */
+            uint32_t off = 0;
+            if (len < 2) break;
+            off = 1 + p[0];                 /* 跳过 token */
+            if (off + 1 > len) break;
+            off += 1 + p[off];              /* 跳过 name  */
+            if (off + 8 <= len) {
+                g_app.peer_w = (int)hop_get_be32(p + off);
+                g_app.peer_h = (int)hop_get_be32(p + off + 4);
+            }
+            break;
+        }
         case HOP_MSG_EDGE_LEAVE:
             if (g_app.state == HOP_LINK_SHARING) capture_set_sharing(0);
             break;
@@ -68,6 +100,8 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     (void)prev; (void)cmd; (void)show;
+
+    set_dpi_aware();
 
     /* 单实例 */
     HANDLE mtx = CreateMutexW(NULL, TRUE, L"Local\\HopDesk");

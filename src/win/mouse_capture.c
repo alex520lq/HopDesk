@@ -36,6 +36,12 @@ static int edge_active(int *edge_x) {
 }
 
 /* ---- 进入 / 退出共享 ---- */
+static void send_enter(int y) {
+    uint8_t p[2];
+    hop_put_be16(p, (uint16_t)(int16_t)y);
+    net_server_send(g_app.net, HOP_MSG_MOUSE_ENTER, p, 2);
+}
+
 static void enter_sharing(POINT anchor) {
     s_sharing = 1;
     s_anchor = anchor;
@@ -43,8 +49,15 @@ static void enter_sharing(POINT anchor) {
     s_have_last = 1;
     g_app.state = HOP_LINK_SHARING;
     SetCursorPos(anchor.x, anchor.y);
+
+    /* 把 Windows y 按屏幕高度比例换算成 Mac 坐标，让鼠标在对应高度进入 */
+    int mac_y = anchor.y;
+    if (g_app.peer_h > 0 && g_app.cfg.screen_h > 0)
+        mac_y = (int)((long)anchor.y * g_app.peer_h / g_app.cfg.screen_h);
+    send_enter(mac_y);
+
     ui_refresh(&g_app);
-    hop_log(HOP_LOG_INFO, "mouse -> Mac");
+    hop_log(HOP_LOG_INFO, "mouse -> Mac (y=%d)", mac_y);
 }
 static void enter_local(void) {
     s_sharing = 0;

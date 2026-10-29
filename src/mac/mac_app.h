@@ -25,6 +25,7 @@ void net_request_stop(void);
 
 /* inject.c */
 void inject_init(void);
+void inject_enter(int y);          /* 服务端移交：在边缘对应 y 进入 */
 void inject_move(int dx, int dy);
 void inject_button(int button, int down);
 void inject_wheel(int dx, int dy);

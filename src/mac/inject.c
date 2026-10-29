@@ -34,19 +34,22 @@ void inject_reset(void) {
     for (int i = 0; i < 3; ++i) g_mac.btn_held[i] = 0;
 }
 
-static void begin_sharing(void) {
-    inject_init();
-    /* 鼠标从相邻边缘进入：默认右边缘（Windows 在右），y 居中 */
-    g_mac.mouse_x = edge_x();
-    g_mac.mouse_y = s_h / 2.0;
-    g_mac.sharing = 1;
-    statusbar_update(1, 1);
-}
-
 static void post_move(CGPoint pt, CGMouseButton btn) {
     CGEventRef e = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved, pt, btn);
     CGEventPost(kCGHIDEventTap, e);
     CFRelease(e);
+}
+
+/* 进入共享：edge 处、指定 y（已是本端坐标），并立即定位物理鼠标 */
+void inject_enter(int y) {
+    if (!s_inited) inject_init();
+    g_mac.mouse_x = edge_x();
+    g_mac.mouse_y = y;
+    if (g_mac.mouse_y < 0) g_mac.mouse_y = 0;
+    if (g_mac.mouse_y > s_h - 1) g_mac.mouse_y = s_h - 1;
+    g_mac.sharing = 1;
+    post_move(CGPointMake(g_mac.mouse_x, g_mac.mouse_y), kCGMouseButtonLeft);
+    statusbar_update(1, 1);
 }
 
 static void leave_edge(void) {
@@ -57,7 +60,7 @@ static void leave_edge(void) {
 }
 
 void inject_move(int dx, int dy) {
-    if (!g_mac.sharing) begin_sharing();
+    if (!g_mac.sharing) inject_enter((int)(s_h / 2));  /* 未收到 ENTER 的兜底 */
     if (!s_inited) inject_init();
 
     /* 边缘离开判定（在更新位置前） */
@@ -80,7 +83,7 @@ void inject_move(int dx, int dy) {
 }
 
 void inject_button(int button, int down) {
-    if (!g_mac.sharing) begin_sharing();
+    if (!g_mac.sharing) inject_enter((int)(s_h / 2));
     CGPoint pt = CGPointMake(g_mac.mouse_x, g_mac.mouse_y);
 
     CGMouseButton b = button == HOP_BTN_RIGHT ? kCGMouseButtonRight
@@ -101,7 +104,7 @@ void inject_button(int button, int down) {
 }
 
 void inject_wheel(int dx, int dy) {
-    if (!g_mac.sharing) begin_sharing();
+    if (!g_mac.sharing) inject_enter((int)(s_h / 2));
     /* Windows WHEEL_DELTA=120 ≈ 3 行；按像素单位换算 */
     int32_t py = (int32_t)(dy * 1.0);
     int32_t px = (int32_t)(dx * 1.0);

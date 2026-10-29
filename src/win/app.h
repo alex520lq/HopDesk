@@ -20,6 +20,7 @@ typedef struct {
     int            tray_added;
     hop_link_state state;
     HICON          icons[3];      /* down / local / sharing */
+    int            peer_w, peer_h; /* 客户端（Mac）屏幕尺寸，握手时取得 */
 } win_app;
 
 extern win_app g_app;

@@ -59,6 +59,9 @@ static void on_recv(hop_recv *r) {
             if (off + 8 <= len) {
                 g_app.peer_w = (int)hop_get_be32(p + off);
                 g_app.peer_h = (int)hop_get_be32(p + off + 4);
+                hop_log(HOP_LOG_INFO, "peer screen %dx%d", g_app.peer_w, g_app.peer_h);
+            } else {
+                hop_log(HOP_LOG_WARN, "HELLO too short (len=%u off=%u)", len, off);
             }
             break;
         }

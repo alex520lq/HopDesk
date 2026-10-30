@@ -82,9 +82,13 @@ typedef struct {
     char     device_name[HOP_NAME_MAX];
     int      server_edge;          /* 服务端移交边缘（hop_edge） */
     int      client_edge;          /* 客户端离开边缘 */
-    int      switch_push_ms;       /* 贴边缘持续推多久才移交 */
     int      screen_w;             /* 本机主屏宽（握手交换） */
     int      screen_h;
+
+    /* ---- 边缘保护（对齐 Deskflow 的 switchDelay 语义） ---- */
+    int      switch_delay_ms;      /* 贴边持续推多久才移交；0 = 立即移交 */
+    int      switch_cooldown_ms;   /* 移交/收回后多久内不再触发，掐断乒乓 */
+    int      edge_margin_px;       /* 内侧死区：进入内移 + 退出越界阈值 */
 
     /* ---- 阶段 4：显示切换 ---- */
     uint16_t disp_win_input;       /* DDC/CI 0x60 值：Windows 侧的输入源 */

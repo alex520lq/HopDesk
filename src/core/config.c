@@ -13,9 +13,14 @@ void hop_config_defaults(hop_config *c) {
     c->port            = HOP_DEFAULT_PORT;
     c->server_edge     = HOP_EDGE_LEFT;
     c->client_edge     = HOP_EDGE_RIGHT;
-    c->switch_push_ms  = 0;        /* 0 = 一碰边缘即移交 */
     c->screen_w        = 0;
     c->screen_h        = 0;
+
+    /* 边缘保护：Deskflow 的 switchDelay 是时间判定，不是距离判定。
+     * 250ms 是 Deskflow 的传统默认值，够你点一下边缘的按钮而不被弹走。 */
+    c->switch_delay_ms    = 250;
+    c->switch_cooldown_ms = 300;
+    c->edge_margin_px     = 40;    /* 进入内移 / 退出越界阈值 */
     /* 空 token = 不校验（局域网自用） */
     c->token[0]        = '\0';
     c->peer_host[0]    = '\0';
@@ -53,7 +58,10 @@ static void set_kv(hop_config *c, const char *k, const char *v) {
     else if (!strcmp(k, "name"))     snprintf(c->device_name, sizeof(c->device_name), "%s", v);
     else if (!strcmp(k, "server_edge")) c->server_edge = atoi(v);
     else if (!strcmp(k, "client_edge")) c->client_edge = atoi(v);
-    else if (!strcmp(k, "switch_push_ms")) c->switch_push_ms = atoi(v);
+    else if (!strcmp(k, "switch_push_ms"))     c->switch_delay_ms = atoi(v);   /* 旧键名 */
+    else if (!strcmp(k, "switch_delay_ms"))    c->switch_delay_ms = atoi(v);
+    else if (!strcmp(k, "switch_cooldown_ms")) c->switch_cooldown_ms = atoi(v);
+    else if (!strcmp(k, "edge_margin_px"))     c->edge_margin_px = atoi(v);
     else if (!strcmp(k, "disp_win_input")) c->disp_win_input = (uint16_t)to_int(v);
     else if (!strcmp(k, "disp_mac_input")) c->disp_mac_input = (uint16_t)to_int(v);
     else if (!strcmp(k, "disp_wake_sec"))  c->disp_wake_sec = atoi(v);

@@ -15,6 +15,9 @@
 #define IDT_DISP       1
 #define DISP_WAKE_DELAY_MS 1200
 
+/* 边缘移交的停留计时（对齐 Deskflow 的 switchDelay） */
+#define IDT_EDGE       2
+
 typedef struct {
     hop_config     cfg;
     net_server    *net;
@@ -34,6 +37,7 @@ void capture_init(win_app *app);
 void capture_shutdown(void);
 void capture_set_sharing(int sharing);
 void capture_force_toggle(void);   /* 手动切换 */
+void capture_on_edge_timer(void);  /* WM_TIMER(IDT_EDGE)：停留够时长才移交 */
 
 /* kbd_capture.c（阶段 2） */
 void kbd_init(win_app *app);

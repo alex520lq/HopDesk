@@ -17,12 +17,8 @@ static int     s_sharing;
 static POINT   s_anchor;      /* SHARING 时鼠标锁定点 */
 static POINT   s_last;
 static int     s_have_last;
-static DWORD   s_push_start;
-
-/* 进入共享后，物理光标不钳在物理边缘，而是钳在边缘内侧这一段距离处。
- * 这样用户继续向边缘方向推时能持续产生位移，鼠标不会"卡死"在边界，
- * 也避免边界处的自然抖动被误判成反向移动。单位为物理像素。 */
-#define WARP_MARGIN 60
+static int     s_edge_pending;    /* 贴边计时器已启动 */
+static DWORD   s_cooldown_until;  /* 在此之前不判定边缘 */
 
 /* ---- 枚举显示器：是否有 X<0 的屏 ---- */
 struct mon_ctx { int has_left; };
@@ -32,12 +28,33 @@ static BOOL CALLBACK mon_proc(HMONITOR h, HDC hdc, LPRECT r, LPARAM lp) {
     if (r->left < 0) c->has_left = 1;
     return TRUE;
 }
-static int edge_active(int *edge_x) {
-    struct mon_ctx c; c.has_left = 0;
+
+/* 计算移交边缘的坐标与方向。两个出参总是被写入，返回值只表示"边缘移交是否启用"。
+ * 这样调用方不需要先判断返回值再取坐标 —— 未初始化值没有生存空间。 */
+static int edge_boundary(int *edge_x, int *is_left) {
+    struct mon_ctx c;
+    c.has_left = 0;
     EnumDisplayMonitors(NULL, NULL, mon_proc, (LPARAM)&c);
-    if (c.has_left) return 0;                 /* 双屏：左屏在 Windows，不启用 */
-    *edge_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    return 1;
+
+    *is_left = (g_app.cfg.server_edge == HOP_EDGE_LEFT);
+    if (*is_left)
+        *edge_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    else
+        *edge_x = GetSystemMetrics(SM_XVIRTUALSCREEN) +
+                  GetSystemMetrics(SM_CXVIRTUALSCREEN) - 1;
+
+    return !c.has_left;          /* 双屏：左屏在 Windows，不启用自动移交 */
+}
+
+static int on_edge(int x, int edge_x, int is_left) {
+    return is_left ? (x <= edge_x) : (x >= edge_x);
+}
+
+/* 冷却期判定。用有符号差值比较，避免 GetTickCount 回绕；
+ * 0 表示"从未设过冷却"，直接放行（否则开机超过 24.8 天后会被误判为冷却中）。 */
+static int in_cooldown(void) {
+    if (!s_cooldown_until) return 0;
+    return (LONG)(GetTickCount() - s_cooldown_until) < 0;
 }
 
 /* ---- 进入 / 退出共享 ---- */
@@ -48,20 +65,23 @@ static void send_enter(int y) {
 }
 
 static void enter_sharing(POINT trigger) {
-    int edge_x;
+    int edge_x, is_left;
+    int margin = g_app.cfg.edge_margin_px;
 
-    edge_active(&edge_x);
+    edge_boundary(&edge_x, &is_left);        /* 出参总是被写入 */
+    if (margin < 0) margin = 0;
+
     s_sharing = 1;
     s_anchor = trigger;
     /* 钳制点内移到边缘内侧，留出继续推的空间 */
-    if (g_app.cfg.server_edge == HOP_EDGE_LEFT)
-        s_anchor.x = edge_x + WARP_MARGIN;
-    else
-        s_anchor.x = edge_x - WARP_MARGIN;
+    s_anchor.x = is_left ? edge_x + margin : edge_x - margin;
     s_last = s_anchor;
     s_have_last = 1;
     g_app.state = HOP_LINK_SHARING;
     SetCursorPos(s_anchor.x, s_anchor.y);
+
+    /* 移交后短时间内不再判定边缘，避免在接缝处来回弹 */
+    s_cooldown_until = GetTickCount() + (DWORD)g_app.cfg.switch_cooldown_ms;
 
     /* 把 Windows y 按屏幕高度比例换算成 Mac 坐标，让鼠标在对应高度进入 */
     int mac_y = trigger.y;
@@ -73,15 +93,23 @@ static void enter_sharing(POINT trigger) {
     hop_log(HOP_LOG_INFO, "mouse -> Mac (y=%d)", mac_y);
 }
 static void enter_local(void) {
+    int edge_x, is_left;
+    POINT p;
+
     /* 先把仍按着的键在对端松开，再放开本机输入 —— 顺序不能反 */
     kbd_release_all();
     s_sharing = 0;
     g_app.state = HOP_LINK_LOCAL;
-    /* 把鼠标放回边缘内侧，避免立刻又触发移交 */
-    POINT p = s_anchor;
-    p.x += 2;
+
+    /* 把鼠标放回边缘内侧，避免立刻又触发移交。
+     * 方向必须跟着 server_edge 走：右边缘时要往回退，不是往前推。 */
+    edge_boundary(&edge_x, &is_left);
+    p = s_anchor;
+    p.x += is_left ? 2 : -2;
     SetCursorPos(p.x, p.y);
     s_have_last = 0;
+    /* 收回后同样进入冷却：不然"推出去又被弹回来"会变成连续往返 */
+    s_cooldown_until = GetTickCount() + (DWORD)g_app.cfg.switch_cooldown_ms;
     ui_refresh(&g_app);
     hop_log(HOP_LOG_INFO, "mouse -> local");
 }
@@ -166,30 +194,41 @@ static LRESULT CALLBACK mouse_proc_hook(int code, WPARAM wp, LPARAM lp) {
         return 1;   /* 其余鼠标事件在共享时也不落到本机 */
     }
 
-    /* LOCAL：边缘检测 */
+    /* LOCAL：边缘检测
+     *
+     * 贴边后不是立刻移交，而是启动 IDT_EDGE 计时器，够 switch_delay_ms
+     * 仍然停在边缘才移交 —— 这就是 Deskflow 的 switchDelay 语义。
+     *
+     * 为什么必须用计时器而不能就地判断时间：
+     * 光标顶到 x=0 之后位置不再变化，系统不再投递 WM_MOUSEMOVE，
+     * 事件驱动的"累计停留时长"永远等不到下一次事件，计时就死了。
+     * （旧实现 switch_push_ms 正是这么坏掉的：设成正值等于彻底禁用移交。） */
     if (wp == WM_MOUSEMOVE) {
-        int edge_x;
-        if (edge_active(&edge_x) && net_server_has_client(g_app.net)) {
+        int edge_x, is_left;
+        int delay = g_app.cfg.switch_delay_ms;
+
+        if (edge_boundary(&edge_x, &is_left) &&
+            net_server_has_client(g_app.net) &&
+            !in_cooldown()) {
+
             int dx = s_have_last ? (pt.x - s_last.x) : 0;
-            int toward = (g_app.cfg.server_edge == HOP_EDGE_LEFT) ? (dx < 0)
-                                                                  : (dx > 0);
-            if (pt.x <= edge_x && toward) {
-                if (g_app.cfg.switch_push_ms > 0) {
-                    DWORD now = GetTickCount();
-                    if (!s_push_start) s_push_start = now;
-                    if ((int)(now - s_push_start) >= g_app.cfg.switch_push_ms) {
-                        s_push_start = 0;
-                        enter_sharing(pt);
-                        return 1;
-                    }
-                } else {
+            int toward = is_left ? (dx < 0) : (dx > 0);
+
+            if (on_edge(pt.x, edge_x, is_left) && toward) {
+                if (delay <= 0) {
                     enter_sharing(pt);
                     return 1;
                 }
-            } else {
-                s_push_start = 0;
+                if (!s_edge_pending) {
+                    s_edge_pending = 1;
+                    SetTimer(g_app.hwnd, IDT_EDGE, (UINT)delay, NULL);
+                }
+            } else if (s_edge_pending) {
+                s_edge_pending = 0;
+                KillTimer(g_app.hwnd, IDT_EDGE);
             }
         }
+
         s_last = pt;
         s_have_last = 1;
     }
@@ -198,11 +237,29 @@ pass:
     return CallNextHookEx(s_hook, code, wp, lp);
 }
 
+/* 停留时间到：再确认一次光标是否仍在边缘，是则移交 */
+void capture_on_edge_timer(void) {
+    POINT pt;
+    int edge_x, is_left;
+
+    s_edge_pending = 0;
+    if (g_app.state != HOP_LINK_LOCAL) return;
+    if (!net_server_has_client(g_app.net)) return;
+    if (!edge_boundary(&edge_x, &is_left)) return;
+    if (in_cooldown()) return;
+
+    GetCursorPos(&pt);
+    if (!on_edge(pt.x, edge_x, is_left)) return;
+
+    enter_sharing(pt);
+}
+
 void capture_init(win_app *app) {
     (void)app;
     s_sharing = 0;
     s_have_last = 0;
-    s_push_start = 0;
+    s_edge_pending = 0;
+    s_cooldown_until = 0;
     s_hook = SetWindowsHookExW(WH_MOUSE_LL, mouse_proc_hook,
                                g_app.inst, 0);
     if (s_hook) hop_log(HOP_LOG_INFO, "mouse hook installed");
@@ -210,5 +267,9 @@ void capture_init(win_app *app) {
 }
 
 void capture_shutdown(void) {
+    if (s_edge_pending) {
+        s_edge_pending = 0;
+        KillTimer(g_app.hwnd, IDT_EDGE);
+    }
     if (s_hook) { UnhookWindowsHookEx(s_hook); s_hook = NULL; }
 }

@@ -64,7 +64,10 @@ src/
 
 - 全局低级钩子 `WH_MOUSE_LL` / `WH_KEYBOARD_LL`（在自身进程内，无需独立 DLL）。
 - 处于"控制 Mac"状态时：钩子返回非零吞掉事件，同时转发；鼠标钳制在移交边缘。
-- 边缘检测：鼠标位置到达配置的左/右边界即切换状态。
+- 边缘检测：鼠标贴到配置的左/右边界并**停留 `switch_delay_ms`** 才移交
+  （对齐 Deskflow 的 `switchDelay`）。移交后 `switch_cooldown_ms` 内不再判定，
+  避免在接缝处来回弹。停留判定必须用定时器：光标顶到边界后位置不再变化，
+  系统不再投递移动事件，事件驱动的计时永远等不到下一次事件。
 - 鼠标移动用相对位移（对标 Deskflow 的 `relativeMouseMoves`）。
 
 ### macOS（注入）
@@ -72,7 +75,9 @@ src/
 - `CGEventCreateMouseEvent` / `CGEventCreateKeyboardEvent` + `CGEventPost(kCGHIDEventTap, ...)`，纯 C。
 - 维护 Mac 端虚拟坐标，按收到的相对位移累加。
 - 需要 Accessibility 权限。
-- 鼠标到达 Mac 屏幕边缘 → 发 `EDGE_LEAVE`，服务端收回并恢复本机输入。
+- 鼠标越过 Mac 屏幕边缘、且越界量累计达到 `edge_margin_px` → 发 `EDGE_LEAVE`，
+  服务端收回并恢复本机输入。用"越界距离"而不是"停留时长"，因为本端坐标由
+  自己维护，距离是确定量，不需要引入定时器；效果与 `switchDelay` 等价。
 
 ### 键码映射
 

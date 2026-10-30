@@ -18,10 +18,10 @@
 static double s_w, s_h;
 static int    s_inited;
 
-/* 进入时不贴死边缘，而是在内侧留出一段死区：进入后手部的小幅反向
- * 抖动不会立刻触发 EDGE_LEAVE，必须真正推到边缘并继续向外才收回。
- * 单位是本端逻辑点。 */
-#define ENTER_MARGIN 24.0
+/* 越过出口边缘的累计量，回到屏内立即清零。
+ * 必须累计而不是看单次位移：慢推时每次事件只有几个像素，
+ * 单次判定永远过不了阈值，表现为"怎么推都出不去"。 */
+static double s_over;
 
 /* 修饰键按下计数（左右各一，不能只用布尔 —— 同时按住两个同类修饰键时
  * 松开一个不能把整个修饰位清掉） */
@@ -55,24 +55,29 @@ static void post(CGEventRef e) {
     CFRelease(e);
 }
 
-/* 离开边界：光标真正到达的物理边缘 */
-static double leave_x(void) {
-    return g_mac.cfg.client_edge == HOP_EDGE_LEFT ? 0 : s_w - 1;
-}
-
-/* 进入位置：边缘内侧的死区点 */
-static double enter_x(void) {
-    return g_mac.cfg.client_edge == HOP_EDGE_LEFT ? ENTER_MARGIN
-                                                  : s_w - 1 - ENTER_MARGIN;
-}
-
-/* 服务端（Windows 物理像素）-> 本端（逻辑点）的位移缩放。
+/* 服务端（Windows 物理像素）-> 本端坐标的位移缩放。
+ * 当前两端都是 3840×2160，scale 为 1；显示器模式变了会自动跟。
  * peer 尺寸未知时退化为 1:1。 */
 static double scale_x(void) {
     return g_mac.peer_w > 0 ? s_w / g_mac.peer_w : 1.0;
 }
 static double scale_y(void) {
     return g_mac.peer_h > 0 ? s_h / g_mac.peer_h : 1.0;
+}
+
+/* 死区宽度：配置项以 Windows 物理像素为单位，换算到本端坐标空间。
+ * 至少 1 个单位，且不超过半屏 —— 否则会变成"永远出不去"。 */
+static double margin(void) {
+    double m = (double)g_mac.cfg.edge_margin_px * scale_x();
+    if (m < 1.0) m = 1.0;
+    if (m > s_w / 2) m = s_w / 2;
+    return m;
+}
+
+/* 进入位置：边缘内侧的死区点 */
+static double enter_x(void) {
+    double m = margin();
+    return g_mac.cfg.client_edge == HOP_EDGE_LEFT ? m : s_w - 1 - m;
 }
 
 void inject_init(void) {
@@ -113,6 +118,7 @@ void inject_reset(void) {
     recompute_flags();
     g_mac.sharing = 0;
     s_inited = 0;
+    s_over = 0;
     g_mac.mouse_x = 0;
     g_mac.mouse_y = 0;
     for (int i = 0; i < 3; ++i) g_mac.btn_held[i] = 0;
@@ -135,6 +141,7 @@ static void post_move(CGPoint pt, CGMouseButton btn) {
 /* 进入共享：边缘内侧死区、指定 y（已是本端坐标），并立即定位物理鼠标 */
 void inject_enter(int y) {
     if (!s_inited) inject_init();
+    s_over = 0;
     g_mac.mouse_x = enter_x();
     g_mac.mouse_y = y;
     if (g_mac.mouse_y < 0) g_mac.mouse_y = 0;
@@ -145,6 +152,7 @@ void inject_enter(int y) {
 }
 
 static void leave_edge(void) {
+    s_over = 0;
     g_mac.sharing = 0;
     net_send(HOP_MSG_EDGE_LEAVE,
              (uint8_t[]){ (uint8_t)g_mac.cfg.client_edge }, 1);
@@ -152,34 +160,42 @@ static void leave_edge(void) {
 }
 
 void inject_move(int dx, int dy) {
-    double sx, sy, nx, ny;
+    double sx, sy, nx, ny, m;
 
     if (!g_mac.sharing) inject_enter((int)(s_h / 2));  /* 未收到 ENTER 的兜底 */
     if (!s_inited) inject_init();
 
-    /* 把 Windows 物理像素增量换算成本端逻辑点 */
+    /* 把 Windows 物理像素增量换算成本端坐标 */
     sx = scale_x();
     sy = scale_y();
     nx = g_mac.mouse_x + dx * sx;
     ny = g_mac.mouse_y + dy * sy;
+    m  = margin();
 
-    /* 边缘离开：光标已到真实边缘，且本周期仍继续向外 */
+    /* 退出边缘：越界量累计够 margin 才收回；中途回到屏内立即清零。
+     * 这是 Deskflow switchDelay 的等价物 —— 那边用"停留时长"，
+     * 这边用"越界距离"，因为本端坐标由我们自己维护，距离是确定量，
+     * 不需要引入定时器。两者效果一致：贴边不会误触发，必须真的推出去。 */
     if (g_mac.cfg.client_edge == HOP_EDGE_LEFT) {
-        if (g_mac.mouse_x <= leave_x() && nx < g_mac.mouse_x) {
-            leave_edge();
-            return;
+        if (nx < 0) {
+            s_over += -nx;
+            nx = 0;
+            if (s_over >= m) { leave_edge(); return; }
+        } else {
+            s_over = 0;
         }
     } else {
-        if (g_mac.mouse_x >= leave_x() && nx > g_mac.mouse_x) {
-            leave_edge();
-            return;
+        if (nx > s_w - 1) {
+            s_over += nx - (s_w - 1);
+            nx = s_w - 1;
+            if (s_over >= m) { leave_edge(); return; }
+        } else {
+            s_over = 0;
         }
     }
 
     g_mac.mouse_x = nx;
     g_mac.mouse_y = ny;
-    if (g_mac.mouse_x < 0) g_mac.mouse_x = 0;
-    if (g_mac.mouse_x > s_w - 1) g_mac.mouse_x = s_w - 1;
     if (g_mac.mouse_y < 0) g_mac.mouse_y = 0;
     if (g_mac.mouse_y > s_h - 1) g_mac.mouse_y = s_h - 1;
 

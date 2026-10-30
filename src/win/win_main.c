@@ -148,6 +148,11 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 disp_set_input(g_app.cfg.disp_mac_input);
                 return 0;
             }
+            if (wp == IDT_EDGE) {
+                KillTimer(h, IDT_EDGE);
+                capture_on_edge_timer();
+                return 0;
+            }
             break;
         case WM_COMMAND:
             switch (LOWORD(wp)) {

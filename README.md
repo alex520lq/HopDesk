@@ -74,6 +74,20 @@ HopDesk 用纯 C 核心 + 各平台原生 UI，把 [Deskflow](https://github.com
 
 不引入 CMake，单条命令编译，保持"很小"。
 
+## 配置
+
+exe 同目录的 `hopdesk.conf`，`key=value` 格式，`#` 开头为注释。只列与边缘手感相关的：
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `server_edge` | `0`（左） | Windows 移交边缘，0=左 1=右 |
+| `client_edge` | `1`（右） | Mac 收回边缘 |
+| `switch_delay_ms` | `250` | **贴边停留多久才移交**（对齐 Deskflow 的 `switchDelay`）。0 = 一碰就切 |
+| `switch_cooldown_ms` | `300` | 移交 / 收回后多久内不再判定边缘，掐断接缝处的来回弹 |
+| `edge_margin_px` | `40` | 内侧死区：进入对端时内移的距离，也是退出时必须推出去的越界量（单位：Windows 物理像素） |
+
+`switch_delay_ms` 与 `edge_margin_px` 解决的是同一类问题的两个面：前者管**时间**（贴一下不算），后者管**距离**（推出去才算）。两个都设大，边缘会变得"迟钝"；都设 0 就回到一碰就跳的老行为。
+
 ## 资源目标
 
 | 指标 | 目标（每端） |

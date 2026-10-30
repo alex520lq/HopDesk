@@ -19,6 +19,8 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <pthread/qos.h>
+#include <sched.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -91,6 +93,11 @@ static int send_small(int fd, uint8_t type, const uint8_t *p, uint32_t len) {
     if (len && !send_all(fd, p, len)) return 0;
     return 1;
 }
+
+/* 每块之后让一次 CPU。传输是后台工作，键鼠才是前台 ——
+ * 真正起作用的保障是 send_thread 里的 QOS_CLASS_UTILITY，
+ * 这里让一次是给同优先级的其他工作减压。 */
+static void yield_cpu(void) { sched_yield(); }
 
 static int mkdir_p(const char *path) {
     char tmp[4096];
@@ -274,6 +281,7 @@ static int send_file_entry(int fd, uint8_t *tx, uint32_t batch,
                 return 0;
             }
             off += (uint64_t)got;
+            yield_cpu();
         }
         close(f);
     }
@@ -300,6 +308,7 @@ static int run_job(int fd, uint8_t *tx, xf_job *j) {
             uint32_t n = (uint32_t)((total - off) < s_x.chunk ? (total - off) : s_x.chunk);
             if (!send_chunk(fd, tx, 1, off, j->pixels + off, n)) return 0;
             off += n;
+            yield_cpu();
         }
 
         uint8_t endp[5];
@@ -333,6 +342,12 @@ static void job_free(xf_job *j) {
 
 static void *send_thread(void *arg) {
     (void)arg;
+
+    /* 主动降到 UTILITY。控制通道承载的是键鼠，主队列是 USER_INTERACTIVE
+     * 级别 —— 降级之后输入路径永远能直接抢占传输线程，
+     * 不会出现"传文件时鼠标发涩"。 */
+    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+
     uint8_t *tx = (uint8_t *)malloc(CHUNK_HDR + s_x.chunk);
     if (!tx) { hop_log(HOP_LOG_ERROR, "xfer: tx alloc failed"); return NULL; }
 

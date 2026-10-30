@@ -22,13 +22,20 @@ extern "C" {
 #define HOP_PATH_LEN_MAX   1024          /* 相对路径（UTF-8）上限 */
 #define HOP_HEADER_SIZE    5
 
-/* 分块大小：1 MB。
- * 实测 1 MB 块 TCP 2548 MB/s，64 KB 块 1276 MB/s，1.4 KB 块 46 MB/s ——
- * 每块一次系统调用，块越大摊销越划算。1 MB 也是缓存行/页对齐的整数倍，
- * 磁盘顺序读在这个粒度上不会浪费预读。 */
-#define HOP_CHUNK_SIZE     (1024u * 1024u)
-/* 单帧载荷上限：一块 + 分块头（id4+off8+len4）+ 余量 */
-#define HOP_MAX_PAYLOAD    (HOP_CHUNK_SIZE + 1024u)
+/* 分块大小。
+ *
+ * 默认 256 KB，不是 1 MB —— 这是实测出来的取舍：
+ *   1 MB 块：本机回环 1245 MB/s，但传输期间控制通道 p99 从 ~180 µs
+ *            涨到 400–1400 µs（尾延迟劣化约 5 倍）
+ *   256 KB 块：1109 MB/s（慢 11%），控制通道 p99 与空载完全一致
+ *
+ * 11% 的吞吐在真实链路上看不见：百兆线速 11.5 MB/s，两者都比线路快 100 倍；
+ * 而尾延迟劣化是用户能感觉到的"鼠标发涩"。所以默认选隔离性。
+ * 链路升到 2.5G/10G 后可把 xfer_chunk_kb 调回 1024。 */
+#define HOP_CHUNK_KB_DEFAULT 256
+#define HOP_CHUNK_KB_MAX     4096
+/* 单帧载荷上限：按最大分块算（分块头 id4+off8+len4，另留余量） */
+#define HOP_MAX_PAYLOAD      ((uint32_t)HOP_CHUNK_KB_MAX * 1024u + 1024u)
 
 /* ---- 消息类型 ---- */
 typedef enum {

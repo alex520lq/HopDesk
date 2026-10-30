@@ -238,6 +238,11 @@ static int send_all(SOCKET c, const char *p, int len) {
     return 1;
 }
 
+/* 每块之后让一次 CPU。传输是后台工作，键鼠才是前台 ——
+ * 真正起作用的保障是 send_thread 里的 BELOW_NORMAL 优先级（输入线程
+ * 是 NORMAL，会直接抢占）；这里让一次是给同优先级的其他工作减压。 */
+static void yield_cpu(void) { Sleep(0); }
+
 /* 小帧：头 + 载荷两次 send。载荷都在 1 KB 级别，不值得拼缓冲。 */
 static int send_small(SOCKET c, uint8_t type, const uint8_t *p, uint32_t len) {
     uint8_t hdr[HOP_HEADER_SIZE];
@@ -309,6 +314,7 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
                 return 0;
             }
             off += got;
+            yield_cpu();
         }
         CloseHandle(h);
     }
@@ -334,6 +340,7 @@ static int send_image_job(SOCKET c, uint8_t *tx, xfer_job *j) {
         uint32_t n = (uint32_t)((total - off) < s_x.chunk ? (total - off) : s_x.chunk);
         if (!send_chunk(c, tx, 1, off, j->pixels + off, n)) return 0;
         off += n;
+        yield_cpu();
     }
 
     uint8_t endp[5];
@@ -373,6 +380,12 @@ static void job_free(xfer_job *j) {
 
 static DWORD WINAPI send_thread(LPVOID arg) {
     (void)arg;
+
+    /* 主动降到 BELOW_NORMAL。控制通道承载的是键鼠，钩子回调跑在主线程
+     * （NORMAL 优先级）—— 降级之后输入路径永远能直接抢占传输线程，
+     * 不会出现"传文件时鼠标发涩"。这是"传输不影响控制"的主要保障。 */
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+
     uint8_t *tx = (uint8_t *)malloc(CHUNK_HDR + s_x.chunk);
     if (!tx) { hop_log(HOP_LOG_ERROR, "xfer: tx buffer alloc failed"); return 1; }
 

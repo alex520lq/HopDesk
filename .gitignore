@@ -39,3 +39,7 @@ Thumbs.db
 # ---- Local runtime / config ----
 *.local
 *.log
+
+# ---- 本地 agent 工作数据（记忆/临时脚本），不入库 ----
+.workbuddy-ai/
+.Temp/

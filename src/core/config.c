@@ -36,9 +36,11 @@ void hop_config_defaults(hop_config *c) {
     snprintf(c->mac_sleep_cmd, sizeof(c->mac_sleep_cmd),
              "%s", "pmset displaysleepnow");
 
-    /* 文件传输：数据通道默认主端口 +1 */
+    /* 文件传输：数据通道默认主端口 +1。
+     * 分块默认 256 KB —— 实测 1 MB 会让控制通道尾延迟劣化 5 倍，
+     * 而省下的 11% 吞吐在真实链路上不可见。详见 hop.h 的说明。 */
     c->data_port      = HOP_DATA_PORT;
-    c->xfer_chunk_kb  = (int)(HOP_CHUNK_SIZE / 1024);
+    c->xfer_chunk_kb  = HOP_CHUNK_KB_DEFAULT;
 }
 
 /* 支持 0x 前缀（DDC 值习惯写十六进制） */

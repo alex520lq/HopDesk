@@ -1,128 +1,199 @@
 # HopDesk
 
-> 一个极小的跨设备（Windows / macOS）原生工具：**一套键鼠、一个剪贴板、一块显示器，在两台电脑之间一跳而过。**
+**HopDesk 是一个面向 Windows 与 macOS 的轻量级跨设备协作工具。**
 
-HopDesk 用纯 C 核心 + 各平台原生 UI，把 [Deskflow](https://github.com/deskflow/deskflow)（键鼠共享）、[CrossPaste](https://github.com/CrossPaste/crosspaste)（剪贴板同步）和显示器切换脚本整合进**一个常驻进程**，目标是把每端的占用从 ~660 MB 内存 / 313 MB 磁盘降到 **< 5 MB 内存 / < 1 MB 磁盘**。
+它让两台电脑共用键盘、鼠标和剪贴板，并可通过快捷菜单控制显示器输入源。项目使用共享的纯 C 核心，分别调用 Windows Win32 与 macOS 原生 API，不依赖 Qt、Electron 等大型 GUI 框架。
 
----
+> 当前项目处于开发阶段。仓库包含两端的核心功能实现，但尚不代表已经完成全面的稳定性、安全性和跨设备兼容性验证。
 
-## 为什么做
+## 功能
 
-在开发机上实测（Windows 端）：
+| 功能 | 当前实现 |
+|---|---|
+| 键鼠共享 | Windows 捕获鼠标与键盘事件，macOS 注入事件 |
+| 鼠标跨屏 | 支持边缘移交、反向收回、相对位移、点击和滚轮 |
+| 键盘映射 | Windows 虚拟键码映射到 macOS 键码；Ctrl 等修饰键按映射规则转发 |
+| 剪贴板文本 | 双向文本同步，并抑制同步回环 |
+| 文件与文件夹 | 通过独立数据通道传输，支持目录递归和空目录 |
+| 图片 | 通过数据通道传输像素数据 |
+| 显示器控制 | Windows DDC/CI 输入源控制；macOS 唤醒、切换输入源和显示睡眠 |
+| 连接管理 | TCP 连接、心跳与客户端重连 |
+| 原生界面 | Windows 系统托盘菜单；macOS 菜单栏状态项 |
 
-| 应用 | 内存（工作集） | 磁盘 | 技术栈 |
-|---|---|---|---|
-| CrossPaste | 522 MB | 269 MB | JVM / Compose |
-| Deskflow（3 进程） | 137 MB | 44 MB | Qt / C++ |
-| **合计** | **~660 MB** | **313 MB** | |
+### 当前边界
 
-而对实际使用的分析（9 天、6778 条剪贴板记录）表明：
+- 目标场景是两台设备之间的局域网连接，不提供多设备组网或公网中继。
+- Windows 作为服务端，macOS 作为主动连接的客户端。
+- 当前协议使用普通 TCP；没有实现 TLS 加密。
+- 连接 token 默认为空，即默认不进行 token 校验。需要在可信网络中使用，或自行配置 token。
+- 显示器 DDC 输入源代码值、macOS 切源命令与具体显示器和接线有关，需要按设备调整。
+- 图片支持受两端当前剪贴板格式处理能力限制，并非通用图片格式转换器。
 
-- 收藏 **0** 条、标签 **0** 个 —— 历史管理功能从未使用；
-- 真正跨设备同步的只有 **124 条（1.8%）**，其余全是本机被动记录；
-- 97% 是文本，图片约 30 张、大文件仅 1 个。
+## 项目结构
 
-也就是说，重型应用 99% 的开销花在不需要的功能上。HopDesk 只保留真正在用的部分。
-
-## 功能范围
-
-| 模块 | 功能 | 对标 | 状态 |
-|---|---|---|---|
-| 键鼠共享 | 鼠标移动 / 点击 / 滚轮（相对移动）、边缘切换 | Deskflow | 规划中 |
-| 键盘 | 全键输入、修饰键映射（**Ctrl → Command**） | Deskflow | 规划中 |
-| 剪贴板 | 实时文本同步（图片 / 文件后续） | CrossPaste | 规划中 |
-| 显示切换 | DDC/CI 切源、唤醒、显示睡眠（替代 SSH） | display-switch.ps1 | 规划中 |
-| 连接 | 单条 TCP 长连接、自动重连 | — | 规划中 |
-| UI | Windows 托盘 / macOS 状态栏 + 极简弹窗 | — | 规划中 |
-
-**明确不做**：剪贴板历史与搜索、标签收藏、多设备（>2）、外网同步、浏览器扩展、TLS（局域网自用，威胁模型不要求；保留一个共享 token 校验）。
-
-## 架构
-
+```text
+HopDesk/
+├── src/
+│   ├── core/          # 平台无关的 C 核心
+│   │   ├── hop.h      # 协议、配置与公共定义
+│   │   ├── protocol.c # TCP 帧编解码
+│   │   ├── config.c   # 配置加载
+│   │   ├── keymap.c   # Windows 到 macOS 键码映射
+│   │   └── log.c      # 日志
+│   ├── win/           # Windows：C + Win32
+│   └── mac/           # macOS：C + 少量 Objective-C
+├── scripts/
+│   ├── build-win.ps1  # Windows 构建脚本
+│   └── build-mac.sh   # macOS 构建脚本
+├── docs/
+│   └── architecture.md
+└── LICENSE
 ```
- Windows（服务端，纯 C + Win32）              Mac（客户端，C 核心 + 少量 ObjC）
- ┌─────────────────────────────┐            ┌─────────────────────────────┐
- │ 键鼠：Raw Input / 低级钩子    │  一条 TCP   │ 键鼠：CGEvent 注入（纯 C）   │
- │ 边界：鼠标过边缘即移交        │ ◀────────▶ │ 剪贴板：NSPasteboard（ObjC） │
- │ 剪贴板：WM_CLIPBOARDUPDATE   │ 键鼠/剪贴板/│ 显示：IOKit 唤醒（纯 C）     │
- │ 显示：dxva2 DDC + DisplaySw  │ 显示复用    │      + 调 m1ddc + 睡眠       │
- │ 托盘：Shell_NotifyIcon      │            │ 状态栏：NSStatusItem（ObjC）│
- └─────────────────────────────┘            └─────────────────────────────┘
-```
 
-详见 [docs/architecture.md](docs/architecture.md)。
+### 平台实现
 
-## 平台权限
+**Windows**
 
-- **macOS**：首次运行需在「系统设置 → 隐私与安全性 → 辅助功能」授权（CGEvent 注入的硬性要求，Deskflow 同样需要）。
-- **Windows**：无需管理员权限；DDC/CI 通过 dxva2.dll 调用。
+- Win32 托盘与消息窗口
+- `WH_MOUSE_LL` / `WH_KEYBOARD_LL` 输入捕获
+- `AddClipboardFormatListener` 剪贴板监听
+- Winsock TCP 服务端
+- `dxva2.dll` DDC/CI 显示器控制
 
-## 路线图
+**macOS**
 
-1. **阶段 1**：连接 + 鼠标移动/点击 + 双向边缘切换（先跑通"过去 / 回来"）
-2. **阶段 2**：键盘 + 修饰键映射（Ctrl → Command）
-3. **阶段 3**：剪贴板文本同步（图片 / 文件后续）
-4. **阶段 4**：显示切换（替代 display-switch.ps1 + SSH）
-5. **阶段 5**：断线重连、开机自启、权限引导
+- CoreGraphics `CGEvent` 键鼠事件注入
+- POSIX socket TCP 客户端
+- `NSPasteboard` 剪贴板读写
+- `NSStatusItem` 菜单栏界面
+- IOKit 显示唤醒，以及外部命令切换显示器输入源
 
-> 替换策略：阶段 1–4 期间与 Deskflow / CrossPaste **并行运行**，确认手感与稳定性后再卸载旧应用，零风险。
+## 通信设计
+
+HopDesk 使用两条独立 TCP 连接，避免文件和图片传输阻塞实时键鼠控制。
+
+| 通道 | 默认端口 | 内容 |
+|---|---:|---|
+| 控制通道 | `24817` | 握手、心跳、键鼠事件、文本剪贴板、显示控制 |
+| 数据通道 | `24818` | 文件、文件夹与图片数据 |
+
+数据通道采用分块传输，默认分块大小为 256 KB。文件从磁盘分块读取和写入，不需要把整个文件一次性载入内存。控制通道和数据通道分别使用独立 socket。
+
+协议帧格式、消息类型、连接状态和线程模型见 [架构说明](docs/architecture.md)。
 
 ## 构建
 
-- Windows：MSVC 或 MinGW，`scripts/build-win.ps1`
-- macOS：clang，`scripts/build-mac.sh`
+### Windows
 
-不引入 CMake，单条命令编译，保持"很小"。
+需要 PowerShell 7 或 Windows PowerShell，以及当前构建脚本支持的 GCC/MinGW 或 MSVC 工具链。
+
+```powershell
+pwsh scripts/build-win.ps1
+```
+
+默认使用 GCC。也可以显式指定：
+
+```powershell
+pwsh scripts/build-win.ps1 -Compiler gcc
+pwsh scripts/build-win.ps1 -Compiler msvc
+```
+
+脚本输出：
+
+```text
+build/hopdesk.exe
+```
+
+当前脚本的编译器选项是 `gcc` 和 `msvc`；llvm-mingw 尚未作为独立选项集成进该脚本。
+
+### macOS
+
+需要 macOS、Xcode Command Line Tools 和 Apple Clang。
+
+```sh
+sh scripts/build-mac.sh
+```
+
+脚本输出：
+
+```text
+build/hopdesk
+```
+
+首次使用键鼠注入时，需要在 macOS「系统设置 → 隐私与安全性 → 辅助功能」中为 HopDesk 授权。
 
 ## 配置
 
-exe 同目录的 `hopdesk.conf`，`key=value` 格式，`#` 开头为注释。只列与边缘手感相关的：
+两端通过 `hopdesk.conf` 加载 `key=value` 配置。以当前源码默认值为基础，可按实际网络和设备创建配置文件。
 
-| 键 | 默认 | 说明 |
-|---|---|---|
-| `server_edge` | `0`（左） | Windows 移交边缘，0=左 1=右 |
-| `client_edge` | `1`（右） | Mac 收回边缘 |
-| `switch_delay_ms` | `250` | **贴边停留多久才移交**（对齐 Deskflow 的 `switchDelay`）。0 = 一碰就切 |
-| `switch_cooldown_ms` | `300` | 移交 / 收回后多久内不再判定边缘，掐断接缝处的来回弹 |
-| `edge_margin_px` | `40` | 内侧死区：进入对端时内移的距离，也是退出时必须推出去的越界量（单位：Windows 物理像素） |
+macOS 客户端至少需要设置 Windows 服务端地址：
 
-`switch_delay_ms` 与 `edge_margin_px` 解决的是同一类问题的两个面：前者管**时间**（贴一下不算），后者管**距离**（推出去才算）。两个都设大，边缘会变得"迟钝"；都设 0 就回到一碰就跳的老行为。
+```ini
+# macOS 客户端：Windows 服务端地址
+host=192.168.1.100
 
-### 文件传输
+# 两端端口需要保持一致
+port=24817
+data_port=24818
 
-| 键 | 默认 | 说明 |
-|---|---|---|
-| `data_port` | `24818` | 数据通道端口。与控制通道分开，大文件不挤占鼠标/键盘帧 |
-| `xfer_chunk_kb` | `256` | 分块大小，64–4096 |
+# 可选：两端配置相同的 token 才能通过握手校验
+# 不配置或留空表示不校验
+token=
 
-剪贴板支持：多文件、文件夹（递归，含空目录）、图片（裸 BGRA，不做 PNG 编码）。
-文件从磁盘流式读，不整文件入内存，因此没有单文件大小上限。
+# 边缘移交设置
+server_edge=0
+client_edge=1
+switch_delay_ms=250
+switch_cooldown_ms=300
+edge_margin_px=40
 
-**分块为什么默认 256 KB 而不是 1 MB**：实测（同进程双通道，100 MB × 192 批压测）
+# 数据通道分块大小，单位 KB
+xfer_chunk_kb=256
+```
 
-| 分块 | 吞吐 | 控制通道 p99（空载 → 传输中） |
-|---|---|---|
-| 1 MB | 1245 MB/s | 180 µs → **400–1400 µs** |
-| 256 KB | 1109 MB/s | 180 µs → **150–200 µs（无变化）** |
+常用配置项：
 
-1 MB 分块会让控制通道的尾延迟劣化约 5 倍，用户能感觉到"鼠标发涩"。
-256 KB 只慢 11%，而这 11% 在真实链路上看不见（百兆线速 11.5 MB/s，两者都比线路快 100 倍）。
-链路升到 2.5G/10G 后可调回 1024。
+| 配置项 | 默认值 | 说明 |
+|---|---:|---|
+| `host` | 空 | macOS 客户端连接的 Windows 服务端地址 |
+| `port` | `24817` | 控制通道端口 |
+| `data_port` | `24818` | 文件与图片数据通道端口 |
+| `token` | 空 | 可选的共享 token；两端需一致 |
+| `server_edge` | `0` | Windows 移交边缘：0=左，1=右 |
+| `client_edge` | `1` | macOS 收回边缘 |
+| `switch_delay_ms` | `250` | 鼠标贴边后持续多久才移交；0 表示立即移交 |
+| `switch_cooldown_ms` | `300` | 移交或收回后的边缘冷却时间 |
+| `edge_margin_px` | `40` | 边缘内移距离及收回越界阈值 |
+| `xfer_chunk_kb` | `256` | 数据通道分块大小，代码范围为 64–4096 KB |
 
-**传输速度取决于链路，不取决于协议。** 实测单流 TCP 在本机回环可达 2548 MB/s，
-千兆链路（约 112 MB/s）单流即可打满 —— 所以只开一条连接，不做多连接分片。
-瓶颈永远在物理层：先确认网卡协商速率是不是 1000 Mbps，百兆链路传 5 GB 需要约 7 分钟。
+显示器相关配置包括 `disp_win_input`、`disp_mac_input`、`disp_wake_sec`、`mac_input_cmd` 和 `mac_sleep_cmd`。其中 DDC/CI 输入源值依赖显示器型号；macOS 默认切源命令使用 `m1ddc`，请确认命令已安装且适用于你的设备。
 
-传输线程主动降到低优先级（Windows `BELOW_NORMAL` / macOS `QOS_CLASS_UTILITY`），
-每块之后让出 CPU，保证键鼠路径永远能抢占。
+## 运行前检查
+
+1. 确保 Windows 与 macOS 位于可互通的网络中。
+2. 在 macOS 配置文件中填写 Windows 的局域网 IP。
+3. 确保两端控制端口和数据端口一致，并允许对应 TCP 端口通信。
+4. 首次运行 macOS 端前授予辅助功能权限。
+5. 如果启用了 token，两端必须配置相同值。
+6. 显示器切源功能需要按实际显示器输入源和接线配置。
 
 ## 资源目标
 
-| 指标 | 目标（每端） |
-|---|---|
-| 常驻内存 | < 5 MB |
-| 可执行文件 | < 1 MB |
-| 运行时依赖 | 零（不装运行时） |
+项目以低资源占用为设计目标：
+
+| 指标 | 设计目标 |
+|---|---:|
+| 常驻内存 | 每端低于 5 MB |
+| 可执行文件 | 每端低于 1 MB |
+| 运行时依赖 | 不依赖大型 GUI 框架或独立运行时 |
+
+以上是项目目标，不是对所有构建版本和运行场景的实测保证。
+
+## 文档
+
+- [架构设计与通信协议](docs/architecture.md)
+- [Windows 端说明](src/win/README.md)
+- [macOS 端说明](src/mac/README.md)
 
 ## 许可证
 

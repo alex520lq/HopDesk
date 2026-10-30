@@ -32,12 +32,14 @@ if ($Compiler -eq 'gcc') {
 
     $libArgs = $libs | ForEach-Object { '-l' + $_ }
     & $gcc -O2 -Wall -Wextra -municode -mwindows -I $inc -o $out $src @libArgs
+    if ($LASTEXITCODE -ne 0) { throw "gcc 编译失败（退出码 $LASTEXITCODE）" }
 }
 else {
     $cl = (Get-Command cl.exe -ErrorAction SilentlyContinue).Source
     if (-not $cl) { throw '未找到 cl.exe；请在 x64 Native Tools for VS 终端运行。' }
     $libArgs = $libs | ForEach-Object { $_ + '.lib' }
     & cl /nologo /O2 /MT /W3 /I $inc /Fe:$out $src /Fo"$build\\" @libArgs
+    if ($LASTEXITCODE -ne 0) { throw "cl 编译失败（退出码 $LASTEXITCODE）" }
 }
 
 if (Test-Path -LiteralPath $out) {

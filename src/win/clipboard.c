@@ -1,17 +1,14 @@
 /* =====================================================================
- *  HopDesk - Windows 剪贴板同步（阶段 3：文本 + 单文件）
+ *  HopDesk - Windows 剪贴板同步
  *
- *  AddClipboardFormatListener + WM_CLIPBOARDUPDATE：
- *    本机复制 -> CF_HDROP（文件优先）或 CF_UNICODETEXT -> 发送
- *    收到对端 -> 写回剪贴板，并抑制由此产生的本机广播
+ *  发送：AddClipboardFormatListener + WM_CLIPBOARDUPDATE
+ *    CF_HDROP        -> 全部条目（含目录）交给数据通道，目录递归
+ *    CF_DIB          -> 转成自上而下 BGRA，交给数据通道
+ *    CF_UNICODETEXT  -> 控制通道（文本都很小）
  *
- *  为什么文件优先：资源管理器里 Ctrl+C 一个文件，剪贴板里放的是
- *  CF_HDROP，不是 CF_UNICODETEXT。只读文本的话，复制文件会"什么都不发生"。
- *
- *  文件传输的限制（有意为之，不是待办）：
- *    - 只传第一个文件，多选时日志里说明
- *    - 单文件 ≤ HOP_FILE_MAX（8 MB），一帧传完，不做分块
- *  这两条够用：这个工具的目标是"跳一下就过去"，不是替代 AirDrop。
+ *  为什么文件和图片不走控制通道：
+ *    控制通道的发送队列是给鼠标键盘用的，塞一个 33 MB 的 4K 截图进去，
+ *    后面几十毫秒的鼠标事件全被堵住。数据通道独立 socket、独立线程。
  *
  *  回环抑制两道：
  *    1) 协议层 origin 字段（跨设备）：收到自己发的不再写回
@@ -19,14 +16,13 @@
  *  s_suppress 只在主线程读写（窗口消息 + on_recv 都在主线程），无竞态。
  * ===================================================================== */
 #include "app.h"
+#include "xfer.h"
 
 #include <shellapi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
-
-static int s_suppress;
 
 /* DROPFILES 在 MSVC 的 shellapi.h 里，MinGW 的 shellapi.h 没有（在 shlobj.h）。
  * 自己定义，省掉一个头文件版本差异 —— 布局是 ABI 固定的 20 字节。 */
@@ -36,6 +32,11 @@ typedef struct {
     BOOL  fNC;
     BOOL  fWide;
 } HOP_DROPFILES;
+
+static int s_suppress;
+
+/* 图片上限：4K 截图裸 BGRA 约 33 MB，留到 256 MB 足够，再大就是异常了 */
+#define CLIP_IMG_MAX_BYTES (256u * 1024u * 1024u)
 
 /* 剪贴板是全局独占资源，别的程序可能正拿着 —— 短暂重试 */
 static int open_retry(HWND hwnd) {
@@ -73,71 +74,89 @@ static void send_text(const char *utf8, uint32_t len) {
     free(p);
 }
 
-/* payload = origin(4) + nlen(2) + name + size(4) + data */
-static void send_file(const wchar_t *path) {
-    FILE *f;
-    long size;
-    const wchar_t *base, *p;
-    char name[256];
-    uint32_t nlen;
-    uint8_t *p8;
-    size_t total;
-    int need;
-    DWORD attr;
+/* CF_HDROP：全部条目一次性交给数据通道，目录由 xfer 递归展开 */
+static void send_drop(HDROP drop, UINT count) {
+    wchar_t **paths = (wchar_t **)calloc(count, sizeof(wchar_t *));
+    if (!paths) return;
 
-    /* Windows 路径两种分隔符都合法，只认反斜杠会把整个路径当文件名 */
-    base = path;
-    for (p = path; *p; ++p)
-        if (*p == L'\\' || *p == L'/') base = p + 1;
+    int n = 0;
+    for (UINT i = 0; i < count && n < 256; ++i) {
+        UINT need = DragQueryFileW(drop, i, NULL, 0);
+        if (need == 0 || need >= 32768) continue;
+        wchar_t *buf = (wchar_t *)malloc(((size_t)need + 1) * sizeof(wchar_t));
+        if (!buf) continue;
+        if (DragQueryFileW(drop, i, buf, need + 1) == 0) { free(buf); continue; }
+        paths[n++] = buf;
+    }
 
-    attr = GetFileAttributesW(path);
-    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
-        hop_log(HOP_LOG_WARN, "clip: folder copy not supported, skipped");
+    if (n > 0) {
+        hop_log(HOP_LOG_INFO, "clip: %d path(s) out (first: %ls)", n, paths[0]);
+        if (!xfer_submit_paths((const wchar_t *const *)paths, n))
+            hop_log(HOP_LOG_WARN, "clip: data channel unavailable, paths dropped");
+    }
+
+    for (int i = 0; i < n; ++i) free(paths[i]);
+    free(paths);
+}
+
+/* CF_DIB -> 自上而下 BGRA。只处理 BI_RGB 的 24/32 位，其余（压缩格式）跳过。 */
+static void send_dib(HANDLE h) {
+    const BITMAPINFOHEADER *bi = (const BITMAPINFOHEADER *)GlobalLock(h);
+    if (!bi) return;
+
+    int w = (int)bi->biWidth;
+    int hgt = (int)bi->biHeight;
+    int bpp = (int)bi->biBitCount;
+    int topdown = 0;
+
+    if (hgt < 0) { topdown = 1; hgt = -hgt; }
+    if (w <= 0 || hgt <= 0 || bi->biCompression != BI_RGB || (bpp != 24 && bpp != 32)) {
+        hop_log(HOP_LOG_INFO, "clip: dib %dx%d %dbpp comp %lu unsupported, skipped",
+                w, hgt, bpp, (unsigned long)bi->biCompression);
+        GlobalUnlock(h);
         return;
     }
 
-    need = WideCharToMultiByte(CP_UTF8, 0, base, -1, NULL, 0, NULL, NULL);
-    if (need <= 1 || need > (int)sizeof(name)) {
-        hop_log(HOP_LOG_WARN, "clip: file name too long, skipped");
-        return;
-    }
-    WideCharToMultiByte(CP_UTF8, 0, base, -1, name, (int)sizeof(name), NULL, NULL);
-    nlen = (uint32_t)strlen(name);
-    if (nlen == 0 || nlen > HOP_NAME_LEN_MAX) return;
-
-    f = _wfopen(path, L"rb");
-    if (!f) { hop_log(HOP_LOG_WARN, "clip: cannot open file"); return; }
-    fseek(f, 0, SEEK_END);
-    size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (size <= 0 || (unsigned long)size > HOP_FILE_MAX) {
-        hop_log(HOP_LOG_WARN, "clip: file %ld bytes out of range, skipped", size);
-        fclose(f);
+    size_t stride = (size_t)w * 4;
+    size_t total = stride * (size_t)hgt;
+    if (total > CLIP_IMG_MAX_BYTES) {
+        hop_log(HOP_LOG_WARN, "clip: image %.1f MB too large, skipped",
+                (double)total / 1048576.0);
+        GlobalUnlock(h);
         return;
     }
 
-    total = 4 + 2 + nlen + 4 + (size_t)size;
-    p8 = (uint8_t *)malloc(total);
-    if (!p8) { fclose(f); return; }
+    const uint8_t *src = (const uint8_t *)bi + bi->biSize + bi->biClrUsed * 4;
+    uint8_t *dst = (uint8_t *)malloc(total);
+    if (!dst) { GlobalUnlock(h); return; }
 
-    hop_put_be32(p8, HOP_DEV_SERVER);
-    hop_put_be16(p8 + 4, (uint16_t)nlen);
-    memcpy(p8 + 6, name, nlen);
-    hop_put_be32(p8 + 6 + nlen, (uint32_t)size);
-
-    if (fread(p8 + 10 + nlen, 1, (size_t)size, f) != (size_t)size) {
-        hop_log(HOP_LOG_WARN, "clip: file read short, aborted");
-        fclose(f);
-        free(p8);
-        return;
+    size_t src_stride = (((size_t)w * bpp + 31) / 32) * 4;
+    for (int y = 0; y < hgt; ++y) {
+        /* DIB 默认自下而上；topdown 时行序已经正确 */
+        int sy = topdown ? y : (hgt - 1 - y);
+        const uint8_t *s = src + (size_t)sy * src_stride;
+        uint8_t *d = dst + (size_t)y * stride;
+        if (bpp == 32) {
+            for (int x = 0; x < w; ++x) {
+                d[x * 4 + 0] = s[x * 4 + 0];
+                d[x * 4 + 1] = s[x * 4 + 1];
+                d[x * 4 + 2] = s[x * 4 + 2];
+                d[x * 4 + 3] = 255;          /* 源 alpha 常为 0，强制不透明 */
+            }
+        } else {
+            for (int x = 0; x < w; ++x) {
+                d[x * 4 + 0] = s[x * 3 + 0];
+                d[x * 4 + 1] = s[x * 3 + 1];
+                d[x * 4 + 2] = s[x * 3 + 2];
+                d[x * 4 + 3] = 255;
+            }
+        }
     }
-    fclose(f);
 
-    if (net_server_send(g_app.net, HOP_MSG_CLIP_FILE, p8, (uint32_t)total))
-        hop_log(HOP_LOG_INFO, "clip: file out %s (%ld bytes)", name, size);
-    else
-        hop_log(HOP_LOG_WARN, "clip: file out failed (no client?)");
-    free(p8);
+    GlobalUnlock(h);
+    hop_log(HOP_LOG_INFO, "clip: image out %dx%d", w, hgt);
+    xfer_submit_image(dst, w, hgt, (int)stride);
+    free(dst);
 }
 
 /* WM_CLIPBOARDUPDATE -> 广播本机内容 */
@@ -151,21 +170,25 @@ void clip_on_update(void) {
         return;
     }
 
-    /* 文件优先：复制文件时也可能同时带一段文本（文件名），但用户要的是文件 */
+    /* 文件优先：复制文件时剪贴板里也可能带文件名文本，但用户要的是文件。
+     * 从浏览器"复制图片"常常同时给 CF_HDROP（临时文件）和 CF_DIB，
+     * 发文件更忠实原样。 */
     h = GetClipboardData(CF_HDROP);
     if (h) {
         HDROP drop = (HDROP)h;
         UINT count = DragQueryFileW(drop, 0xFFFFFFFF, NULL, 0);
         if (count > 0) {
-            wchar_t path[MAX_PATH];
-            if (DragQueryFileW(drop, 0, path, MAX_PATH) > 0) {
-                if (count > 1)
-                    hop_log(HOP_LOG_WARN, "clip: %u files copied, only the first is sent", count);
-                send_file(path);
-                CloseClipboard();
-                return;
-            }
+            send_drop(drop, count);
+            CloseClipboard();
+            return;
         }
+    }
+
+    h = GetClipboardData(CF_DIB);
+    if (h) {
+        send_dib(h);
+        CloseClipboard();
+        return;
     }
 
     h = GetClipboardData(CF_UNICODETEXT);
@@ -234,91 +257,89 @@ void clip_apply_remote(const uint8_t *p, uint32_t len) {
     free(u);
 }
 
-/* 文件名只允许普通字符：对端是可信的，但越界写入不该由"信任"来兜底 */
-static int name_safe(const char *n) {
-    if (!n || !*n) return 0;
-    if (strstr(n, "..")) return 0;
-    for (; *n; ++n)
-        if (*n == '/' || *n == '\\' || *n == ':') return 0;
-    return 1;
-}
-
-/* 把收到的文件落到 %TEMP%\HopDesk\ 并挂到剪贴板，用户可直接 Ctrl+V 到资源管理器 */
-static void write_file_and_set_clip(const char *name, const uint8_t *data, uint32_t size) {
-    wchar_t base[MAX_PATH], dir[MAX_PATH], path[MAX_PATH];
-    wchar_t wname[MAX_PATH];
+/* 一批文件/目录落盘完毕：把顶层条目挂到剪贴板，用户直接 Ctrl+V */
+void clip_apply_remote_paths(const wchar_t *const *paths, int n) {
     HOP_DROPFILES *df;
     HGLOBAL h;
-    FILE *f;
     SIZE_T bytes;
+    SIZE_T off;
 
-    if (GetTempPathW(MAX_PATH, base) == 0) return;
-    if (wcslen(base) + 16 >= MAX_PATH) return;
-    wcscpy(dir, base);
-    wcscat(dir, L"HopDesk");
-    CreateDirectoryW(dir, NULL);
+    if (!paths || n <= 0) return;
 
-    if (MultiByteToWideChar(CP_UTF8, 0, name, -1, wname, MAX_PATH) <= 0) return;
-    if (wcslen(dir) + wcslen(wname) + 2 >= MAX_PATH) return;
-    wcscpy(path, dir);
-    wcscat(path, L"\\");
-    wcscat(path, wname);
+    bytes = sizeof(HOP_DROPFILES);
+    for (int i = 0; i < n; ++i) bytes += (wcslen(paths[i]) + 1) * sizeof(wchar_t);
+    bytes += sizeof(wchar_t);        /* 双 NUL 结尾 */
 
-    f = _wfopen(path, L"wb");
-    if (!f) { hop_log(HOP_LOG_WARN, "clip: cannot write temp file"); return; }
-    if (fwrite(data, 1, size, f) != size) {
-        hop_log(HOP_LOG_WARN, "clip: temp file write short");
-        fclose(f);
-        return;
-    }
-    fclose(f);
-
-    bytes = sizeof(HOP_DROPFILES) + (wcslen(path) + 2) * sizeof(wchar_t);
     h = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
     if (!h) return;
     df = (HOP_DROPFILES *)GlobalLock(h);
     if (!df) { GlobalFree(h); return; }
+
     df->pFiles = sizeof(HOP_DROPFILES);
     df->fWide = TRUE;
-    memcpy((BYTE *)df + sizeof(HOP_DROPFILES), path, wcslen(path) * sizeof(wchar_t));
+
+    off = sizeof(HOP_DROPFILES);
+    for (int i = 0; i < n; ++i) {
+        SIZE_T cb = wcslen(paths[i]) * sizeof(wchar_t);
+        memcpy((BYTE *)df + off, paths[i], cb);
+        off += cb + sizeof(wchar_t);      /* 逐条以 NUL 分隔 */
+    }
     GlobalUnlock(h);
 
     if (open_retry(g_app.hwnd)) {
         if (EmptyClipboard() && SetClipboardData(CF_HDROP, h)) {
             s_suppress = 1;
-            hop_log(HOP_LOG_INFO, "clip: file in %s (%u bytes)", name, size);
+            hop_log(HOP_LOG_INFO, "clip: %d path(s) in (first: %ls)", n, paths[0]);
             CloseClipboard();
             return;
         }
         CloseClipboard();
     }
     GlobalFree(h);
-    hop_log(HOP_LOG_WARN, "clip: failed to put received file on clipboard");
+    hop_log(HOP_LOG_WARN, "clip: failed to put received paths on clipboard");
 }
 
-/* payload = origin(4) + nlen(2) + name + size(4) + data */
-void clip_apply_remote_file(const uint8_t *p, uint32_t len) {
-    uint16_t nlen;
-    uint32_t size;
-    char name[256];
+/* 收到图片：裸 BGRA 自上而下 -> CF_DIB（32 位，自下而上，BI_RGB） */
+void clip_apply_remote_image(const uint8_t *bgra, int w, int h, int stride) {
+    if (!bgra || w <= 0 || h <= 0 || stride < w * 4) return;
 
-    if (len < 10) return;
-    if (hop_get_be32(p) == HOP_DEV_SERVER) return;
-
-    nlen = hop_get_be16(p + 4);
-    if (nlen == 0 || nlen > HOP_NAME_LEN_MAX) return;
-    if (10u + nlen > len) return;
-
-    size = hop_get_be32(p + 6 + nlen);
-    if (size == 0 || size > HOP_FILE_MAX) return;
-    if (10u + (uint32_t)nlen + size > len) return;
-
-    memcpy(name, p + 6, nlen);
-    name[nlen] = '\0';
-    if (!name_safe(name)) {
-        hop_log(HOP_LOG_WARN, "clip: unsafe file name rejected");
+    size_t need = sizeof(BITMAPINFOHEADER) + (size_t)stride * (size_t)h;
+    if (need > CLIP_IMG_MAX_BYTES) {
+        hop_log(HOP_LOG_WARN, "clip: incoming image too large, skipped");
         return;
     }
 
-    write_file_and_set_clip(name, p + 10 + nlen, size);
+    HGLOBAL gh = GlobalAlloc(GMEM_MOVEABLE, need);
+    if (!gh) return;
+    uint8_t *base = (uint8_t *)GlobalLock(gh);
+    if (!base) { GlobalFree(gh); return; }
+
+    BITMAPINFOHEADER *bi = (BITMAPINFOHEADER *)base;
+    memset(bi, 0, sizeof(*bi));
+    bi->biSize = sizeof(*bi);
+    bi->biWidth = w;
+    bi->biHeight = h;              /* 正值 = 自下而上，与 DIB 约定一致 */
+    bi->biPlanes = 1;
+    bi->biBitCount = 32;
+    bi->biCompression = BI_RGB;
+    bi->biSizeImage = (DWORD)((size_t)stride * (size_t)h);
+
+    uint8_t *dst = base + sizeof(BITMAPINFOHEADER);
+    for (int y = 0; y < h; ++y) {
+        memcpy(dst + (size_t)y * stride,
+               bgra + (size_t)(h - 1 - y) * stride, (size_t)stride);
+    }
+    GlobalUnlock(gh);
+
+    if (open_retry(g_app.hwnd)) {
+        if (EmptyClipboard() && SetClipboardData(CF_DIB, gh)) {
+            s_suppress = 1;
+            hop_log(HOP_LOG_INFO, "clip: image in %dx%d", w, h);
+            CloseClipboard();
+            return;
+        }
+        CloseClipboard();
+    }
+    GlobalFree(gh);
+    hop_log(HOP_LOG_WARN, "clip: failed to put received image on clipboard");
 }

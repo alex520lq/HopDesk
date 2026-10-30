@@ -3,6 +3,7 @@
  *  初始化配置、网络线程、状态栏，进入 Cocoa 主循环。
  * ===================================================================== */
 #include "mac_app.h"
+#include "xfer.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -25,6 +26,7 @@ int main(int argc, char **argv) {
 
     inject_init();
     net_loop_run();
+    xfer_init(&g_mac.cfg);
     statusbar_init();
     clipboard_init();
     app_run();

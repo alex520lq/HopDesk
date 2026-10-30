@@ -7,9 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* 单帧上限：文本 + 文件头 + 文件体。超过这个长度视为坏帧，丢弃重同步。 */
-#define HOP_MAX_PAYLOAD (HOP_FILE_MAX + 1024)
-
 /* ---- 字节序 ---- */
 void hop_put_be16(uint8_t *p, uint16_t v) {
     p[0] = (uint8_t)(v >> 8);
@@ -21,12 +18,19 @@ void hop_put_be32(uint8_t *p, uint32_t v) {
     p[2] = (uint8_t)(v >> 8);
     p[3] = (uint8_t)(v);
 }
+void hop_put_be64(uint8_t *p, uint64_t v) {
+    hop_put_be32(p, (uint32_t)(v >> 32));
+    hop_put_be32(p + 4, (uint32_t)(v & 0xFFFFFFFFu));
+}
 uint16_t hop_get_be16(const uint8_t *p) {
     return (uint16_t)((p[0] << 8) | p[1]);
 }
 uint32_t hop_get_be32(const uint8_t *p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
            ((uint32_t)p[2] << 8)  | (uint32_t)p[3];
+}
+uint64_t hop_get_be64(const uint8_t *p) {
+    return ((uint64_t)hop_get_be32(p) << 32) | (uint64_t)hop_get_be32(p + 4);
 }
 
 /* ---- 编码 ---- */
@@ -85,27 +89,43 @@ static void emit(hop_decoder *d) {
 }
 
 void hop_decoder_feed(hop_decoder *d, const uint8_t *buf, uint32_t n) {
-    for (uint32_t i = 0; i < n; ++i) {
-        uint8_t b = buf[i];
+    uint32_t i = 0;
+
+    /* 按段拷贝，不是逐字节。
+     * 原来的实现对每个字节跑一遍状态机 —— 1 MB 分块就是 100 万次循环，
+     * GB 级传输光解码就能吃掉一个核。这里每段一次 memcpy，
+     * 段边界仍然落在"头部未满 / 体未满"两处，跨段续传语义不变。 */
+    while (i < n) {
         if (d->hdr_have < HOP_HEADER_SIZE) {
-            d->hdr[d->hdr_have++] = b;
-            if (d->hdr_have == HOP_HEADER_SIZE) {
-                d->body_len = hop_get_be32(d->hdr + 1);
-                if (d->body_len > HOP_MAX_PAYLOAD) {
-                    /* 异常帧：丢弃，重新同步 */
-                    hop_decoder_reset(d);
-                    continue;
-                }
-                if (d->body_len == 0) {
-                    d->body = NULL;
-                    emit(d);
-                } else {
-                    d->body = (uint8_t *)malloc(d->body_len);
-                    if (!d->body) { hop_decoder_reset(d); return; }
-                }
+            uint32_t take = HOP_HEADER_SIZE - d->hdr_have;
+            if (take > n - i) take = n - i;
+            memcpy(d->hdr + d->hdr_have, buf + i, take);
+            d->hdr_have += take;
+            i += take;
+
+            if (d->hdr_have < HOP_HEADER_SIZE) break;
+
+            d->body_len = hop_get_be32(d->hdr + 1);
+            d->body_have = 0;
+            if (d->body_len > HOP_MAX_PAYLOAD) {
+                /* 异常帧：丢弃，重新同步 */
+                hop_decoder_reset(d);
+                continue;
             }
+            if (d->body_len == 0) {
+                d->body = NULL;
+                emit(d);
+                continue;
+            }
+            d->body = (uint8_t *)malloc(d->body_len);
+            if (!d->body) { hop_decoder_reset(d); return; }
         } else {
-            d->body[d->body_have++] = b;
+            uint32_t take = d->body_len - d->body_have;
+            if (take > n - i) take = n - i;
+            memcpy(d->body + d->body_have, buf + i, take);
+            d->body_have += take;
+            i += take;
+
             if (d->body_have >= d->body_len) emit(d);
         }
     }

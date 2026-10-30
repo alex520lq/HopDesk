@@ -34,10 +34,12 @@ void inject_reset(void);
 void inject_key(uint16_t kc, int down);   /* 阶段 2：映射后的 Mac 键码 */
 void inject_release_all(void);            /* 断线时松开所有修饰键 */
 
-/* clipboard.m（阶段 3） */
+/* clipboard.m */
 void clipboard_init(void);
 void clipboard_apply(const char *utf8);   /* 收到对端文本 */
-void clipboard_apply_file(const char *name, const uint8_t *data, uint32_t size);
+/* 数据通道收完一批后回调：把落盘的顶层条目挂到剪贴板 */
+void clipboard_apply_paths(const char *const *paths, int n);
+void clipboard_apply_image(const uint8_t *bgra, int w, int h, int stride);
 
 /* display.c（阶段 4） */
 void disp_wake(int sec);

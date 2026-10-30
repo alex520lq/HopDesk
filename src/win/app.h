@@ -44,12 +44,14 @@ void kbd_init(win_app *app);
 void kbd_shutdown(void);
 void kbd_release_all(void);        /* 交还键鼠时松开对端仍按着的键 */
 
-/* clipboard.c（阶段 3） */
+/* clipboard.c */
 void clip_init(HWND hwnd);
 void clip_shutdown(HWND hwnd);
 void clip_on_update(void);                              /* WM_CLIPBOARDUPDATE */
 void clip_apply_remote(const uint8_t *p, uint32_t len); /* 收到 CLIP_TEXT */
-void clip_apply_remote_file(const uint8_t *p, uint32_t len); /* 收到 CLIP_FILE */
+/* 数据通道收完一批后回调：把落盘的顶层条目挂到剪贴板 */
+void clip_apply_remote_paths(const wchar_t *const *paths, int n);
+void clip_apply_remote_image(const uint8_t *bgra, int w, int h, int stride);
 
 /* display.c（阶段 4） */
 int disp_set_input(uint16_t vcp);      /* DDC/CI 0x60 写输入源 */

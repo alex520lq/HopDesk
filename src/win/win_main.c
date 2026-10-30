@@ -3,6 +3,7 @@
  *  单实例、隐藏消息窗口、托盘、网络、鼠标钩子。
  * ===================================================================== */
 #include "app.h"
+#include "xfer.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -86,9 +87,6 @@ static void on_recv(hop_recv *r) {
             break;
         case HOP_MSG_CLIP_TEXT:
             clip_apply_remote(r->data, r->len);
-            break;
-        case HOP_MSG_CLIP_FILE:
-            clip_apply_remote_file(r->data, r->len);
             break;
         default:
             break;
@@ -216,6 +214,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
 
     ui_init(&g_app);
     g_app.net = net_server_start(g_app.hwnd, &g_app.cfg);
+    xfer_init(g_app.hwnd, &g_app.cfg);
     clip_init(g_app.hwnd);
     capture_init(&g_app);
     kbd_init(&g_app);
@@ -229,6 +228,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     kbd_shutdown();
     capture_shutdown();
     clip_shutdown(g_app.hwnd);
+    xfer_shutdown();
     if (g_app.net) net_server_stop(g_app.net);
     ui_shutdown(&g_app);
     hop_log(HOP_LOG_INFO, "stopped");

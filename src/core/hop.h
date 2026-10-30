@@ -14,12 +14,21 @@ extern "C" {
 
 #define HOP_VERSION        "0.1.0"
 #define HOP_DEFAULT_PORT   24817
+#define HOP_DATA_PORT      24818         /* 文件数据通道，与控制通道分离 */
 #define HOP_TOKEN_MAX      128
 #define HOP_NAME_MAX       32
 #define HOP_TEXT_MAX       (64 * 1024)   /* 文本上限 */
-#define HOP_FILE_MAX       (8u * 1024u * 1024u)  /* 单文件上限，一帧传完 */
 #define HOP_NAME_LEN_MAX   255           /* 文件名（UTF-8）上限 */
+#define HOP_PATH_LEN_MAX   1024          /* 相对路径（UTF-8）上限 */
 #define HOP_HEADER_SIZE    5
+
+/* 分块大小：1 MB。
+ * 实测 1 MB 块 TCP 2548 MB/s，64 KB 块 1276 MB/s，1.4 KB 块 46 MB/s ——
+ * 每块一次系统调用，块越大摊销越划算。1 MB 也是缓存行/页对齐的整数倍，
+ * 磁盘顺序读在这个粒度上不会浪费预读。 */
+#define HOP_CHUNK_SIZE     (1024u * 1024u)
+/* 单帧载荷上限：一块 + 分块头（id4+off8+len4）+ 余量 */
+#define HOP_MAX_PAYLOAD    (HOP_CHUNK_SIZE + 1024u)
 
 /* ---- 消息类型 ---- */
 typedef enum {
@@ -39,17 +48,33 @@ typedef enum {
     HOP_MSG_KEY_MODS     = 22,  /* S -> C: modmask(uint16)         */
 
     HOP_MSG_CLIP_TEXT    = 30,  /* 双向: origin(uint32) + UTF-8    */
-    HOP_MSG_CLIP_FILE    = 31,  /* 双向: origin(4)+nlen(2)+name+size(4)+data */
+    /* 31 曾是"整文件一帧传完"的 CLIP_FILE，已废弃：
+     * 大文件走数据通道，单帧 8 MB 上限一并取消。 */
 
     HOP_MSG_DISP_WAKE    = 40,  /* S -> C: seconds(uint32)         */
     HOP_MSG_DISP_INPUT   = 41,  /* S -> C: vcp(uint16)             */
-    HOP_MSG_DISP_SLEEP   = 42
+    HOP_MSG_DISP_SLEEP   = 42,
+
+    /* ---- 数据通道（port+1，只跑文件/图片字节） ----
+     * 与控制通道分开，是为了让大载荷不挤占鼠标/键盘帧：
+     * 单条 TCP 流上的大块数据会造成队头阻塞，鼠标事件要等整块发完。
+     * 图片也走这里 —— 一张 4K 截图裸 BGRA 就是 33 MB，塞不进控制通道。 */
+    HOP_MSG_XFER_HELLO   = 50,  /* C -> S: ver(1)                  */
+    HOP_MSG_FILE_BEGIN   = 51,  /* S -> C: id(4)+size(8)+mtime(8)+flags(1)
+                                 *         +nlen(2)+name+plen(2)+relpath */
+    HOP_MSG_FILE_CHUNK   = 52,  /* S -> C: id(4)+off(8)+len(4)+data */
+    HOP_MSG_FILE_END     = 53,  /* S -> C: id(4)+status(1)          */
+    HOP_MSG_XFER_DONE    = 54,  /* S -> C: count(4)+total(8)        */
+    HOP_MSG_IMAGE_BEGIN  = 55   /* S -> C: id(4)+w(4)+h(4)+stride(4)+flags(1) */
 } hop_msg_type;
 
 /* ---- 鼠标按键 ---- */
 #define HOP_BTN_LEFT     0
 #define HOP_BTN_MIDDLE   1
 #define HOP_BTN_RIGHT    2
+
+/* ---- 文件条目标志 ---- */
+#define HOP_FILE_FLAG_DIR    (1u << 0)   /* 空目录占位，无分块 */
 
 /* ---- 边缘 ---- */
 typedef enum {
@@ -99,6 +124,12 @@ typedef struct {
     int      disp_wake_sec;        /* DISP_WAKE 保持多久（秒） */
     char     mac_input_cmd[96];    /* Mac 端切源命令前缀，DDC 值追加在后 */
     char     mac_sleep_cmd[64];    /* Mac 端显示睡眠命令 */
+
+    /* ---- 文件传输 ----
+     * 只留一个连接。实测千兆线速 125 MB/s，单流 TCP 就能打满（BDP 只有几十 KB），
+     * 多开连接在 1 Gbps 及以下收益为零；等链路升到 2.5G/10G 再加池化。 */
+    uint16_t data_port;            /* 数据通道端口 */
+    int      xfer_chunk_kb;        /* 分块大小（KB），64-4096 */
 } hop_config;
 
 void hop_config_defaults(hop_config *c);
@@ -135,8 +166,10 @@ void         hop_decoder_free(hop_decoder *d);
 /* ---- 小工具 ---- */
 void hop_put_be16(uint8_t *p, uint16_t v);
 void hop_put_be32(uint8_t *p, uint32_t v);
+void hop_put_be64(uint8_t *p, uint64_t v);
 uint16_t hop_get_be16(const uint8_t *p);
 uint32_t hop_get_be32(const uint8_t *p);
+uint64_t hop_get_be64(const uint8_t *p);
 
 #ifdef __cplusplus
 }

@@ -22,7 +22,21 @@ src/
 
 ## 3. 通信协议
 
-单条 TCP 长连接，复用键鼠、剪贴板、显示控制三类消息。
+**两条 TCP 长连接，按载荷性质分工：**
+
+| 通道 | 端口 | 承载 | 发送方式 |
+|---|---|---|---|
+| 控制 | 24817 | 键鼠、显示控制、剪贴板文本 | 入队 + 独立发送线程 |
+| 数据 | 24818 | 文件字节、图片像素 | 专用线程，流式读写 |
+
+分两条的理由是**队头阻塞**：单条 TCP 流上的 1 MB 分块会把排在后面的鼠标事件
+一起拖住几十毫秒。分开后传大文件不影响手感。
+
+控制通道的发送必须异步。`WH_MOUSE_LL` / `WH_KEYBOARD_LL` 的回调跑在装钩子的线程
+（主线程），`WM_CLIPBOARDUPDATE` 也在主线程；如果在那里直接阻塞 `send()`，
+一次大载荷就能让本机鼠标键盘整体僵住，超时后 Windows 会静默摘钩，输入捕获永久失效。
+所以回调只入队，发送由独立线程做，鼠标移动在队列尾做位移累加合并
+（累加而非覆盖 —— 相对位移丢掉就是永久落后，光标会越用越偏）。
 
 ### 帧格式
 
@@ -35,8 +49,10 @@ src/
 
 - `length`：网络字节序（big-endian）的 uint32。
 - 文本 payload：UTF-8。
+- 单帧上限 1 MB + 1 KB（一块 + 分块头）。
+- 解码器按段 `memcpy`，不逐字节走状态机 —— 后者处理 1 MB 分块要循环一百万次。
 
-### 消息类型
+### 控制通道消息
 
 | 类别 | 类型 | 方向 | 说明 |
 |---|---|---|---|
@@ -53,12 +69,34 @@ src/
 | 显示 | DISP_SET_INPUT | S→C | 调 m1ddc 切面板输入源 |
 | 显示 | DISP_SLEEP | S→C | Mac 显示睡眠（断 HDMI 信号） |
 
+### 数据通道消息
+
+一条连接全双工：Windows→Mac 与 Mac→Windows 各自有发送线程，互不干扰。
+
+| 类型 | 方向 | 载荷 |
+|---|---|---|
+| XFER_HELLO | C→S | `ver(1)` |
+| FILE_BEGIN | 双向 | `batch(4) id(4) size(8) mtime(8) flags(1) nlen(2) name plen(2) relpath` |
+| FILE_CHUNK | 双向 | `id(4) off(8) len(4) data[len]` |
+| FILE_END | 双向 | `id(4) status(1)` |
+| IMAGE_BEGIN | 双向 | `batch(4) id(4) w(4) h(4) stride(4)` |
+| XFER_DONE | 双向 | `batch(4) count(4) total(8)` |
+
+- **目录递归**：每个条目自带相对路径，接收端按路径逐级建目录，
+  空目录用 `flags & HOP_FILE_FLAG_DIR` 单独登记。不需要额外的树结构协议。
+- **图片不做编码**：直接传裸 BGRA（自上而下）。Windows 从 `CF_DIB` 解出、
+  转成 BGRA；Mac 用 `CGBitmapContext` 建 `CGImage`。省掉整个 zlib/PNG 依赖。
+- **分块带 64 位偏移**：接收端用 `SetFilePointerEx` / `lseek` 按偏移写。
+  当前是单连接顺序发送，这个字段为将来多连接区间并行预留 —— 每个分块写到
+  确定的偏移，天然没有乱序重组问题。
+
 ### 回环抑制
 
 剪贴板消息带 `origin`（设备 id）。收到对端同步后写入本机剪贴板时，
 该次写入不再触发广播，避免 A→B→A 抖动。
 
 ## 4. 键鼠共享
+
 
 ### Windows（捕获）
 
@@ -87,9 +125,26 @@ src/
 
 ## 5. 剪贴板同步
 
-- Windows：`AddClipboardFormatListener` + `WM_CLIPBOARDUPDATE`，读 `CF_UNICODETEXT`。
-- macOS：`NSPasteboard`（ObjC 薄层），轮询 `changeCount` 或用变更通知。
-- 阶段 3 只做文本；图片（CF_DIB / NSPasteboard PNG）、文件（CF_HDROP / file URL）后续扩展。
+- Windows：`AddClipboardFormatListener` + `WM_CLIPBOARDUPDATE`。
+- macOS：`NSPasteboard`，主队列 250 ms 定时器轮询 `changeCount`。
+
+按载荷大小分流：
+
+| 格式 | 通道 | 说明 |
+|---|---|---|
+| `CF_HDROP` / file URL | 数据通道 | 多选、目录递归（含空目录） |
+| `CF_DIB` / TIFF-PNG | 数据通道 | 转裸 BGRA，不做图片编码 |
+| `CF_UNICODETEXT` / String | 控制通道 | 文本都很小 |
+
+**文件优先于文本**：资源管理器里 Ctrl+C 一个文件，剪贴板里是 `CF_HDROP`，
+只读文本的话会"什么都不发生"。同理，从浏览器复制图片常常同时给
+`CF_HDROP`（临时文件）和 `CF_DIB`，发文件更忠实原样。
+
+接收端落盘到 `%TEMP%\HopDesk\<batch>\` / `$TMPDIR/HopDesk/<batch>/`，
+保留相对路径，然后把**顶层条目**挂到剪贴板，用户直接 Ctrl+V / Cmd+V。
+
+安全边界：对端是可信的，但越界写入不该由"信任"兜底 —— 相对路径里的
+`..` 与绝对路径必须拒绝，符号链接不跟随（macOS 用 `lstat`）。
 
 ## 6. 显示切换（替代 SSH）
 

@@ -35,6 +35,10 @@ void hop_config_defaults(hop_config *c) {
              "%s", "m1ddc display 1 set input");
     snprintf(c->mac_sleep_cmd, sizeof(c->mac_sleep_cmd),
              "%s", "pmset displaysleepnow");
+
+    /* 文件传输：数据通道默认主端口 +1 */
+    c->data_port      = HOP_DATA_PORT;
+    c->xfer_chunk_kb  = (int)(HOP_CHUNK_SIZE / 1024);
 }
 
 /* 支持 0x 前缀（DDC 值习惯写十六进制） */
@@ -67,6 +71,8 @@ static void set_kv(hop_config *c, const char *k, const char *v) {
     else if (!strcmp(k, "disp_wake_sec"))  c->disp_wake_sec = atoi(v);
     else if (!strcmp(k, "mac_input_cmd"))  snprintf(c->mac_input_cmd, sizeof(c->mac_input_cmd), "%s", v);
     else if (!strcmp(k, "mac_sleep_cmd"))  snprintf(c->mac_sleep_cmd, sizeof(c->mac_sleep_cmd), "%s", v);
+    else if (!strcmp(k, "data_port"))      c->data_port = (uint16_t)to_int(v);
+    else if (!strcmp(k, "xfer_chunk_kb"))  c->xfer_chunk_kb = atoi(v);
 }
 
 int hop_config_load(hop_config *c, const char *path) {

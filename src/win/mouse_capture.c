@@ -214,7 +214,9 @@ static LRESULT CALLBACK mouse_proc_hook(int code, WPARAM wp, LPARAM lp) {
             int dx = s_have_last ? (pt.x - s_last.x) : 0;
             int toward = is_left ? (dx < 0) : (dx > 0);
 
-            if (on_edge(pt.x, edge_x, is_left) && toward) {
+            int at_edge = on_edge(pt.x, edge_x, is_left);
+
+            if (at_edge && toward) {
                 if (delay <= 0) {
                     enter_sharing(pt);
                     return 1;
@@ -223,7 +225,14 @@ static LRESULT CALLBACK mouse_proc_hook(int code, WPARAM wp, LPARAM lp) {
                     s_edge_pending = 1;
                     SetTimer(g_app.hwnd, IDT_EDGE, (UINT)delay, NULL);
                 }
-            } else if (s_edge_pending) {
+            } else if (!at_edge && s_edge_pending) {
+                /* 只有真的**离开**边缘才取消计时。
+                 *
+                 * 旧代码是 "else if (s_edge_pending)"，只要 toward 为假就取消。
+                 * 但光标顶到边缘后位置被系统钳住不再变化，后续每个事件算出的
+                 * dx 都是 0（toward 恒为假），于是计时器在启动后的下一个鼠标
+                 * 事件就被杀掉 —— 移交永远等不到，键盘也就永远不跟过去。
+                 * 停在边缘上必须保持计时。 */
                 s_edge_pending = 0;
                 KillTimer(g_app.hwnd, IDT_EDGE);
             }

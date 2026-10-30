@@ -87,6 +87,21 @@ void inject_init(void) {
     g_mac.screen_w = s_w;
     g_mac.screen_h = s_h;
     s_inited = 1;
+
+    /* 注入权限预检。
+     *
+     * CGEventPost 在没有「辅助功能」权限时**静默丢弃**事件，返回 void，
+     * 没有任何错误可查。表现就是"键鼠切过去了，Mac 毫无反应"，而日志里
+     * 一个字都没有 —— 排查时会被误判成消息没送到。
+     *
+     * CGPreflightPostEventAccess 只查询、不弹窗（10.15+），适合放在初始化里。
+     * 真缺权限时必须把话说清楚，否则用户根本不知道该去勾哪个开关。 */
+    if (CGPreflightPostEventAccess())
+        hop_log(HOP_LOG_INFO, "inject: 辅助功能权限已授予");
+    else
+        hop_log(HOP_LOG_ERROR,
+                "inject: 缺少「辅助功能」权限，键鼠注入会被系统静默丢弃 —— "
+                "到 系统设置 > 隐私与安全性 > 辅助功能 勾选 hopdesk 后重启本程序");
 }
 
 /* 把仍按着的修饰键全部松开：断线时不能让 Mac 卡住 Cmd */
@@ -149,6 +164,11 @@ void inject_enter(int y) {
     g_mac.sharing = 1;
     post_move(CGPointMake(g_mac.mouse_x, g_mac.mouse_y), kCGMouseButtonLeft);
     statusbar_update(1, 1);
+
+    /* 打出落点：这是"键鼠到底有没有切过来"唯一的服务端可观测证据。
+     * 没有这行说明 MOUSE_ENTER 没送到，问题在传输而不是注入。 */
+    hop_log(HOP_LOG_INFO, "inject: enter (%.0f, %.0f) screen %.0fx%.0f",
+            g_mac.mouse_x, g_mac.mouse_y, s_w, s_h);
 }
 
 static void leave_edge(void) {

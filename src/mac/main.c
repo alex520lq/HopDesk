@@ -7,9 +7,52 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <limits.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/file.h>
+
+/* ---- 单实例 ----
+ * macOS 端是客户端，不 bind 端口，所以不会"抢端口"；但两个实例会同时
+ * 连上 Windows 端的同一个数据通道，谁后连谁把 s_x.client 顶掉 ——
+ * 键鼠和剪贴板会来回跳，而且两端日志都看不出原因。
+ *
+ * 用 flock 拦：锁由内核在进程退出时释放，**崩溃也不会留下僵尸锁**，
+ * 不像 pidfile 那样需要判断"那个 pid 还活着吗、是不是复用了"。
+ *
+ * 锁文件放 $TMPDIR：macOS 上它是每用户私有目录（/var/folders/…），
+ * 天然按用户隔离，也不用自己拼 ~/Library 再建目录。
+ * 故意不关 fd —— 锁要活到进程结束。 */
+static int acquire_single_instance(void) {
+    const char *dir = getenv("TMPDIR");
+    if (!dir || !dir[0]) dir = "/tmp";
+
+    char path[PATH_MAX];
+    size_t n = strlen(dir);
+    snprintf(path, sizeof(path), "%s%shopdesk.lock",
+             dir, (n > 0 && dir[n - 1] == '/') ? "" : "/");
+
+    int fd = open(path, O_CREAT | O_RDWR, 0600);
+    if (fd < 0) {
+        /* 开不了就别拦：宁可双开，也别让用户完全打不开 */
+        fprintf(stderr, "hopdesk: 无法创建实例锁 %s\n", path);
+        return 1;
+    }
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        close(fd);
+        return 0;
+    }
+    return 1;
+}
 
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
+
+    if (!acquire_single_instance()) {
+        fprintf(stderr, "hopdesk: 已经有一个实例在运行，本进程退出。\n");
+        return 1;
+    }
 
     memset(&g_mac, 0, sizeof(g_mac));
     g_mac.sock = -1;

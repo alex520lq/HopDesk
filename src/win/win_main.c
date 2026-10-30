@@ -162,6 +162,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 case 1003: disp_switch_to_mac(); return 0;
                 case 1004: disp_switch_to_win(); return 0;
                 case 1005: disp_sleep_mac(); return 0;
+                case 1006: xfer_cancel(); return 0;
             }
             break;
         case WM_DESTROY:
@@ -176,9 +177,25 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
 
     set_dpi_aware();
 
-    /* 单实例 */
-    HANDLE mtx = CreateMutexW(NULL, TRUE, L"Local\\HopDesk");
-    if (!mtx || GetLastError() == ERROR_ALREADY_EXISTS) return 0;
+    /* ---- 单实例 ----
+     * 两个实例会同时 bind 24817/24818，而 Windows 的 SO_REUSEADDR 允许
+     * 后来者绑上同一个端口并把连接抢走 —— 表现是"对端连上了，但键鼠时灵时不灵"，
+     * 极难排查。用命名互斥量在最早的时刻拦掉第二个实例。
+     *
+     * 句柄故意不关：互斥量要活到进程结束，进程一退内核自动释放，
+     * 所以崩溃也不会留下"需要手工清理"的僵尸锁。 */
+    static HANDLE s_instance_mtx = NULL;
+    s_instance_mtx = CreateMutexW(NULL, TRUE, L"Local\\HopDesk.SingleInstance");
+    if (s_instance_mtx && GetLastError() == ERROR_ALREADY_EXISTS) {
+        /* 托盘里已经有一个在跑，告诉用户去哪儿找，别让他以为程序没启动 */
+        MessageBoxW(NULL,
+                    L"HopDesk 已经在运行。\n\n"
+                    L"请到任务栏通知区域（托盘）里操作它的图标。",
+                    L"HopDesk", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+        CloseHandle(s_instance_mtx);
+        s_instance_mtx = NULL;
+        return 0;
+    }
 
     g_app.inst = inst;
     g_app.state = HOP_LINK_DOWN;
@@ -232,6 +249,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     if (g_app.net) net_server_stop(g_app.net);
     ui_shutdown(&g_app);
     hop_log(HOP_LOG_INFO, "stopped");
-    if (mtx) CloseHandle(mtx);
+    /* 正常退出时也释放互斥量，别指望"反正进程要退了" —— 万一有别的
+     * 退出路径（比如宿主进程 fork 出来的子进程）还活着，锁就悬着了 */
+    if (s_instance_mtx) CloseHandle(s_instance_mtx);
     return 0;
 }

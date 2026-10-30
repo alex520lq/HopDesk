@@ -100,8 +100,9 @@ src/
 | FILE_BEGIN | 双向 | `batch(4) id(4) size(8) mtime(8) flags(1) nlen(2) name plen(2) relpath` |
 | FILE_CHUNK | 双向 | `id(4) off(8) len(4) crc(4) data[len]` |
 | FILE_END | 双向 | `id(4) status(1) file_crc(4)` |
+| FILE_ACK | 双向 | `batch(4) id(4) status(1)` |
 | IMAGE_BEGIN | 双向 | `batch(4) id(4) w(4) h(4) stride(4)` |
-| XFER_DONE | 双向 | `batch(4) count(4) total(8)` |
+| XFER_DONE | 双向 | `batch(4) ok(4) total(4) bytes(8)` |
 | XFER_ABORT | 双向 | `batch(4) reason(1)` |
 
 - **目录递归**：每个条目自带相对路径，接收端按路径逐级建目录，
@@ -118,6 +119,10 @@ src/
 |---|---|
 | 单块校验 | 每块带 CRC32（IEEE 802.3，表驱动，~1–2 GB/s）。TCP 的 16 位校验和配合网卡 offload 有漏检可能，GB 级传输漏检一次就是静默损坏 |
 | 整文件校验 | 各块 CRC 再折一次得到 file_crc，随 `FILE_END` 传。它同时覆盖数据、**块顺序**和**偏移**，且不需要把整份文件重读一遍 |
+| 单文件 ACK | 接收端在 `FILE_END` 之后回 `FILE_ACK`（`OK` / `CRC` / `DISK` / `BADPATH`）。发送端据此决定"重发这一个文件"还是"继续下一个"。只有一个 ACK 槽：发送是串行的，任一时刻只有一个文件在途 |
+| 文件级重试 | `HOP_XFER_FILE_RETRY_MAX = 3`，退避 200/400/800 ms。`BADPATH` 属确定性失败，不重试。重试只动失败的那一个文件，`XFER_DONE` 的 `ok/total` 因此是精确计数 |
+| 作业级重试 | 链路断了整批退回队尾，`next_i` 游标保留 —— 重连后从断点条目继续，已确认的不重传。退避 0.5–8 s，最多 5 次，总预算 `HOP_XFER_RECONNECT_BUDGET_MS = 30 s` |
+| 取消 | 菜单触发后置 `cancel_batch`，发送线程每块之后检查（延迟上限一个分块），`ack_wait` 里也检查，否则会干等满 10 s 的 ACK 超时。接收侧由 conn/listen 线程消费 `cancel_rx`：删半成品、立墓碑，对端再发同批次直接回 `ABORT(CANCEL)` |
 | 背压 | 写盘队列有界（`RX_Q_SLOTS = 8`）。队列满 → 接收线程阻塞 → `recv` 停止 → TCP 窗口收缩 → 发送端自动减速。内存上界 = 队列深度 × 块大小，与传输总量无关 |
 | 磁盘 I/O 隔离 | 网络线程只做"收包 + 校验 + 入队"，落盘交给独立写线程（同样降级优先级）。文件句柄由写线程独占，避免关文件与写入的竞态 |
 | 尺寸边界 | `FILE_CHUNK` 超出 `FILE_BEGIN` 声明的 size 直接丢弃；`IMAGE_BEGIN` 的 w/h/stride 全部校验，上限 `32768` 边长 / `256 MB` |
@@ -205,10 +210,20 @@ src/
 
 - 客户端指数退避重连（1s、2s、4s… 上限 10s）。
 - 心跳超时（连续 3 次 PING 无 PONG）判定断线，状态回退到"本机控制"。
-- 单实例：Windows 命名 Mutex / macOS `flock`，防止两个实例冲突。
+- **单实例**：Windows 用命名互斥量 `Local\HopDesk.SingleInstance`，第二个实例弹提示后退出；
+  macOS 用 `flock` 锁 `$TMPDIR/hopdesk.lock`。锁由内核在进程退出时释放，
+  **崩溃也不会留下僵尸锁**（pidfile 方案就得判断"那个 pid 还活着吗、是不是被复用了"）。
+  两个实例的后果不是"多占点内存"：Windows 端会各自 bind 一次端口，
+  macOS 端会各自连同一个数据通道、把对方的客户端槽位顶掉，键鼠和剪贴板来回跳。
+- **端口独占**：Windows 的监听 socket 用 `SO_EXCLUSIVEADDRUSE`，**不是** `SO_REUSEADDR`。
+  两者在 Windows 上语义相反 —— `SO_REUSEADDR` 允许**别的进程**绑同一端口并把连接抢走
+  （Unix 上它只是允许绕过 TIME_WAIT，没有这个坑）。抢连接的症状是
+  "对端连上了，但键鼠时灵时不灵"，日志里完全看不出来。独占之后后来者 bind 直接
+  失败（`WSAEACCES`），错误明确。实测杀掉进程后立即重启仍能正常绑定，不受 TIME_WAIT 影响。
 
 ## 8. 资源与构建
 
 - 目标：每端常驻内存 < 5 MB、可执行文件 < 1 MB、零运行时依赖。
-- Windows：MSVC `/MT` 静态链接或 MinGW；macOS：clang 单命令。
+- Windows：clang（llvm-mingw UCRT）单命令，注意 `-Wl,--entry=WinMainCRTStartup`
+  （clang 的 `-municode` 只定义宏、不切 CRT 入口）；macOS：clang 单命令。
 - 不引入 CMake 与第三方 GUI 框架，保持体积与可审计性。

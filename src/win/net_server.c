@@ -238,8 +238,19 @@ net_server *net_server_start(HWND hwnd, const hop_config *cfg) {
     s->listen_s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s->listen_s == INVALID_SOCKET) goto fail;
 
+    /* SO_EXCLUSIVEADDRUSE，不是 SO_REUSEADDR。
+     *
+     * 这两个在 Windows 上语义相反：SO_REUSEADDR 允许**别人**绑同一个端口
+     * 并把连接抢走（Unix 上它只是允许绕过 TIME_WAIT，没有这个问题）；
+     * SO_EXCLUSIVEADDRUSE 则独占端口，别人再绑直接失败。
+     * 抢连接的症状是"连上了但键鼠时灵时不灵"，从日志里根本看不出来，
+     * 所以宁可让后来者 bind 失败、报一条明确的错误。 */
     BOOL yes = TRUE;
-    setsockopt(s->listen_s, SOL_SOCKET, SO_REUSEADDR, (char *)&yes, sizeof(yes));
+    if (setsockopt(s->listen_s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                   (char *)&yes, sizeof(yes)) != 0) {
+        hop_log(HOP_LOG_WARN, "net: SO_EXCLUSIVEADDRUSE failed (%d)",
+                WSAGetLastError());
+    }
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));

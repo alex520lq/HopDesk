@@ -2,6 +2,7 @@
  *  HopDesk - Windows 托盘 UI
  * ===================================================================== */
 #include "app.h"
+#include "xfer.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,6 +12,7 @@
 #define IDM_DISP_MAC   1003
 #define IDM_DISP_WIN   1004
 #define IDM_DISP_SLEEP 1005
+#define IDM_XFER_CANCEL 1006
 
 /* 用纯色圆生成一个 16x16 图标 */
 static HICON make_icon(COLORREF c) {
@@ -92,6 +94,12 @@ static void show_menu(win_app *app) {
                 L"显示器 → Windows");
     AppendMenuW(m, (can ? 0 : MF_GRAYED) | MF_STRING, IDM_DISP_SLEEP,
                 L"Mac 显示睡眠");
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+
+    /* 传了一半改主意：键鼠已经切走了、或者发现选错了文件 */
+    AppendMenuW(m, (xfer_busy() ? 0 : MF_GRAYED) | MF_STRING,
+                IDM_XFER_CANCEL, L"取消当前传输");
+
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
 
     AppendMenuW(m, MF_STRING, IDM_EXIT, L"退出");

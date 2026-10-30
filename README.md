@@ -85,17 +85,16 @@ HopDesk 使用两条独立 TCP 连接，避免文件和图片传输阻塞实时�
 
 ### Windows
 
-需要 PowerShell 7 或 Windows PowerShell，以及当前构建脚本支持的 GCC/MinGW 或 MSVC 工具链。
+需要 PowerShell 7 或 Windows PowerShell，以及 clang 工具链。推荐
+[llvm-mingw](https://github.com/mstorsjo/llvm-mingw)：clang + lld + 完整的 mingw-w64
+sysroot，自带 CRT，不依赖 VS 或 MSYS2。
+
+```powershell
+winget install MartinStorsjo.LLVM-MinGW.UCRT
+```
 
 ```powershell
 pwsh scripts/build-win.ps1
-```
-
-默认使用 GCC。也可以显式指定：
-
-```powershell
-pwsh scripts/build-win.ps1 -Compiler gcc
-pwsh scripts/build-win.ps1 -Compiler msvc
 ```
 
 脚本输出：
@@ -104,7 +103,20 @@ pwsh scripts/build-win.ps1 -Compiler msvc
 build/hopdesk.exe
 ```
 
-当前脚本的编译器选项是 `gcc` 和 `msvc`；llvm-mingw 尚未作为独立选项集成进该脚本。
+默认用 clang —— 与 macOS 端同一个编译器前端，`-Wall -Wextra` 的警告语义一致，不会出现
+"Mac 上没警告、Windows 上一堆"的情况。脚本按 PATH 上的 `clang.exe` → winget 安装的
+llvm-mingw → w64devkit 的顺序探测，都找不到才回落到 gcc。也可以显式指定：
+
+```powershell
+pwsh scripts/build-win.ps1 -Compiler clang
+pwsh scripts/build-win.ps1 -Compiler gcc
+pwsh scripts/build-win.ps1 -Compiler msvc
+```
+
+**一个必须显式处理的坑**：clang 的 MinGW driver 接受 `-municode`，但它只定义
+`UNICODE` / `_UNICODE`，**不会切换 CRT 入口**（gcc 的 spec 会）。若不额外加
+`-Wl,--entry=WinMainCRTStartup`，入口会落到 `__tmainCRTStartup`，`__mingw_app_type`
+保持 0（console），与 GUI 语义不符。脚本里已固定该参数。
 
 ### macOS
 
@@ -121,6 +133,16 @@ build/hopdesk
 ```
 
 首次使用键鼠注入时，需要在 macOS「系统设置 → 隐私与安全性 → 辅助功能」中为 HopDesk 授权。
+
+## 运行
+
+- **每台设备只允许一个实例**。Windows 端第二次启动会弹提示后退出（互斥量
+  `Local\HopDesk.SingleInstance`）；macOS 端静默退出（状态栏里已经有一个了）。
+  两个实例同时跑不是"多占点内存"：Windows 端会各自 bind 一次端口，macOS 端会各自
+  连同一个数据通道把对方顶掉，键鼠和剪贴板会来回跳，而且两端日志都看不出原因。
+- **Windows 端端口是独占的**（`SO_EXCLUSIVEADDRUSE`）。24817 / 24818 被别的程序占着时，
+  HopDesk 在日志里报 `bind failed` 并退出，不会和别人"共享"端口。这一点和 Unix 相反：
+  Windows 的 `SO_REUSEADDR` 会让后来者绑上同一个端口并把连接抢走。
 
 ## 配置
 
@@ -180,11 +202,25 @@ xfer_chunk_kb=256
 **可靠性**（详细设计见 `docs/architecture.md`）：
 
 - **每块 CRC32 + 整文件 CRC**。整文件 CRC 是各块 CRC 再折一次，同时覆盖数据、
-  块顺序和偏移，且不需要把 GB 级文件重读一遍。校验失败回 `XFER_ABORT`，不写坏文件。
+  块顺序和偏移，且不需要把 GB 级文件重读一遍。
+- **单文件 ACK 闭环（数据协议 v3）**。每个文件发完由接收端回 `FILE_ACK`
+  （`OK` / `CRC` / `DISK` / `BADPATH`）。失败只重发这一个文件，最多 3 次
+  （200 / 400 / 800 ms 退避）；`BADPATH` 是确定性失败，直接放弃不重试。
+  一个坏文件不再判死整批，`XFER_DONE` 里的 `ok` / `total` 就是精确的"N/M 成功"。
+- **断线按批次重连重试**。连接中断后从断点条目继续（已确认的不重传），
+  退避 0.5–8 s，最多 5 次，总预算 30 s。超预算才放弃 —— 否则对端再也不回来时
+  作业会永久挂在队列里。
+- **可取消**。托盘 / 菜单栏「取消当前传输」双向生效：发送侧每块之后检查一次
+  （响应延迟上限一个分块），接收侧删掉半成品并立墓碑，对端再发同批次直接回 `ABORT`。
 - **有界写盘队列（8 槽）做背压**。磁盘跟不上时接收线程阻塞，TCP 窗口随之收缩，
   发送端自动减速 —— 内存上界是"队列深度 × 块大小"，不随传输总量增长。
   实测传 200 MB 峰值工作集 10 MB（1 MB 分块时 19 MB）。
-- **落盘在独立线程**，文件句柄由写线程独占。
+- **落盘在独立线程**，文件句柄由写线程独占。剪贴板只在单文件 `FILE_ACK` 成功之后
+  才登记，不会出现"粘贴出一个写了一半的文件"。
+
+数据协议版本在握手时校验（`HOP_XFER_PROTO_VER = 3`）。两端版本不一致时日志会明确
+报出来 —— 旧版对端不认 `FILE_ACK`，会出现"文件其实传到了，发送端却报失败"的现象，
+升级时两端一起重建。
 
 **还没做的**：多文件并发、断点续传。局域网单条 TCP 流已是瓶颈，多文件并发
 不提高吞吐；断点续传要按 batch 持久化已完成偏移，只在跨不稳定链路时才值得做。

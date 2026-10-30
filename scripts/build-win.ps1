@@ -1,13 +1,17 @@
 # =====================================================================
 #  HopDesk - Windows 构建脚本
 #
-#  用法：  pwsh scripts/build-win.ps1 [-Compiler gcc|msvc]
+#  用法：  pwsh scripts/build-win.ps1 [-Compiler clang|gcc|msvc]
 #
-#  gcc 优先；若 PATH 无 gcc，会自动探测 D:\w64devkit。
+#  clang 优先（与 macOS 端同一前端，警告语义一致）。探测顺序：
+#    1. PATH 上的 clang.exe
+#    2. winget 安装的 llvm-mingw（MartinStorsjo.LLVM-MinGW.UCRT）
+#    3. w64devkit 里的 clang
+#  找不到 clang 时回落到 gcc（w64devkit）。
 # =====================================================================
 [CmdletBinding()]
 param(
-    [ValidateSet('gcc', 'msvc')][string]$Compiler = 'gcc'
+    [ValidateSet('clang', 'gcc', 'msvc')][string]$Compiler = 'clang'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,33 +20,66 @@ $build = Join-Path $root 'build'
 New-Item -ItemType Directory -Force -Path $build | Out-Null
 
 $core = Get-ChildItem -LiteralPath (Join-Path $root 'src/core') -Filter *.c
-$win  = Get-ChildItem -LiteralPath (Join-Path $root 'src/win')  -Filter *.c
-$src  = @($core.FullName) + @($win.FullName)
-$inc  = Join-Path $root 'src/core'
-$out  = Join-Path $build 'hopdesk.exe'
-$libs = 'ws2_32','dxva2','gdi32','shell32','user32','comctl32'
+$win = Get-ChildItem -LiteralPath (Join-Path $root 'src/win') -Filter *.c
+$src = @($core.FullName) + @($win.FullName)
+$inc = Join-Path $root 'src/core'
+$out = Join-Path $build 'hopdesk.exe'
+$libs = 'ws2_32', 'dxva2', 'gdi32', 'shell32', 'user32', 'comctl32'
 
-if ($Compiler -eq 'gcc') {
-    $gcc = (Get-Command gcc.exe -ErrorAction SilentlyContinue).Source
-    if (-not $gcc) {
-        $cand = 'D:\w64devkit\w64devkit\bin\gcc.exe'
-        if (Test-Path $cand) { $gcc = $cand }
-    }
-    if (-not $gcc) { throw '未找到 gcc；可运行 w64devkit，或用 -Compiler msvc。' }
+function Find-Clang {
+    $c = (Get-Command clang.exe -ErrorAction SilentlyContinue).Source
+    if ($c) { return $c }
 
-    $libArgs = $libs | ForEach-Object { '-l' + $_ }
-    & $gcc -O2 -Wall -Wextra -municode -mwindows -I $inc -o $out $src @libArgs
-    if ($LASTEXITCODE -ne 0) { throw "gcc 编译失败（退出码 $LASTEXITCODE）" }
+    # winget 的 llvm-mingw：Packages\MartinStorsjo.LLVM-MinGW*\llvm-mingw-*-x86_64\bin\clang.exe
+    $pkgs = Join-Path $env:LOCALAPPDATA 'Microsoft/WinGet/Packages'
+    $c = Get-ChildItem -LiteralPath $pkgs -Directory -Filter 'MartinStorsjo.LLVM-MinGW*' -ErrorAction SilentlyContinue |
+        ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -Directory -Filter 'llvm-mingw-*-x86_64' -ErrorAction SilentlyContinue } |
+        ForEach-Object { Join-Path $_.FullName 'bin/clang.exe' } |
+        Where-Object { Test-Path -LiteralPath $_ } |
+        Select-Object -First 1
+    if ($c) { return $c }
+
+    $c = 'D:\w64devkit\w64devkit\bin\clang.exe'
+    if (Test-Path -LiteralPath $c) { return $c }
+    return $null
 }
-else {
-    $cl = (Get-Command cl.exe -ErrorAction SilentlyContinue).Source
-    if (-not $cl) { throw '未找到 cl.exe；请在 x64 Native Tools for VS 终端运行。' }
-    $libArgs = $libs | ForEach-Object { $_ + '.lib' }
-    & cl /nologo /O2 /MT /W3 /I $inc /Fe:$out $src /Fo"$build\\" @libArgs
-    if ($LASTEXITCODE -ne 0) { throw "cl 编译失败（退出码 $LASTEXITCODE）" }
+
+# -municode 在 clang 的 MinGW driver 里只定义 UNICODE/_UNICODE，
+# 不会切换 CRT 入口 —— 必须显式指定 WinMainCRTStartup，
+# 否则入口落到 __tmainCRTStartup，__mingw_app_type 保持 0（console）。
+$clangFlags = '-municode', '-mwindows', '-Wl,--entry=WinMainCRTStartup'
+
+switch ($Compiler) {
+    'clang' {
+        $clang = Find-Clang
+        if (-not $clang) { throw '未找到 clang；安装 llvm-mingw（winget install MartinStorsjo.LLVM-MinGW.UCRT）或改用 -Compiler gcc。' }
+
+        $libArgs = $libs | ForEach-Object { '-l' + $_ }
+        & $clang --target=x86_64-w64-mingw32 -O2 -Wall -Wextra @clangFlags -I $inc -o $out $src @libArgs
+        if ($LASTEXITCODE -ne 0) { throw "clang 编译失败（退出码 $LASTEXITCODE）" }
+    }
+    'gcc' {
+        $gcc = (Get-Command gcc.exe -ErrorAction SilentlyContinue).Source
+        if (-not $gcc) {
+            $cand = 'D:\w64devkit\w64devkit\bin\gcc.exe'
+            if (Test-Path -LiteralPath $cand) { $gcc = $cand }
+        }
+        if (-not $gcc) { throw '未找到 gcc；可运行 w64devkit，或用 -Compiler clang。' }
+
+        $libArgs = $libs | ForEach-Object { '-l' + $_ }
+        & $gcc -O2 -Wall -Wextra -municode -mwindows -I $inc -o $out $src @libArgs
+        if ($LASTEXITCODE -ne 0) { throw "gcc 编译失败（退出码 $LASTEXITCODE）" }
+    }
+    'msvc' {
+        $cl = (Get-Command cl.exe -ErrorAction SilentlyContinue).Source
+        if (-not $cl) { throw '未找到 cl.exe；请在 x64 Native Tools for VS 终端运行。' }
+        $libArgs = $libs | ForEach-Object { $_ + '.lib' }
+        & cl /nologo /O2 /MT /W3 /I $inc /Fe:$out $src /Fo"$build\\" @libArgs
+        if ($LASTEXITCODE -ne 0) { throw "cl 编译失败（退出码 $LASTEXITCODE）" }
+    }
 }
 
 if (Test-Path -LiteralPath $out) {
-    $kb = [math]::Round((Get-Item $out).Length / 1KB, 1)
-    Write-Host "构建成功: $out  (${kb} KB)" -ForegroundColor Green
+    $kb = [math]::Round((Get-Item -LiteralPath $out).Length / 1KB, 1)
+    Write-Host "构建成功: $out  (${kb} KB, $Compiler)" -ForegroundColor Green
 }

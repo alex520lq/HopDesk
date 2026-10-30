@@ -71,9 +71,13 @@ typedef enum {
                                  *         +nlen(2)+name+plen(2)+relpath */
     HOP_MSG_FILE_CHUNK   = 52,  /* 双向: id(4)+off(8)+len(4)+crc(4)+data */
     HOP_MSG_FILE_END     = 53,  /* 双向: id(4)+status(1)+file_crc(4) */
-    HOP_MSG_XFER_DONE    = 54,  /* S -> C: count(4)+total(8)        */
+    HOP_MSG_XFER_DONE    = 54,  /* S -> C: batch(4)+ok(4)+total(4)+bytes(8)
+                                 * ok < total 就是部分成功，接收端据此报错 */
     HOP_MSG_IMAGE_BEGIN  = 55,  /* S -> C: id(4)+w(4)+h(4)+stride(4)+flags(1) */
-    HOP_MSG_XFER_ABORT   = 56   /* 双向: batch(4)+reason(1)，收到即中止本批 */
+    HOP_MSG_XFER_ABORT   = 56,  /* 双向: batch(4)+reason(1)，收到即中止本批 */
+    HOP_MSG_FILE_ACK     = 57   /* C -> S: batch(4)+id(4)+status(1)
+                                 * 单文件结论。没有 ACK 就没有"完成" ——
+                                 * 这是发送端判断要不要重发这一个文件的唯一依据。 */
 } hop_msg_type;
 
 /* ---- 鼠标按键 ---- */
@@ -84,24 +88,52 @@ typedef enum {
 /* ---- 文件条目标志 ---- */
 #define HOP_FILE_FLAG_DIR    (1u << 0)   /* 空目录占位，无分块 */
 
-/* ---- FILE_END 的 status ---- */
+/* ---- FILE_END 的 status（发送端报告"我这边怎么了"） ---- */
 #define HOP_FILE_OK          0
 #define HOP_FILE_IO_ERROR    1
 #define HOP_FILE_CRC_ERROR   2
 
+/* ---- FILE_ACK 的 status（接收端报告"这个文件到底成没成"） ---- */
+#define HOP_FILE_ACK_OK       0
+#define HOP_FILE_ACK_CRC      1   /* 块或整文件 CRC 不符 → 值得重发 */
+#define HOP_FILE_ACK_DISK     2   /* 接收端写盘失败 → 重发也未必有用，但仍重试 */
+#define HOP_FILE_ACK_BADPATH  3   /* 相对路径被拒 → 重发无意义，直接放弃该文件 */
+
 /* ---- 数据通道协议版本 ----
  * v1: FILE_CHUNK = id+off+len+data          FILE_END = id+status
  * v2: FILE_CHUNK 加 crc(4)，FILE_END 加 file_crc(4)，新增 XFER_ABORT
+ * v3: 新增 FILE_ACK（逐文件确认），XFER_DONE 载荷改为 20 字节并带真实计数
  * 两端必须同版本：旧端发来的块在新端会按错位的 CRC 字段解析，
  * 结果是每块都校验失败。所以连上就先比版本，别让用户对着
  * "传输一直失败"猜原因。 */
-#define HOP_XFER_PROTO_VER   2
+#define HOP_XFER_PROTO_VER   3
 
 /* ---- XFER_ABORT 的 reason ---- */
 #define HOP_ABORT_CRC        1
 #define HOP_ABORT_DISK       2
 #define HOP_ABORT_TOO_LARGE  3
 #define HOP_ABORT_BAD_PATH   4
+#define HOP_ABORT_CANCEL     5   /* 用户主动取消，两端都不再重试 */
+
+/* ---- 传输重试策略 ----
+ * 两层，各管各的，别混：
+ *   文件级 —— 单个文件失败（CRC/写盘/超时），原地重发这一个文件
+ *   作业级 —— 连接断了，整批退回队列，等重连后从断点条目继续
+ * 两层都有限次：无限重试等于把队列焊死。 */
+#define HOP_XFER_FILE_RETRY_MAX  3    /* 单文件最多尝试次数（含首次） */
+#define HOP_XFER_JOB_RETRY_MAX   5    /* 连接级最多重试次数 */
+#define HOP_XFER_ACK_TIMEOUT_MS  10000 /* 等单个文件 ACK 的上限 */
+/* 断线后等对端回来的总预算。没有它，一个断线的批次会永远挂在队列里：
+ * 菜单上的"取消传输"一直亮着，对端几小时后回来还会突然接着传。 */
+#define HOP_XFER_RECONNECT_BUDGET_MS 30000
+
+static inline unsigned hop_xfer_file_retry_delay_ms(int attempt) {
+    return 200u << (attempt > 1 ? attempt - 1 : 0);      /* 200,400,800… */
+}
+static inline unsigned hop_xfer_job_retry_delay_ms(int attempt) {
+    unsigned d = 500u << (attempt > 1 ? attempt - 1 : 0); /* 0.5,1,2,4,8s */
+    return d > 8000u ? 8000u : d;
+}
 
 /* ---- 图片上限 ----
  * 接收端必须自己设限：对端声称 100000×100000 就能把内存吃光。

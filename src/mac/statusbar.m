@@ -4,12 +4,16 @@
  * ===================================================================== */
 #import <Cocoa/Cocoa.h>
 #include "mac_app.h"
+#include "xfer.h"
 
-/* ---- 退出动作的 target ---- */
-@interface HopController : NSObject
+/* ---- 退出动作的 target ----
+ * 必须显式声明 NSMenuItemValidation：10.14 之后 NSMenu 只对声明了该协议的
+ * target 调用 validateMenuItem:，否则"取消当前传输"永远是亮的。 */
+@interface HopController : NSObject <NSMenuItemValidation>
 - (void)doQuit:(id)sender;
 - (void)doWake:(id)sender;
 - (void)doInputWin:(id)sender;
+- (void)doCancelXfer:(id)sender;
 @end
 @implementation HopController
 - (void)doQuit:(id)sender {
@@ -25,6 +29,17 @@
 - (void)doInputWin:(id)sender {
     (void)sender;
     disp_set_input(g_mac.cfg.disp_win_input);
+}
+/* 传了一半改主意：键鼠已经切走了、或者发现选错了文件 */
+- (void)doCancelXfer:(id)sender {
+    (void)sender;
+    xfer_cancel();
+}
+/* 菜单打开时自动校验：没有传输在进行就把"取消"变灰。
+ * NSMenu 默认 autoenablesItems，走的就是这个入口。 */
+- (BOOL)validateMenuItem:(NSMenuItem *)item {
+    if ([item action] == @selector(doCancelXfer:)) return xfer_busy() != 0;
+    return YES;
 }
 @end
 
@@ -81,6 +96,14 @@ void statusbar_init(void) {
                                                 keyEquivalent:@""];
         inwin.target = s_ctrl;
         [menu addItem:inwin];
+
+        [menu addItem:[NSMenuItem separatorItem]];
+
+        NSMenuItem *cancel = [[NSMenuItem alloc] initWithTitle:@"取消当前传输"
+                                                        action:@selector(doCancelXfer:)
+                                                 keyEquivalent:@""];
+        cancel.target = s_ctrl;
+        [menu addItem:cancel];
 
         [menu addItem:[NSMenuItem separatorItem]];
 

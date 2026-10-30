@@ -87,6 +87,9 @@ static void on_recv(hop_recv *r) {
         case HOP_MSG_CLIP_TEXT:
             clip_apply_remote(r->data, r->len);
             break;
+        case HOP_MSG_CLIP_FILE:
+            clip_apply_remote_file(r->data, r->len);
+            break;
         default:
             break;
     }

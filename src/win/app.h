@@ -49,6 +49,7 @@ void clip_init(HWND hwnd);
 void clip_shutdown(HWND hwnd);
 void clip_on_update(void);                              /* WM_CLIPBOARDUPDATE */
 void clip_apply_remote(const uint8_t *p, uint32_t len); /* 收到 CLIP_TEXT */
+void clip_apply_remote_file(const uint8_t *p, uint32_t len); /* 收到 CLIP_FILE */
 
 /* display.c（阶段 4） */
 int disp_set_input(uint16_t vcp);      /* DDC/CI 0x60 写输入源 */

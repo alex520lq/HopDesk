@@ -16,7 +16,9 @@ extern "C" {
 #define HOP_DEFAULT_PORT   24817
 #define HOP_TOKEN_MAX      128
 #define HOP_NAME_MAX       32
-#define HOP_TEXT_MAX       (64 * 1024)   /* 阶段 3 文本上限 */
+#define HOP_TEXT_MAX       (64 * 1024)   /* 文本上限 */
+#define HOP_FILE_MAX       (8u * 1024u * 1024u)  /* 单文件上限，一帧传完 */
+#define HOP_NAME_LEN_MAX   255           /* 文件名（UTF-8）上限 */
 #define HOP_HEADER_SIZE    5
 
 /* ---- 消息类型 ---- */
@@ -37,6 +39,7 @@ typedef enum {
     HOP_MSG_KEY_MODS     = 22,  /* S -> C: modmask(uint16)         */
 
     HOP_MSG_CLIP_TEXT    = 30,  /* 双向: origin(uint32) + UTF-8    */
+    HOP_MSG_CLIP_FILE    = 31,  /* 双向: origin(4)+nlen(2)+name+size(4)+data */
 
     HOP_MSG_DISP_WAKE    = 40,  /* S -> C: seconds(uint32)         */
     HOP_MSG_DISP_INPUT   = 41,  /* S -> C: vcp(uint16)             */

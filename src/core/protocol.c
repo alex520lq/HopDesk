@@ -7,7 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define HOP_MAX_PAYLOAD (HOP_TEXT_MAX + 256)
+/* 单帧上限：文本 + 文件头 + 文件体。超过这个长度视为坏帧，丢弃重同步。 */
+#define HOP_MAX_PAYLOAD (HOP_FILE_MAX + 1024)
 
 /* ---- 字节序 ---- */
 void hop_put_be16(uint8_t *p, uint16_t v) {

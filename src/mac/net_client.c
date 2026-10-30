@@ -73,6 +73,28 @@ static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
                 }
             }
             break;
+        case HOP_MSG_CLIP_FILE: {
+            /* origin(4) + nlen(2) + name + size(4) + data */
+            uint16_t nlen;
+            uint32_t size;
+            if (len >= 10 && hop_get_be32(p) != HOP_DEV_CLIENT) {
+                nlen = hop_get_be16(p + 4);
+                if (nlen > 0 && nlen <= HOP_NAME_LEN_MAX && 10u + nlen <= len) {
+                    size = hop_get_be32(p + 6 + nlen);
+                    if (size > 0 && size <= HOP_FILE_MAX &&
+                        10u + (uint32_t)nlen + size <= len) {
+                        char *nm = (char *)malloc((size_t)nlen + 1);
+                        if (nm) {
+                            memcpy(nm, p + 6, nlen);
+                            nm[nlen] = '\0';
+                            clipboard_apply_file(nm, p + 10 + nlen, size);
+                            free(nm);
+                        }
+                    }
+                }
+            }
+            break;
+        }
         case HOP_MSG_DISP_WAKE:
             if (len >= 4) disp_wake((int)hop_get_be32(p));
             break;

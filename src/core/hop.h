@@ -69,10 +69,11 @@ typedef enum {
     HOP_MSG_XFER_HELLO   = 50,  /* C -> S: ver(1)                  */
     HOP_MSG_FILE_BEGIN   = 51,  /* S -> C: id(4)+size(8)+mtime(8)+flags(1)
                                  *         +nlen(2)+name+plen(2)+relpath */
-    HOP_MSG_FILE_CHUNK   = 52,  /* S -> C: id(4)+off(8)+len(4)+data */
-    HOP_MSG_FILE_END     = 53,  /* S -> C: id(4)+status(1)          */
+    HOP_MSG_FILE_CHUNK   = 52,  /* 双向: id(4)+off(8)+len(4)+crc(4)+data */
+    HOP_MSG_FILE_END     = 53,  /* 双向: id(4)+status(1)+file_crc(4) */
     HOP_MSG_XFER_DONE    = 54,  /* S -> C: count(4)+total(8)        */
-    HOP_MSG_IMAGE_BEGIN  = 55   /* S -> C: id(4)+w(4)+h(4)+stride(4)+flags(1) */
+    HOP_MSG_IMAGE_BEGIN  = 55,  /* S -> C: id(4)+w(4)+h(4)+stride(4)+flags(1) */
+    HOP_MSG_XFER_ABORT   = 56   /* 双向: batch(4)+reason(1)，收到即中止本批 */
 } hop_msg_type;
 
 /* ---- 鼠标按键 ---- */
@@ -82,6 +83,31 @@ typedef enum {
 
 /* ---- 文件条目标志 ---- */
 #define HOP_FILE_FLAG_DIR    (1u << 0)   /* 空目录占位，无分块 */
+
+/* ---- FILE_END 的 status ---- */
+#define HOP_FILE_OK          0
+#define HOP_FILE_IO_ERROR    1
+#define HOP_FILE_CRC_ERROR   2
+
+/* ---- 数据通道协议版本 ----
+ * v1: FILE_CHUNK = id+off+len+data          FILE_END = id+status
+ * v2: FILE_CHUNK 加 crc(4)，FILE_END 加 file_crc(4)，新增 XFER_ABORT
+ * 两端必须同版本：旧端发来的块在新端会按错位的 CRC 字段解析，
+ * 结果是每块都校验失败。所以连上就先比版本，别让用户对着
+ * "传输一直失败"猜原因。 */
+#define HOP_XFER_PROTO_VER   2
+
+/* ---- XFER_ABORT 的 reason ---- */
+#define HOP_ABORT_CRC        1
+#define HOP_ABORT_DISK       2
+#define HOP_ABORT_TOO_LARGE  3
+#define HOP_ABORT_BAD_PATH   4
+
+/* ---- 图片上限 ----
+ * 接收端必须自己设限：对端声称 100000×100000 就能把内存吃光。
+ * 33 MB 是 4K 截图的裸 BGRA，留到 256 MB 足够任何真实用途。 */
+#define HOP_IMG_MAX_BYTES    (256ull * 1024ull * 1024ull)
+#define HOP_IMG_MAX_SIDE     32768
 
 /* ---- 边缘 ---- */
 typedef enum {
@@ -177,6 +203,10 @@ void hop_put_be64(uint8_t *p, uint64_t v);
 uint16_t hop_get_be16(const uint8_t *p);
 uint32_t hop_get_be32(const uint8_t *p);
 uint64_t hop_get_be64(const uint8_t *p);
+
+/* ---- CRC32（IEEE 802.3，增量式） ---- */
+void     hop_crc32_init(void);
+uint32_t hop_crc32(uint32_t seed, const void *data, size_t len);
 
 #ifdef __cplusplus
 }

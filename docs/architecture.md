@@ -98,10 +98,11 @@ src/
 |---|---|---|
 | XFER_HELLO | C→S | `ver(1)` |
 | FILE_BEGIN | 双向 | `batch(4) id(4) size(8) mtime(8) flags(1) nlen(2) name plen(2) relpath` |
-| FILE_CHUNK | 双向 | `id(4) off(8) len(4) data[len]` |
-| FILE_END | 双向 | `id(4) status(1)` |
+| FILE_CHUNK | 双向 | `id(4) off(8) len(4) crc(4) data[len]` |
+| FILE_END | 双向 | `id(4) status(1) file_crc(4)` |
 | IMAGE_BEGIN | 双向 | `batch(4) id(4) w(4) h(4) stride(4)` |
 | XFER_DONE | 双向 | `batch(4) count(4) total(8)` |
+| XFER_ABORT | 双向 | `batch(4) reason(1)` |
 
 - **目录递归**：每个条目自带相对路径，接收端按路径逐级建目录，
   空目录用 `flags & HOP_FILE_FLAG_DIR` 单独登记。不需要额外的树结构协议。
@@ -110,6 +111,27 @@ src/
 - **分块带 64 位偏移**：接收端用 `SetFilePointerEx` / `lseek` 按偏移写。
   当前是单连接顺序发送，这个字段为将来多连接区间并行预留 —— 每个分块写到
   确定的偏移，天然没有乱序重组问题。
+
+### 传输可靠性
+
+| 关注点 | 做法 |
+|---|---|
+| 单块校验 | 每块带 CRC32（IEEE 802.3，表驱动，~1–2 GB/s）。TCP 的 16 位校验和配合网卡 offload 有漏检可能，GB 级传输漏检一次就是静默损坏 |
+| 整文件校验 | 各块 CRC 再折一次得到 file_crc，随 `FILE_END` 传。它同时覆盖数据、**块顺序**和**偏移**，且不需要把整份文件重读一遍 |
+| 背压 | 写盘队列有界（`RX_Q_SLOTS = 8`）。队列满 → 接收线程阻塞 → `recv` 停止 → TCP 窗口收缩 → 发送端自动减速。内存上界 = 队列深度 × 块大小，与传输总量无关 |
+| 磁盘 I/O 隔离 | 网络线程只做"收包 + 校验 + 入队"，落盘交给独立写线程（同样降级优先级）。文件句柄由写线程独占，避免关文件与写入的竞态 |
+| 尺寸边界 | `FILE_CHUNK` 超出 `FILE_BEGIN` 声明的 size 直接丢弃；`IMAGE_BEGIN` 的 w/h/stride 全部校验，上限 `32768` 边长 / `256 MB` |
+| 发送互斥 | 接收线程出错时要回 `XFER_ABORT`，和发送线程写同一个 socket。锁粒度是**整帧**，不是单次 `send`/`write`，否则两线程交错会把帧字节搅乱。配套设 `SO_SNDTIMEO = 5 s`，避免发送线程卡死时把接收线程一起拖住 |
+
+**尚未实现**：
+
+- **多文件并发**：单连接内文件是串行的。局域网下单条 TCP 流已是瓶颈（千兆
+  11.5 MB/s 的线速远低于磁盘），并发不会提高吞吐；真要提速应该做"并行读盘 +
+  单一发送队列"，而不是多连接。
+- **断点续传**：连接断开后重传整批，没有 chunk 位图持久化。GB 级数据在稳定
+  局域网下不需要；跨不稳定链路才值得做，且需要 `RESUME_QUERY` / `RESUME_STATE`
+  一对消息 + 接收端按 batch 持久化已完成偏移。
+
 
 ### 回环抑制
 

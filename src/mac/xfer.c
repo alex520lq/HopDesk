@@ -141,9 +141,20 @@ static int mkdir_p(const char *path) {
     return 0;
 }
 
+/* $TMPDIR 在 macOS 上带尾部斜杠（/var/folders/…/T/），直接拼 "/HopDesk"
+ * 就得到 "T//HopDesk"。POSIX 下双斜杠无害，但日志和剪贴板里的路径
+ * 会变成两个不同字符串表示同一个文件，排查时容易看花眼。去掉尾斜杠。 */
 static const char *temp_root(void) {
+    static char buf[1024];
     const char *t = getenv("TMPDIR");
-    return (t && *t) ? t : "/tmp";
+    if (!t || !*t) return "/tmp";
+
+    size_t n = strlen(t);
+    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+    memcpy(buf, t, n);
+    buf[n] = '\0';
+    while (n > 1 && buf[n - 1] == '/') buf[--n] = '\0';
+    return buf;
 }
 
 /* 相对路径安全校验：不许绝对路径、不许 .. 作为完整分量。

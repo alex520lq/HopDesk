@@ -33,7 +33,15 @@ typedef struct {
     BOOL  fWide;
 } HOP_DROPFILES;
 
-static int s_suppress;
+/* 程序性写入后的抑制窗口。
+ *
+ * EmptyClipboard + SetClipboardData 会触发**两次** WM_CLIPBOARDUPDATE。
+ * 原来用 s_suppress 计数只挡一次，第二次通知就被当成用户复制广播出去，
+ * 两端互相回环 —— 日志里 clip: text in/out 刷屏，文件剪贴板被文本冲掉，
+ * 用户按粘贴什么也拿不到。用时间窗把整串通知一起吃掉。 */
+static int   s_suppress;
+static DWORD s_suppress_until;
+#define CLIP_SUPPRESS_MS 400
 
 /* 图片上限：4K 截图裸 BGRA 约 33 MB，留到 256 MB 足够，再大就是异常了 */
 #define CLIP_IMG_MAX_BYTES (256u * 1024u * 1024u)
@@ -50,6 +58,7 @@ static int open_retry(HWND hwnd) {
 
 void clip_init(HWND hwnd) {
     s_suppress = 0;
+    s_suppress_until = 0;
     if (!AddClipboardFormatListener(hwnd))
         hop_log(HOP_LOG_ERROR, "AddClipboardFormatListener failed: %lu", GetLastError());
     else
@@ -90,7 +99,13 @@ static void send_drop(HDROP drop, UINT count) {
     }
 
     if (n > 0) {
-        hop_log(HOP_LOG_INFO, "clip: %d path(s) out (first: %ls)", n, paths[0]);
+        /* %ls 交给窄字符 vsnprintf 时按当前 locale 转换，默认 "C" 下遇到
+         * 中文就停在第一个非 ASCII 字节 —— 日志里只剩 "D://Desktop//"，
+         * 排查时看不到到底是哪个文件。显式转 UTF-8 再打。 */
+        char first_utf8[MAX_PATH * 3];
+        WideCharToMultiByte(CP_UTF8, 0, paths[0], -1,
+                            first_utf8, sizeof(first_utf8), NULL, NULL);
+        hop_log(HOP_LOG_INFO, "clip: %d path(s) out (first: %s)", n, first_utf8);
         if (!xfer_submit_paths((const wchar_t *const *)paths, n))
             hop_log(HOP_LOG_WARN, "clip: data channel unavailable, paths dropped");
     }
@@ -163,7 +178,14 @@ static void send_dib(HANDLE h) {
 void clip_on_update(void) {
     HANDLE h;
 
-    if (s_suppress) { s_suppress = 0; return; }   /* 是我们自己写的 */
+    /* 抑制窗口内的所有通知都吃掉。
+     * EmptyClipboard + SetClipboardData 会各触发一次，只挡一次挡不住。 */
+    if (s_suppress || (s_suppress_until &&
+                       (LONG)(GetTickCount() - s_suppress_until) < 0)) {
+        s_suppress = 0;
+        return;
+    }
+    s_suppress_until = 0;
 
     if (!open_retry(g_app.hwnd)) {
         hop_log(HOP_LOG_WARN, "clip: clipboard busy, update skipped");
@@ -247,8 +269,9 @@ void clip_apply_remote(const uint8_t *p, uint32_t len) {
 
     if (open_retry(g_app.hwnd)) {
         if (EmptyClipboard() && SetClipboardData(CF_UNICODETEXT, h)) {
-            s_suppress = 1;      /* 所有权归系统，不再 GlobalFree */
-            h = NULL;
+            s_suppress = 1;
+            s_suppress_until = GetTickCount() + CLIP_SUPPRESS_MS;
+            h = NULL;   /* 所有权归系统，不再 GlobalFree */
             hop_log(HOP_LOG_INFO, "clip: text in %u bytes", len - 4);
         }
         CloseClipboard();
@@ -289,6 +312,7 @@ void clip_apply_remote_paths(const wchar_t *const *paths, int n) {
     if (open_retry(g_app.hwnd)) {
         if (EmptyClipboard() && SetClipboardData(CF_HDROP, h)) {
             s_suppress = 1;
+            s_suppress_until = GetTickCount() + CLIP_SUPPRESS_MS;
             hop_log(HOP_LOG_INFO, "clip: %d path(s) in (first: %ls)", n, paths[0]);
             CloseClipboard();
             return;
@@ -334,6 +358,7 @@ void clip_apply_remote_image(const uint8_t *bgra, int w, int h, int stride) {
     if (open_retry(g_app.hwnd)) {
         if (EmptyClipboard() && SetClipboardData(CF_DIB, gh)) {
             s_suppress = 1;
+            s_suppress_until = GetTickCount() + CLIP_SUPPRESS_MS;
             hop_log(HOP_LOG_INFO, "clip: image in %dx%d", w, h);
             CloseClipboard();
             return;

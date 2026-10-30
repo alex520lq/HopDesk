@@ -1436,6 +1436,15 @@ static DWORD WINAPI listen_thread(LPVOID arg) {
 
         hop_decoder_reset(dec);
         rx_reset();
+
+        /* 对称握手：Mac 端（客户端）连上后会发 HELLO，服务端这边原来只
+         * 接收不发，于是 Mac 端永远打不出 "peer data channel ready"，
+         * 版本不一致时也发现不了 —— 一条静默的协议漂移。两边都发。 */
+        {
+            uint8_t hello = HOP_XFER_PROTO_VER;
+            send_small(c, HOP_MSG_XFER_HELLO, &hello, 1);
+        }
+
         hop_log(HOP_LOG_INFO, "xfer: data channel connected");
 
         char buf[65536];

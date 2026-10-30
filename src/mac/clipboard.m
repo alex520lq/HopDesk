@@ -197,12 +197,19 @@ void clipboard_apply_paths(const char *const *paths, int n) {
     dispatch_async(dispatch_get_main_queue(), ^{
         NSPasteboard *pb = [NSPasteboard generalPasteboard];
         NSMutableArray<NSURL *> *urls = [NSMutableArray arrayWithCapacity:[strs count]];
-        for (NSString *p in strs) [urls addObject:[NSURL fileURLWithPath:p]];
+        for (NSString *p in strs) {
+            NSURL *u = [NSURL fileURLWithPath:p];
+            hop_log(HOP_LOG_INFO, "clip: url(%s) -> %s",
+                    [p UTF8String], u ? "ok" : "NULL");
+            if (u) [urls addObject:u];
+        }
 
         [pb clearContents];
-        [pb writeObjects:urls];
+        BOOL ok = [pb writeObjects:urls];
         s_last_change = [pb changeCount];   /* 抑制回传 */
-        hop_log(HOP_LOG_INFO, "clip: %lu path(s) in", (unsigned long)[urls count]);
+        hop_log(HOP_LOG_INFO, "clip: %lu path(s) in, ok=%d types=%lu",
+                (unsigned long)[urls count], (int)ok,
+                (unsigned long)[[pb types] count]);
     });
 }
 

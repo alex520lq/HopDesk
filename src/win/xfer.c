@@ -114,7 +114,11 @@ static void status_end(int phase,const char *detail){
  }
  ReleaseSRWLockExclusive(&s_status_lock);
 }
-void xfer_get_status(hop_xfer_status *out){if(!out)return;AcquireSRWLockShared(&s_status_lock);*out=s_status;ReleaseSRWLockShared(&s_status_lock);}
+void xfer_get_status(hop_xfer_status *out){
+ if(!out)return;uint32_t queued=0;
+ EnterCriticalSection(&s_x.lock);for(xfer_job *j=s_x.q_head;j;j=j->next)queued++;LeaveCriticalSection(&s_x.lock);
+ AcquireSRWLockShared(&s_status_lock);*out=s_status;out->queued_count=queued;ReleaseSRWLockShared(&s_status_lock);
+}
 static void status_set_files(const xfer_entry *entries,int n){
  AcquireSRWLockExclusive(&s_status_lock);
  s_file_count=n>HOP_XFER_FILE_LIMIT?HOP_XFER_FILE_LIMIT:n;

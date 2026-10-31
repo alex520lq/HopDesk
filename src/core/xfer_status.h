@@ -29,6 +29,23 @@ typedef struct {
     char detail[HOP_XFER_STATUS_DETAIL];
 } hop_xfer_status;
 
+#define HOP_XFER_FILE_LIMIT 8192
+typedef enum {
+    HOP_XFER_FILE_QUEUED = 0,
+    HOP_XFER_FILE_SENDING,
+    HOP_XFER_FILE_VERIFYING,
+    HOP_XFER_FILE_COMPLETED,
+    HOP_XFER_FILE_FAILED
+} hop_xfer_file_phase;
+typedef struct {
+    uint32_t index;
+    int phase;
+    uint32_t attempts;
+    uint64_t bytes_done;
+    uint64_t bytes_total;
+    char relative_path[1024];
+} hop_xfer_file_status;
+
 #define HOP_XFER_HISTORY_LIMIT 100
 typedef struct {
     uint32_t batch;

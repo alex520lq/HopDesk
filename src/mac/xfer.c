@@ -186,7 +186,7 @@ int xfer_get_files(hop_xfer_file_status *out,int capacity){
 int xfer_retry_file(int index){
  char *path=NULL;
  pthread_mutex_lock(&s_status_lock);
- if(index>=0&&index<s_file_count&&s_files[index].phase==HOP_XFER_FILE_FAILED&&s_retry_paths[index])
+ if(index>=0&&index<s_file_count&&s_files[index].phase==HOP_XFER_FILE_FAILED&&!s_files[index].is_directory&&s_retry_paths[index])
   path=strdup(s_retry_paths[index]);
  pthread_mutex_unlock(&s_status_lock);
  if(!path)return 0;

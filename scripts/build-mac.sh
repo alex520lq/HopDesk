@@ -1,34 +1,60 @@
 #!/bin/sh
-# =====================================================================
-#  HopDesk - macOS 构建脚本
-#
-#  用法：  sh scripts/build-mac.sh
-#
-#  阶段 1 源码就位后即可运行；当前为立项骨架。
-#  ObjC 仅用于状态栏与剪贴板。
-# =====================================================================
-set -e
+# Build a native macOS application bundle for Finder/Dock launch.
+set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/build"
-mkdir -p "$BUILD"
+APP="$BUILD/HopDesk.app"
+CONTENTS="$APP/Contents"
+MACOS="$CONTENTS/MacOS"
+RESOURCES="$CONTENTS/Resources"
 
-CORE=$(ls "$ROOT"/src/core/*.c 2>/dev/null || true)
-MAC_C=$(ls "$ROOT"/src/mac/*.c 2>/dev/null || true)
-MAC_M=$(ls "$ROOT"/src/mac/*.m 2>/dev/null || true)
+rm -rf "$APP"
+mkdir -p "$MACOS" "$RESOURCES"
 
+CORE=$(find "$ROOT/src/core" -maxdepth 1 -name '*.c' -print | sort)
+MAC_C=$(find "$ROOT/src/mac" -maxdepth 1 -name '*.c' -print | sort)
+MAC_M=$(find "$ROOT/src/mac" -maxdepth 1 -name '*.m' -print | sort)
 if [ -z "$CORE$MAC_C$MAC_M" ]; then
-    echo "暂无源文件（阶段 1 就位后再构建）。"
-    exit 0
+    echo "No HopDesk source files found." >&2
+    exit 1
 fi
 
 INC="$ROOT/src/core"
 FRAMEWORKS="-framework Cocoa -framework ApplicationServices -framework CoreGraphics -framework IOKit"
-
-clang -O2 -Wall -Wextra -fobjc-arc \
-    -I "$INC" \
-    -o "$BUILD/hopdesk" \
+# shellcheck disable=SC2086
+clang -O2 -Wall -Wextra -fobjc-arc -I "$INC" \
+    -o "$MACOS/HopDesk" \
     $CORE $MAC_C $MAC_M \
     $FRAMEWORKS
 
-echo "构建成功: $BUILD/hopdesk"
+cat > "$CONTENTS/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key><string>HopDesk</string>
+    <key>CFBundleIdentifier</key><string>com.hopdesk.app</string>
+    <key>CFBundleName</key><string>HopDesk</string>
+    <key>CFBundleDisplayName</key><string>HopDesk</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleVersion</key><string>0.5.0</string>
+    <key>CFBundleShortVersionString</key><string>0.5.0</string>
+    <key>LSUIElement</key><true/>
+    <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+PLIST
+
+# Ad-hoc signing is free and gives the bundle a consistent local signature.
+# It is not Developer ID signing and does not notarize the app.
+codesign --force --deep --sign - "$APP"
+codesign --verify --deep --strict "$APP"
+plutil -lint "$CONTENTS/Info.plist"
+test -x "$MACOS/HopDesk"
+
+# Keep a standalone binary for developer diagnostics, but publish the .app ZIP.
+cp "$MACOS/HopDesk" "$BUILD/hopdesk"
+ditto -c -k --sequesterRsrc --keepParent "$APP" "$BUILD/HopDesk-macOS.zip"
+echo "Built app: $APP"
+echo "Built archive: $BUILD/HopDesk-macOS.zip"

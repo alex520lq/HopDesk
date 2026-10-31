@@ -1168,6 +1168,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
             s_rx.cur_path = strdup(path);
             s_rx.cur_size = size;
+            status_set_name(relz);
 
             if (s_rx.cur_is_dir) {
                 mkdir_p(path);
@@ -1281,6 +1282,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 }
                 memcpy(s_rx.img + off, data, n);
                 if (need > s_rx.img_len) s_rx.img_len = need;
+                status_add_bytes(n);
                 break;
             }
 
@@ -1302,6 +1304,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             if (!t.data) return;
             memcpy(t.data, data, n);
             if (!wq_push(&t)) free(t.data);
+            else status_add_bytes(n);
 
             /* 文件 CRC 折入本块 CRC：既覆盖数据（块 CRC 已验证），
              * 也覆盖顺序与偏移，且不需要把整份文件重算一遍 */

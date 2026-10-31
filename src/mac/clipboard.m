@@ -185,6 +185,48 @@ void clipboard_init(void) {
 
 /* ---- 接收（都在主队列执行） ---- */
 
+/* Retry transient pasteboard write failures, but never overwrite a newer local
+ * clipboard change while waiting. expected_count guards delayed retries. */
+static void apply_objects_retry(NSArray *objects, NSString *kind,
+                                NSUInteger attempt, NSInteger expected_count) {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            apply_objects_retry(objects, kind, attempt, expected_count);
+        });
+        return;
+    }
+
+    NSPasteboard *pb = [NSPasteboard generalPasteboard];
+    if (attempt > 0 && [pb changeCount] != expected_count) {
+        hop_log(HOP_LOG_INFO, "clip: %s apply retry cancelled; clipboard changed locally",
+                [kind UTF8String]);
+        return;
+    }
+
+    [pb clearContents];
+    s_last_change = [pb changeCount]; /* suppress the clear notification */
+    BOOL ok = [pb writeObjects:objects];
+    if (ok) {
+        s_last_change = [pb changeCount];
+        hop_log(HOP_LOG_INFO, "clip: %s in; write succeeded on attempt %lu",
+                [kind UTF8String], (unsigned long)(attempt + 1));
+        return;
+    }
+
+    if (attempt < 10) {
+        NSInteger expected = [pb changeCount];
+        hop_log(HOP_LOG_WARN, "clip: %s pasteboard write failed; retry %lu/10",
+                [kind UTF8String], (unsigned long)(attempt + 1));
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 150ull * NSEC_PER_MSEC),
+                       dispatch_get_main_queue(), ^{
+            apply_objects_retry(objects, kind, attempt + 1, expected);
+        });
+    } else {
+        hop_log(HOP_LOG_ERROR, "clip: %s pasteboard write failed after retries",
+                [kind UTF8String]);
+    }
+}
+
 void clipboard_apply(const char *utf8) {
     NSString *s;
 
@@ -192,13 +234,7 @@ void clipboard_apply(const char *utf8) {
     s = [NSString stringWithUTF8String:utf8];
     if (!s) return;
 
-    dispatch_async(dispatch_get_main_queue(), ^{
-        NSPasteboard *pb = [NSPasteboard generalPasteboard];
-        [pb clearContents];
-        [pb setString:s forType:NSPasteboardTypeString];
-        s_last_change = [pb changeCount];   /* 抑制回传 */
-        hop_log(HOP_LOG_INFO, "clip: text in %lu bytes", (unsigned long)[s length]);
-    });
+    apply_objects_retry(@[ s ], @"text", 0, -1);
 }
 
 /* 一批文件/目录落盘完毕：把顶层条目挂到剪贴板，Finder 里 Cmd+V 即复制 */
@@ -212,23 +248,12 @@ void clipboard_apply_paths(const char *const *paths, int n) {
     }
     if ([strs count] == 0) return;
 
-    dispatch_async(dispatch_get_main_queue(), ^{
-        NSPasteboard *pb = [NSPasteboard generalPasteboard];
-        NSMutableArray<NSURL *> *urls = [NSMutableArray arrayWithCapacity:[strs count]];
-        for (NSString *p in strs) {
-            NSURL *u = [NSURL fileURLWithPath:p];
-            hop_log(HOP_LOG_INFO, "clip: url(%s) -> %s",
-                    [p UTF8String], u ? "ok" : "NULL");
-            if (u) [urls addObject:u];
-        }
-
-        [pb clearContents];
-        BOOL ok = [pb writeObjects:urls];
-        s_last_change = [pb changeCount];   /* 抑制回传 */
-        hop_log(HOP_LOG_INFO, "clip: %lu path(s) in, ok=%d types=%lu",
-                (unsigned long)[urls count], (int)ok,
-                (unsigned long)[[pb types] count]);
-    });
+    NSMutableArray<NSURL *> *urls = [NSMutableArray arrayWithCapacity:[strs count]];
+    for (NSString *p in strs) {
+        NSURL *u = [NSURL fileURLWithPath:p];
+        if (u) [urls addObject:u];
+    }
+    if ([urls count] > 0) apply_objects_retry(urls, @"paths", 0, -1);
 }
 
 /* 收到图片：裸 BGRA 自上而下 -> NSImage -> 剪贴板 */
@@ -255,10 +280,6 @@ void clipboard_apply_image(const uint8_t *bgra, int w, int h, int stride) {
                                                   size:NSMakeSize(w, h)];
         CGImageRelease(img);
 
-        NSPasteboard *pb = [NSPasteboard generalPasteboard];
-        [pb clearContents];
-        [pb writeObjects:@[ ns ]];
-        s_last_change = [pb changeCount];   /* 抑制回传 */
-        hop_log(HOP_LOG_INFO, "clip: image in %dx%d", w, h);
+        apply_objects_retry(@[ ns ], @"image", 0, -1);
     });
 }

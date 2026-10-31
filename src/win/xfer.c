@@ -1228,13 +1228,13 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 break;
             }
 
+            status_set_name(relz);
             wchar_t *path = rx_path_for(relz);
             free(relz);
             if (!path) { s_rx.cur_fail = HOP_FILE_ACK_BADPATH; break; }
 
             s_rx.cur_path = path;
             s_rx.cur_size = size;
-            status_set_name(relz);
 
             if (s_rx.cur_is_dir) {
                 ensure_dirs(path);

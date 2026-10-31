@@ -45,6 +45,7 @@ static DWORD s_suppress_until;
 
 /* Latest remote clipboard payload survives temporary clipboard contention.
  * Ownership of HGLOBAL transfers here; Windows owns it only after SetClipboardData. */
+static int open_retry(HWND hwnd); /* used by pending remote-clipboard writer */
 static HGLOBAL s_pending_global;
 static UINT s_pending_format;
 

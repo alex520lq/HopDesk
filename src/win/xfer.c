@@ -62,6 +62,67 @@ static int s_file_count;
 static int s_current_file = -1;
 static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];
 static int s_history_count;
+
+typedef struct {
+    char magic[8];
+    uint32_t version;
+    uint32_t record_size;
+    uint32_t count;
+} hop_history_disk_header;
+static wchar_t s_history_path[MAX_PATH];
+
+static int history_prepare_path(void) {
+    wchar_t base[MAX_PATH],directory[MAX_PATH];
+    DWORD n=GetEnvironmentVariableW(L"LOCALAPPDATA",base,MAX_PATH);
+    if(!n||n>=MAX_PATH)return 0;
+    if(swprintf(directory,MAX_PATH,L"%ls\\HopDesk",base)<0||
+       swprintf(s_history_path,MAX_PATH,L"%ls\\transfer-history.bin",directory)<0)return 0;
+    if(!CreateDirectoryW(directory,NULL)&&GetLastError()!=ERROR_ALREADY_EXISTS)return 0;
+    return 1;
+}
+static void history_load(void) {
+    if(!history_prepare_path())return;
+    FILE *f=_wfopen(s_history_path,L"rb");if(!f)return;
+    hop_history_disk_header h;memset(&h,0,sizeof(h));
+    if(fread(&h,sizeof(h),1,f)==1&&memcmp(h.magic,"HOPXHST1",8)==0&&h.version==1&&
+       h.record_size==sizeof(hop_xfer_history_entry)&&h.count<=HOP_XFER_HISTORY_LIMIT){
+        hop_xfer_history_entry rows[HOP_XFER_HISTORY_LIMIT];memset(rows,0,sizeof(rows));
+        size_t n=fread(rows,sizeof(rows[0]),h.count,f);
+        if(n==h.count){
+            for(uint32_t i=0;i<h.count;i++){
+                rows[i].name[sizeof(rows[i].name)-1]=0;
+                rows[i].detail[sizeof(rows[i].detail)-1]=0;
+                if(rows[i].direction<HOP_XFER_DIR_SEND||rows[i].direction>HOP_XFER_DIR_RECEIVE||
+                   rows[i].phase<HOP_XFER_COMPLETED||rows[i].phase>HOP_XFER_CANCELLED){n=0;break;}
+            }
+            if(n==h.count){
+                AcquireSRWLockExclusive(&s_status_lock);
+                memcpy(s_history,rows,n*sizeof(rows[0]));s_history_count=(int)n;
+                ReleaseSRWLockExclusive(&s_status_lock);
+            }
+        }
+    }
+    fclose(f);
+}
+static void history_save(void) {
+    if(!s_history_path[0]&&!history_prepare_path())return;
+    hop_xfer_history_entry rows[HOP_XFER_HISTORY_LIMIT];int count;
+    AcquireSRWLockShared(&s_status_lock);
+    count=s_history_count;
+    if(count>HOP_XFER_HISTORY_LIMIT)count=HOP_XFER_HISTORY_LIMIT;
+    memcpy(rows,s_history,(size_t)count*sizeof(rows[0]));
+    ReleaseSRWLockShared(&s_status_lock);
+    wchar_t temp[MAX_PATH];
+    if(swprintf(temp,MAX_PATH,L"%ls.tmp",s_history_path)<0)return;
+    FILE *f=_wfopen(temp,L"wb");if(!f)return;
+    hop_history_disk_header h={{'H','O','P','X','H','S','T','1'},1,(uint32_t)sizeof(rows[0]),(uint32_t)count};
+    int ok=fwrite(&h,sizeof(h),1,f)==1&&fwrite(rows,sizeof(rows[0]),(size_t)count,f)==(size_t)count;
+    if(ok)ok=fflush(f)==0&&_commit(_fileno(f))==0;
+    if(fclose(f)!=0)ok=0;
+    if(ok){if(!MoveFileExW(temp,s_history_path,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))DeleteFileW(temp);}
+    else DeleteFileW(temp);
+}
+
 static void status_begin(uint32_t batch,int direction,uint32_t files,uint64_t bytes,const char *name,int phase){
  AcquireSRWLockExclusive(&s_status_lock);memset(&s_status,0,sizeof(s_status));
  for(int i=0;i<HOP_XFER_FILE_LIMIT;i++){free(s_retry_paths[i]);s_retry_paths[i]=NULL;}
@@ -114,6 +175,7 @@ static void status_end(int phase,const char *detail){
   if(s_history_count<HOP_XFER_HISTORY_LIMIT)s_history_count++;
  }
  ReleaseSRWLockExclusive(&s_status_lock);
+ history_save();
 }
 void xfer_get_status(hop_xfer_status *out);
 static void status_set_files(const xfer_entry *entries,int n){
@@ -1705,6 +1767,7 @@ static DWORD WINAPI listen_thread(LPVOID arg) {
 /* ---------------- 对外接口 ---------------- */
 
 int xfer_init(HWND hwnd, const hop_config *cfg) {
+    history_load();
     memset(&s_x, 0, sizeof(s_x));
     s_x.hwnd = hwnd;
     s_x.cfg = *cfg;

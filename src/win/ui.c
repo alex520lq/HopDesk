@@ -28,6 +28,7 @@
 static HWND s_xfer_window, s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_progress, s_xfer_history, s_xfer_files;
 static hop_xfer_file_status *s_xfer_file_snapshot;
 static int s_collapsed_folders[HOP_XFER_FILE_LIMIT];
+static uint32_t s_collapsed_batch;
 static uint32_t s_history_batch;
 static uint32_t s_notified_batch;
 static int s_notified_phase;
@@ -55,6 +56,10 @@ static void xfer_window_refresh(void) {
     hop_xfer_status st; memset(&st, 0, sizeof(st)); xfer_get_status(&st);
     xfer_notify_if_terminal(&st);
     if (s_xfer_files) {
+        if (s_collapsed_batch != st.batch) {
+            memset(s_collapsed_folders, 0, sizeof(s_collapsed_folders));
+            s_collapsed_batch = st.batch;
+        }
         if (!s_xfer_file_snapshot) s_xfer_file_snapshot = (hop_xfer_file_status *)calloc(HOP_XFER_FILE_LIMIT, sizeof(*s_xfer_file_snapshot));
         int fileCount = s_xfer_file_snapshot ? xfer_get_files(s_xfer_file_snapshot, HOP_XFER_FILE_LIMIT) : 0;
         static uint64_t lastFileSignature = 0;

@@ -98,6 +98,23 @@ static struct {
  * socket 写。一次 send_all 内部可能分多次 write，两线程交错就会把
  * 帧字节搅在一起 —— 锁的粒度必须是"整帧"，不是"单次 write"。 */
 static pthread_mutex_t s_txlock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t s_status_lock = PTHREAD_MUTEX_INITIALIZER;
+static hop_xfer_status s_status;
+static void status_begin(uint32_t batch,int direction,uint32_t files,uint64_t bytes,const char *name,int phase){
+ pthread_mutex_lock(&s_status_lock); memset(&s_status,0,sizeof(s_status));
+ s_status.batch=batch;s_status.active=1;s_status.direction=direction;s_status.phase=phase;
+ s_status.files_total=files;s_status.bytes_total=bytes;if(name)snprintf(s_status.name,sizeof(s_status.name),"%s",name);
+ snprintf(s_status.detail,sizeof(s_status.detail),"%s",direction==HOP_XFER_DIR_SEND?"Sending to peer":"Receiving from peer");
+ pthread_mutex_unlock(&s_status_lock);
+}
+static void status_progress(uint64_t bytes,uint32_t files_done,const char *name,int phase){
+ pthread_mutex_lock(&s_status_lock);if(s_status.active){s_status.bytes_done=bytes;s_status.files_done=files_done;
+ if(name)snprintf(s_status.name,sizeof(s_status.name),"%s",name);s_status.phase=phase;}pthread_mutex_unlock(&s_status_lock);
+}
+static void status_end(int phase,const char *detail){pthread_mutex_lock(&s_status_lock);s_status.active=0;s_status.phase=phase;
+ if(detail)snprintf(s_status.detail,sizeof(s_status.detail),"%s",detail);pthread_mutex_unlock(&s_status_lock);}
+void xfer_get_status(hop_xfer_status *out){if(!out)return;pthread_mutex_lock(&s_status_lock);*out=s_status;pthread_mutex_unlock(&s_status_lock);}
+
 
 static int send_all(int fd, const void *buf, size_t len) {
     const char *p = (const char *)buf;
@@ -569,6 +586,8 @@ static int run_job(int fd, uint8_t *tx, xf_job *j) {
 
         if (st == HOP_FILE_ACK_OK) {
             j->ok++;
+            uint64_t bytes_done=0;for(int si=0;si<=j->next_i;si++)bytes_done+=j->e[si].size;
+            status_progress(bytes_done,(uint32_t)j->ok,e->name,HOP_XFER_SENDING);
         } else {
             hop_log(HOP_LOG_ERROR, "xfer: giving up on %s after %d attempt(s) (status %d)",
                     e->rel, tries + 1, st);
@@ -675,6 +694,11 @@ static void *send_thread(void *arg) {
             continue;
         }
         if (!j) continue;
+        uint64_t total_bytes=0;
+        if (!j->is_image) for(int si=0;si<j->n;si++) total_bytes+=j->e[si].size;
+        else total_bytes=(uint64_t)j->stride*j->h;
+        status_begin(j->batch,HOP_XFER_DIR_SEND,(uint32_t)j->n,total_bytes,
+                     j->is_image?"Image":j->e[0].name,HOP_XFER_SENDING);
 
         pthread_mutex_lock(&s_x.slock);
         fd = s_x.sock;
@@ -718,6 +742,10 @@ static void *send_thread(void *arg) {
                         j->batch, j->ok, j->n);
             if (fd >= 0) send_done(fd, j);
         }
+        if (r == JOB_DONE) status_end(j->ok==j->n?HOP_XFER_COMPLETED:HOP_XFER_PARTIAL,
+                                      j->ok==j->n?"Transfer completed":"Some files failed");
+        else if (r == JOB_CANCELLED) status_end(HOP_XFER_CANCELLED,"Cancelled");
+        else if (r == JOB_PEER_ABORT) status_end(HOP_XFER_FAILED,"Peer aborted transfer");
         job_free(j);
     }
 
@@ -1642,6 +1670,11 @@ int xfer_submit_paths(const char *const *paths, int n) {
 
     hop_log(HOP_LOG_INFO, "xfer: queued batch %u, %d entries, %.1f MB",
             j->batch, j->n, (double)total / 1048576.0);
+    pthread_mutex_lock(&s_status_lock);
+    if (!s_status.active) { s_status.batch=j->batch;s_status.active=1;s_status.direction=HOP_XFER_DIR_SEND;
+      s_status.phase=HOP_XFER_QUEUED;s_status.files_total=(uint32_t)j->n;s_status.bytes_total=total;
+      snprintf(s_status.name,sizeof(s_status.name),"%s",paths[0]);snprintf(s_status.detail,sizeof(s_status.detail),"Queued"); }
+    pthread_mutex_unlock(&s_status_lock);
 
     return submit(j);
 }

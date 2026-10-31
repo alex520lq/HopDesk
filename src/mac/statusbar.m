@@ -51,7 +51,7 @@ static HopController *s_ctrl;
 static NSWindow *s_transferWindow;
 static NSTextField *s_transferTitle, *s_transferDetail, *s_transferCounts;
 static NSProgressIndicator *s_transferProgress;
-static NSTextView *s_transferHistory;
+static NSTextView *s_transferHistory, *s_transferFiles;
 static uint32_t s_historyBatch;
 static uint32_t s_notifiedBatch;
 static int s_notifiedPhase;
@@ -179,6 +179,24 @@ static void transfer_window_refresh(void) {
     if (!s_transferWindow) return;
     hop_xfer_status st; memset(&st, 0, sizeof(st)); xfer_get_status(&st);
     transfer_notify_if_terminal(&st);
+    hop_xfer_file_status files[HOP_XFER_FILE_LIMIT];
+    int fileCount = xfer_get_files(files, HOP_XFER_FILE_LIMIT);
+    if (s_transferFiles) {
+        NSMutableString *fileRows = [NSMutableString string];
+        for (int i = 0; i < fileCount; ++i) {
+            NSString *path = [NSString stringWithUTF8String:files[i].relative_path] ?: @"(未知文件)";
+            NSUInteger depth = [[path componentsSeparatedByString:@"/"] count] - 1;
+            NSString *indent = [@"" stringByPaddingToLength:MIN(depth * 2, 24) withString:@" " startingAtIndex:0];
+            NSString *state = files[i].phase == HOP_XFER_FILE_COMPLETED ? @"完成" :
+                              files[i].phase == HOP_XFER_FILE_FAILED ? @"失败" :
+                              files[i].phase == HOP_XFER_FILE_SENDING ? @"传输中" :
+                              files[i].phase == HOP_XFER_FILE_VERIFYING ? @"校验中" : @"排队中";
+            NSString *kind = files[i].is_directory ? @"📁" : @"📄";
+            [fileRows appendFormat:@"%@%@ %@  %llu/%llu B  %@\n", indent, kind, path,
+                (unsigned long long)files[i].bytes_done, (unsigned long long)files[i].bytes_total, state];
+        }
+        s_transferFiles.string = fileRows.length ? fileRows : @"当前没有文件明细";
+    }
     hop_xfer_history_entry history[HOP_XFER_HISTORY_LIMIT];
     int historyCount = xfer_get_history(history, HOP_XFER_HISTORY_LIMIT);
     if (s_transferHistory && historyCount > 0 && s_historyBatch != history[0].batch) {
@@ -224,26 +242,31 @@ static void transfer_window_refresh(void) {
 void statusbar_show_transfers(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!s_transferWindow) {
-            s_transferWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,620,430)
+            s_transferWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,620,620)
                 styleMask:(NSWindowStyleMaskTitled|NSWindowStyleMaskClosable)
                 backing:NSBackingStoreBuffered defer:NO];
             s_transferWindow.title = @"HopDesk · 传输管理器";
             NSView *v = s_transferWindow.contentView;
-            s_transferTitle = transfer_label(@"暂无传输任务", NSMakeRect(20,390,580,22), 15);
-            s_transferDetail = transfer_label(@"等待文件传输", NSMakeRect(20,360,580,20), 12);
-            s_transferCounts = transfer_label(@"文件 0 / 0    数据 0 B / 0 B", NSMakeRect(20,335,580,20), 12);
-            s_transferProgress = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(20,310,580,12)];
+            s_transferTitle = transfer_label(@"暂无传输任务", NSMakeRect(20,580,580,22), 15);
+            s_transferDetail = transfer_label(@"等待文件传输", NSMakeRect(20,550,580,20), 12);
+            s_transferCounts = transfer_label(@"文件 0 / 0    数据 0 B / 0 B", NSMakeRect(20,525,580,20), 12);
+            s_transferProgress = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(20,500,580,12)];
             s_transferProgress.minValue=0; s_transferProgress.maxValue=100; s_transferProgress.indeterminate=NO;
-            NSScrollView *historyScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(20,55,580,240)];
+            NSScrollView *fileScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(20,255,580,220)];
+            fileScroll.hasVerticalScroller = YES;
+            s_transferFiles = [[NSTextView alloc] initWithFrame:NSMakeRect(0,0,560,200)];
+            s_transferFiles.editable = NO; s_transferFiles.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+            fileScroll.documentView = s_transferFiles;
+            NSScrollView *historyScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(20,55,580,180)];
             historyScroll.hasVerticalScroller = YES;
-            s_transferHistory = [[NSTextView alloc] initWithFrame:NSMakeRect(0,0,560,220)];
+            s_transferHistory = [[NSTextView alloc] initWithFrame:NSMakeRect(0,0,560,160)];
             s_transferHistory.editable = NO; s_transferHistory.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
             historyScroll.documentView = s_transferHistory;
             NSButton *cancel = [[NSButton alloc] initWithFrame:NSMakeRect(500,12,100,28)];
             cancel.title=@"取消传输"; cancel.bezelStyle=NSBezelStyleRounded;
             cancel.target=s_ctrl; cancel.action=@selector(doCancelXfer:);
             [v addSubview:s_transferTitle]; [v addSubview:s_transferDetail];
-            [v addSubview:s_transferCounts]; [v addSubview:s_transferProgress]; [v addSubview:historyScroll]; [v addSubview:cancel];
+            [v addSubview:s_transferCounts]; [v addSubview:s_transferProgress]; [v addSubview:fileScroll]; [v addSubview:historyScroll]; [v addSubview:cancel];
             [NSTimer scheduledTimerWithTimeInterval:0.4 repeats:YES block:^(NSTimer *timer) {
                 (void)timer; transfer_window_refresh();
             }];

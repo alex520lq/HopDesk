@@ -1071,7 +1071,6 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             uint64_t size = msg.size;
             uint32_t flags = msg.flags;
             uint32_t plen = msg.relpath_len;
-            uint32_t nlen = msg.name_len;
 
             rx_begin_batch(batch);
             if (!s_rx.active) return;
@@ -1096,11 +1095,6 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             memcpy(rel, msg.relpath, plen);
             rel[plen] = '\0';
 
-            if (!hop_xfer_relpath_safe(rel)) {
-                hop_log(HOP_LOG_WARN, "xfer: unsafe rel path rejected: %s", rel);
-                s_rx.cur_fail = HOP_FILE_ACK_BADPATH;   /* 单个文件的问题，别拖垮整批 */
-                break;
-            }
 
             char path[4096];
             snprintf(path, sizeof(path), "%s/%s", s_rx.dir, rel);

@@ -10,6 +10,7 @@
 
 #define WM_APP_TRAY    (WM_APP + 3)
 #define WM_APP_STATE   (WM_APP + 4)   /* 状态变化，刷新 UI */
+#define IDT_CLIP_RETRY 3              /* 剪贴板读写/发送延迟重试 */
 
 /* 切到 Mac 显示时，先唤醒再切源；这两步之间要等一会儿 */
 #define IDT_DISP       1
@@ -48,6 +49,7 @@ void kbd_release_all(void);        /* 交还键鼠时松开对端仍按着的键
 void clip_init(HWND hwnd);
 void clip_shutdown(HWND hwnd);
 void clip_on_update(void);                              /* WM_CLIPBOARDUPDATE */
+void clip_retry_pending(void);                          /* WM_TIMER(IDT_CLIP_RETRY) */
 void clip_apply_remote(const uint8_t *p, uint32_t len); /* 收到 CLIP_TEXT */
 /* 数据通道收完一批后回调：把落盘的顶层条目挂到剪贴板 */
 void clip_apply_remote_paths(const wchar_t *const *paths, int n);

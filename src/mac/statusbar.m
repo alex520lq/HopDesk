@@ -274,8 +274,8 @@ static void transfer_window_refresh(void) {
                           st.direction == HOP_XFER_DIR_RECEIVE ? @"接收" : @"";
     s_transferDetail.stringValue = [NSString stringWithFormat:@"%@ · %@ · %@",
         direction, phase, st.detail[0] ? [NSString stringWithUTF8String:st.detail] : @""];
-    s_transferCounts.stringValue = [NSString stringWithFormat:@"文件 %u / %u    数据 %@ / %@",
-        st.files_done, st.files_total,
+    s_transferCounts.stringValue = [NSString stringWithFormat:@"文件 %u / %u    排队 %u    数据 %@ / %@",
+        st.files_done, st.files_total, st.queued_count,
         [NSByteCountFormatter stringFromByteCount:(long long)st.bytes_done countStyle:NSByteCountFormatterCountStyleFile],
         [NSByteCountFormatter stringFromByteCount:(long long)st.bytes_total countStyle:NSByteCountFormatterCountStyleFile]];
     s_transferProgress.doubleValue = st.bytes_total ? MIN(100.0, 100.0 * (double)st.bytes_done / (double)st.bytes_total) : (st.active ? 0 : 100);

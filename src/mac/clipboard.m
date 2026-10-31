@@ -33,12 +33,12 @@ static dispatch_source_t s_timer;
 
 /* ---- 发送 ---- */
 
-static void send_paths(NSArray<NSURL *> *urls) {
+static BOOL send_paths(NSArray<NSURL *> *urls) {
     NSUInteger n = [urls count];
-    if (n == 0 || n > 256) return;
+    if (n == 0 || n > 256) return NO;
 
     const char **paths = (const char **)calloc(n, sizeof(char *));
-    if (!paths) return;
+    if (!paths) return NO;
 
     int k = 0;
     for (NSURL *u in urls) {
@@ -46,34 +46,36 @@ static void send_paths(NSArray<NSURL *> *urls) {
         if (p && *p) paths[k++] = p;
     }
 
+    BOOL ok = NO;
     if (k > 0) {
         hop_log(HOP_LOG_INFO, "clip: %d path(s) out (first: %s)", k, paths[0]);
-        if (!xfer_submit_paths(paths, k))
-            hop_log(HOP_LOG_WARN, "clip: data channel unavailable, paths dropped");
+        ok = xfer_submit_paths(paths, k) ? YES : NO;
+        if (!ok) hop_log(HOP_LOG_WARN, "clip: paths not queued; will retry");
     }
     free(paths);
+    return ok;
 }
 
 /* NSImage -> 自上而下 BGRA。用 CGBitmapContext 明确指定字节序，
  * 不依赖 NSBitmapImageRep 的默认通道顺序。 */
-static void send_image(NSImage *img) {
-    if (!img) return;
+static BOOL send_image(NSImage *img) {
+    if (!img) return NO;
 
     /* 必须用 CGImage 的像素尺寸，不能用 [img size]（那是"点"）。
      * Retina 截图在点上只有一半，按点取会掉一半分辨率。 */
     CGImageRef cg = [img CGImageForProposedRect:NULL context:nil hints:nil];
-    if (!cg) return;
+    if (!cg) return NO;
 
     int w = (int)CGImageGetWidth(cg);
     int h = (int)CGImageGetHeight(cg);
-    if (w <= 0 || h <= 0) return;
+    if (w <= 0 || h <= 0) return NO;
 
     size_t stride = (size_t)w * 4;
     size_t total = stride * (size_t)h;
     if (total > CLIP_IMG_MAX_BYTES) {
         hop_log(HOP_LOG_WARN, "clip: image %.1f MB too large, skipped",
                 (double)total / 1048576.0);
-        return;
+        return NO;
     }
 
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
@@ -81,46 +83,47 @@ static void send_image(NSImage *img) {
     CGContextRef ctx = CGBitmapContextCreate(NULL, (size_t)w, (size_t)h, 8, stride, cs,
                                             kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst);
     CGColorSpaceRelease(cs);
-    if (!ctx) return;
+    if (!ctx) return NO;
 
     CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), cg);
     void *data = CGBitmapContextGetData(ctx);
-    if (!data) { CGContextRelease(ctx); return; }
+    if (!data) { CGContextRelease(ctx); return NO; }
 
     /* CGContext 原点在左下，CGBitmapContext 的行序是自上而下存的，
      * 但 draw 进来之后第 0 行对应图像底部 —— 需要翻转成自上而下。 */
     uint8_t *flip = (uint8_t *)malloc(total);
-    if (!flip) { CGContextRelease(ctx); return; }
+    if (!flip) { CGContextRelease(ctx); return NO; }
     for (int y = 0; y < h; ++y) {
         memcpy(flip + (size_t)y * stride,
                (uint8_t *)data + (size_t)(h - 1 - y) * stride, stride);
     }
 
     hop_log(HOP_LOG_INFO, "clip: image out %dx%d", w, h);
-    xfer_submit_image(flip, w, h, (int)stride);
-
+    BOOL ok = xfer_submit_image(flip, w, h, (int)stride) ? YES : NO;
     free(flip);
     CGContextRelease(ctx);
+    if (!ok) hop_log(HOP_LOG_WARN, "clip: image not queued; will retry");
+    return ok;
 }
 
-static void send_text(NSString *s) {
+static BOOL send_text(NSString *s) {
     const char *u = [s UTF8String];
     uint32_t n;
     uint8_t *p;
 
-    if (!u) return;
+    if (!u) return NO;
     n = (uint32_t)strlen(u);
-    if (n == 0 || n > HOP_TEXT_MAX) return;
+    if (n == 0 || n > HOP_TEXT_MAX) return NO;
 
     p = (uint8_t *)malloc(4 + n);
-    if (!p) return;
+    if (!p) return NO;
     hop_put_be32(p, HOP_DEV_CLIENT);
     memcpy(p + 4, u, n);
-    if (net_send(HOP_MSG_CLIP_TEXT, p, 4 + n))
-        hop_log(HOP_LOG_INFO, "clip: text out %u bytes", n);
-    else
-        hop_log(HOP_LOG_WARN, "clip: text out failed (not connected)");
+    BOOL ok = net_send(HOP_MSG_CLIP_TEXT, p, 4 + n) ? YES : NO;
+    if (ok) hop_log(HOP_LOG_INFO, "clip: text out %u bytes", n);
+    else hop_log(HOP_LOG_WARN, "clip: text out failed; will retry");
     free(p);
+    return ok;
 }
 
 static void poll_pasteboard(void) {
@@ -136,9 +139,7 @@ static void poll_pasteboard(void) {
             [pb readObjectsForClasses:@[ [NSURL class] ]
                               options:@{ NSPasteboardURLReadingFileURLsOnlyKey : @YES }];
         if ([urls count] > 0) {
-            send_paths(urls);
-            /* xfer_submit_paths copies/queues synchronously; only then consume this change. */
-            s_last_change = cc;
+            if (send_paths(urls)) s_last_change = cc;
             return;
         }
 
@@ -146,8 +147,7 @@ static void poll_pasteboard(void) {
         if ([pb availableTypeFromArray:@[ NSPasteboardTypeTIFF, NSPasteboardTypePNG ]] != nil) {
             NSImage *img = [[NSImage alloc] initWithPasteboard:pb];
             if (img) {
-                send_image(img);
-                s_last_change = cc;
+                if (send_image(img)) s_last_change = cc;
                 return;
             }
         }
@@ -157,9 +157,7 @@ static void poll_pasteboard(void) {
             const char *utf8 = [s UTF8String];
             uint32_t n = utf8 ? (uint32_t)strlen(utf8) : 0;
             if (n > 0 && n <= HOP_TEXT_MAX) {
-                send_text(s);
-                /* Keep the change pending while disconnected; poll retries it. */
-                if (g_mac.connected) s_last_change = cc;
+                if (send_text(s)) s_last_change = cc;
                 return;
             }
         }

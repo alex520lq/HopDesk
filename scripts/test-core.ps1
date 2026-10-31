@@ -13,7 +13,7 @@ $sources = @(
 )
 $inc = Join-Path $root 'src/core'
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
-    & cl.exe /nologo /std:c11 /O2 /W4 /I $inc /Fe:$out @sources
+    & cl.exe /nologo /std:c11 /O2 /W4 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I $inc /Fe:$out @sources
 } else {
     & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $out @sources
 }

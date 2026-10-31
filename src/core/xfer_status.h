@@ -23,6 +23,7 @@ typedef struct {
     int phase;
     uint32_t files_done;
     uint32_t files_total;
+    uint32_t queued_count;
     uint64_t bytes_done;
     uint64_t bytes_total;
     char name[HOP_XFER_STATUS_NAME];

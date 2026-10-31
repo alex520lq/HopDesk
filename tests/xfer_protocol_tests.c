@@ -155,10 +155,82 @@ static void test_directory_entry(void){
     hop_decoder_free(d);
 }
 
+
+typedef struct {
+    uint8_t *pixels;
+    size_t expected, received;
+    int started, complete, error;
+} img_sim;
+
+static void image_message(void *user,uint8_t type,const uint8_t*p,uint32_t len){
+    img_sim *r=(img_sim*)user;
+    if(type==HOP_MSG_IMAGE_BEGIN){
+        hop_xfer_image_begin_msg m;
+        if(!hop_xfer_decode_image_begin(p,len,&m)){r->error=1;return;}
+        if(!hop_xfer_image_valid((int32_t)m.width,(int32_t)m.height,(int32_t)m.stride)){r->error=1;return;}
+        r->expected=(size_t)m.stride*(size_t)m.height;
+        r->pixels=(uint8_t*)calloc(1,r->expected);
+        if(!r->pixels){r->error=1;return;}
+        r->started=1;return;
+    }
+    if(type==HOP_MSG_FILE_CHUNK){
+        if(!r->started||!hop_xfer_chunk_valid(p,len,r->expected,1)){r->error=1;return;}
+        uint64_t off=hop_get_be64(p+4);uint32_t n=hop_get_be32(p+12),crc=hop_get_be32(p+16);
+        if(off!=r->received||hop_crc32(0,p+20,n)!=crc){r->error=1;return;}
+        memcpy(r->pixels+off,p+20,n);r->received+=n;return;
+    }
+    if(type==HOP_MSG_FILE_END){
+        hop_xfer_file_end_msg e;
+        if(!hop_xfer_decode_file_end(p,len,&e)||e.status!=HOP_FILE_OK){r->error=1;return;}
+        r->complete=(r->received==r->expected);return;
+    }
+}
+
+static void run_image_case(int mode,int expect_complete){
+    img_sim r;memset(&r,0,sizeof(r));
+    hop_decoder*d=hop_decoder_new(&r,image_message);CHECK(d!=NULL);if(!d)return;
+    uint8_t begin[20];hop_put_be32(begin,5);hop_put_be32(begin+4,1);
+    hop_put_be32(begin+8,2);hop_put_be32(begin+12,2);hop_put_be32(begin+16,8);
+    feed_frame(d,HOP_MSG_IMAGE_BEGIN,begin,sizeof(begin));
+    uint8_t source[16];for(int i=0;i<16;i++)source[i]=(uint8_t)(i*7+1);
+    uint8_t chunk[28];
+    int count=(mode==1)?1:2;
+    for(int step=0;step<count;step++){
+        int index=(mode==2)?1-step:step;
+        uint64_t off=(uint64_t)index*8;
+        uint32_t n=8,crc=hop_crc32(0,source+off,n);
+        hop_put_be32(chunk,1);hop_put_be64(chunk+4,off);
+        hop_put_be32(chunk+12,n);hop_put_be32(chunk+16,mode==3&&index==0?(crc^1u):crc);
+        memcpy(chunk+20,source+off,n);
+        feed_frame(d,HOP_MSG_FILE_CHUNK,chunk,sizeof(chunk));
+    }
+    if(mode==4){
+        hop_put_be32(chunk,1);hop_put_be64(chunk+4,16);
+        hop_put_be32(chunk+12,1);hop_put_be32(chunk+16,hop_crc32(0,source,1));
+        chunk[20]=source[0];
+        feed_frame(d,HOP_MSG_FILE_CHUNK,chunk,21);
+    }
+    uint8_t end[9];hop_put_be32(end,1);end[4]=HOP_FILE_OK;hop_put_be32(end+5,0);
+    feed_frame(d,HOP_MSG_FILE_END,end,sizeof(end));
+    CHECK(r.complete==expect_complete);
+    if(mode==0 && r.complete)CHECK(memcmp(r.pixels,source,sizeof(source))==0);
+    if(mode!=0)CHECK(r.error || !r.complete);
+    free(r.pixels);hop_decoder_free(d);
+}
+
+static void test_image_transfer_protocol(void){
+    run_image_case(0,1); /* complete image */
+    run_image_case(1,0); /* truncated image */
+    run_image_case(2,0); /* out-of-order chunks */
+    run_image_case(3,0); /* corrupted chunk */
+    run_image_case(4,0); /* beyond declared image size */
+}
+
 int main(void){
     hop_crc32_init();
     test_file_transfer_wire_roundtrip();
     test_directory_entry();
+    test_image_transfer_protocol();
     if(failures){fprintf(stderr,"HopDesk xfer protocol tests: %d failure(s)\n",failures);return 1;}
     puts("HopDesk xfer protocol tests: all tests passed");return 0;
 }

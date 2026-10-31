@@ -174,9 +174,9 @@ static void image_message(void *user,uint8_t type,const uint8_t*p,uint32_t len){
         r->started=1;return;
     }
     if(type==HOP_MSG_FILE_CHUNK){
-        if(!r->started||!hop_xfer_chunk_valid(p,len,r->expected,1)){r->error=1;return;}
+        if(!r->started||!hop_xfer_chunk_valid(p,len,r->expected,1)){r->error=1;r->received=0;return;}
         uint64_t off=hop_get_be64(p+4);uint32_t n=hop_get_be32(p+12),crc=hop_get_be32(p+16);
-        if(off!=r->received||hop_crc32(0,p+20,n)!=crc){r->error=1;return;}
+        if(off!=r->received||hop_crc32(0,p+20,n)!=crc){r->error=1;r->received=0;return;}
         memcpy(r->pixels+off,p+20,n);r->received+=n;return;
     }
     if(type==HOP_MSG_FILE_END){

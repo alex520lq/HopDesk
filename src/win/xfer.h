@@ -16,6 +16,7 @@
 
 #include <windows.h>
 #include "hop.h"
+#include "../core/xfer_status.h"
 
 /* 起监听 + 发送线程。失败返回 0。 */
 int  xfer_init(HWND hwnd, const hop_config *cfg);
@@ -26,6 +27,8 @@ int  xfer_connected(void);
 
 /* 有没有正在传或排队的批次（菜单项据此决定是否可点） */
 int  xfer_busy(void);
+/* Thread-safe snapshot for native transfer manager UI; caller owns the copy. */
+void xfer_get_status(hop_xfer_status *out);
 
 /* 取消当前批次：停发、通知对端、删掉接收侧半成品。
  * 发送端每块之后检查一次，所以响应延迟上限是一个分块（默认 256 KB）。 */

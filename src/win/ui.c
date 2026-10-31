@@ -206,6 +206,12 @@ void ui_init(win_app *app) {
     wcscpy(app->nid.szTip, L"HopDesk");
 
     app->tray_added = Shell_NotifyIconW(NIM_ADD, &app->nid);
+    SetTimer(app->hwnd, IDT_XFER_NOTIFY, 500, NULL);
+}
+void ui_transfer_poll(void) {
+    hop_xfer_status snapshot; memset(&snapshot, 0, sizeof(snapshot));
+    xfer_get_status(&snapshot);
+    xfer_notify_if_terminal(&snapshot);
 }
 
 void ui_shutdown(win_app *app) {

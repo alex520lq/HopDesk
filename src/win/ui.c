@@ -78,7 +78,7 @@ void ui_show_transfers(win_app *app) {
     if (!s_xfer_window) {
         WNDCLASSW wc; memset(&wc,0,sizeof(wc)); wc.lpfnWndProc=xfer_wnd_proc;
         wc.hInstance=app->inst; wc.lpszClassName=L"HopDeskTransferManager";
-        wc.hCursor=LoadCursorW(NULL,IDC_ARROW); wc.hbrBackground=(HBRUSH)(COLOR_WINDOW+1);
+        wc.hCursor=LoadCursorW(NULL,MAKEINTRESOURCEW(32512)); wc.hbrBackground=(HBRUSH)(COLOR_WINDOW+1);
         RegisterClassW(&wc);
         INITCOMMONCONTROLSEX ic={sizeof(ic),ICC_PROGRESS_CLASS}; InitCommonControlsEx(&ic);
         s_xfer_window=CreateWindowExW(WS_EX_APPWINDOW,wc.lpszClassName,L"HopDesk · 传输管理器",

@@ -23,7 +23,8 @@
 #define IDC_XFER_PROGRESS 2104
 #define IDC_XFER_CANCEL 2105
 
-static HWND s_xfer_window, s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_progress;
+static HWND s_xfer_window, s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_progress, s_xfer_history;
+static uint32_t s_history_batch;
 static uint32_t s_notified_batch;
 static int s_notified_phase;
 
@@ -49,6 +50,26 @@ static void xfer_window_refresh(void) {
     if (!s_xfer_window) return;
     hop_xfer_status st; memset(&st, 0, sizeof(st)); xfer_get_status(&st);
     xfer_notify_if_terminal(&st);
+    if (s_xfer_history) {
+        hop_xfer_history_entry history[HOP_XFER_HISTORY_LIMIT];
+        int n = xfer_get_history(history, HOP_XFER_HISTORY_LIMIT);
+        if (n > 0 && s_history_batch != history[0].batch) {
+            s_history_batch = history[0].batch;
+            SendMessageW(s_xfer_history, LB_RESETCONTENT, 0, 0);
+            for (int i = 0; i < n; ++i) {
+                wchar_t name[HOP_XFER_STATUS_NAME], row[512];
+                MultiByteToWideChar(CP_UTF8, 0, history[i].name, -1, name, ARRAYSIZE(name));
+                const wchar_t *phaseText = history[i].phase == HOP_XFER_COMPLETED ? L"完成" :
+                    history[i].phase == HOP_XFER_PARTIAL ? L"部分失败" :
+                    history[i].phase == HOP_XFER_CANCELLED ? L"已取消" : L"失败";
+                const wchar_t *dirText = history[i].direction == HOP_XFER_DIR_SEND ? L"发送" : L"接收";
+                swprintf(row, ARRAYSIZE(row), L"%ls  %ls  %ls  文件 %u/%u  %llu MB",
+                    dirText, phaseText, name, history[i].files_done, history[i].files_total,
+                    (unsigned long long)(history[i].bytes_total / 1048576ULL));
+                SendMessageW(s_xfer_history, LB_ADDSTRING, 0, (LPARAM)row);
+            }
+        }
+    }
     const wchar_t *phase = L"空闲";
     switch (st.phase) {
         case HOP_XFER_QUEUED: phase=L"排队中"; break;
@@ -85,7 +106,9 @@ static LRESULT CALLBACK xfer_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             s_xfer_detail=CreateWindowW(L"STATIC",L"等待文件传输",WS_CHILD|WS_VISIBLE,20,55,520,22,h,(HMENU)IDC_XFER_DETAIL,g_app.inst,NULL);
             s_xfer_counts=CreateWindowW(L"STATIC",L"文件 0 / 0    数据 0 / 0 MB",WS_CHILD|WS_VISIBLE,20,88,520,22,h,(HMENU)IDC_XFER_COUNTS,g_app.inst,NULL);
             s_xfer_progress=CreateWindowW(PROGRESS_CLASSW,L"",WS_CHILD|WS_VISIBLE,20,122,520,18,h,(HMENU)IDC_XFER_PROGRESS,g_app.inst,NULL);
-            CreateWindowW(L"BUTTON",L"取消传输",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,430,158,110,30,h,(HMENU)IDC_XFER_CANCEL,g_app.inst,NULL);
+            CreateWindowW(L"STATIC",L"最近 100 次传输",WS_CHILD|WS_VISIBLE,20,158,520,20,h,NULL,g_app.inst,NULL);
+            s_xfer_history=CreateWindowW(L"LISTBOX",L"",WS_CHILD|WS_VISIBLE|WS_VSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS,20,182,580,270,h,NULL,g_app.inst,NULL);
+            CreateWindowW(L"BUTTON",L"取消传输",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,490,460,110,30,h,(HMENU)IDC_XFER_CANCEL,g_app.inst,NULL);
             SetTimer(h,ID_XFER_TIMER,400,NULL); xfer_window_refresh(); return 0;
         case WM_TIMER: xfer_window_refresh(); return 0;
         case WM_COMMAND: if(LOWORD(wp)==IDC_XFER_CANCEL){xfer_cancel();return 0;} break;
@@ -104,7 +127,7 @@ void ui_show_transfers(win_app *app) {
         INITCOMMONCONTROLSEX ic={sizeof(ic),ICC_PROGRESS_CLASS}; InitCommonControlsEx(&ic);
         s_xfer_window=CreateWindowExW(WS_EX_APPWINDOW,wc.lpszClassName,L"HopDesk · 传输管理器",
             WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,
-            CW_USEDEFAULT,CW_USEDEFAULT,580,250,NULL,NULL,app->inst,NULL);
+            CW_USEDEFAULT,CW_USEDEFAULT,640,520,NULL,NULL,app->inst,NULL);
     }
     if(s_xfer_window){ShowWindow(s_xfer_window,SW_SHOWNORMAL);SetForegroundWindow(s_xfer_window);xfer_window_refresh();}
 }

@@ -104,10 +104,11 @@ typedef enum {
  * v2: FILE_CHUNK 加 crc(4)，FILE_END 加 file_crc(4)，新增 XFER_ABORT
  * v3: 新增 FILE_ACK（逐文件确认），XFER_DONE 载荷改为 20 字节并带真实计数
  * v4: 数据通道 HELLO 增加 token 身份校验，握手未通过不得传输。
+ * v5: 整文件 CRC fold 同时纳入 chunk offset 与 chunk CRC，校验块位置。
  * 两端必须同版本：旧端发来的块在新端会按错位的 CRC 字段解析，
  * 结果是每块都校验失败。所以连上就先比版本，别让用户对着
  * "传输一直失败"猜原因。 */
-#define HOP_XFER_PROTO_VER   4
+#define HOP_XFER_PROTO_VER   5
 
 /* ---- XFER_ABORT 的 reason ---- */
 #define HOP_ABORT_CRC        1
@@ -289,7 +290,7 @@ int hop_xfer_hello_valid(const uint8_t *payload, uint32_t len, const char *token
 int hop_xfer_relpath_bytes_safe(const uint8_t *rel, size_t len);
 int hop_xfer_relpath_safe(const char *rel);
 int hop_clip_should_apply_remote(uint32_t origin, uint32_t local_device);
-uint32_t hop_xfer_file_crc_step(uint32_t seed, uint32_t chunk_crc);
+uint32_t hop_xfer_file_crc_step(uint32_t seed, uint64_t offset, uint32_t chunk_crc);
 int hop_xfer_image_valid(int32_t width, int32_t height, int32_t stride);
 int hop_xfer_chunk_valid(const uint8_t *payload, uint32_t len,
                          uint64_t declared_size, int is_image);

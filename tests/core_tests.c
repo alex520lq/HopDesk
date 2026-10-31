@@ -340,10 +340,12 @@ static void test_file_crc_fold(void) {
     const char b[] = "chunk-B";
     uint32_t ca = hop_crc32(0, a, sizeof(a)-1);
     uint32_t cb = hop_crc32(0, b, sizeof(b)-1);
-    uint32_t ab = hop_xfer_file_crc_step(hop_xfer_file_crc_step(0, ca), cb);
-    uint32_t ba = hop_xfer_file_crc_step(hop_xfer_file_crc_step(0, cb), ca);
+    uint32_t ab = hop_xfer_file_crc_step(hop_xfer_file_crc_step(0, 0, ca), 7, cb);
+    uint32_t ba = hop_xfer_file_crc_step(hop_xfer_file_crc_step(0, 7, cb), 0, ca);
+    uint32_t moved = hop_xfer_file_crc_step(0, 1, ca);
     CHECK(ab != ba);
-    CHECK(hop_xfer_file_crc_step(0, ca) != hop_xfer_file_crc_step(0, cb));
+    CHECK(hop_xfer_file_crc_step(0, 0, ca) != moved);
+    CHECK(hop_xfer_file_crc_step(0, 0, ca) != hop_xfer_file_crc_step(0, 0, cb));
 }
 
 static void test_relative_path_wire_bytes(void) {

@@ -115,9 +115,10 @@ int hop_clip_should_apply_remote(uint32_t origin, uint32_t local_device) {
     return origin != local_device;
 }
 
-uint32_t hop_xfer_file_crc_step(uint32_t seed, uint32_t chunk_crc) {
-    uint8_t encoded[4];
-    hop_put_be32(encoded, chunk_crc);
+uint32_t hop_xfer_file_crc_step(uint32_t seed, uint64_t offset, uint32_t chunk_crc) {
+    uint8_t encoded[12];
+    hop_put_be64(encoded, offset);
+    hop_put_be32(encoded + 8, chunk_crc);
     return hop_crc32(seed, encoded, sizeof(encoded));
 }
 

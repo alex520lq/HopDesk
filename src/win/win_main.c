@@ -144,6 +144,11 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             clip_on_update();
             return 0;
         case WM_TIMER:
+            if (wp == IDT_CLIP_RETRY) {
+                clip_retry_pending();
+                clip_on_update(); /* retry the latest local clipboard snapshot too */
+                return 0;
+            }
             if (wp == IDT_DISP) {
                 KillTimer(h, IDT_DISP);
                 disp_set_input(g_app.cfg.disp_mac_input);

@@ -138,6 +138,6 @@ int hop_xfer_chunk_valid(const uint8_t *p, uint32_t len,
     if (n == 0 || (uint64_t)n != (uint64_t)len - 20u) return 0;
     if (off > UINT64_MAX - n) return 0;
     uint64_t end = off + n;
-    if (is_image) return end <= HOP_IMG_MAX_BYTES;
+    if (is_image && end > HOP_IMG_MAX_BYTES) return 0;
     return end <= declared_size;
 }

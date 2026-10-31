@@ -244,7 +244,8 @@ static void test_xfer_chunk_bounds(void) {
     make_chunk(p, 0, 4);
     CHECK(hop_xfer_chunk_valid(p, sizeof(p), 4, 0));
     CHECK(!hop_xfer_chunk_valid(p, sizeof(p), 3, 0));
-    CHECK(hop_xfer_chunk_valid(p, sizeof(p), 0, 1));
+    CHECK(hop_xfer_chunk_valid(p, sizeof(p), 4, 1));
+    CHECK(!hop_xfer_chunk_valid(p, sizeof(p), 3, 1));
     CHECK(!hop_xfer_chunk_valid(p, 19, 4, 0));
     CHECK(!hop_xfer_chunk_valid(p, 23, 4, 0));
     CHECK(!hop_xfer_chunk_valid(p, 25, 4, 0));

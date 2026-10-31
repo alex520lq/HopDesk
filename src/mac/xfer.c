@@ -895,7 +895,7 @@ static struct {
     /* 当前文件的校验累加：每块 CRC 折进来，FILE_END 时与发送端比对 */
     uint32_t fcrc;
     uint8_t *img;
-    size_t   img_cap, img_len;
+    size_t   img_cap, img_len, img_expected;
     int      img_w, img_h, img_stride;
     char   **tops;
     int      ntop;
@@ -917,7 +917,7 @@ static void rx_clear_state(void) {
     s_rx.cur_path = NULL;
     free(s_rx.img);
     s_rx.img = NULL;
-    s_rx.img_cap = s_rx.img_len = 0;
+    s_rx.img_cap = s_rx.img_len = s_rx.img_expected = 0;
     for (int i = 0; i < s_rx.ntop; ++i) free(s_rx.tops[i]);
     free(s_rx.tops);
     s_rx.tops = NULL;
@@ -1010,9 +1010,13 @@ static void rx_finish_batch(void) {
     wq_push(&t);
     wq_drain();
 
-    if (s_rx.cur_is_image && s_rx.img && s_rx.img_len)
-        clipboard_apply_image(s_rx.img, s_rx.img_w, s_rx.img_h, s_rx.img_stride);
-    else if (s_rx.ntop > 0)
+    if (s_rx.cur_is_image) {
+        if (s_rx.img && s_rx.img_len == s_rx.img_expected)
+            clipboard_apply_image(s_rx.img, s_rx.img_w, s_rx.img_h, s_rx.img_stride);
+        else
+            hop_log(HOP_LOG_ERROR, "xfer: incomplete image rejected (%llu/%llu bytes)",
+                    (unsigned long long)s_rx.img_len, (unsigned long long)s_rx.img_expected);
+    } else if (s_rx.ntop > 0)
         clipboard_apply_paths((const char *const *)s_rx.tops, s_rx.ntop);
 
     hop_log(HOP_LOG_INFO, "xfer: batch %u done (%d items)", s_rx.batch, s_rx.ntop);
@@ -1154,6 +1158,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             s_rx.img_w = w;
             s_rx.img_h = h;
             s_rx.img_stride = stride;
+            s_rx.img_expected = (size_t)stride * (size_t)h;
             s_rx.img_len = 0;
             break;
         }
@@ -1164,7 +1169,8 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             uint32_t n   = hop_get_be32(p + 12);
             uint32_t crc = hop_get_be32(p + 16);
             if (!hop_xfer_chunk_valid(p, len,
-                    s_rx.cur_fail >= 0 ? UINT64_MAX : s_rx.cur_size,
+                    s_rx.cur_is_image ? s_rx.img_expected :
+                        (s_rx.cur_fail >= 0 ? UINT64_MAX : s_rx.cur_size),
                     s_rx.cur_is_image)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed or out-of-range chunk; closing data channel");
                 pthread_mutex_lock(&s_x.slock);
@@ -1184,14 +1190,21 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 hop_log(HOP_LOG_ERROR,
                         "xfer: CHUNK CRC MISMATCH off=%llu len=%u (expect %08x)",
                         (unsigned long long)off, n, crc);
-                s_rx.cur_fail = HOP_FILE_ACK_CRC;
+                if (s_rx.cur_is_image) {
+                    send_abort(s_rx.batch, HOP_ABORT_CRC);
+                    s_rx.img_len = 0;
+                } else {
+                    s_rx.cur_fail = HOP_FILE_ACK_CRC;
+                }
                 return;
             }
 
             if (s_rx.cur_is_image) {
                 size_t need = (size_t)off + n;
-                if (need > HOP_IMG_MAX_BYTES) {
-                    hop_log(HOP_LOG_ERROR, "xfer: image exceeds cap, dropped");
+                if (off != s_rx.img_len || need > s_rx.img_expected) {
+                    hop_log(HOP_LOG_ERROR, "xfer: image chunk gap/overlap or length overflow");
+                    send_abort(s_rx.batch, HOP_ABORT_TOO_LARGE);
+                    s_rx.img_len = 0;
                     return;
                 }
                 if (need > s_rx.img_cap) {

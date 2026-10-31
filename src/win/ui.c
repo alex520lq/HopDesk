@@ -22,6 +22,7 @@
 #define IDC_XFER_COUNTS 2103
 #define IDC_XFER_PROGRESS 2104
 #define IDC_XFER_CANCEL 2105
+#define IDC_XFER_RETRY 2106
 
 static HWND s_xfer_window, s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_progress, s_xfer_history, s_xfer_files;
 static uint32_t s_history_batch;
@@ -137,10 +138,18 @@ static LRESULT CALLBACK xfer_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             s_xfer_files=CreateWindowW(L"LISTBOX",L"",WS_CHILD|WS_VISIBLE|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS,20,182,580,210,h,NULL,g_app.inst,NULL);
             CreateWindowW(L"STATIC",L"最近 100 次传输",WS_CHILD|WS_VISIBLE,20,405,520,20,h,NULL,g_app.inst,NULL);
             s_xfer_history=CreateWindowW(L"LISTBOX",L"",WS_CHILD|WS_VISIBLE|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS,20,428,580,110,h,NULL,g_app.inst,NULL);
+            CreateWindowW(L"BUTTON",L"重试选中文件",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,360,555,120,30,h,(HMENU)IDC_XFER_RETRY,g_app.inst,NULL);
             CreateWindowW(L"BUTTON",L"取消传输",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,490,555,110,30,h,(HMENU)IDC_XFER_CANCEL,g_app.inst,NULL);
             SetTimer(h,ID_XFER_TIMER,400,NULL); xfer_window_refresh(); return 0;
         case WM_TIMER: xfer_window_refresh(); return 0;
-        case WM_COMMAND: if(LOWORD(wp)==IDC_XFER_CANCEL){xfer_cancel();return 0;} break;
+        case WM_COMMAND:
+            if(LOWORD(wp)==IDC_XFER_CANCEL){xfer_cancel();return 0;}
+            if(LOWORD(wp)==IDC_XFER_RETRY){
+                int selected=(int)SendMessageW(s_xfer_files,LB_GETCURSEL,0,0);
+                if(selected!=LB_ERR)xfer_retry_file(selected);
+                return 0;
+            }
+            break;
         case WM_CLOSE: KillTimer(h,ID_XFER_TIMER); DestroyWindow(h); return 0;
         case WM_DESTROY: s_xfer_window=NULL; return 0;
     }

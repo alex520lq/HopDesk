@@ -2,11 +2,10 @@ name: Build HopDesk
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+    tags: ['v*']
   pull_request:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -18,22 +17,35 @@ concurrency:
 
 jobs:
   windows:
-    name: Windows build and tests
+    name: Windows build, tests and package
     runs-on: windows-latest
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up MinGW GCC
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+          cache: pip
+
+      - name: Install icon generation dependencies
+        run: python -m pip install Pillow CairoSVG
+
+      - name: Set up cached MinGW GCC
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          update: true
+          update: false
+          cache: true
           install: mingw-w64-x86_64-gcc
 
-      - name: Build Windows executable
+      - name: Build Windows executable (timed)
         shell: pwsh
-        run: ./scripts/build-win.ps1 -Compiler gcc
+        run: |
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          ./scripts/build-win.ps1 -Compiler gcc
+          $timer.Stop()
+          "Windows compile and link: $([math]::Round($timer.Elapsed.TotalSeconds, 2)) sec" | Tee-Object -FilePath build-timing.txt
 
       - name: Run portable core tests
         shell: pwsh
@@ -47,23 +59,49 @@ jobs:
         shell: pwsh
         run: ./scripts/test-network.ps1
 
-      - name: Upload Windows build
+      - name: Package Windows
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build/windows-package | Out-Null
+          Copy-Item build/hopdesk.exe build/windows-package/HopDesk.exe
+          Compress-Archive -Path build/windows-package/* -DestinationPath build/HopDesk-Windows.zip -Force
+
+      - name: Upload Windows package
         uses: actions/upload-artifact@v4
         with:
           name: hopdesk-windows
-          path: build/hopdesk.exe
+          path: build/HopDesk-Windows.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Windows timing
+        uses: actions/upload-artifact@v4
+        with:
+          name: hopdesk-windows-timing
+          path: build-timing.txt
           if-no-files-found: error
           retention-days: 14
 
   macos:
-    name: macOS build and tests
+    name: macOS build, tests and package
     runs-on: macos-latest
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Build macOS executable
-        run: sh scripts/build-mac.sh
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+          cache: pip
+
+      - name: Install icon generation dependencies
+        run: python -m pip install Pillow CairoSVG
+
+      - name: Build macOS app (timed)
+        run: |
+          start=$SECONDS
+          sh scripts/build-mac.sh
+          echo "macOS compile, bundle and signing: $((SECONDS-start)) sec" | tee build-timing.txt
 
       - name: Run portable core tests
         run: sh scripts/test-core.sh
@@ -74,13 +112,24 @@ jobs:
       - name: Run TCP loopback tests
         run: sh scripts/test-network.sh
 
-      - name: Verify macOS app bundle
+      - name: Verify macOS app and shared branding
         run: |
           test -d build/HopDesk.app
           test -x build/HopDesk.app/Contents/MacOS/HopDesk
           plutil -lint build/HopDesk.app/Contents/Info.plist
           codesign --verify --deep --strict build/HopDesk.app
+          test -s build/HopDesk.app/Contents/Resources/HopDesk.icns
+          test -s build/HopDesk.app/Contents/Resources/hopdesk.png
           test -s build/HopDesk-macOS.zip
+          unzip -l build/HopDesk-macOS.zip | grep -q 'install-macos.command'
+
+      - name: Upload macOS install archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: hopdesk-macos
+          path: build/HopDesk-macOS.zip
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload macOS app bundle
         uses: actions/upload-artifact@v4
@@ -90,10 +139,36 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload macOS install archive
+      - name: Upload macOS timing
         uses: actions/upload-artifact@v4
         with:
-          name: hopdesk-macos-zip
-          path: build/HopDesk-macOS.zip
+          name: hopdesk-macos-timing
+          path: build-timing.txt
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows package
+        uses: actions/download-artifact@v4
+        with:
+          name: hopdesk-windows
+          path: release-assets
+
+      - name: Download macOS package
+        uses: actions/download-artifact@v4
+        with:
+          name: hopdesk-macos
+          path: release-assets
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true

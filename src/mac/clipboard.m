@@ -129,23 +129,43 @@ static void poll_pasteboard(void) {
         NSInteger cc = [pb changeCount];
 
         if (cc == s_last_change) return;
-        s_last_change = cc;
 
         /* 文件优先：Finder 里 Cmd+C 一个文件，剪贴板上是 fileURL，
          * 只读字符串的话会"什么都不发生" */
         NSArray<NSURL *> *urls =
             [pb readObjectsForClasses:@[ [NSURL class] ]
                               options:@{ NSPasteboardURLReadingFileURLsOnlyKey : @YES }];
-        if ([urls count] > 0) { send_paths(urls); return; }
+        if ([urls count] > 0) {
+            send_paths(urls);
+            /* xfer_submit_paths copies/queues synchronously; only then consume this change. */
+            s_last_change = cc;
+            return;
+        }
 
         /* 图片：TIFF 覆盖最广（截图、浏览器、预览都是它） */
         if ([pb availableTypeFromArray:@[ NSPasteboardTypeTIFF, NSPasteboardTypePNG ]] != nil) {
             NSImage *img = [[NSImage alloc] initWithPasteboard:pb];
-            if (img) { send_image(img); return; }
+            if (img) {
+                send_image(img);
+                s_last_change = cc;
+                return;
+            }
         }
 
         NSString *s = [pb stringForType:NSPasteboardTypeString];
-        if (s) send_text(s);
+        if (s) {
+            const char *utf8 = [s UTF8String];
+            uint32_t n = utf8 ? (uint32_t)strlen(utf8) : 0;
+            if (n > 0 && n <= HOP_TEXT_MAX) {
+                send_text(s);
+                /* Keep the change pending while disconnected; poll retries it. */
+                if (g_mac.connected) s_last_change = cc;
+                return;
+            }
+        }
+
+        /* Unsupported/empty clipboard formats are intentionally consumed. */
+        s_last_change = cc;
     }
 }
 

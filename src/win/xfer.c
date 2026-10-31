@@ -64,6 +64,7 @@ static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];
 static int s_history_count;
 static void status_begin(uint32_t batch,int direction,uint32_t files,uint64_t bytes,const char *name,int phase){
  AcquireSRWLockExclusive(&s_status_lock);memset(&s_status,0,sizeof(s_status));
+ for(int i=0;i<HOP_XFER_FILE_LIMIT;i++){free(s_retry_paths[i]);s_retry_paths[i]=NULL;}
  memset(s_files,0,sizeof(s_files));s_file_count=0;s_current_file=-1;
  s_status.batch=batch;s_status.active=1;s_status.direction=direction;s_status.phase=phase;
  s_status.files_total=files;s_status.bytes_total=bytes;if(name)snprintf(s_status.name,sizeof(s_status.name),"%s",name);

@@ -431,7 +431,6 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
                     CloseHandle(h);
                     return XFER_SEND_DEAD;
                 }
-                uint8_t cb[4];
                 fcrc = hop_xfer_file_crc_step(fcrc, ccrc);
                 off += got;
                 yield_cpu();
@@ -1301,7 +1300,6 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
             /* 文件 CRC 折入本块 CRC：既覆盖数据（块 CRC 已验证），
              * 也覆盖顺序与偏移，且不需要把整份文件重算一遍 */
-            uint8_t cb[4];
             s_rx.fcrc = hop_xfer_file_crc_step(s_rx.fcrc, crc);
             break;
         }

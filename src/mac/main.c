@@ -93,7 +93,10 @@ int main(int argc, char **argv) {
             }
         }
         if (legacy[0]) config_loaded = hop_config_load(&g_mac.cfg, legacy);
-        if (!config_loaded) config_loaded = hop_config_load(&g_mac.cfg, "hopdesk.conf");
+        if (!config_loaded) {
+            config_loaded = hop_config_load(&g_mac.cfg, "hopdesk.conf");
+            if (config_loaded) snprintf(legacy, sizeof(legacy), "%s", "hopdesk.conf");
+        }
         if (config_loaded && legacy[0]) {
             FILE *src = fopen(legacy, "rb");
             if (src) {

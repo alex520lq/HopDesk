@@ -100,3 +100,30 @@ jobs:
       - name: Run portable core tests (macOS)
         if: runner.os == 'macOS'
         run: sh scripts/test-core.sh
+
+  network-tests:
+    name: Network loopback tests on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+          - os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up MinGW GCC
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc
+      - name: Run TCP loopback tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-network.ps1
+      - name: Run TCP loopback tests (macOS)
+        if: runner.os == 'macOS'
+        run: sh scripts/test-network.sh

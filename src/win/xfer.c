@@ -55,6 +55,8 @@ typedef struct {
 
 static SRWLOCK s_status_lock = SRWLOCK_INIT;
 static hop_xfer_status s_status;
+static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];
+static int s_history_count;
 static void status_begin(uint32_t batch,int direction,uint32_t files,uint64_t bytes,const char *name,int phase){
  AcquireSRWLockExclusive(&s_status_lock);memset(&s_status,0,sizeof(s_status));
  s_status.batch=batch;s_status.active=1;s_status.direction=direction;s_status.phase=phase;
@@ -86,9 +88,27 @@ static void status_file_done(uint32_t files,const char *name) {
  if(s_status.active){s_status.files_done=files;if(name)snprintf(s_status.name,sizeof(s_status.name),"%s",name);}
  ReleaseSRWLockExclusive(&s_status_lock);
 }
-static void status_end(int phase,const char *detail){AcquireSRWLockExclusive(&s_status_lock);s_status.active=0;s_status.phase=phase;
- if(detail)snprintf(s_status.detail,sizeof(s_status.detail),"%s",detail);ReleaseSRWLockExclusive(&s_status_lock);}
+static void status_end(int phase,const char *detail){
+ AcquireSRWLockExclusive(&s_status_lock);
+ s_status.active=0;s_status.phase=phase;
+ if(detail)snprintf(s_status.detail,sizeof(s_status.detail),"%s",detail);
+ if(s_status.batch && phase!=HOP_XFER_IDLE){
+  memmove(&s_history[1],&s_history[0],(size_t)(s_history_count<HOP_XFER_HISTORY_LIMIT?s_history_count:HOP_XFER_HISTORY_LIMIT-1)*sizeof(s_history[0]));
+  hop_xfer_history_entry *h=&s_history[0];memset(h,0,sizeof(*h));
+  h->batch=s_status.batch;h->direction=s_status.direction;h->phase=s_status.phase;
+  h->files_done=s_status.files_done;h->files_total=s_status.files_total;
+  h->bytes_done=s_status.bytes_done;h->bytes_total=s_status.bytes_total;h->finished_at=(uint64_t)time(NULL);
+  snprintf(h->name,sizeof(h->name),"%s",s_status.name);snprintf(h->detail,sizeof(h->detail),"%s",s_status.detail);
+  if(s_history_count<HOP_XFER_HISTORY_LIMIT)s_history_count++;
+ }
+ ReleaseSRWLockExclusive(&s_status_lock);
+}
 void xfer_get_status(hop_xfer_status *out){if(!out)return;AcquireSRWLockShared(&s_status_lock);*out=s_status;ReleaseSRWLockShared(&s_status_lock);}
+int xfer_get_history(hop_xfer_history_entry *out,int capacity){
+ if(!out||capacity<=0)return 0;AcquireSRWLockShared(&s_status_lock);
+ int n=s_history_count<capacity?s_history_count:capacity;memcpy(out,s_history,(size_t)n*sizeof(*out));
+ ReleaseSRWLockShared(&s_status_lock);return n;
+}
 
 static struct {
     HWND             hwnd;

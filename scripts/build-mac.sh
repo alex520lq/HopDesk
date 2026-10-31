@@ -12,7 +12,10 @@ PACKAGE="$BUILD/macos-package"
 rm -rf "$APP" "$ICONSET" "$PACKAGE" "$BUILD/HopDesk-macOS.zip"
 mkdir -p "$MACOS" "$RESOURCES" "$ICONSET" "$PACKAGE"
 
-python3 "$ROOT/scripts/generate-app-icons.py"
+if [ ! -s "$ROOT/assets/appicon/hopdesk.png" ]; then
+    echo "Pre-generated app icon missing: assets/appicon/hopdesk.png" >&2
+    exit 1
+fi
 cp "$ROOT/assets/appicon/hopdesk.png" "$RESOURCES/hopdesk.png"
 for size in 16 32 128 256 512; do
     sips -z "$size" "$size" "$ROOT/assets/appicon/hopdesk.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null

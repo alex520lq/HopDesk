@@ -55,6 +55,7 @@ static NSWindow *s_transferWindow;
 static NSTextField *s_transferTitle, *s_transferDetail, *s_transferCounts;
 static NSProgressIndicator *s_transferProgress;
 static NSTextView *s_transferHistory, *s_transferFiles;
+static hop_xfer_file_status *s_transferFileSnapshot;
 static uint32_t s_historyBatch;
 static uint32_t s_notifiedBatch;
 static int s_notifiedPhase;
@@ -192,23 +193,24 @@ static void transfer_window_refresh(void) {
     if (!s_transferWindow) return;
     hop_xfer_status st; memset(&st, 0, sizeof(st)); xfer_get_status(&st);
     transfer_notify_if_terminal(&st);
-    hop_xfer_file_status files[HOP_XFER_FILE_LIMIT];
-    int fileCount = xfer_get_files(files, HOP_XFER_FILE_LIMIT);
+    if (!s_transferFileSnapshot) s_transferFileSnapshot = calloc(HOP_XFER_FILE_LIMIT, sizeof(*s_transferFileSnapshot));
+    int fileCount = s_transferFileSnapshot ? xfer_get_files(s_transferFileSnapshot, HOP_XFER_FILE_LIMIT) : 0;
     if (s_transferFiles) {
         NSMutableString *fileRows = [NSMutableString string];
         for (int i = 0; i < fileCount; ++i) {
-            NSString *path = [NSString stringWithUTF8String:files[i].relative_path] ?: @"(未知文件)";
+            NSString *path = [NSString stringWithUTF8String:s_transferFileSnapshot[i].relative_path] ?: @"(未知文件)";
             NSUInteger depth = [[path componentsSeparatedByString:@"/"] count] - 1;
             NSString *indent = [@"" stringByPaddingToLength:MIN(depth * 2, 24) withString:@" " startingAtIndex:0];
-            NSString *state = files[i].phase == HOP_XFER_FILE_COMPLETED ? @"完成" :
-                              files[i].phase == HOP_XFER_FILE_FAILED ? @"失败" :
-                              files[i].phase == HOP_XFER_FILE_SENDING ? @"传输中" :
-                              files[i].phase == HOP_XFER_FILE_VERIFYING ? @"校验中" : @"排队中";
-            NSString *kind = files[i].is_directory ? @"📁" : @"📄";
+            NSString *state = s_transferFileSnapshot[i].phase == HOP_XFER_FILE_COMPLETED ? @"完成" :
+                              s_transferFileSnapshot[i].phase == HOP_XFER_FILE_FAILED ? @"失败" :
+                              s_transferFileSnapshot[i].phase == HOP_XFER_FILE_SENDING ? @"传输中" :
+                              s_transferFileSnapshot[i].phase == HOP_XFER_FILE_VERIFYING ? @"校验中" : @"排队中";
+            NSString *kind = s_transferFileSnapshot[i].is_directory ? @"📁" : @"📄";
             [fileRows appendFormat:@"%@%@ %@  %llu/%llu B  %@\n", indent, kind, path,
-                (unsigned long long)files[i].bytes_done, (unsigned long long)files[i].bytes_total, state];
+                (unsigned long long)s_transferFileSnapshot[i].bytes_done, (unsigned long long)s_transferFileSnapshot[i].bytes_total, state];
         }
-        s_transferFiles.string = fileRows.length ? fileRows : @"当前没有文件明细";
+        NSString *nextFiles = fileRows.length ? fileRows : @"当前没有文件明细";
+        if (![s_transferFiles.string isEqualToString:nextFiles]) s_transferFiles.string = nextFiles;
     }
     hop_xfer_history_entry history[HOP_XFER_HISTORY_LIMIT];
     int historyCount = xfer_get_history(history, HOP_XFER_HISTORY_LIMIT);

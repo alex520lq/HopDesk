@@ -23,9 +23,11 @@
 #define IDC_XFER_PROGRESS 2104
 #define IDC_XFER_CANCEL 2105
 #define IDC_XFER_RETRY 2106
+#define IDC_XFER_FILES 2107
 
 static HWND s_xfer_window, s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_progress, s_xfer_history, s_xfer_files;
 static hop_xfer_file_status *s_xfer_file_snapshot;
+static int s_collapsed_folders[HOP_XFER_FILE_LIMIT];
 static uint32_t s_history_batch;
 static uint32_t s_notified_batch;
 static int s_notified_phase;
@@ -56,9 +58,11 @@ static void xfer_window_refresh(void) {
         if (!s_xfer_file_snapshot) s_xfer_file_snapshot = (hop_xfer_file_status *)calloc(HOP_XFER_FILE_LIMIT, sizeof(*s_xfer_file_snapshot));
         int fileCount = s_xfer_file_snapshot ? xfer_get_files(s_xfer_file_snapshot, HOP_XFER_FILE_LIMIT) : 0;
         static uint64_t lastFileSignature = 0;
-        uint64_t fileSignature = (uint64_t)fileCount;
+        uint64_t fileSignature = ((uint64_t)st.batch << 32) ^ (uint64_t)fileCount;
         for (int i = 0; i < fileCount; ++i)
             fileSignature = (fileSignature * 1315423911ULL) ^ ((uint64_t)s_xfer_file_snapshot[i].phase << 32) ^ s_xfer_file_snapshot[i].bytes_done;
+        for (int i = 0; i < fileCount; ++i)
+            if (s_collapsed_folders[i]) fileSignature ^= (uint64_t)(i + 1) * 0x9e3779b97f4a7c15ULL;
         if (fileSignature != lastFileSignature) {
             lastFileSignature = fileSignature;
             int selectedBefore = (int)SendMessageW(s_xfer_files, LB_GETCURSEL, 0, 0);
@@ -66,6 +70,15 @@ static void xfer_window_refresh(void) {
             for (int i = 0; i < fileCount; ++i) {
                 wchar_t path[1024], row[1600], indent[64];
                 MultiByteToWideChar(CP_UTF8, 0, s_xfer_file_snapshot[i].relative_path, -1, path, ARRAYSIZE(path));
+                int hidden = 0;
+                for (int parent = 0; parent < i; ++parent) {
+                    if (!s_collapsed_folders[parent] || !s_xfer_file_snapshot[parent].is_directory) continue;
+                    const char *parentPath = s_xfer_file_snapshot[parent].relative_path;
+                    size_t parentLen = strlen(parentPath);
+                    if (strncmp(s_xfer_file_snapshot[i].relative_path, parentPath, parentLen) == 0 &&
+                        s_xfer_file_snapshot[i].relative_path[parentLen] == '/') { hidden = 1; break; }
+                }
+                if (hidden) continue;
                 int depth = 0;
                 for (const char *p = s_xfer_file_snapshot[i].relative_path; *p; ++p) if (*p == '/') depth++;
                 int spaces = depth * 2; if (spaces > 24) spaces = 24;
@@ -76,12 +89,13 @@ static void xfer_window_refresh(void) {
                     s_xfer_file_snapshot[i].phase == HOP_XFER_FILE_SENDING ? L"传输中" :
                     s_xfer_file_snapshot[i].phase == HOP_XFER_FILE_VERIFYING ? L"校验中" : L"排队中";
                 swprintf(row, ARRAYSIZE(row), L"%ls%ls %ls  %llu/%llu B  %ls",
-                    indent, s_xfer_file_snapshot[i].is_directory ? L"[目录]" : L"[文件]", path,
+                    indent, s_xfer_file_snapshot[i].is_directory ? (s_collapsed_folders[i] ? L"[+目录]" : L"[-目录]") : L"[文件]", path,
                     (unsigned long long)s_xfer_file_snapshot[i].bytes_done,
                     (unsigned long long)s_xfer_file_snapshot[i].bytes_total, state);
-                SendMessageW(s_xfer_files, LB_ADDSTRING, 0, (LPARAM)row);
+                LRESULT rowIndex = SendMessageW(s_xfer_files, LB_ADDSTRING, 0, (LPARAM)row);
+                if (rowIndex != LB_ERR) SendMessageW(s_xfer_files, LB_SETITEMDATA, (WPARAM)rowIndex, (LPARAM)i);
             }
-            if (selectedBefore >= 0 && selectedBefore < fileCount)
+            if (selectedBefore >= 0 && selectedBefore < (int)SendMessageW(s_xfer_files, LB_GETCOUNT, 0, 0))
                 SendMessageW(s_xfer_files, LB_SETCURSEL, selectedBefore, 0);
         }
     }
@@ -142,7 +156,7 @@ static LRESULT CALLBACK xfer_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             s_xfer_counts=CreateWindowW(L"STATIC",L"文件 0 / 0    数据 0 / 0 MB",WS_CHILD|WS_VISIBLE,20,88,520,22,h,(HMENU)IDC_XFER_COUNTS,g_app.inst,NULL);
             s_xfer_progress=CreateWindowW(PROGRESS_CLASSW,L"",WS_CHILD|WS_VISIBLE,20,122,520,18,h,(HMENU)IDC_XFER_PROGRESS,g_app.inst,NULL);
             CreateWindowW(L"STATIC",L"文件明细（目录层级）",WS_CHILD|WS_VISIBLE,20,158,520,20,h,NULL,g_app.inst,NULL);
-            s_xfer_files=CreateWindowW(L"LISTBOX",L"",WS_CHILD|WS_VISIBLE|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS,20,182,580,210,h,NULL,g_app.inst,NULL);
+            s_xfer_files=CreateWindowW(L"LISTBOX",L"",WS_CHILD|WS_VISIBLE|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS,20,182,580,210,h,(HMENU)IDC_XFER_FILES,g_app.inst,NULL);
             CreateWindowW(L"STATIC",L"最近 100 次传输",WS_CHILD|WS_VISIBLE,20,405,520,20,h,NULL,g_app.inst,NULL);
             s_xfer_history=CreateWindowW(L"LISTBOX",L"",WS_CHILD|WS_VISIBLE|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS,20,428,580,110,h,NULL,g_app.inst,NULL);
             CreateWindowW(L"BUTTON",L"重试选中文件",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,360,555,120,30,h,(HMENU)IDC_XFER_RETRY,g_app.inst,NULL);
@@ -151,9 +165,24 @@ static LRESULT CALLBACK xfer_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_TIMER: xfer_window_refresh(); return 0;
         case WM_COMMAND:
             if(LOWORD(wp)==IDC_XFER_CANCEL){xfer_cancel();return 0;}
+            if(LOWORD(wp)==IDC_XFER_FILES && HIWORD(wp)==LBN_DBLCLK){
+                int selected=(int)SendMessageW(s_xfer_files,LB_GETCURSEL,0,0);
+                if(selected!=LB_ERR){
+                    int fileIndex=(int)SendMessageW(s_xfer_files,LB_GETITEMDATA,(WPARAM)selected,0);
+                    if(fileIndex>=0 && fileIndex<HOP_XFER_FILE_LIMIT && s_xfer_file_snapshot &&
+                       s_xfer_file_snapshot[fileIndex].is_directory){
+                        s_collapsed_folders[fileIndex]=!s_collapsed_folders[fileIndex];
+                        xfer_window_refresh();
+                    }
+                }
+                return 0;
+            }
             if(LOWORD(wp)==IDC_XFER_RETRY){
                 int selected=(int)SendMessageW(s_xfer_files,LB_GETCURSEL,0,0);
-                if(selected!=LB_ERR)xfer_retry_file(selected);
+                if(selected!=LB_ERR){
+                    int fileIndex=(int)SendMessageW(s_xfer_files,LB_GETITEMDATA,(WPARAM)selected,0);
+                    xfer_retry_file(fileIndex);
+                }
                 return 0;
             }
             break;

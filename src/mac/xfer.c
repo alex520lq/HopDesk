@@ -1168,7 +1168,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
             s_rx.cur_path = strdup(path);
             s_rx.cur_size = size;
-            status_set_name(relz);
+            status_set_name(rel);
 
             if (s_rx.cur_is_dir) {
                 mkdir_p(path);

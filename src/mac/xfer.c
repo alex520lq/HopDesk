@@ -1358,7 +1358,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
             if (ack == HOP_FILE_ACK_OK) {
                 hop_xfer_status snapshot; xfer_get_status(&snapshot);
-                status_file_done(snapshot.files_done + 1, s_rx.cur_path ? s_rx.cur_path : "File received");
+                status_file_done(snapshot.files_done + 1, NULL);
             }
 
             /* 回执是发送端判断"这个文件成没成"的唯一依据。

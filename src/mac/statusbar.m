@@ -14,6 +14,7 @@
 - (void)doWake:(id)sender;
 - (void)doInputWin:(id)sender;
 - (void)doCancelXfer:(id)sender;
+- (void)doTransfers:(id)sender;
 @end
 @implementation HopController
 - (void)doQuit:(id)sender {
@@ -35,6 +36,7 @@
     (void)sender;
     xfer_cancel();
 }
+- (void)doTransfers:(id)sender { (void)sender; statusbar_show_transfers(); }
 /* 菜单打开时自动校验：没有传输在进行就把"取消"变灰。
  * NSMenu 默认 autoenablesItems，走的就是这个入口。 */
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
@@ -46,6 +48,9 @@
 static NSStatusItem *s_item;
 static NSMenuItem   *s_state;
 static HopController *s_ctrl;
+static NSWindow *s_transferWindow;
+static NSTextField *s_transferTitle, *s_transferDetail, *s_transferCounts;
+static NSProgressIndicator *s_transferProgress;
 
 static void set_appearance(int connected, int sharing) {
     NSString *sym;
@@ -111,6 +116,11 @@ void statusbar_init(void) {
                                                  keyEquivalent:@""];
         cancel.target = s_ctrl;
         [menu addItem:cancel];
+        NSMenuItem *transfers = [[NSMenuItem alloc] initWithTitle:@"传输管理器…"
+                                                           action:@selector(doTransfers:)
+                                                    keyEquivalent:@""];
+        transfers.target = s_ctrl;
+        [menu addItem:transfers];
 
         [menu addItem:[NSMenuItem separatorItem]];
 
@@ -127,6 +137,69 @@ void statusbar_init(void) {
 void statusbar_update(int connected, int sharing) {
     dispatch_async(dispatch_get_main_queue(), ^{
         set_appearance(connected, sharing);
+    });
+}
+
+static NSTextField *transfer_label(NSString *text, NSRect frame, CGFloat size) {
+    NSTextField *f = [[NSTextField alloc] initWithFrame:frame];
+    f.stringValue = text; f.editable = NO; f.bezeled = NO; f.drawsBackground = NO;
+    f.selectable = YES; f.font = [NSFont systemFontOfSize:size];
+    return f;
+}
+
+static void transfer_window_refresh(void) {
+    if (!s_transferWindow) return;
+    hop_xfer_status st; memset(&st, 0, sizeof(st)); xfer_get_status(&st);
+    NSString *title = st.name[0] ? [NSString stringWithUTF8String:st.name] : @"暂无传输任务";
+    NSString *phase = @"空闲";
+    switch (st.phase) {
+        case HOP_XFER_QUEUED: phase=@"排队中"; break;
+        case HOP_XFER_SCANNING: phase=@"扫描中"; break;
+        case HOP_XFER_SENDING: phase=@"发送中"; break;
+        case HOP_XFER_RECEIVING: phase=@"接收中"; break;
+        case HOP_XFER_VERIFYING: phase=@"校验中"; break;
+        case HOP_XFER_COMPLETED: phase=@"已完成"; break;
+        case HOP_XFER_PARTIAL: phase=@"部分失败"; break;
+        case HOP_XFER_FAILED: phase=@"失败"; break;
+        case HOP_XFER_CANCELLED: phase=@"已取消"; break;
+    }
+    s_transferTitle.stringValue = title ?: @"HopDesk";
+    NSString *direction = st.direction == HOP_XFER_DIR_SEND ? @"发送" :
+                          st.direction == HOP_XFER_DIR_RECEIVE ? @"接收" : @"";
+    s_transferDetail.stringValue = [NSString stringWithFormat:@"%@ · %@ · %@",
+        direction, phase, st.detail[0] ? [NSString stringWithUTF8String:st.detail] : @""];
+    s_transferCounts.stringValue = [NSString stringWithFormat:@"文件 %u / %u    数据 %@ / %@",
+        st.files_done, st.files_total,
+        [NSByteCountFormatter stringFromByteCount:(long long)st.bytes_done countStyle:NSByteCountFormatterCountStyleFile],
+        [NSByteCountFormatter stringFromByteCount:(long long)st.bytes_total countStyle:NSByteCountFormatterCountStyleFile]];
+    s_transferProgress.doubleValue = st.bytes_total ? MIN(100.0, 100.0 * (double)st.bytes_done / (double)st.bytes_total) : (st.active ? 0 : 100);
+}
+
+void statusbar_show_transfers(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!s_transferWindow) {
+            s_transferWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,460,190)
+                styleMask:(NSWindowStyleMaskTitled|NSWindowStyleMaskClosable)
+                backing:NSBackingStoreBuffered defer:NO];
+            s_transferWindow.title = @"HopDesk · 传输管理器";
+            NSView *v = s_transferWindow.contentView;
+            s_transferTitle = transfer_label(@"暂无传输任务", NSMakeRect(20,140,420,22), 15);
+            s_transferDetail = transfer_label(@"等待文件传输", NSMakeRect(20,108,420,20), 12);
+            s_transferCounts = transfer_label(@"文件 0 / 0    数据 0 B / 0 B", NSMakeRect(20,78,420,20), 12);
+            s_transferProgress = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(20,48,420,12)];
+            s_transferProgress.minValue=0; s_transferProgress.maxValue=100; s_transferProgress.indeterminate=NO;
+            NSButton *cancel = [[NSButton alloc] initWithFrame:NSMakeRect(340,12,100,28)];
+            cancel.title=@"取消传输"; cancel.bezelStyle=NSBezelStyleRounded;
+            cancel.target=s_ctrl; cancel.action=@selector(doCancelXfer:);
+            [v addSubview:s_transferTitle]; [v addSubview:s_transferDetail];
+            [v addSubview:s_transferCounts]; [v addSubview:s_transferProgress]; [v addSubview:cancel];
+            [NSTimer scheduledTimerWithTimeInterval:0.4 target:[NSBlockOperation blockOperationWithBlock:^{
+                transfer_window_refresh();
+            }] selector:@selector(main) userInfo:nil repeats:YES];
+        }
+        transfer_window_refresh();
+        [NSApp activateIgnoringOtherApps:YES];
+        [s_transferWindow makeKeyAndOrderFront:nil];
     });
 }
 

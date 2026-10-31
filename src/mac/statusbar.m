@@ -19,6 +19,7 @@
 - (void)doToggleFolder:(id)sender;
 @end
 static void retry_selected_mac_file(void);
+static void toggle_selected_mac_folder(void);
 @implementation HopController
 - (void)doQuit:(id)sender {
     (void)sender;

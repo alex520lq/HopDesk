@@ -23,6 +23,7 @@ $core = Get-ChildItem -LiteralPath (Join-Path $root 'src/core') -Filter *.c
 $win = Get-ChildItem -LiteralPath (Join-Path $root 'src/win') -Filter *.c
 $src = @($core.FullName) + @($win.FullName)
 $inc = Join-Path $root 'src/core'
+$iconInc = Join-Path $root 'assets/appicon'
 $out = Join-Path $build 'hopdesk.exe'
 $libs = 'ws2_32', 'dxva2', 'gdi32', 'shell32', 'user32', 'comctl32'
 $iconPng = Join-Path $root 'assets/appicon/hopdesk.png'
@@ -69,7 +70,7 @@ switch ($Compiler) {
         if (-not $clang) { throw '未找到 clang；安装 llvm-mingw（winget install MartinStorsjo.LLVM-MinGW.UCRT）或改用 -Compiler gcc。' }
 
         $libArgs = $libs | ForEach-Object { '-l' + $_ }
-        & $clang --target=x86_64-w64-mingw32 -O2 -Wall -Wextra @clangFlags -I $inc -o $out $src $res @libArgs
+        & $clang --target=x86_64-w64-mingw32 -O2 -Wall -Wextra @clangFlags -I $inc -I $iconInc -o $out $src $res @libArgs
         if ($LASTEXITCODE -ne 0) { throw "clang 编译失败（退出码 $LASTEXITCODE）" }
     }
     'gcc' {
@@ -88,7 +89,7 @@ switch ($Compiler) {
         $cl = (Get-Command cl.exe -ErrorAction SilentlyContinue).Source
         if (-not $cl) { throw '未找到 cl.exe；请在 x64 Native Tools for VS 终端运行。' }
         $libArgs = $libs | ForEach-Object { $_ + '.lib' }
-        & cl /nologo /O2 /MT /W3 /I $inc /Fe:$out $src /Fo"$build\\" @libArgs
+        & cl /nologo /O2 /MT /W3 /I $inc /I $iconInc /Fe:$out $src /Fo"$build\\" @libArgs
         if ($LASTEXITCODE -ne 0) { throw "cl 编译失败（退出码 $LASTEXITCODE）" }
     }
 }

@@ -28,4 +28,18 @@ typedef struct {
     char name[HOP_XFER_STATUS_NAME];
     char detail[HOP_XFER_STATUS_DETAIL];
 } hop_xfer_status;
+
+#define HOP_XFER_HISTORY_LIMIT 100
+typedef struct {
+    uint32_t batch;
+    int direction;
+    int phase;
+    uint32_t files_done;
+    uint32_t files_total;
+    uint64_t bytes_done;
+    uint64_t bytes_total;
+    uint64_t finished_at;
+    char name[HOP_XFER_STATUS_NAME];
+    char detail[HOP_XFER_STATUS_DETAIL];
+} hop_xfer_history_entry;
 #endif

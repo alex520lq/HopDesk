@@ -38,6 +38,42 @@ int hop_xfer_decode_image_begin(const uint8_t *p, uint32_t len,
     return 1;
 }
 
+int hop_xfer_decode_file_end(const uint8_t *p, uint32_t len,
+                             hop_xfer_file_end_msg *out) {
+    if (!p || !out || len != 9u) return 0;
+    out->id = hop_get_be32(p);
+    out->status = p[4];
+    out->file_crc = hop_get_be32(p + 5);
+    return 1;
+}
+
+int hop_xfer_decode_file_ack(const uint8_t *p, uint32_t len,
+                             hop_xfer_file_ack_msg *out) {
+    if (!p || !out || len != 9u) return 0;
+    out->batch = hop_get_be32(p);
+    out->id = hop_get_be32(p + 4);
+    out->status = p[8];
+    return 1;
+}
+
+int hop_xfer_decode_abort(const uint8_t *p, uint32_t len,
+                          hop_xfer_abort_msg *out) {
+    if (!p || !out || len != 5u) return 0;
+    out->batch = hop_get_be32(p);
+    out->reason = p[4];
+    return 1;
+}
+
+int hop_xfer_decode_done(const uint8_t *p, uint32_t len,
+                         hop_xfer_done_msg *out) {
+    if (!p || !out || len != 20u) return 0;
+    out->batch = hop_get_be32(p);
+    out->ok = hop_get_be32(p + 4);
+    out->total = hop_get_be32(p + 8);
+    out->bytes = hop_get_be64(p + 12);
+    return 1;
+}
+
 int hop_xfer_hello_valid(const uint8_t *p, uint32_t len, const char *token) {
     if (!p || !token || len < 2) return 0;
     size_t want = strlen(token);

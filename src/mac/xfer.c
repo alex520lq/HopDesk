@@ -1234,10 +1234,11 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
         }
 
         case HOP_MSG_FILE_END: {
-            if (len < 9) return;
-            uint32_t id     = hop_get_be32(p);
-            uint32_t want   = hop_get_be32(p + 5);
-            uint8_t  status = p[4];
+            hop_xfer_file_end_msg end_msg;
+            if (!hop_xfer_decode_file_end(p, len, &end_msg)) return;
+            uint32_t id = end_msg.id;
+            uint32_t want = end_msg.file_crc;
+            uint8_t status = end_msg.status;
 
             /* 图片整批走，没有逐文件回执：发送端不会等 */
             if (s_rx.cur_is_image) break;
@@ -1281,17 +1282,18 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             break;
         }
 
-        case HOP_MSG_FILE_ACK:
-            /* 本端是发送方时，单文件结论从这里进来 —— 送到槽里，
-             * 让 send_file_entry 里等着的那个 ack_wait 返回。 */
-            if (len >= 9)
-                ack_deliver(hop_get_be32(p), hop_get_be32(p + 4), p[8]);
+        case HOP_MSG_FILE_ACK: {
+            hop_xfer_file_ack_msg ack;
+            if (hop_xfer_decode_file_ack(p, len, &ack))
+                ack_deliver(ack.batch, ack.id, ack.status);
             break;
+        }
 
         case HOP_MSG_XFER_ABORT: {
-            if (len < 5) return;
-            uint32_t batch  = hop_get_be32(p);
-            uint8_t  reason = p[4];
+            hop_xfer_abort_msg abort_msg;
+            if (!hop_xfer_decode_abort(p, len, &abort_msg)) return;
+            uint32_t batch = abort_msg.batch;
+            uint8_t reason = abort_msg.reason;
 
             /* 发送线程可能正卡在等 ACK 里 —— 踢醒它，取消不该等满 10 秒 */
             pthread_mutex_lock(&s_x.qlock);
@@ -1314,18 +1316,19 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             break;
         }
 
-        case HOP_MSG_XFER_DONE:
-            if (len >= 20) {
-                uint32_t batch = hop_get_be32(p);
-                uint32_t ok    = hop_get_be32(p + 4);
-                uint32_t total = hop_get_be32(p + 8);
-                if (ok < total)
-                    hop_log(HOP_LOG_ERROR,
-                            "xfer: batch %u PARTIAL - %u/%u delivered, %u failed",
-                            batch, ok, total, total - ok);
+        case HOP_MSG_XFER_DONE: {
+            hop_xfer_done_msg done;
+            if (!hop_xfer_decode_done(p, len, &done)) {
+                hop_log(HOP_LOG_WARN, "xfer: malformed XFER_DONE ignored");
+                return;
             }
+            if (done.ok < done.total)
+                hop_log(HOP_LOG_ERROR,
+                        "xfer: batch %u PARTIAL - %u/%u delivered, %u failed",
+                        done.batch, done.ok, done.total, done.total - done.ok);
             rx_finish_batch();
             break;
+        }
 
         default:
             break;

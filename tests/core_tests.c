@@ -400,6 +400,36 @@ static void test_image_begin_decode(void) {
     CHECK(!hop_xfer_decode_image_begin(p,sizeof(p)-1,&m));
     CHECK(!hop_xfer_decode_image_begin(p,sizeof(p)+1,&m));
 }
+
+static void test_file_end_ack_abort_done_decoders(void) {
+    uint8_t end[9] = {0}, ack[9] = {0}, abortp[5] = {0}, donep[20] = {0};
+    hop_put_be32(end, 17); end[4] = HOP_FILE_OK; hop_put_be32(end+5, 0xAABBCCDDu);
+    hop_xfer_file_end_msg e;
+    CHECK(hop_xfer_decode_file_end(end,sizeof(end),&e));
+    CHECK(e.id==17 && e.status==HOP_FILE_OK && e.file_crc==0xAABBCCDDu);
+    CHECK(!hop_xfer_decode_file_end(end,8,&e));
+    CHECK(!hop_xfer_decode_file_end(end,10,&e));
+
+    hop_put_be32(ack, 21); hop_put_be32(ack+4, 17); ack[8]=HOP_FILE_ACK_CRC;
+    hop_xfer_file_ack_msg a;
+    CHECK(hop_xfer_decode_file_ack(ack,sizeof(ack),&a));
+    CHECK(a.batch==21 && a.id==17 && a.status==HOP_FILE_ACK_CRC);
+    CHECK(!hop_xfer_decode_file_ack(ack,8,&a));
+
+    hop_put_be32(abortp, 21); abortp[4]=HOP_ABORT_CANCEL;
+    hop_xfer_abort_msg ab;
+    CHECK(hop_xfer_decode_abort(abortp,sizeof(abortp),&ab));
+    CHECK(ab.batch==21 && ab.reason==HOP_ABORT_CANCEL);
+    CHECK(!hop_xfer_decode_abort(abortp,6,&ab));
+
+    hop_put_be32(donep,21); hop_put_be32(donep+4,2); hop_put_be32(donep+8,3);
+    hop_put_be64(donep+12,123456);
+    hop_xfer_done_msg d;
+    CHECK(hop_xfer_decode_done(donep,sizeof(donep),&d));
+    CHECK(d.batch==21 && d.ok==2 && d.total==3 && d.bytes==123456);
+    CHECK(!hop_xfer_decode_done(donep,19,&d));
+    CHECK(!hop_xfer_decode_done(donep,21,&d));
+}
 int main(void) {
     hop_crc32_init();
 
@@ -422,6 +452,7 @@ int main(void) {
     test_relative_path_wire_bytes();
     test_file_begin_decode();
     test_image_begin_decode();
+    test_file_end_ack_abort_done_decoders();
 
     if (g_failures) {
         fprintf(stderr, "HopDesk core tests: %d failure(s)\n", g_failures);

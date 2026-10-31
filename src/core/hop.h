@@ -252,10 +252,39 @@ typedef struct {
     uint32_t batch, id, width, height, stride;
 } hop_xfer_image_begin_msg;
 
+typedef struct {
+    uint32_t id;
+    uint8_t status;
+    uint32_t file_crc;
+} hop_xfer_file_end_msg;
+
+typedef struct {
+    uint32_t batch, id;
+    uint8_t status;
+} hop_xfer_file_ack_msg;
+
+typedef struct {
+    uint32_t batch;
+    uint8_t reason;
+} hop_xfer_abort_msg;
+
+typedef struct {
+    uint32_t batch, ok, total;
+    uint64_t bytes;
+} hop_xfer_done_msg;
+
 int hop_xfer_decode_file_begin(const uint8_t *payload, uint32_t len,
                                hop_xfer_file_begin_msg *out);
 int hop_xfer_decode_image_begin(const uint8_t *payload, uint32_t len,
                                 hop_xfer_image_begin_msg *out);
+int hop_xfer_decode_file_end(const uint8_t *payload, uint32_t len,
+                             hop_xfer_file_end_msg *out);
+int hop_xfer_decode_file_ack(const uint8_t *payload, uint32_t len,
+                             hop_xfer_file_ack_msg *out);
+int hop_xfer_decode_abort(const uint8_t *payload, uint32_t len,
+                          hop_xfer_abort_msg *out);
+int hop_xfer_decode_done(const uint8_t *payload, uint32_t len,
+                         hop_xfer_done_msg *out);
 int hop_xfer_hello_valid(const uint8_t *payload, uint32_t len, const char *token);
 int hop_xfer_relpath_bytes_safe(const uint8_t *rel, size_t len);
 int hop_xfer_relpath_safe(const char *rel);

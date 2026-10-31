@@ -183,6 +183,7 @@ static void status_add_received_file(uint32_t id,const char *relative_path,uint6
  pthread_mutex_lock(&s_status_lock);
  int index=(int)id-1;
  if(s_file_count<(int)id)s_file_count=(int)id;
+ if(s_status.files_total<id)s_status.files_total=id;
  memset(&s_files[index],0,sizeof(s_files[index]));
  s_files[index].index=index;s_files[index].phase=HOP_XFER_FILE_RECEIVING;
  s_files[index].bytes_total=size;s_files[index].is_directory=is_directory;

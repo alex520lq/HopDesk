@@ -11,7 +11,8 @@
 #include <limits.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <sys/file.h>\n#include <sys/stat.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 
 /* ---- 单实例 ----
  * macOS 端是客户端，不 bind 端口，所以不会"抢端口"；但两个实例会同时

@@ -82,7 +82,7 @@ switch ($Compiler) {
         if (-not $gcc) { throw '未找到 gcc；可运行 w64devkit，或用 -Compiler clang。' }
 
         $libArgs = $libs | ForEach-Object { '-l' + $_ }
-        & $gcc -O2 -Wall -Wextra -municode -mwindows -I $inc -o $out $src @libArgs
+        & $gcc -O2 -Wall -Wextra -municode -mwindows -I $inc -I $iconInc -o $out $src $res @libArgs
         if ($LASTEXITCODE -ne 0) { throw "gcc 编译失败（退出码 $LASTEXITCODE）" }
     }
     'msvc' {

@@ -138,8 +138,8 @@ static void xfer_window_refresh(void) {
     const wchar_t *dir = st.direction==HOP_XFER_DIR_SEND?L"发送":st.direction==HOP_XFER_DIR_RECEIVE?L"接收":L"";
     swprintf(detail, HOP_XFER_STATUS_DETAIL, L"%ls · %ls · %hs", dir, phase, st.detail);
     SetWindowTextW(s_xfer_detail, detail);
-    swprintf(counts, 256, L"文件 %u / %u    数据 %llu / %llu MB",
-        st.files_done, st.files_total,
+    swprintf(counts, 256, L"文件 %u / %u    排队 %u    数据 %llu / %llu MB",
+        st.files_done, st.files_total, st.queued_count,
         (unsigned long long)(st.bytes_done/1048576ULL),
         (unsigned long long)(st.bytes_total/1048576ULL));
     SetWindowTextW(s_xfer_counts, counts);

@@ -25,6 +25,7 @@
 #define IDC_XFER_RETRY 2106
 
 static HWND s_xfer_window, s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_progress, s_xfer_history, s_xfer_files;
+static hop_xfer_file_status *s_xfer_file_snapshot;
 static uint32_t s_history_batch;
 static uint32_t s_notified_batch;
 static int s_notified_phase;
@@ -52,30 +53,36 @@ static void xfer_window_refresh(void) {
     hop_xfer_status st; memset(&st, 0, sizeof(st)); xfer_get_status(&st);
     xfer_notify_if_terminal(&st);
     if (s_xfer_files) {
-        hop_xfer_file_status files[HOP_XFER_FILE_LIMIT];
-        int fileCount = xfer_get_files(files, HOP_XFER_FILE_LIMIT);
-        static uint32_t lastFileBatch = 0;
-        if (lastFileBatch != st.batch || fileCount > 0) {
-            lastFileBatch = st.batch;
+        if (!s_xfer_file_snapshot) s_xfer_file_snapshot = (hop_xfer_file_status *)calloc(HOP_XFER_FILE_LIMIT, sizeof(*s_xfer_file_snapshot));
+        int fileCount = s_xfer_file_snapshot ? xfer_get_files(s_xfer_file_snapshot, HOP_XFER_FILE_LIMIT) : 0;
+        static uint64_t lastFileSignature = 0;
+        uint64_t fileSignature = (uint64_t)fileCount;
+        for (int i = 0; i < fileCount; ++i)
+            fileSignature = (fileSignature * 1315423911ULL) ^ ((uint64_t)s_xfer_file_snapshot[i].phase << 32) ^ s_xfer_file_snapshot[i].bytes_done;
+        if (fileSignature != lastFileSignature) {
+            lastFileSignature = fileSignature;
+            int selectedBefore = (int)SendMessageW(s_xfer_files, LB_GETCURSEL, 0, 0);
             SendMessageW(s_xfer_files, LB_RESETCONTENT, 0, 0);
             for (int i = 0; i < fileCount; ++i) {
                 wchar_t path[1024], row[1600], indent[64];
-                MultiByteToWideChar(CP_UTF8, 0, files[i].relative_path, -1, path, ARRAYSIZE(path));
+                MultiByteToWideChar(CP_UTF8, 0, s_xfer_file_snapshot[i].relative_path, -1, path, ARRAYSIZE(path));
                 int depth = 0;
-                for (const char *p = files[i].relative_path; *p; ++p) if (*p == '/') depth++;
+                for (const char *p = s_xfer_file_snapshot[i].relative_path; *p; ++p) if (*p == '/') depth++;
                 int spaces = depth * 2; if (spaces > 24) spaces = 24;
                 for (int j = 0; j < spaces; ++j) indent[j] = L' ';
                 indent[spaces] = 0;
-                const wchar_t *state = files[i].phase == HOP_XFER_FILE_COMPLETED ? L"完成" :
-                    files[i].phase == HOP_XFER_FILE_FAILED ? L"失败" :
-                    files[i].phase == HOP_XFER_FILE_SENDING ? L"传输中" :
-                    files[i].phase == HOP_XFER_FILE_VERIFYING ? L"校验中" : L"排队中";
+                const wchar_t *state = s_xfer_file_snapshot[i].phase == HOP_XFER_FILE_COMPLETED ? L"完成" :
+                    s_xfer_file_snapshot[i].phase == HOP_XFER_FILE_FAILED ? L"失败" :
+                    s_xfer_file_snapshot[i].phase == HOP_XFER_FILE_SENDING ? L"传输中" :
+                    s_xfer_file_snapshot[i].phase == HOP_XFER_FILE_VERIFYING ? L"校验中" : L"排队中";
                 swprintf(row, ARRAYSIZE(row), L"%ls%ls %ls  %llu/%llu B  %ls",
-                    indent, files[i].is_directory ? L"[目录]" : L"[文件]", path,
-                    (unsigned long long)files[i].bytes_done,
-                    (unsigned long long)files[i].bytes_total, state);
+                    indent, s_xfer_file_snapshot[i].is_directory ? L"[目录]" : L"[文件]", path,
+                    (unsigned long long)s_xfer_file_snapshot[i].bytes_done,
+                    (unsigned long long)s_xfer_file_snapshot[i].bytes_total, state);
                 SendMessageW(s_xfer_files, LB_ADDSTRING, 0, (LPARAM)row);
             }
+            if (selectedBefore >= 0 && selectedBefore < fileCount)
+                SendMessageW(s_xfer_files, LB_SETCURSEL, selectedBefore, 0);
         }
     }
     if (s_xfer_history) {

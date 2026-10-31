@@ -66,7 +66,7 @@ typedef enum {
      * 与控制通道分开，是为了让大载荷不挤占鼠标/键盘帧：
      * 单条 TCP 流上的大块数据会造成队头阻塞，鼠标事件要等整块发完。
      * 图片也走这里 —— 一张 4K 截图裸 BGRA 就是 33 MB，塞不进控制通道。 */
-    HOP_MSG_XFER_HELLO   = 50,  /* C -> S: ver(1)                  */
+    HOP_MSG_XFER_HELLO   = 50,  /* 双向: ver(1)+token_len(1)+token */
     HOP_MSG_FILE_BEGIN   = 51,  /* S -> C: id(4)+size(8)+mtime(8)+flags(1)
                                  *         +nlen(2)+name+plen(2)+relpath */
     HOP_MSG_FILE_CHUNK   = 52,  /* 双向: id(4)+off(8)+len(4)+crc(4)+data */
@@ -103,10 +103,11 @@ typedef enum {
  * v1: FILE_CHUNK = id+off+len+data          FILE_END = id+status
  * v2: FILE_CHUNK 加 crc(4)，FILE_END 加 file_crc(4)，新增 XFER_ABORT
  * v3: 新增 FILE_ACK（逐文件确认），XFER_DONE 载荷改为 20 字节并带真实计数
+ * v4: 数据通道 HELLO 增加 token 身份校验，握手未通过不得传输。
  * 两端必须同版本：旧端发来的块在新端会按错位的 CRC 字段解析，
  * 结果是每块都校验失败。所以连上就先比版本，别让用户对着
  * "传输一直失败"猜原因。 */
-#define HOP_XFER_PROTO_VER   3
+#define HOP_XFER_PROTO_VER   4
 
 /* ---- XFER_ABORT 的 reason ---- */
 #define HOP_ABORT_CRC        1

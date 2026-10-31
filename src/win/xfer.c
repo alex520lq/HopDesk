@@ -58,6 +58,7 @@ static struct {
     hop_config       cfg;
     SOCKET           listen_s;
     SOCKET           client;
+    int              peer_ready;    /* 数据通道版本与 token 握手通过 */
     CRITICAL_SECTION lock;      /* 保护 client + 作业队列 + 取消标记 */
     HANDLE           stop;
     HANDLE           q_evt;
@@ -1101,17 +1102,40 @@ static void rx_finish_batch(void) {
 static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
     (void)user;
 
+    if (type == HOP_MSG_XFER_HELLO) {
+        size_t want = strlen(s_x.cfg.token);
+        int valid = len >= 2 && p[0] == HOP_XFER_PROTO_VER &&
+                    p[1] == want && len == 2u + want &&
+                    (want == 0 || memcmp(p + 2, s_x.cfg.token, want) == 0);
+        if (!valid) {
+            hop_log(HOP_LOG_ERROR,
+                    "xfer: peer handshake rejected (protocol/token mismatch)");
+            EnterCriticalSection(&s_x.lock);
+            SOCKET active = s_x.client;
+            s_x.peer_ready = 0;
+            LeaveCriticalSection(&s_x.lock);
+            if (active != INVALID_SOCKET) shutdown(active, SD_BOTH);
+            return;
+        }
+        EnterCriticalSection(&s_x.lock);
+        s_x.peer_ready = 1;
+        LeaveCriticalSection(&s_x.lock);
+        hop_log(HOP_LOG_INFO, "xfer: authenticated peer data channel (v%u)",
+                (unsigned)HOP_XFER_PROTO_VER);
+        return;
+    }
+
+    EnterCriticalSection(&s_x.lock);
+    int ready = s_x.peer_ready;
+    SOCKET active = s_x.client;
+    LeaveCriticalSection(&s_x.lock);
+    if (!ready) {
+        hop_log(HOP_LOG_WARN, "xfer: frame received before handshake; closing peer");
+        if (active != INVALID_SOCKET) shutdown(active, SD_BOTH);
+        return;
+    }
+
     switch (type) {
-        case HOP_MSG_XFER_HELLO:
-            if (len >= 1 && p[0] != HOP_XFER_PROTO_VER)
-                hop_log(HOP_LOG_ERROR,
-                        "xfer: peer speaks data protocol v%u, we speak v%u — "
-                        "两端版本不一致，请把两边都重建",
-                        p[0], (unsigned)HOP_XFER_PROTO_VER);
-            else
-                hop_log(HOP_LOG_INFO, "xfer: peer data channel ready (v%u)",
-                        (unsigned)HOP_XFER_PROTO_VER);
-            break;
 
         case HOP_MSG_FILE_BEGIN: {
             if (len < 27) return;
@@ -1436,6 +1460,7 @@ static DWORD WINAPI listen_thread(LPVOID arg) {
 
         EnterCriticalSection(&s_x.lock);
         s_x.client = c;
+        s_x.peer_ready = 0;
         s_x.abort_batch = 0;          /* 新会话，上一轮的 ABORT 不再算数 */
         LeaveCriticalSection(&s_x.lock);
 
@@ -1446,11 +1471,16 @@ static DWORD WINAPI listen_thread(LPVOID arg) {
          * 接收不发，于是 Mac 端永远打不出 "peer data channel ready"，
          * 版本不一致时也发现不了 —— 一条静默的协议漂移。两边都发。 */
         {
-            uint8_t hello = HOP_XFER_PROTO_VER;
-            send_small(c, HOP_MSG_XFER_HELLO, &hello, 1);
+            uint8_t hello[2 + HOP_TOKEN_MAX];
+            size_t token_len = strlen(s_x.cfg.token);
+            hello[0] = HOP_XFER_PROTO_VER;
+            hello[1] = (uint8_t)token_len;
+            if (token_len) memcpy(hello + 2, s_x.cfg.token, token_len);
+            if (!send_small(c, HOP_MSG_XFER_HELLO, hello, (uint32_t)(2 + token_len)))
+                shutdown(c, SD_BOTH);
         }
 
-        hop_log(HOP_LOG_INFO, "xfer: data channel connected");
+        hop_log(HOP_LOG_INFO, "xfer: data channel connected; waiting for peer authentication");
 
         char buf[65536];
         for (;;) {
@@ -1474,6 +1504,7 @@ static DWORD WINAPI listen_thread(LPVOID arg) {
 
         EnterCriticalSection(&s_x.lock);
         s_x.client = INVALID_SOCKET;
+        s_x.peer_ready = 0;
         LeaveCriticalSection(&s_x.lock);
         closesocket(c);
         /* 只关文件，不清批次：发送端会带着同一个 batch 号回来，
@@ -1608,7 +1639,7 @@ void xfer_shutdown(void) {
 int xfer_connected(void) {
     int c;
     EnterCriticalSection(&s_x.lock);
-    c = (s_x.client != INVALID_SOCKET);
+    c = (s_x.client != INVALID_SOCKET && s_x.peer_ready);
     LeaveCriticalSection(&s_x.lock);
     return c;
 }
@@ -1644,7 +1675,7 @@ void xfer_cancel(void) {
 static int submit(xfer_job *j) {
     int ok = 0;
     EnterCriticalSection(&s_x.lock);
-    if (s_x.client != INVALID_SOCKET) {
+    if (s_x.client != INVALID_SOCKET && s_x.peer_ready) {
         if (s_x.q_tail) s_x.q_tail->next = j;
         else            s_x.q_head = j;
         s_x.q_tail = j;

@@ -89,6 +89,18 @@ static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
     }
 }
 
+static int socket_send_all(int fd, const void *buf, size_t len) {
+    const uint8_t *p = (const uint8_t *)buf;
+    while (len > 0) {
+        ssize_t n = write(fd, p, len);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return 0;
+        p += (size_t)n;
+        len -= (size_t)n;
+    }
+    return 1;
+}
+
 int net_send(uint8_t type, const void *payload, uint32_t len) {
     uint8_t hdr[HOP_HEADER_SIZE];
     hop_encode_header(hdr, type, len);
@@ -98,8 +110,8 @@ int net_send(uint8_t type, const void *payload, uint32_t len) {
     int ok = 0;
     if (s >= 0) {
         ok = 1;
-        if (write(s, hdr, HOP_HEADER_SIZE) != HOP_HEADER_SIZE) ok = 0;
-        if (ok && len && write(s, payload, len) != (int)len) ok = 0;
+        ok = socket_send_all(s, hdr, HOP_HEADER_SIZE);
+        if (ok && len) ok = socket_send_all(s, payload, len);
     }
     pthread_mutex_unlock(&s_lock);
     return ok;
@@ -133,6 +145,12 @@ static int do_connect(void) {
     for (struct addrinfo *r = res; r; r = r->ai_next) {
         s = socket(r->ai_family, r->ai_socktype, r->ai_protocol);
         if (s < 0) continue;
+        int no_sigpipe = 1;
+        if (setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe)) != 0) {
+            close(s);
+            s = -1;
+            continue;
+        }
         if (connect(s, r->ai_addr, r->ai_addrlen) == 0) break;
         close(s);
         s = -1;

@@ -17,6 +17,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <ftw.h>
+#include <limits.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <pthread.h>

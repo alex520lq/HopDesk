@@ -177,6 +177,18 @@ static void status_set_files(const xf_entry *entries,int n){
  }
  pthread_mutex_unlock(&s_status_lock);
 }
+static void status_add_received_file(uint32_t id,const char *relative_path,uint64_t size,int is_directory){
+ if(id==0||id>HOP_XFER_FILE_LIMIT)return;
+ pthread_mutex_lock(&s_status_lock);
+ int index=(int)id-1;
+ if(s_file_count<(int)id)s_file_count=(int)id;
+ memset(&s_files[index],0,sizeof(s_files[index]));
+ s_files[index].index=index;s_files[index].phase=HOP_XFER_FILE_RECEIVING;
+ s_files[index].bytes_total=size;s_files[index].is_directory=is_directory;
+ if(relative_path)snprintf(s_files[index].relative_path,sizeof(s_files[index].relative_path),"%s",relative_path);
+ s_current_file=index;
+ pthread_mutex_unlock(&s_status_lock);
+}
 static void status_file_phase(int index,int phase,uint32_t attempts){
  pthread_mutex_lock(&s_status_lock);
  if(index>=0&&index<s_file_count){s_current_file=index;s_files[index].phase=phase;s_files[index].attempts=attempts;}
@@ -1247,6 +1259,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             s_rx.cur_path = strdup(path);
             s_rx.cur_size = size;
             status_set_name(rel);
+            status_add_received_file(id,rel,size,s_rx.cur_is_dir);
 
             if (s_rx.cur_is_dir) {
                 mkdir_p(path);
@@ -1402,6 +1415,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             /* 图片整批走，没有逐文件回执：发送端不会等 */
             if (s_rx.cur_is_image) break;
 
+            status_file_phase((int)id-1,HOP_XFER_FILE_VERIFYING,0);
             int ack = HOP_FILE_ACK_OK;
 
             if (s_rx.cur_fail >= 0) {
@@ -1434,6 +1448,8 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 hop_xfer_status snapshot; xfer_get_status(&snapshot);
                 status_file_done(snapshot.files_done + 1, NULL);
             }
+
+            status_file_phase((int)id-1,ack==HOP_FILE_ACK_OK?HOP_XFER_FILE_COMPLETED:HOP_XFER_FILE_FAILED,0);
 
             /* 回执是发送端判断"这个文件成没成"的唯一依据。
              * 以前这里发的是批量级 ABORT，等于一个文件坏了就把整批判死。 */

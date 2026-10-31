@@ -19,6 +19,10 @@ A green compile is not evidence that those manual/device cases passed.
 | XFER-003 | Image bounds | Zero/negative, stride, side cap, 256 MiB cap, boundary |
 | XFER-004 | Chunk bounds | Exact end, overflow, beyond file/image cap, zero, malformed |
 | XFER-005 | Retry policy | File/job backoff, retry limits and reconnect budget |
+| XFER-006 | FILE_BEGIN parser | Valid fields, zero/oversized name, short payload, truncated path, trailing bytes |
+| XFER-007 | IMAGE_BEGIN parser | Exact 20-byte payload, truncated and trailing bytes |
+| XFER-008 | Clipboard origin | Apply remote origin; suppress local-origin echo on both endpoints |
+| XFER-009 | File CRC fold | Chunk CRC fold, ordering sensitivity, sender/receiver shared helper |
 
 ## B. Network/data-channel integration (next automation layer)
 

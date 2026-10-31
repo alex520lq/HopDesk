@@ -74,10 +74,26 @@ jobs:
       - name: Run TCP loopback tests
         run: sh scripts/test-network.sh
 
-      - name: Upload macOS build
+      - name: Verify macOS app bundle
+        run: |
+          test -d build/HopDesk.app
+          test -x build/HopDesk.app/Contents/MacOS/HopDesk
+          plutil -lint build/HopDesk.app/Contents/Info.plist
+          codesign --verify --deep --strict build/HopDesk.app
+          test -s build/HopDesk-macOS.zip
+
+      - name: Upload macOS app bundle
         uses: actions/upload-artifact@v4
         with:
-          name: hopdesk-macos
-          path: build/hopdesk
+          name: hopdesk-macos-app
+          path: build/HopDesk.app
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload macOS install archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: hopdesk-macos-zip
+          path: build/HopDesk-macOS.zip
           if-no-files-found: error
           retention-days: 14

@@ -25,6 +25,20 @@ $src = @($core.FullName) + @($win.FullName)
 $inc = Join-Path $root 'src/core'
 $out = Join-Path $build 'hopdesk.exe'
 $libs = 'ws2_32', 'dxva2', 'gdi32', 'shell32', 'user32', 'comctl32'
+$iconPng = Join-Path $root 'assets/appicon/hopdesk.png'
+$iconIco = Join-Path $root 'assets/appicon/hopdesk.ico'
+$resource = Join-Path $root 'assets/appicon/hopdesk.rc'
+$res = Join-Path $build 'hopdesk-res.o'
+
+python (Join-Path $root 'scripts/generate-app-icons.py')
+if ($LASTEXITCODE -ne 0) { throw 'HopDesk icon generation failed' }
+Push-Location $root
+try {
+    $windres = (Get-Command windres.exe -ErrorAction SilentlyContinue).Source
+    if (-not $windres) { throw 'windres.exe not found; install mingw-w64 binutils' }
+    & $windres -i $resource -o $res
+    if ($LASTEXITCODE -ne 0) { throw 'windres failed to compile the icon resource' }
+} finally { Pop-Location }
 
 function Find-Clang {
     $c = (Get-Command clang.exe -ErrorAction SilentlyContinue).Source
@@ -55,7 +69,7 @@ switch ($Compiler) {
         if (-not $clang) { throw '未找到 clang；安装 llvm-mingw（winget install MartinStorsjo.LLVM-MinGW.UCRT）或改用 -Compiler gcc。' }
 
         $libArgs = $libs | ForEach-Object { '-l' + $_ }
-        & $clang --target=x86_64-w64-mingw32 -O2 -Wall -Wextra @clangFlags -I $inc -o $out $src @libArgs
+        & $clang --target=x86_64-w64-mingw32 -O2 -Wall -Wextra @clangFlags -I $inc -o $out $src $res @libArgs
         if ($LASTEXITCODE -ne 0) { throw "clang 编译失败（退出码 $LASTEXITCODE）" }
     }
     'gcc' {

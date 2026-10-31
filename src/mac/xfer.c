@@ -100,10 +100,14 @@ static struct {
 static pthread_mutex_t s_txlock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t s_status_lock = PTHREAD_MUTEX_INITIALIZER;
 static hop_xfer_status s_status;
+static hop_xfer_file_status s_files[HOP_XFER_FILE_LIMIT];
+static int s_file_count;
+static int s_current_file = -1;
 static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];
 static int s_history_count;
 static void status_begin(uint32_t batch,int direction,uint32_t files,uint64_t bytes,const char *name,int phase){
  pthread_mutex_lock(&s_status_lock); memset(&s_status,0,sizeof(s_status));
+ memset(s_files,0,sizeof(s_files));s_file_count=0;s_current_file=-1;
  s_status.batch=batch;s_status.active=1;s_status.direction=direction;s_status.phase=phase;
  s_status.files_total=files;s_status.bytes_total=bytes;if(name)snprintf(s_status.name,sizeof(s_status.name),"%s",name);
  snprintf(s_status.detail,sizeof(s_status.detail),"%s",direction==HOP_XFER_DIR_SEND?"Sending to peer":"Receiving from peer");
@@ -116,6 +120,11 @@ static void status_progress(uint64_t bytes,uint32_t files_done,const char *name,
 static void status_add_bytes(uint32_t n) {
  pthread_mutex_lock(&s_status_lock);
  if(s_status.active){s_status.bytes_done+=n;if(s_status.bytes_done>s_status.bytes_total)s_status.bytes_done=s_status.bytes_total;}
+ if(s_current_file>=0&&s_current_file<s_file_count){
+  s_files[s_current_file].bytes_done+=n;
+  if(s_files[s_current_file].bytes_done>s_files[s_current_file].bytes_total)
+   s_files[s_current_file].bytes_done=s_files[s_current_file].bytes_total;
+ }
  pthread_mutex_unlock(&s_status_lock);
 }
 static void status_add_total(uint64_t n) {
@@ -149,6 +158,27 @@ static void status_end(int phase,const char *detail){
  pthread_mutex_unlock(&s_status_lock);
 }
 void xfer_get_status(hop_xfer_status *out){if(!out)return;pthread_mutex_lock(&s_status_lock);*out=s_status;pthread_mutex_unlock(&s_status_lock);}
+static void status_set_files(const xf_entry *entries,int n){
+ pthread_mutex_lock(&s_status_lock);
+ s_file_count=n>HOP_XFER_FILE_LIMIT?HOP_XFER_FILE_LIMIT:n;
+ for(int i=0;i<s_file_count;i++){
+  s_files[i].index=(uint32_t)i;s_files[i].phase=HOP_XFER_FILE_QUEUED;
+  s_files[i].bytes_total=entries[i].size;
+  if(entries[i].rel)snprintf(s_files[i].relative_path,sizeof(s_files[i].relative_path),"%s",entries[i].rel);
+  else if(entries[i].name)snprintf(s_files[i].relative_path,sizeof(s_files[i].relative_path),"%s",entries[i].name);
+ }
+ pthread_mutex_unlock(&s_status_lock);
+}
+static void status_file_phase(int index,int phase,uint32_t attempts){
+ pthread_mutex_lock(&s_status_lock);
+ if(index>=0&&index<s_file_count){s_current_file=index;s_files[index].phase=phase;s_files[index].attempts=attempts;}
+ pthread_mutex_unlock(&s_status_lock);
+}
+int xfer_get_files(hop_xfer_file_status *out,int capacity){
+ if(!out||capacity<=0)return 0;pthread_mutex_lock(&s_status_lock);
+ int n=s_file_count<capacity?s_file_count:capacity;memcpy(out,s_files,(size_t)n*sizeof(*out));
+ pthread_mutex_unlock(&s_status_lock);return n;
+}
 int xfer_get_history(hop_xfer_history_entry *out,int capacity){
  if(!out||capacity<=0)return 0;pthread_mutex_lock(&s_status_lock);
  int n=s_history_count<capacity?s_history_count:capacity;memcpy(out,s_history,(size_t)n*sizeof(*out));
@@ -599,6 +629,7 @@ static int run_job(int fd, uint8_t *tx, xf_job *j) {
         }
 
         const xf_entry *e = &j->e[j->next_i];
+        status_file_phase(j->next_i,HOP_XFER_FILE_SENDING,0);
         uint32_t id = (uint32_t)(j->next_i + 1);
         int st = HOP_FILE_ACK_OK;
         int tries = 0;
@@ -628,8 +659,10 @@ static int run_job(int fd, uint8_t *tx, xf_job *j) {
 
         if (st == HOP_FILE_ACK_OK) {
             j->ok++;
+            status_file_phase(j->next_i,HOP_XFER_FILE_COMPLETED,(uint32_t)(tries+1));
             status_file_done((uint32_t)j->ok,e->name);
         } else {
+            status_file_phase(j->next_i,HOP_XFER_FILE_FAILED,(uint32_t)(tries+1));
             hop_log(HOP_LOG_ERROR, "xfer: giving up on %s after %d attempt(s) (status %d)",
                     e->rel, tries + 1, st);
         }
@@ -740,6 +773,7 @@ static void *send_thread(void *arg) {
         else total_bytes=(uint64_t)j->stride*j->h;
         status_begin(j->batch,HOP_XFER_DIR_SEND,(uint32_t)j->n,total_bytes,
                      j->is_image?"Image":j->e[0].name,HOP_XFER_SENDING);
+        if(!j->is_image)status_set_files(j->e,j->n);
 
         pthread_mutex_lock(&s_x.slock);
         fd = s_x.sock;

@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <io.h>
 #include <time.h>
 
 #define XFER_MAX_ENTRIES  8192     /* 一次提交的条目上限，防跑飞 */

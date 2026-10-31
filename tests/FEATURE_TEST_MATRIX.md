@@ -22,7 +22,9 @@ A green compile is not evidence that those manual/device cases passed.
 | XFER-006 | FILE_BEGIN parser | Valid fields, zero/oversized name, short payload, truncated path, trailing bytes |
 | XFER-007 | IMAGE_BEGIN parser | Exact 20-byte payload, truncated and trailing bytes |
 | XFER-008 | Clipboard origin | Apply remote origin; suppress local-origin echo on both endpoints |
-| XFER-009 | File CRC fold | Chunk CRC fold, ordering sensitivity, sender/receiver shared helper |
+| XFER-009 | File CRC fold | Chunk offset + CRC fold, ordering/position sensitivity, sender/receiver shared helper |
+| XFER-010 | File wire round-trip | Empty, 1-byte, chunk boundaries, multi-chunk, CRC corruption, offset tamper, reorder, traversal path, empty directory |
+| XFER-011 | Image wire round-trip | Exact image bytes, truncated image, reordered chunks, corrupt CRC, beyond-declared-size chunk |
 
 ## B. Network/data-channel integration (next automation layer)
 

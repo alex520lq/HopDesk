@@ -97,6 +97,8 @@ Run every case in both directions (Windows→Mac and Mac→Windows).
 | CLIP-008 | Test transparency and padded row stride | Alpha/orientation/row alignment are correct or documented |
 | CLIP-009 | Test large 4K image | Transfer succeeds within configured cap |
 | CLIP-010 | Send invalid dimensions/stride via protocol harness | Receiver rejects without excessive allocation |
+| CLIP-011 | Send image with missing final chunk, gap, overlap or extra chunk | Image is not applied to clipboard; batch is rejected |
+| CLIP-012 | Corrupt one image chunk CRC | Image is discarded; no partial image reaches clipboard |
 
 ## Display control
 

@@ -69,7 +69,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
 
       - name: Initialize Visual Studio x64 tools
         uses: ilammy/msvc-dev-cmd@v1
@@ -126,7 +126,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
 
       - name: Build macOS app (timed)
         run: |

@@ -40,6 +40,7 @@ typedef enum {
 typedef struct {
     uint32_t index;
     int phase;
+    int is_directory;
     uint32_t attempts;
     uint64_t bytes_done;
     uint64_t bytes_total;

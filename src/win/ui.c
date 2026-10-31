@@ -3,6 +3,7 @@
  * ===================================================================== */
 #include "app.h"
 #include "xfer.h"
+#include "resource.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,46 +14,6 @@
 #define IDM_DISP_WIN   1004
 #define IDM_DISP_SLEEP 1005
 #define IDM_XFER_CANCEL 1006
-
-/* 用纯色圆生成一个 16x16 图标 */
-static HICON make_icon(COLORREF c) {
-    const int S = 16;
-    HDC scr = GetDC(NULL);
-    HDC dc = CreateCompatibleDC(scr);
-    HBITMAP color = CreateCompatibleBitmap(scr, S, S);
-    HBITMAP mask = CreateBitmap(S, S, 1, 1, NULL);
-    HBITMAP old = SelectObject(dc, color);
-
-    HBRUSH bg = CreateSolidBrush(RGB(0, 0, 0));
-    RECT all = { 0, 0, S, S };
-    FillRect(dc, &all, bg);
-    DeleteObject(bg);
-
-    HBRUSH b = CreateSolidBrush(c);
-    HBRUSH ob = SelectObject(dc, b);
-    HPEN pen = CreatePen(PS_SOLID, 1, c);
-    HPEN open = SelectObject(dc, pen);
-    Ellipse(dc, 2, 2, S - 2, S - 2);
-    SelectObject(dc, ob);
-    SelectObject(dc, open);
-    DeleteObject(b);
-    DeleteObject(pen);
-
-    SelectObject(dc, old);
-    ICONINFO ii;
-    ii.fIcon = TRUE;
-    ii.xHotspot = 0;
-    ii.yHotspot = 0;
-    ii.hbmMask = mask;
-    ii.hbmColor = color;
-    HICON ic = CreateIconIndirect(&ii);
-
-    DeleteObject(color);
-    DeleteObject(mask);
-    DeleteDC(dc);
-    ReleaseDC(NULL, scr);
-    return ic;
-}
 
 static const wchar_t *state_text_w(win_app *app) {
     switch (app->state) {
@@ -111,9 +72,11 @@ static void show_menu(win_app *app) {
 void ui_show_menu(win_app *app) { show_menu(app); }
 
 void ui_init(win_app *app) {
-    app->icons[0] = make_icon(RGB(150, 150, 150));
-    app->icons[1] = make_icon(RGB(70, 130, 220));
-    app->icons[2] = make_icon(RGB(60, 180, 110));
+    /* All tray states use the exact same brand icon; state is shown in tooltip/menu. */
+    for (int i = 0; i < 3; ++i) {
+        app->icons[i] = (HICON)LoadImageW(GetModuleHandleW(NULL),
+            MAKEINTRESOURCEW(IDI_HOPDESK), IMAGE_ICON, 32, 32, LR_DEFAULTCOLOR);
+    }
 
     memset(&app->nid, 0, sizeof(app->nid));
     app->nid.cbSize = sizeof(app->nid);

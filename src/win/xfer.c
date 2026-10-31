@@ -119,6 +119,7 @@ static void status_set_files(const xfer_entry *entries,int n){
  s_file_count=n>HOP_XFER_FILE_LIMIT?HOP_XFER_FILE_LIMIT:n;
  for(int i=0;i<s_file_count;i++){
   s_files[i].index=(uint32_t)i;s_files[i].phase=HOP_XFER_FILE_QUEUED;
+  s_files[i].is_directory=(entries[i].flags & HOP_FILE_FLAG_DIR)!=0;
   s_files[i].bytes_total=entries[i].size;
   if(entries[i].rel)snprintf(s_files[i].relative_path,sizeof(s_files[i].relative_path),"%s",entries[i].rel);
   else if(entries[i].name)snprintf(s_files[i].relative_path,sizeof(s_files[i].relative_path),"%s",entries[i].name);

@@ -57,11 +57,18 @@ static void set_appearance(int connected, int sharing) {
     } else {
         sym = @"circle"; color = [NSColor systemGrayColor];
     }
-    NSImage *base = [NSImage imageWithSystemSymbolName:sym
-                                accessibilityDescription:nil];
-    NSImageSymbolConfiguration *cfg =
-        [NSImageSymbolConfiguration configurationWithPaletteColors:@[color]];
-    s_item.button.image = [base imageWithSymbolConfiguration:cfg];
+    NSString *iconPath = [[NSBundle mainBundle] pathForResource:@"hopdesk" ofType:@"png"];
+    NSImage *base = iconPath ? [[NSImage alloc] initWithContentsOfFile:iconPath] : nil;
+    if (!base) {
+        base = [NSImage imageWithSystemSymbolName:sym accessibilityDescription:nil];
+        NSImageSymbolConfiguration *cfg =
+            [NSImageSymbolConfiguration configurationWithPaletteColors:@[color]];
+        base = [base imageWithSymbolConfiguration:cfg];
+    } else {
+        base.size = NSMakeSize(18.0, 18.0);
+        base.template = NO;
+    }
+    s_item.button.image = base;
 
     s_state.title = sharing ? @"键鼠在 Mac"
                   : connected ? @"已连接（Windows 主控）"

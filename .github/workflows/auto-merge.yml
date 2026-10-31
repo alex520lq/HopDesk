@@ -41,4 +41,4 @@ jobs:
             exit 0
           fi
 
-          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --squash --delete-branch
+          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --squash --delete-branch --match-head-commit "$EXPECTED_SHA"

@@ -43,6 +43,56 @@ static int   s_suppress;
 static DWORD s_suppress_until;
 #define CLIP_SUPPRESS_MS 400
 
+/* Latest remote clipboard payload survives temporary clipboard contention.
+ * Ownership of HGLOBAL transfers here; Windows owns it only after SetClipboardData. */
+static HGLOBAL s_pending_global;
+static UINT s_pending_format;
+
+static void schedule_clip_retry(void) {
+    if (g_app.hwnd) SetTimer(g_app.hwnd, IDT_CLIP_RETRY, 120, NULL);
+}
+
+static int apply_global(UINT format, HGLOBAL h) {
+    if (!h) return 0;
+    if (open_retry(g_app.hwnd)) {
+        if (EmptyClipboard() && SetClipboardData(format, h)) {
+            s_suppress = 1;
+            s_suppress_until = GetTickCount() + CLIP_SUPPRESS_MS;
+            CloseClipboard();
+            return 1;
+        }
+        CloseClipboard();
+    }
+    if (s_pending_global) GlobalFree(s_pending_global);
+    s_pending_global = h;
+    s_pending_format = format;
+    schedule_clip_retry();
+    hop_log(HOP_LOG_WARN, "clip: clipboard busy; queued remote format %u for retry", format);
+    return 0;
+}
+
+void clip_retry_pending(void) {
+    if (s_pending_global) {
+        if (open_retry(g_app.hwnd)) {
+            if (EmptyClipboard() && SetClipboardData(s_pending_format, s_pending_global)) {
+                s_pending_global = NULL; /* ownership transferred to Windows */
+                s_suppress = 1;
+                s_suppress_until = GetTickCount() + CLIP_SUPPRESS_MS;
+                hop_log(HOP_LOG_INFO, "clip: pending remote clipboard applied");
+                CloseClipboard();
+            } else {
+                CloseClipboard();
+                schedule_clip_retry();
+                return;
+            }
+        } else {
+            schedule_clip_retry();
+            return;
+        }
+    }
+    KillTimer(g_app.hwnd, IDT_CLIP_RETRY);
+}
+
 /* 图片上限：4K 截图裸 BGRA 约 33 MB，留到 256 MB 足够，再大就是异常了 */
 #define CLIP_IMG_MAX_BYTES (256u * 1024u * 1024u)
 
@@ -67,6 +117,8 @@ void clip_init(HWND hwnd) {
 
 void clip_shutdown(HWND hwnd) {
     RemoveClipboardFormatListener(hwnd);
+    KillTimer(hwnd, IDT_CLIP_RETRY);
+    if (s_pending_global) { GlobalFree(s_pending_global); s_pending_global = NULL; }
 }
 
 /* ---- 发送 ---- */
@@ -267,14 +319,10 @@ void clip_apply_remote(const uint8_t *p, uint32_t len) {
         GlobalUnlock(h);
     }
 
-    if (open_retry(g_app.hwnd)) {
-        if (EmptyClipboard() && SetClipboardData(CF_UNICODETEXT, h)) {
-            s_suppress = 1;
-            s_suppress_until = GetTickCount() + CLIP_SUPPRESS_MS;
-            h = NULL;   /* 所有权归系统，不再 GlobalFree */
-            hop_log(HOP_LOG_INFO, "clip: text in %u bytes", len - 4);
-        }
-        CloseClipboard();
+    if (apply_global(CF_UNICODETEXT, h)) {
+        hop_log(HOP_LOG_INFO, "clip: text in %u bytes", len - 4);
+    } else {
+        h = NULL; /* apply_global retained ownership for retry */
     }
     if (h) GlobalFree(h);
     free(u);
@@ -309,18 +357,11 @@ void clip_apply_remote_paths(const wchar_t *const *paths, int n) {
     }
     GlobalUnlock(h);
 
-    if (open_retry(g_app.hwnd)) {
-        if (EmptyClipboard() && SetClipboardData(CF_HDROP, h)) {
-            s_suppress = 1;
-            s_suppress_until = GetTickCount() + CLIP_SUPPRESS_MS;
-            hop_log(HOP_LOG_INFO, "clip: %d path(s) in (first: %ls)", n, paths[0]);
-            CloseClipboard();
-            return;
-        }
-        CloseClipboard();
+    if (apply_global(CF_HDROP, h)) {
+        hop_log(HOP_LOG_INFO, "clip: %d path(s) in (first: %ls)", n, paths[0]);
+    } else {
+        hop_log(HOP_LOG_WARN, "clip: received paths queued for clipboard retry");
     }
-    GlobalFree(h);
-    hop_log(HOP_LOG_WARN, "clip: failed to put received paths on clipboard");
 }
 
 /* 收到图片：裸 BGRA 自上而下 -> CF_DIB（32 位，自下而上，BI_RGB） */
@@ -355,16 +396,9 @@ void clip_apply_remote_image(const uint8_t *bgra, int w, int h, int stride) {
     }
     GlobalUnlock(gh);
 
-    if (open_retry(g_app.hwnd)) {
-        if (EmptyClipboard() && SetClipboardData(CF_DIB, gh)) {
-            s_suppress = 1;
-            s_suppress_until = GetTickCount() + CLIP_SUPPRESS_MS;
-            hop_log(HOP_LOG_INFO, "clip: image in %dx%d", w, h);
-            CloseClipboard();
-            return;
-        }
-        CloseClipboard();
+    if (apply_global(CF_DIB, gh)) {
+        hop_log(HOP_LOG_INFO, "clip: image in %dx%d", w, h);
+    } else {
+        hop_log(HOP_LOG_WARN, "clip: received image queued for clipboard retry");
     }
-    GlobalFree(gh);
-    hop_log(HOP_LOG_WARN, "clip: failed to put received image on clipboard");
 }

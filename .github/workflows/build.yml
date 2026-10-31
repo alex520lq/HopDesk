@@ -39,6 +39,10 @@ jobs:
         shell: pwsh
         run: ./scripts/test-core.ps1
 
+      - name: Run file-transfer protocol tests
+        shell: pwsh
+        run: ./scripts/test-xfer-protocol.ps1
+
       - name: Run TCP loopback tests
         shell: pwsh
         run: ./scripts/test-network.ps1
@@ -63,6 +67,9 @@ jobs:
 
       - name: Run portable core tests
         run: sh scripts/test-core.sh
+
+      - name: Run file-transfer protocol tests
+        run: sh scripts/test-xfer-protocol.sh
 
       - name: Run TCP loopback tests
         run: sh scripts/test-network.sh

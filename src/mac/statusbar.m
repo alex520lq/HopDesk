@@ -51,6 +51,25 @@ static HopController *s_ctrl;
 static NSWindow *s_transferWindow;
 static NSTextField *s_transferTitle, *s_transferDetail, *s_transferCounts;
 static NSProgressIndicator *s_transferProgress;
+static uint32_t s_notifiedBatch;
+static int s_notifiedPhase;
+
+static void transfer_notify_if_terminal(const hop_xfer_status *st) {
+    if (!st || st->active || st->batch == 0) return;
+    if (st->phase != HOP_XFER_COMPLETED && st->phase != HOP_XFER_PARTIAL &&
+        st->phase != HOP_XFER_FAILED && st->phase != HOP_XFER_CANCELLED) return;
+    if (s_notifiedBatch == st->batch && s_notifiedPhase == st->phase) return;
+    s_notifiedBatch = st->batch;
+    s_notifiedPhase = st->phase;
+    NSString *title = st->phase == HOP_XFER_COMPLETED ? @"传输完成" :
+                      st->phase == HOP_XFER_PARTIAL ? @"传输部分失败" :
+                      st->phase == HOP_XFER_CANCELLED ? @"传输已取消" : @"传输失败";
+    NSString *detail = st->detail[0] ? [NSString stringWithUTF8String:st->detail] : @"请打开传输管理器查看详情";
+    NSUserNotification *note = [[NSUserNotification alloc] init];
+    note.title = title;
+    note.informativeText = detail ?: @"请打开传输管理器查看详情";
+    [[NSUserNotificationCenter defaultUserNotificationCenter] deliverNotification:note];
+}
 
 static void set_appearance(int connected, int sharing) {
     NSString *sym;
@@ -150,6 +169,7 @@ static NSTextField *transfer_label(NSString *text, NSRect frame, CGFloat size) {
 static void transfer_window_refresh(void) {
     if (!s_transferWindow) return;
     hop_xfer_status st; memset(&st, 0, sizeof(st)); xfer_get_status(&st);
+    transfer_notify_if_terminal(&st);
     NSString *title = st.name[0] ? [NSString stringWithUTF8String:st.name] : @"暂无传输任务";
     NSString *phase = @"空闲";
     switch (st.phase) {

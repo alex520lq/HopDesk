@@ -1066,15 +1066,27 @@ static void rx_begin_batch(uint32_t batch) {
 }
 
 /* 收完后把顶层条目放进剪贴板（CF_HDROP），Mac 那边就能直接粘贴 */
-static void rx_finish_batch(void) {
-    /* 落盘全部完成后才能把路径挂到剪贴板 —— 否则用户粘贴到的是半截文件 */
+static void rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
+    if (!s_rx.active || s_rx.batch != batch) {
+        hop_log(HOP_LOG_WARN, "xfer: stale DONE for batch %u ignored (active=%u)",
+                batch, s_rx.active ? s_rx.batch : 0);
+        return;
+    }
+
+    /* 落盘全部完成后才能把路径挂到剪贴板。 */
     rx_task t;
     memset(&t, 0, sizeof(t));
     t.kind = RX_CLOSE;
     wq_push(&t);
     wq_drain();
 
-    if (s_rx.cur_is_image) {
+    if (ok != total) {
+        /* Keep the staged files for recovery, but never advertise a partial folder
+         * through CF_HDROP as though it were a successful transfer. */
+        hop_log(HOP_LOG_ERROR,
+                "xfer: batch %u incomplete (%u/%u entries); staged data kept at %ls; clipboard not updated",
+                batch, ok, total, s_rx.dir);
+    } else if (s_rx.cur_is_image) {
         if (s_rx.img && s_rx.img_len == s_rx.img_expected)
             clip_apply_remote_image(s_rx.img, s_rx.img_w, s_rx.img_h, s_rx.img_stride);
         else
@@ -1083,7 +1095,8 @@ static void rx_finish_batch(void) {
     } else if (s_rx.ntop > 0) {
         clip_apply_remote_paths((const wchar_t *const *)s_rx.tops, s_rx.ntop);
     }
-    hop_log(HOP_LOG_INFO, "xfer: batch %u done (%d items)", s_rx.batch, s_rx.ntop);
+    hop_log(HOP_LOG_INFO, "xfer: batch %u done (%d items, %u/%u ACKed)",
+            batch, s_rx.ntop, ok, total);
     rx_reset();
 }
 
@@ -1415,7 +1428,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 hop_log(HOP_LOG_ERROR,
                         "xfer: batch %u PARTIAL - %u/%u delivered, %u failed",
                         done.batch, done.ok, done.total, done.total - done.ok);
-            rx_finish_batch();
+            rx_finish_batch(done.batch, done.ok, done.total);
             break;
         }
 

@@ -237,6 +237,13 @@ uint16_t hop_get_be16(const uint8_t *p);
 uint32_t hop_get_be32(const uint8_t *p);
 uint64_t hop_get_be64(const uint8_t *p);
 
+/* ---- 数据通道输入校验（平台无关，可单元测试） ---- */
+int hop_xfer_hello_valid(const uint8_t *payload, uint32_t len, const char *token);
+int hop_xfer_relpath_safe(const char *rel);
+int hop_xfer_image_valid(int32_t width, int32_t height, int32_t stride);
+int hop_xfer_chunk_valid(const uint8_t *payload, uint32_t len,
+                         uint64_t declared_size, int is_image);
+
 /* ---- CRC32（IEEE 802.3，增量式） ---- */
 void     hop_crc32_init(void);
 uint32_t hop_crc32(uint32_t seed, const void *data, size_t len);

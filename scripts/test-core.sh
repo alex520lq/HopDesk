@@ -9,5 +9,6 @@ clang -std=c11 -Wall -Wextra -I "$ROOT/src/core" \
   "$ROOT/src/core/protocol.c" \
   "$ROOT/src/core/crc32.c" \
   "$ROOT/src/core/config.c" \
-  "$ROOT/src/core/keymap.c"
+  "$ROOT/src/core/keymap.c" \
+  "$ROOT/src/core/xfer_validate.c"
 "$BUILD/hopdesk-core-tests"

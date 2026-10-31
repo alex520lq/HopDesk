@@ -106,26 +106,7 @@ static const wchar_t *base_name(const wchar_t *p) {
     return b;
 }
 
-/* 相对路径安全校验。
- * 对端是可信的，但"越界写入"不该由"信任"兜底 —— 一条 ../.. 就能写到
- * 临时目录外面去。规则：不许绝对路径、不许盘符、不许 .. 作为完整分量
- * （"a..b" 是合法文件名，不能一并拒掉）。 */
-static int rel_safe(const char *rel) {
-    if (!rel || !*rel) return 0;
-    if (rel[0] == '/' || rel[0] == '\\') return 0;
-    if (strchr(rel, ':')) return 0;
-
-    const char *p = rel;
-    while (*p) {
-        const char *seg = p;
-        while (*p && *p != '/' && *p != '\\') ++p;
-        size_t n = (size_t)(p - seg);
-        if (n == 2 && seg[0] == '.' && seg[1] == '.') return 0;
-        if (n == 0) return 0;                 /* 连续的 / 或 \\，异常 */
-        if (*p) ++p;
-    }
-    return 1;
-}
+/* Relative path validation is shared in src/core/xfer_validate.c. */
 
 /* FILETIME -> Unix 秒 */
 static uint64_t ft_to_unix(const FILETIME *ft) {
@@ -1109,9 +1090,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
     if (type == HOP_MSG_XFER_HELLO) {
         size_t want = strlen(s_x.cfg.token);
-        int valid = len >= 2 && p[0] == HOP_XFER_PROTO_VER &&
-                    p[1] == want && len == 2u + want &&
-                    (want == 0 || memcmp(p + 2, s_x.cfg.token, want) == 0);
+        int valid = hop_xfer_hello_valid(p, len, s_x.cfg.token);
         if (!valid) {
             hop_log(HOP_LOG_ERROR,
                     "xfer: peer handshake rejected (protocol/token mismatch)");
@@ -1176,7 +1155,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             memcpy(relz, rel, plen);
             relz[plen] = '\0';
 
-            if (!rel_safe(relz)) {
+            if (!hop_xfer_relpath_safe(relz)) {
                 hop_log(HOP_LOG_WARN, "xfer: unsafe rel path rejected: %s", relz);
                 free(relz);
                 s_rx.cur_fail = HOP_FILE_ACK_BADPATH;
@@ -1233,8 +1212,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
             /* 对端声称的尺寸必须自己验：不然 w=h=100000 就能把内存吃光。
              * 这正是"避免内存不断增长"的边界。 */
-            if (w <= 0 || h <= 0 || w > HOP_IMG_MAX_SIDE || h > HOP_IMG_MAX_SIDE ||
-                stride < w * 4 || (uint64_t)stride * (uint64_t)h > HOP_IMG_MAX_BYTES) {
+            if (!hop_xfer_image_valid(w, h, stride)) {
                 hop_log(HOP_LOG_ERROR,
                         "xfer: image %dx%d stride %d rejected (over cap)", w, h, stride);
                 uint8_t ab[5];
@@ -1258,7 +1236,16 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             uint64_t off = hop_get_be64(p + 4);
             uint32_t n   = hop_get_be32(p + 12);
             uint32_t crc = hop_get_be32(p + 16);
-            if (20u + n > len) return;
+            if (!hop_xfer_chunk_valid(p, len,
+                    s_rx.cur_fail >= 0 ? UINT64_MAX : s_rx.cur_size,
+                    s_rx.cur_is_image)) {
+                hop_log(HOP_LOG_WARN, "xfer: malformed or out-of-range chunk; closing data channel");
+                EnterCriticalSection(&s_x.lock);
+                SOCKET active = s_x.client;
+                LeaveCriticalSection(&s_x.lock);
+                if (active != INVALID_SOCKET) shutdown(active, SD_BOTH);
+                return;
+            }
             const uint8_t *data = p + 20;
 
             /* 逐块校验。TCP 的 16 位校验和 + 网卡 offload 有漏检可能，

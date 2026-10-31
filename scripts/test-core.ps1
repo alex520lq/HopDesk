@@ -8,7 +8,8 @@ $sources = @(
     (Join-Path $root 'src/core/protocol.c'),
     (Join-Path $root 'src/core/crc32.c'),
     (Join-Path $root 'src/core/config.c'),
-    (Join-Path $root 'src/core/keymap.c')
+    (Join-Path $root 'src/core/keymap.c'),
+    (Join-Path $root 'src/core/xfer_validate.c')
 )
 & gcc -std=c11 -Wall -Wextra -I (Join-Path $root 'src/core') -o $out @sources
 if ($LASTEXITCODE -ne 0) { throw "Core test compilation failed ($LASTEXITCODE)" }

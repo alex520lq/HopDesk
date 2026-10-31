@@ -144,6 +144,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             clip_on_update();
             return 0;
         case WM_TIMER:
+            if (wp == IDT_XFER_NOTIFY) { ui_transfer_poll(); return 0; }
             if (wp == IDT_CLIP_RETRY) {
                 clip_retry_pending();
                 clip_on_update(); /* retry the latest local clipboard snapshot too */

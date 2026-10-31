@@ -53,6 +53,23 @@ typedef struct {
 
 /* ---------------- 全局状态 ---------------- */
 
+static SRWLOCK s_status_lock = SRWLOCK_INIT;
+static hop_xfer_status s_status;
+static void status_begin(uint32_t batch,int direction,uint32_t files,uint64_t bytes,const char *name,int phase){
+ AcquireSRWLockExclusive(&s_status_lock);memset(&s_status,0,sizeof(s_status));
+ s_status.batch=batch;s_status.active=1;s_status.direction=direction;s_status.phase=phase;
+ s_status.files_total=files;s_status.bytes_total=bytes;if(name)snprintf(s_status.name,sizeof(s_status.name),"%s",name);
+ snprintf(s_status.detail,sizeof(s_status.detail),"%s",direction==HOP_XFER_DIR_SEND?"Sending to peer":"Receiving from peer");
+ ReleaseSRWLockExclusive(&s_status_lock);
+}
+static void status_progress(uint64_t bytes,uint32_t files_done,const char *name,int phase){
+ AcquireSRWLockExclusive(&s_status_lock);if(s_status.active){s_status.bytes_done=bytes;s_status.files_done=files_done;
+ if(name)snprintf(s_status.name,sizeof(s_status.name),"%s",name);s_status.phase=phase;}ReleaseSRWLockExclusive(&s_status_lock);
+}
+static void status_end(int phase,const char *detail){AcquireSRWLockExclusive(&s_status_lock);s_status.active=0;s_status.phase=phase;
+ if(detail)snprintf(s_status.detail,sizeof(s_status.detail),"%s",detail);ReleaseSRWLockExclusive(&s_status_lock);}
+void xfer_get_status(hop_xfer_status *out){if(!out)return;AcquireSRWLockShared(&s_status_lock);*out=s_status;ReleaseSRWLockShared(&s_status_lock);}
+
 static struct {
     HWND             hwnd;
     hop_config       cfg;
@@ -549,6 +566,8 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
 
         if (st == HOP_FILE_ACK_OK) {
             j->ok++;
+            uint64_t bytes_done=0;for(int si=0;si<=j->next_i;si++)bytes_done+=j->e[si].size;
+            status_progress(bytes_done,(uint32_t)j->ok,e->name,HOP_XFER_SENDING);
         } else {
             hop_log(HOP_LOG_ERROR, "xfer: giving up on %s after %d attempt(s) (status %d)",
                     e->rel, tries + 1, st);
@@ -659,6 +678,9 @@ static DWORD WINAPI send_thread(LPVOID arg) {
             }
 
             if (!j) break;
+            uint64_t total_bytes=0;for(int si=0;si<j->n;si++)total_bytes+=j->e[si].size;
+            status_begin(j->batch,HOP_XFER_DIR_SEND,(uint32_t)j->n,total_bytes,
+                         j->is_image?"Image":j->e[0].name,HOP_XFER_SENDING);
 
             int r = run_job(c, tx, j);
 
@@ -697,6 +719,9 @@ static DWORD WINAPI send_thread(LPVOID arg) {
                             j->batch, j->ok, j->n);
                 send_done(c, j);
             }
+            if(r==JOB_DONE)status_end(j->ok==j->n?HOP_XFER_COMPLETED:HOP_XFER_PARTIAL,j->ok==j->n?"Transfer completed":"Some files failed");
+            else if(r==JOB_CANCELLED)status_end(HOP_XFER_CANCELLED,"Cancelled");
+            else if(r==JOB_PEER_ABORT)status_end(HOP_XFER_FAILED,"Peer aborted transfer");
             job_free(j);
         }
     }
@@ -1749,6 +1774,11 @@ int xfer_submit_paths(const wchar_t *const *paths, int n) {
 
     hop_log(HOP_LOG_INFO, "xfer: queued batch %u, %d entries, %.1f MB",
             j->batch, j->n, (double)total / 1048576.0);
+    AcquireSRWLockExclusive(&s_status_lock);
+    if(!s_status.active){s_status.batch=j->batch;s_status.active=1;s_status.direction=HOP_XFER_DIR_SEND;
+      s_status.phase=HOP_XFER_QUEUED;s_status.files_total=(uint32_t)j->n;s_status.bytes_total=total;
+      snprintf(s_status.name,sizeof(s_status.name),"%s",paths[0]? "Files":"");snprintf(s_status.detail,sizeof(s_status.detail),"Queued");}
+    ReleaseSRWLockExclusive(&s_status_lock);
 
     if (!submit(j)) { job_free(j); return 0; }
     return 1;

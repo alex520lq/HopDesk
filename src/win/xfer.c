@@ -133,6 +133,18 @@ static void status_set_files(const xfer_entry *entries,int n){
  }
  ReleaseSRWLockExclusive(&s_status_lock);
 }
+static void status_add_received_file(uint32_t id,const char *relative_path,uint64_t size,int is_directory){
+ if(id==0||id>HOP_XFER_FILE_LIMIT)return;
+ AcquireSRWLockExclusive(&s_status_lock);
+ int index=(int)id-1;
+ if(s_file_count<(int)id)s_file_count=(int)id;
+ memset(&s_files[index],0,sizeof(s_files[index]));
+ s_files[index].index=index;s_files[index].phase=HOP_XFER_FILE_RECEIVING;
+ s_files[index].bytes_total=size;s_files[index].is_directory=is_directory;
+ if(relative_path)snprintf(s_files[index].relative_path,sizeof(s_files[index].relative_path),"%s",relative_path);
+ s_current_file=index;
+ ReleaseSRWLockExclusive(&s_status_lock);
+}
 static void status_file_phase(int index,int phase,uint32_t attempts){
  AcquireSRWLockExclusive(&s_status_lock);
  if(index>=0&&index<s_file_count){s_current_file=index;s_files[index].phase=phase;s_files[index].attempts=attempts;}
@@ -1308,6 +1320,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             }
 
             status_set_name(relz);
+            status_add_received_file(id,relz,size,s_rx.cur_is_dir);
             wchar_t *path = rx_path_for(relz);
             free(relz);
             if (!path) { s_rx.cur_fail = HOP_FILE_ACK_BADPATH; break; }
@@ -1481,6 +1494,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             /* 图片整批走，没有逐文件回执：发送端不会等 */
             if (s_rx.cur_is_image) break;
 
+            status_file_phase((int)id-1,HOP_XFER_FILE_VERIFYING,0);
             int ack = HOP_FILE_ACK_OK;
 
             if (s_rx.cur_fail >= 0) {
@@ -1513,6 +1527,8 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 hop_xfer_status snapshot; xfer_get_status(&snapshot);
                 status_file_done(snapshot.files_done + 1, NULL);
             }
+
+            status_file_phase((int)id-1,ack==HOP_FILE_ACK_OK?HOP_XFER_FILE_COMPLETED:HOP_XFER_FILE_FAILED,0);
 
             /* 回执是发送端判断"这个文件成没成"的唯一依据。
              * 以前这里发的是批量级 ABORT，等于一个文件坏了就把整批判死。 */

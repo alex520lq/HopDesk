@@ -71,6 +71,11 @@ static void status_add_bytes(uint32_t n) {
  if(s_status.active){s_status.bytes_done+=n;if(s_status.bytes_done>s_status.bytes_total)s_status.bytes_done=s_status.bytes_total;}
  ReleaseSRWLockExclusive(&s_status_lock);
 }
+static void status_set_name(const char *name) {
+ AcquireSRWLockExclusive(&s_status_lock);
+ if(s_status.active&&name)snprintf(s_status.name,sizeof(s_status.name),"%s",name);
+ ReleaseSRWLockExclusive(&s_status_lock);
+}
 static void status_file_done(uint32_t files,const char *name) {
  AcquireSRWLockExclusive(&s_status_lock);
  if(s_status.active){s_status.files_done=files;if(name)snprintf(s_status.name,sizeof(s_status.name),"%s",name);}
@@ -1089,6 +1094,7 @@ static void rx_begin_batch(uint32_t batch) {
 
     s_rx.active = 1;
     s_rx.batch = batch;
+    status_begin(batch,HOP_XFER_DIR_RECEIVE,0,0,"Incoming files",HOP_XFER_RECEIVING);
 
     ensure_dirs(s_rx.dir);
     CreateDirectoryW(s_rx.dir, NULL);
@@ -1132,6 +1138,11 @@ static void rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
     }
     hop_log(HOP_LOG_INFO, "xfer: batch %u done (%d items, %u/%u ACKed)",
             batch, s_rx.ntop, ok, total);
+    pthread_mutex_lock(&s_status_lock);
+    s_status.files_total=total;
+    pthread_mutex_unlock(&s_status_lock);
+    status_end(ok==total?HOP_XFER_COMPLETED:HOP_XFER_PARTIAL,
+               ok==total?"Receive completed":"Partial receive; staged files retained");
     rx_reset();
 }
 

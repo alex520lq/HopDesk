@@ -142,7 +142,7 @@ int xfer_get_files(hop_xfer_file_status *out,int capacity){
 int xfer_retry_file(int index){
  wchar_t *path=NULL;
  AcquireSRWLockExclusive(&s_status_lock);
- if(index>=0&&index<s_file_count&&s_files[index].phase==HOP_XFER_FILE_FAILED&&s_retry_paths[index])
+ if(index>=0&&index<s_file_count&&s_files[index].phase==HOP_XFER_FILE_FAILED&&!s_files[index].is_directory&&s_retry_paths[index])
   path=_wcsdup(s_retry_paths[index]);
  ReleaseSRWLockExclusive(&s_status_lock);
  if(!path)return 0;

@@ -192,7 +192,7 @@ static void transfer_window_refresh(void) {
             NSString *dirText = history[i].direction == HOP_XFER_DIR_SEND ? @"发送" : @"接收";
             [rows appendFormat:@"%@  %@  %@  文件 %u/%u  %@\n", dirText, phaseText, name,
                 history[i].files_done, history[i].files_total,
-                [NSByteCountFormatter stringFromByteCount:(long long)history[i].bytes_total countStyle:NSByteCountFormatterFile]];
+                [NSByteCountFormatter stringFromByteCount:(long long)history[i].bytes_total countStyle:NSByteCountFormatterCountStyleFile]];
         }
         s_transferHistory.string = rows;
     }

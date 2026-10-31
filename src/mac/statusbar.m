@@ -62,6 +62,7 @@ static hop_xfer_file_status *s_transferFileSnapshot;
 static int s_collapsedFolders[HOP_XFER_FILE_LIMIT];
 static int s_visibleFileIndices[HOP_XFER_FILE_LIMIT];
 static int s_visibleFileCount;
+static uint32_t s_collapsedBatch;
 static uint32_t s_historyBatch;
 static uint32_t s_notifiedBatch;
 static int s_notifiedPhase;
@@ -211,6 +212,10 @@ static void transfer_window_refresh(void) {
     if (!s_transferWindow) return;
     hop_xfer_status st; memset(&st, 0, sizeof(st)); xfer_get_status(&st);
     transfer_notify_if_terminal(&st);
+    if (s_collapsedBatch != st.batch) {
+        memset(s_collapsedFolders, 0, sizeof(s_collapsedFolders));
+        s_collapsedBatch = st.batch;
+    }
     if (!s_transferFileSnapshot) s_transferFileSnapshot = calloc(HOP_XFER_FILE_LIMIT, sizeof(*s_transferFileSnapshot));
     int fileCount = s_transferFileSnapshot ? xfer_get_files(s_transferFileSnapshot, HOP_XFER_FILE_LIMIT) : 0;
     if (s_transferFiles) {

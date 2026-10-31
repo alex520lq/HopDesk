@@ -116,6 +116,11 @@ static void status_add_bytes(uint32_t n) {
  if(s_status.active){s_status.bytes_done+=n;if(s_status.bytes_done>s_status.bytes_total)s_status.bytes_done=s_status.bytes_total;}
  pthread_mutex_unlock(&s_status_lock);
 }
+static void status_add_total(uint64_t n) {
+ pthread_mutex_lock(&s_status_lock);
+ if(s_status.active)s_status.bytes_total+=n;
+ pthread_mutex_unlock(&s_status_lock);
+}
 static void status_set_name(const char *name) {
  pthread_mutex_lock(&s_status_lock);
  if(s_status.active&&name)snprintf(s_status.name,sizeof(s_status.name),"%s",name);
@@ -1136,6 +1141,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             uint32_t batch = msg.batch;
             uint32_t id = msg.id;
             uint64_t size = msg.size;
+            status_add_total(size);
             uint32_t flags = msg.flags;
             uint32_t plen = msg.relpath_len;
 
@@ -1348,6 +1354,11 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                     const char *tail = s_rx.cur_path + strlen(s_rx.dir) + 1;
                     if (!strchr(tail, '/')) rx_add_top(s_rx.cur_path);
                 }
+            }
+
+            if (ack == HOP_FILE_ACK_OK) {
+                hop_xfer_status snapshot; xfer_get_status(&snapshot);
+                status_file_done(snapshot.files_done + 1, s_rx.cur_path ? s_rx.cur_path : "File received");
             }
 
             /* 回执是发送端判断"这个文件成没成"的唯一依据。

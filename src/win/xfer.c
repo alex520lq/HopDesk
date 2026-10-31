@@ -1138,9 +1138,9 @@ static void rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
     }
     hop_log(HOP_LOG_INFO, "xfer: batch %u done (%d items, %u/%u ACKed)",
             batch, s_rx.ntop, ok, total);
-    pthread_mutex_lock(&s_status_lock);
+    AcquireSRWLockExclusive(&s_status_lock);
     s_status.files_total=total;
-    pthread_mutex_unlock(&s_status_lock);
+    ReleaseSRWLockExclusive(&s_status_lock);
     status_end(ok==total?HOP_XFER_COMPLETED:HOP_XFER_PARTIAL,
                ok==total?"Receive completed":"Partial receive; staged files retained");
     rx_reset();

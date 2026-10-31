@@ -32,4 +32,13 @@ int         net_server_has_client(net_server *s);
 /* 主动断开当前客户端（例如握手 token 不匹配） */
 void        net_server_drop(net_server *s);
 
+/* 给已连接的 socket 打开 TCP keepalive（控制通道与数据通道都用）。
+ *
+ * 没有它，链路中间设备把空闲连接的表项丢掉之后 socket 会变成黑洞：
+ * send 只进本地发送缓冲并返回成功，recv 永远等不到数据，两端都以为
+ * 还连着。实测空闲数小时后正是这个状态 —— 文件发出去 10 秒 ACK 超时、
+ * 作业级重连也拉不起来，只能重启进程。keepalive 让内核约 90 秒内判定
+ * 连接死亡，上层才有机会走既有的重连逻辑。 */
+void        net_set_keepalive(SOCKET s);
+
 #endif

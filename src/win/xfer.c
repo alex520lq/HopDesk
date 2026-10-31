@@ -1415,6 +1415,11 @@ static DWORD WINAPI listen_thread(LPVOID arg) {
         setsockopt(c, SOL_SOCKET, SO_RCVBUF, (char *)&bufsz, sizeof(bufsz));
         setsockopt(c, SOL_SOCKET, SO_SNDBUF, (char *)&bufsz, sizeof(bufsz));
 
+        /* 数据通道是空闲时间最长的：不开 keepalive 的话，链路中间设备
+         * 丢掉空闲连接表项后这条 socket 就变黑洞，send 返回成功但字节
+         * 永远到不了对端，两端还都以为连着。 */
+        net_set_keepalive(c);
+
         /* 发送超时：ABORT 是从接收线程发的，如果发送线程正卡在 send 里
          * （对端窗口满），接收线程拿不到发送锁就会跟着卡死 —— 那是死锁。
          * 给个上限，卡住就当作传输失败，别把整个通道拖死。

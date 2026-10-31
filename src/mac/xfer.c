@@ -1370,6 +1370,11 @@ static void *conn_thread(void *arg) {
         setsockopt(s, SOL_SOCKET, SO_RCVBUF, &bufsz, sizeof(bufsz));
         setsockopt(s, SOL_SOCKET, SO_SNDBUF, &bufsz, sizeof(bufsz));
 
+        /* 数据通道空闲时间最长：不开 keepalive，链路中间设备丢掉空闲
+         * 连接表项后这条 socket 就变黑洞 —— 对端发来的字节永远到不了，
+         * 而本端 read 一直 EAGAIN，连"断开"都感知不到。 */
+        net_set_keepalive(s);
+
         /* 发送超时：ABORT 是从接收线程发的，如果发送线程正卡在 write 里
          * （对端窗口满），接收线程拿不到发送锁就会跟着卡死 —— 那是死锁。
          * 给个上限，卡住就当作传输失败，别把整个通道拖死。

@@ -5,8 +5,10 @@
 #include "mac_app.h"
 
 #include <arpa/inet.h>
+#include <errno.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -139,6 +141,28 @@ static int do_connect(void) {
     return s;
 }
 
+/* 给已连接的 socket 打开 TCP keepalive（控制通道与数据通道都用）。
+ *
+ * 没有它，链路中间设备把空闲连接的表项丢掉之后 socket 会变成黑洞：
+ * write 只进本地发送缓冲并返回成功，read 永远等不到数据，两端都以为
+ * 还连着。实测空闲数小时后正是这个状态 —— 对端发文件过来完全收不到，
+ * 日志里连 "data channel closed" 都没有，只能重启进程。
+ * keepalive 让内核约 90 秒内判定连接死亡，read 返回错误后走既有重连。
+ *
+ * macOS 的空闲时长选项叫 TCP_KEEPALIVE（不是 Linux 的 TCP_KEEPIDLE）。 */
+void net_set_keepalive(int s) {
+    int on = 1;
+    int idle = 60, intvl = 10, cnt = 3;
+
+    if (setsockopt(s, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on)) != 0) {
+        hop_log(HOP_LOG_WARN, "net: SO_KEEPALIVE 失败 (errno=%d)", errno);
+        return;
+    }
+    setsockopt(s, IPPROTO_TCP, TCP_KEEPALIVE, &idle, sizeof(idle));
+    setsockopt(s, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
+    setsockopt(s, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
+}
+
 static void set_connected(int on) {
     g_mac.connected = on;
     if (on) {
@@ -172,6 +196,11 @@ static void *net_thread(void *arg) {
         g_mac.sock = s;
         pthread_mutex_unlock(&s_lock);
         backoff = 1;
+
+        /* 下面的 read 是阻塞的：连接变黑洞时它会永远不返回，
+         * 控制通道就此彻底僵死。keepalive 是唯一能让它返回的机制。 */
+        net_set_keepalive(s);
+
         hop_decoder_reset(s_dec);
         set_connected(1);
 

@@ -15,6 +15,7 @@
 /* winsock2 必须在 windows.h 之前 */
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <mstcpip.h>
 #include "net_server.h"
 
 #include <stdlib.h>
@@ -161,6 +162,21 @@ static DWORD WINAPI sender_thread(LPVOID arg) {
     return 0;
 }
 
+void net_set_keepalive(SOCKET s) {
+    struct tcp_keepalive ka;
+    DWORD bytes = 0;
+
+    /* 60s 空闲后开始探测，每 10s 一次，3 次无响应判定死亡 —— 约 90 秒。
+     * 探测包只在完全空闲时才发，局域网里开销可忽略。 */
+    ka.onoff             = 1;
+    ka.keepalivetime     = 60000;
+    ka.keepaliveinterval = 10000;
+
+    if (WSAIoctl(s, SIO_KEEPALIVE_VALS, &ka, sizeof(ka),
+                 NULL, 0, &bytes, NULL, NULL) != 0)
+        hop_log(HOP_LOG_WARN, "net: keepalive 设置失败 (%d)", WSAGetLastError());
+}
+
 static void handle_client(net_server *s, SOCKET c) {
     EnterCriticalSection(&s->lock);
     if (s->client != INVALID_SOCKET) {
@@ -171,6 +187,7 @@ static void handle_client(net_server *s, SOCKET c) {
     s->client = c;
     LeaveCriticalSection(&s->lock);
 
+    net_set_keepalive(c);
     post_link(s, 1);
 
     /* 握手回 ACK：{ok=1, name, w, h} */

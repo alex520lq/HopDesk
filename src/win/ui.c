@@ -23,7 +23,7 @@
 #define IDC_XFER_PROGRESS 2104
 #define IDC_XFER_CANCEL 2105
 
-static HWND s_xfer_window, s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_progress, s_xfer_history;
+static HWND s_xfer_window, s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_progress, s_xfer_history, s_xfer_files;
 static uint32_t s_history_batch;
 static uint32_t s_notified_batch;
 static int s_notified_phase;
@@ -50,6 +50,33 @@ static void xfer_window_refresh(void) {
     if (!s_xfer_window) return;
     hop_xfer_status st; memset(&st, 0, sizeof(st)); xfer_get_status(&st);
     xfer_notify_if_terminal(&st);
+    if (s_xfer_files) {
+        hop_xfer_file_status files[HOP_XFER_FILE_LIMIT];
+        int fileCount = xfer_get_files(files, HOP_XFER_FILE_LIMIT);
+        static uint32_t lastFileBatch = 0;
+        if (lastFileBatch != st.batch || fileCount > 0) {
+            lastFileBatch = st.batch;
+            SendMessageW(s_xfer_files, LB_RESETCONTENT, 0, 0);
+            for (int i = 0; i < fileCount; ++i) {
+                wchar_t path[1024], row[1600], indent[64];
+                MultiByteToWideChar(CP_UTF8, 0, files[i].relative_path, -1, path, ARRAYSIZE(path));
+                int depth = 0;
+                for (const char *p = files[i].relative_path; *p; ++p) if (*p == '/') depth++;
+                int spaces = depth * 2; if (spaces > 24) spaces = 24;
+                for (int j = 0; j < spaces; ++j) indent[j] = L' ';
+                indent[spaces] = 0;
+                const wchar_t *state = files[i].phase == HOP_XFER_FILE_COMPLETED ? L"完成" :
+                    files[i].phase == HOP_XFER_FILE_FAILED ? L"失败" :
+                    files[i].phase == HOP_XFER_FILE_SENDING ? L"传输中" :
+                    files[i].phase == HOP_XFER_FILE_VERIFYING ? L"校验中" : L"排队中";
+                swprintf(row, ARRAYSIZE(row), L"%ls%ls %ls  %llu/%llu B  %ls",
+                    indent, files[i].is_directory ? L"[目录]" : L"[文件]", path,
+                    (unsigned long long)files[i].bytes_done,
+                    (unsigned long long)files[i].bytes_total, state);
+                SendMessageW(s_xfer_files, LB_ADDSTRING, 0, (LPARAM)row);
+            }
+        }
+    }
     if (s_xfer_history) {
         hop_xfer_history_entry history[HOP_XFER_HISTORY_LIMIT];
         int n = xfer_get_history(history, HOP_XFER_HISTORY_LIMIT);
@@ -106,9 +133,11 @@ static LRESULT CALLBACK xfer_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             s_xfer_detail=CreateWindowW(L"STATIC",L"等待文件传输",WS_CHILD|WS_VISIBLE,20,55,520,22,h,(HMENU)IDC_XFER_DETAIL,g_app.inst,NULL);
             s_xfer_counts=CreateWindowW(L"STATIC",L"文件 0 / 0    数据 0 / 0 MB",WS_CHILD|WS_VISIBLE,20,88,520,22,h,(HMENU)IDC_XFER_COUNTS,g_app.inst,NULL);
             s_xfer_progress=CreateWindowW(PROGRESS_CLASSW,L"",WS_CHILD|WS_VISIBLE,20,122,520,18,h,(HMENU)IDC_XFER_PROGRESS,g_app.inst,NULL);
-            CreateWindowW(L"STATIC",L"最近 100 次传输",WS_CHILD|WS_VISIBLE,20,158,520,20,h,NULL,g_app.inst,NULL);
-            s_xfer_history=CreateWindowW(L"LISTBOX",L"",WS_CHILD|WS_VISIBLE|WS_VSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS,20,182,580,270,h,NULL,g_app.inst,NULL);
-            CreateWindowW(L"BUTTON",L"取消传输",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,490,460,110,30,h,(HMENU)IDC_XFER_CANCEL,g_app.inst,NULL);
+            CreateWindowW(L"STATIC",L"文件明细（目录层级）",WS_CHILD|WS_VISIBLE,20,158,520,20,h,NULL,g_app.inst,NULL);
+            s_xfer_files=CreateWindowW(L"LISTBOX",L"",WS_CHILD|WS_VISIBLE|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS,20,182,580,210,h,NULL,g_app.inst,NULL);
+            CreateWindowW(L"STATIC",L"最近 100 次传输",WS_CHILD|WS_VISIBLE,20,405,520,20,h,NULL,g_app.inst,NULL);
+            s_xfer_history=CreateWindowW(L"LISTBOX",L"",WS_CHILD|WS_VISIBLE|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS,20,428,580,110,h,NULL,g_app.inst,NULL);
+            CreateWindowW(L"BUTTON",L"取消传输",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,490,555,110,30,h,(HMENU)IDC_XFER_CANCEL,g_app.inst,NULL);
             SetTimer(h,ID_XFER_TIMER,400,NULL); xfer_window_refresh(); return 0;
         case WM_TIMER: xfer_window_refresh(); return 0;
         case WM_COMMAND: if(LOWORD(wp)==IDC_XFER_CANCEL){xfer_cancel();return 0;} break;
@@ -127,7 +156,7 @@ void ui_show_transfers(win_app *app) {
         INITCOMMONCONTROLSEX ic={sizeof(ic),ICC_PROGRESS_CLASS}; InitCommonControlsEx(&ic);
         s_xfer_window=CreateWindowExW(WS_EX_APPWINDOW,wc.lpszClassName,L"HopDesk · 传输管理器",
             WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,
-            CW_USEDEFAULT,CW_USEDEFAULT,640,520,NULL,NULL,app->inst,NULL);
+            CW_USEDEFAULT,CW_USEDEFAULT,640,640,NULL,NULL,app->inst,NULL);
     }
     if(s_xfer_window){ShowWindow(s_xfer_window,SW_SHOWNORMAL);SetForegroundWindow(s_xfer_window);xfer_window_refresh();}
 }

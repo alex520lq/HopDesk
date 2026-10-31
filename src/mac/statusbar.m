@@ -16,6 +16,7 @@
 - (void)doCancelXfer:(id)sender;
 - (void)doTransfers:(id)sender;
 - (void)doRetryFile:(id)sender;
+- (void)doToggleFolder:(id)sender;
 @end
 static void retry_selected_mac_file(void);
 @implementation HopController
@@ -40,6 +41,7 @@ static void retry_selected_mac_file(void);
 }
 - (void)doTransfers:(id)sender { (void)sender; statusbar_show_transfers(); }
 - (void)doRetryFile:(id)sender { (void)sender; retry_selected_mac_file(); }
+- (void)doToggleFolder:(id)sender { (void)sender; toggle_selected_mac_folder(); }
 /* 菜单打开时自动校验：没有传输在进行就把"取消"变灰。
  * NSMenu 默认 autoenablesItems，走的就是这个入口。 */
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
@@ -56,6 +58,9 @@ static NSTextField *s_transferTitle, *s_transferDetail, *s_transferCounts;
 static NSProgressIndicator *s_transferProgress;
 static NSTextView *s_transferHistory, *s_transferFiles;
 static hop_xfer_file_status *s_transferFileSnapshot;
+static int s_collapsedFolders[HOP_XFER_FILE_LIMIT];
+static int s_visibleFileIndices[HOP_XFER_FILE_LIMIT];
+static int s_visibleFileCount;
 static uint32_t s_historyBatch;
 static uint32_t s_notifiedBatch;
 static int s_notifiedPhase;
@@ -67,7 +72,19 @@ static void retry_selected_mac_file(void) {
     NSUInteger line = 0;
     NSUInteger limit = MIN(selected.location, content.length);
     for (NSUInteger i = 0; i < limit; ++i) if ([content characterAtIndex:i] == '\n') line++;
-    (void)xfer_retry_file((int)line);
+    if (line < (NSUInteger)s_visibleFileCount)
+        (void)xfer_retry_file(s_visibleFileIndices[line]);
+}
+static void toggle_selected_mac_folder(void) {
+    if (!s_transferFiles) return;
+    NSRange selected = [s_transferFiles selectedRange];
+    NSString *content = s_transferFiles.string ?: @"";
+    NSUInteger line = 0, limit = MIN(selected.location, content.length);
+    for (NSUInteger i = 0; i < limit; ++i) if ([content characterAtIndex:i] == '\n') line++;
+    if (line >= (NSUInteger)s_visibleFileCount) return;
+    int index = s_visibleFileIndices[line];
+    if (s_transferFileSnapshot[index].is_directory)
+        s_collapsedFolders[index] = !s_collapsedFolders[index];
 }
 
 static void transfer_notify_if_terminal(const hop_xfer_status *st) {
@@ -197,15 +214,24 @@ static void transfer_window_refresh(void) {
     int fileCount = s_transferFileSnapshot ? xfer_get_files(s_transferFileSnapshot, HOP_XFER_FILE_LIMIT) : 0;
     if (s_transferFiles) {
         NSMutableString *fileRows = [NSMutableString string];
+        s_visibleFileCount = 0;
         for (int i = 0; i < fileCount; ++i) {
             NSString *path = [NSString stringWithUTF8String:s_transferFileSnapshot[i].relative_path] ?: @"(未知文件)";
+            BOOL hidden = NO;
+            for (int parent = 0; parent < i; ++parent) {
+                if (!s_collapsedFolders[parent] || !s_transferFileSnapshot[parent].is_directory) continue;
+                NSString *parentPath = [NSString stringWithUTF8String:s_transferFileSnapshot[parent].relative_path] ?: @"";
+                if ([path hasPrefix:[parentPath stringByAppendingString:@"/"]]) { hidden = YES; break; }
+            }
+            if (hidden) continue;
+            s_visibleFileIndices[s_visibleFileCount++] = i;
             NSUInteger depth = [[path componentsSeparatedByString:@"/"] count] - 1;
             NSString *indent = [@"" stringByPaddingToLength:MIN(depth * 2, 24) withString:@" " startingAtIndex:0];
             NSString *state = s_transferFileSnapshot[i].phase == HOP_XFER_FILE_COMPLETED ? @"完成" :
                               s_transferFileSnapshot[i].phase == HOP_XFER_FILE_FAILED ? @"失败" :
                               s_transferFileSnapshot[i].phase == HOP_XFER_FILE_SENDING ? @"传输中" :
                               s_transferFileSnapshot[i].phase == HOP_XFER_FILE_VERIFYING ? @"校验中" : @"排队中";
-            NSString *kind = s_transferFileSnapshot[i].is_directory ? @"📁" : @"📄";
+            NSString *kind = s_transferFileSnapshot[i].is_directory ? (s_collapsedFolders[i] ? @"▸ 📁" : @"▾ 📁") : @"📄";
             [fileRows appendFormat:@"%@%@ %@  %llu/%llu B  %@\n", indent, kind, path,
                 (unsigned long long)s_transferFileSnapshot[i].bytes_done, (unsigned long long)s_transferFileSnapshot[i].bytes_total, state];
         }
@@ -277,6 +303,9 @@ void statusbar_show_transfers(void) {
             s_transferHistory = [[NSTextView alloc] initWithFrame:NSMakeRect(0,0,560,160)];
             s_transferHistory.editable = NO; s_transferHistory.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
             historyScroll.documentView = s_transferHistory;
+            NSButton *toggleFolder = [[NSButton alloc] initWithFrame:NSMakeRect(250,12,120,28)];
+            toggleFolder.title=@"展开/折叠目录"; toggleFolder.bezelStyle=NSBezelStyleRounded;
+            toggleFolder.target=s_ctrl; toggleFolder.action=@selector(doToggleFolder:);
             NSButton *retry = [[NSButton alloc] initWithFrame:NSMakeRect(380,12,110,28)];
             retry.title=@"重试选中文件"; retry.bezelStyle=NSBezelStyleRounded;
             retry.target=s_ctrl; retry.action=@selector(doRetryFile:);
@@ -284,7 +313,7 @@ void statusbar_show_transfers(void) {
             cancel.title=@"取消传输"; cancel.bezelStyle=NSBezelStyleRounded;
             cancel.target=s_ctrl; cancel.action=@selector(doCancelXfer:);
             [v addSubview:s_transferTitle]; [v addSubview:s_transferDetail];
-            [v addSubview:s_transferCounts]; [v addSubview:s_transferProgress]; [v addSubview:fileScroll]; [v addSubview:historyScroll]; [v addSubview:retry]; [v addSubview:cancel];
+            [v addSubview:s_transferCounts]; [v addSubview:s_transferProgress]; [v addSubview:fileScroll]; [v addSubview:historyScroll]; [v addSubview:toggleFolder]; [v addSubview:retry]; [v addSubview:cancel];
             [NSTimer scheduledTimerWithTimeInterval:0.4 repeats:YES block:^(NSTimer *timer) {
                 (void)timer; transfer_window_refresh();
             }];

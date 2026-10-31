@@ -193,9 +193,9 @@ void statusbar_show_transfers(void) {
             cancel.target=s_ctrl; cancel.action=@selector(doCancelXfer:);
             [v addSubview:s_transferTitle]; [v addSubview:s_transferDetail];
             [v addSubview:s_transferCounts]; [v addSubview:s_transferProgress]; [v addSubview:cancel];
-            [NSTimer scheduledTimerWithTimeInterval:0.4 target:[NSBlockOperation blockOperationWithBlock:^{
-                transfer_window_refresh();
-            }] selector:@selector(main) userInfo:nil repeats:YES];
+            [NSTimer scheduledTimerWithTimeInterval:0.4 repeats:YES block:^(NSTimer *timer) {
+                (void)timer; transfer_window_refresh();
+            }];
         }
         transfer_window_refresh();
         [NSApp activateIgnoringOtherApps:YES];

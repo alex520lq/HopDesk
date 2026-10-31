@@ -73,6 +73,7 @@ typedef struct {
 
 static struct {
     int              sock;
+    int              peer_ready;     /* 数据通道版本与 token 握手通过 */
     pthread_mutex_t  slock;          /* 保护 sock */
     pthread_mutex_t  qlock;          /* 保护作业队列 */
     pthread_cond_t   qcond;
@@ -102,7 +103,12 @@ static int send_all(int fd, const void *buf, size_t len) {
     const char *p = (const char *)buf;
     while (len > 0) {
         ssize_t n = write(fd, p, len);
-        if (n <= 0) return 0;
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) {
+            /* 部分帧不可重用；唤醒 conn 线程并让作业走断线重试。 */
+            shutdown(fd, SHUT_RDWR);
+            return 0;
+        }
         p += n;
         len -= (size_t)n;
     }
@@ -1034,17 +1040,41 @@ static void rx_finish_batch(void) {
 static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
     (void)user;
 
+    if (type == HOP_MSG_XFER_HELLO) {
+        size_t want = strlen(g_mac.cfg.token);
+        int valid = len >= 2 && p[0] == HOP_XFER_PROTO_VER &&
+                    p[1] == want && len == 2u + want &&
+                    (want == 0 || memcmp(p + 2, g_mac.cfg.token, want) == 0);
+        if (!valid) {
+            hop_log(HOP_LOG_ERROR,
+                    "xfer: peer handshake rejected (protocol/token mismatch)");
+            pthread_mutex_lock(&s_x.slock);
+            if (s_x.sock >= 0) shutdown(s_x.sock, SHUT_RDWR);
+            s_x.peer_ready = 0;
+            pthread_mutex_unlock(&s_x.slock);
+            return;
+        }
+        pthread_mutex_lock(&s_x.slock);
+        s_x.peer_ready = 1;
+        pthread_mutex_unlock(&s_x.slock);
+        hop_log(HOP_LOG_INFO,
+                want ? "xfer: authenticated peer data channel (v%u)" :
+                       "xfer: peer data channel ready (v%u)",
+                (unsigned)HOP_XFER_PROTO_VER);
+        return;
+    }
+
+    pthread_mutex_lock(&s_x.slock);
+    int ready = s_x.peer_ready;
+    int active_sock = s_x.sock;
+    pthread_mutex_unlock(&s_x.slock);
+    if (!ready) {
+        hop_log(HOP_LOG_WARN, "xfer: frame received before handshake; closing peer");
+        if (active_sock >= 0) shutdown(active_sock, SHUT_RDWR);
+        return;
+    }
+
     switch (type) {
-        case HOP_MSG_XFER_HELLO:
-            if (len >= 1 && p[0] != HOP_XFER_PROTO_VER)
-                hop_log(HOP_LOG_ERROR,
-                        "xfer: peer speaks data protocol v%u, we speak v%u — "
-                        "两端版本不一致，请把两边都重建",
-                        p[0], (unsigned)HOP_XFER_PROTO_VER);
-            else
-                hop_log(HOP_LOG_INFO, "xfer: peer data channel ready (v%u)",
-                        (unsigned)HOP_XFER_PROTO_VER);
-            break;
 
         case HOP_MSG_FILE_BEGIN: {
             if (len < 27) return;
@@ -1328,6 +1358,12 @@ static int do_connect(void) {
     for (struct addrinfo *r = res; r; r = r->ai_next) {
         s = socket(r->ai_family, r->ai_socktype, r->ai_protocol);
         if (s < 0) continue;
+        int no_sigpipe = 1;
+        if (setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe)) != 0) {
+            close(s);
+            s = -1;
+            continue;
+        }
         if (connect(s, r->ai_addr, r->ai_addrlen) == 0) break;
         close(s);
         s = -1;
@@ -1395,6 +1431,7 @@ static void *conn_thread(void *arg) {
 
         pthread_mutex_lock(&s_x.slock);
         s_x.sock = s;
+        s_x.peer_ready = 0;
         pthread_mutex_unlock(&s_x.slock);
 
         pthread_mutex_lock(&s_x.qlock);
@@ -1404,9 +1441,15 @@ static void *conn_thread(void *arg) {
         hop_decoder_reset(dec);
         rx_reset();
 
-        uint8_t hello = HOP_XFER_PROTO_VER;
-        send_small(s, HOP_MSG_XFER_HELLO, &hello, 1);
-        hop_log(HOP_LOG_INFO, "xfer: data channel connected");
+        uint8_t hello[2 + HOP_TOKEN_MAX];
+        size_t token_len = strlen(g_mac.cfg.token);
+        hello[0] = HOP_XFER_PROTO_VER;
+        hello[1] = (uint8_t)token_len;
+        if (token_len) memcpy(hello + 2, g_mac.cfg.token, token_len);
+        if (!send_small(s, HOP_MSG_XFER_HELLO, hello, (uint32_t)(2 + token_len))) {
+            shutdown(s, SHUT_RDWR);
+        }
+        hop_log(HOP_LOG_INFO, "xfer: data channel connected; waiting for peer authentication");
 
         char buf[65536];
         for (;;) {
@@ -1428,6 +1471,7 @@ static void *conn_thread(void *arg) {
 
         pthread_mutex_lock(&s_x.slock);
         s_x.sock = -1;
+        s_x.peer_ready = 0;
         pthread_mutex_unlock(&s_x.slock);
         close(s);
         /* 只关文件，不清批次：发送端会带着同一个 batch 号回来，
@@ -1498,7 +1542,7 @@ void xfer_shutdown(void) {
 int xfer_connected(void) {
     int c;
     pthread_mutex_lock(&s_x.slock);
-    c = (s_x.sock >= 0);
+    c = (s_x.sock >= 0 && s_x.peer_ready);
     pthread_mutex_unlock(&s_x.slock);
     return c;
 }

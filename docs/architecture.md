@@ -93,10 +93,13 @@ src/
 ### 数据通道消息
 
 一条连接全双工：Windows→Mac 与 Mac→Windows 各自有发送线程，互不干扰。
+连接建立后双方都发送 `XFER_HELLO`，载荷为 `version(1) + token_length(1) + token`。
+收到 HELLO 的一端必须同时验证协议版本、长度和 token；验证失败立即关闭 socket。
+握手成功前收到任何其他数据帧也会关闭连接。两端配置的 token 必须完全一致。
 
 | 类型 | 方向 | 载荷 |
 |---|---|---|
-| XFER_HELLO | C→S | `ver(1)` |
+| XFER_HELLO | 双向 | `ver(1) token_len(1) token[token_len]`；两端均校验，成功前拒绝其他数据帧 |
 | FILE_BEGIN | 双向 | `batch(4) id(4) size(8) mtime(8) flags(1) nlen(2) name plen(2) relpath` |
 | FILE_CHUNK | 双向 | `id(4) off(8) len(4) crc(4) data[len]` |
 | FILE_END | 双向 | `id(4) status(1) file_crc(4)` |
@@ -127,6 +130,7 @@ src/
 | 磁盘 I/O 隔离 | 网络线程只做"收包 + 校验 + 入队"，落盘交给独立写线程（同样降级优先级）。文件句柄由写线程独占，避免关文件与写入的竞态 |
 | 尺寸边界 | `FILE_CHUNK` 超出 `FILE_BEGIN` 声明的 size 直接丢弃；`IMAGE_BEGIN` 的 w/h/stride 全部校验，上限 `32768` 边长 / `256 MB` |
 | 发送互斥 | 接收线程出错时要回 `XFER_ABORT`，和发送线程写同一个 socket。锁粒度是**整帧**，不是单次 `send`/`write`，否则两线程交错会把帧字节搅乱。配套设 `SO_SNDTIMEO = 5 s`，避免发送线程卡死时把接收线程一起拖住 |
+| 数据通道身份校验 | v4 HELLO 双向携带协议版本与共享 token；两端校验成功前不接受文件/图片帧、不报告数据通道可用。空 token 按配置语义跳过身份校验；token 不加密，TCP 载荷也未启用 TLS |
 
 **尚未实现**：
 

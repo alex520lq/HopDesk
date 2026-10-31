@@ -247,7 +247,7 @@ void clip_apply_remote(const uint8_t *p, uint32_t len) {
     HGLOBAL h;
 
     if (len < 5) return;
-    if (hop_get_be32(p) == HOP_DEV_SERVER) return;   /* 自己发的，回环 */
+    if (!hop_clip_should_apply_remote(hop_get_be32(p), HOP_DEV_SERVER)) return; /* 自己发的，回环 */
 
     u = (char *)malloc((size_t)(len - 3));           /* 文本 + NUL */
     if (!u) return;

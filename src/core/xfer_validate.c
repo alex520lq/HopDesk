@@ -15,27 +15,41 @@ int hop_xfer_hello_valid(const uint8_t *p, uint32_t len, const char *token) {
            (want == 0 || memcmp(p + 2, token, want) == 0);
 }
 
-int hop_xfer_relpath_safe(const char *rel) {
-    if (!rel || !*rel) return 0;
-    /* Protocol paths are UTF-8 and always use '/'; reject platform-specific separators. */
-    if (rel[0] == '/' || rel[0] == '\\' || strchr(rel, ':') || strchr(rel, '\\')) return 0;
+int hop_xfer_relpath_bytes_safe(const uint8_t *rel, size_t len) {
+    if (!rel || len == 0 || len > HOP_PATH_LEN_MAX) return 0;
+    if (rel[0] == '/' || rel[0] == '\\') return 0;
 
-    const char *p = rel;
-    while (*p) {
-        const char *seg = p;
-        while (*p && *p != '/') {
-            if ((unsigned char)*p < 0x20u) return 0;
-            ++p;
+    size_t i = 0;
+    while (i < len) {
+        size_t start = i;
+        while (i < len && rel[i] != '/') {
+            if (rel[i] == '\\' || rel[i] == ':' || rel[i] == 0 ||
+                rel[i] < 0x20u) return 0;
+            ++i;
         }
-        size_t n = (size_t)(p - seg);
-        if (n == 0 || (n == 1 && seg[0] == '.') ||
-            (n == 2 && seg[0] == '.' && seg[1] == '.')) return 0;
-        if (*p) {
-            ++p;
-            if (!*p) return 0;
+        size_t n = i - start;
+        if (n == 0 || (n == 1 && rel[start] == '.') ||
+            (n == 2 && rel[start] == '.' && rel[start + 1] == '.')) return 0;
+        if (i < len) {
+            ++i;
+            if (i == len) return 0;
         }
     }
     return 1;
+}
+
+int hop_xfer_relpath_safe(const char *rel) {
+    return rel ? hop_xfer_relpath_bytes_safe((const uint8_t *)rel, strlen(rel)) : 0;
+}
+
+int hop_clip_should_apply_remote(uint32_t origin, uint32_t local_device) {
+    return origin != local_device;
+}
+
+uint32_t hop_xfer_file_crc_step(uint32_t seed, uint32_t chunk_crc) {
+    uint8_t encoded[4];
+    hop_put_be32(encoded, chunk_crc);
+    return hop_crc32(seed, encoded, sizeof(encoded));
 }
 
 int hop_xfer_image_valid(int32_t width, int32_t height, int32_t stride) {

@@ -427,8 +427,7 @@ static int send_file_entry(int fd, uint8_t *tx, uint32_t batch,
                     return XFER_SEND_DEAD;
                 }
                 uint8_t cb[4];
-                hop_put_be32(cb, ccrc);
-                fcrc = hop_crc32(fcrc, cb, 4);
+                fcrc = hop_xfer_file_crc_step(fcrc, ccrc);
                 off += (uint64_t)got;
                 yield_cpu();
                 /* 取消的响应粒度 = 一个分块 */
@@ -1073,9 +1072,13 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             if (!s_rx.active) return;
 
             char rel[HOP_PATH_LEN_MAX + 1];
-            uint32_t cp = plen < HOP_PATH_LEN_MAX ? plen : HOP_PATH_LEN_MAX;
-            memcpy(rel, p + 29 + nlen, cp);
-            rel[cp] = '\0';
+            if (!hop_xfer_relpath_bytes_safe(p + 29 + nlen, plen)) {
+                hop_log(HOP_LOG_WARN, "xfer: unsafe or oversized relative path rejected");
+                s_rx.cur_fail = HOP_FILE_ACK_BADPATH;
+                break;
+            }
+            memcpy(rel, p + 29 + nlen, plen);
+            rel[plen] = '\0';
 
             /* 先把"当前条目"登记好，哪怕它是坏的：FILE_END 要靠 cur_id 回 ACK，
              * 漏回一次，发送端就要白等 10 秒超时再重试。 */
@@ -1225,8 +1228,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             /* 文件 CRC 折入本块 CRC：既覆盖数据（块 CRC 已验证），
              * 也覆盖顺序与偏移，且不需要把整份文件重算一遍 */
             uint8_t cb[4];
-            hop_put_be32(cb, crc);
-            s_rx.fcrc = hop_crc32(s_rx.fcrc, cb, 4);
+            s_rx.fcrc = hop_xfer_file_crc_step(s_rx.fcrc, crc);
             break;
         }
 

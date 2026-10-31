@@ -239,7 +239,10 @@ uint64_t hop_get_be64(const uint8_t *p);
 
 /* ---- 数据通道输入校验（平台无关，可单元测试） ---- */
 int hop_xfer_hello_valid(const uint8_t *payload, uint32_t len, const char *token);
+int hop_xfer_relpath_bytes_safe(const uint8_t *rel, size_t len);
 int hop_xfer_relpath_safe(const char *rel);
+int hop_clip_should_apply_remote(uint32_t origin, uint32_t local_device);
+uint32_t hop_xfer_file_crc_step(uint32_t seed, uint32_t chunk_crc);
 int hop_xfer_image_valid(int32_t width, int32_t height, int32_t stride);
 int hop_xfer_chunk_valid(const uint8_t *payload, uint32_t len,
                          uint64_t declared_size, int is_image);

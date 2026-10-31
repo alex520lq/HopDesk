@@ -326,6 +326,34 @@ static void test_decoder_all_split_points(void) {
     }
 }
 
+
+static void test_clipboard_origin_routing(void) {
+    CHECK(hop_clip_should_apply_remote(HOP_DEV_CLIENT, HOP_DEV_SERVER));
+    CHECK(hop_clip_should_apply_remote(HOP_DEV_SERVER, HOP_DEV_CLIENT));
+    CHECK(!hop_clip_should_apply_remote(HOP_DEV_SERVER, HOP_DEV_SERVER));
+    CHECK(!hop_clip_should_apply_remote(HOP_DEV_CLIENT, HOP_DEV_CLIENT));
+    CHECK(hop_clip_should_apply_remote(0, HOP_DEV_SERVER));
+}
+
+static void test_file_crc_fold(void) {
+    const char a[] = "chunk-A";
+    const char b[] = "chunk-B";
+    uint32_t ca = hop_crc32(0, a, sizeof(a)-1);
+    uint32_t cb = hop_crc32(0, b, sizeof(b)-1);
+    uint32_t ab = hop_xfer_file_crc_step(hop_xfer_file_crc_step(0, ca), cb);
+    uint32_t ba = hop_xfer_file_crc_step(hop_xfer_file_crc_step(0, cb), ca);
+    CHECK(ab != ba);
+    CHECK(hop_xfer_file_crc_step(0, ca) != hop_xfer_file_crc_step(0, cb));
+}
+
+static void test_relative_path_wire_bytes(void) {
+    const uint8_t good[] = "dir/file.txt";
+    const uint8_t nul_inside[] = {'d','i','r',0,'/','x'};
+    CHECK(hop_xfer_relpath_bytes_safe(good, sizeof(good)-1));
+    CHECK(!hop_xfer_relpath_bytes_safe(good, HOP_PATH_LEN_MAX+1u));
+    CHECK(!hop_xfer_relpath_bytes_safe(nul_inside, sizeof(nul_inside)));
+    CHECK(!hop_xfer_relpath_bytes_safe((const uint8_t *)"a\\\\b", 3));
+}
 int main(void) {
     hop_crc32_init();
 
@@ -343,6 +371,9 @@ int main(void) {
     test_xfer_image_bounds();
     test_xfer_chunk_bounds();
     test_xfer_retry_policy();
+    test_clipboard_origin_routing();
+    test_file_crc_fold();
+    test_relative_path_wire_bytes();
 
     if (g_failures) {
         fprintf(stderr, "HopDesk core tests: %d failure(s)\n", g_failures);

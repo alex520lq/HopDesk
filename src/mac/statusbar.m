@@ -152,7 +152,14 @@ void statusbar_init(void) {
         [menu addItem:quit];
         s_item.menu = menu;
 
-        set_appearance(0, 0);    }
+        set_appearance(0, 0);
+        [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
+            (void)timer;
+            hop_xfer_status snapshot; memset(&snapshot, 0, sizeof(snapshot));
+            xfer_get_status(&snapshot);
+            transfer_notify_if_terminal(&snapshot);
+        }];
+    }
 }
 
 void statusbar_update(int connected, int sharing) {

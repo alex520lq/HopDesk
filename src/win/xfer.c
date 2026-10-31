@@ -546,6 +546,7 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
         if (!send_image_job(c, tx, j)) return JOB_NET_DOWN;
         j->ok = 1;
         j->next_i = j->n;
+        status_file_done(1,"Image");
         return JOB_DONE;
     }
 
@@ -1305,6 +1306,8 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             s_rx.img_h = h;
             s_rx.img_stride = stride;
             s_rx.img_expected = (size_t)stride * (size_t)h;
+            status_add_total(s_rx.img_expected);
+            status_file_done(0,"Image");
             s_rx.img_len = 0;
             break;
         }

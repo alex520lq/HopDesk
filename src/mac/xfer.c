@@ -1053,7 +1053,9 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
         pthread_mutex_lock(&s_x.slock);
         s_x.peer_ready = 1;
         pthread_mutex_unlock(&s_x.slock);
-        hop_log(HOP_LOG_INFO, "xfer: authenticated peer data channel (v%u)",
+        hop_log(HOP_LOG_INFO,
+                want ? "xfer: authenticated peer data channel (v%u)" :
+                       "xfer: peer data channel ready (v%u)",
                 (unsigned)HOP_XFER_PROTO_VER);
         return;
     }

@@ -58,6 +58,7 @@ static NSWindow *s_transferWindow;
 static NSTextField *s_transferTitle, *s_transferDetail, *s_transferCounts;
 static NSProgressIndicator *s_transferProgress;
 static NSTextView *s_transferHistory, *s_transferFiles;
+static NSButton *s_retryButton;
 static hop_xfer_file_status *s_transferFileSnapshot;
 static int s_collapsedFolders[HOP_XFER_FILE_LIMIT];
 static int s_visibleFileIndices[HOP_XFER_FILE_LIMIT];
@@ -284,6 +285,7 @@ static void transfer_window_refresh(void) {
         [NSByteCountFormatter stringFromByteCount:(long long)st.bytes_done countStyle:NSByteCountFormatterCountStyleFile],
         [NSByteCountFormatter stringFromByteCount:(long long)st.bytes_total countStyle:NSByteCountFormatterCountStyleFile]];
     s_transferProgress.doubleValue = st.bytes_total ? MIN(100.0, 100.0 * (double)st.bytes_done / (double)st.bytes_total) : (st.active ? 0 : 100);
+    s_retryButton.enabled = (st.direction == HOP_XFER_DIR_SEND);
 }
 
 void statusbar_show_transfers(void) {
@@ -312,14 +314,14 @@ void statusbar_show_transfers(void) {
             NSButton *toggleFolder = [[NSButton alloc] initWithFrame:NSMakeRect(250,12,120,28)];
             toggleFolder.title=@"展开/折叠目录"; toggleFolder.bezelStyle=NSBezelStyleRounded;
             toggleFolder.target=s_ctrl; toggleFolder.action=@selector(doToggleFolder:);
-            NSButton *retry = [[NSButton alloc] initWithFrame:NSMakeRect(380,12,110,28)];
-            retry.title=@"重试选中文件"; retry.bezelStyle=NSBezelStyleRounded;
-            retry.target=s_ctrl; retry.action=@selector(doRetryFile:);
+            s_retryButton = [[NSButton alloc] initWithFrame:NSMakeRect(380,12,110,28)];
+            s_retryButton.title=@"重试选中文件"; s_retryButton.bezelStyle=NSBezelStyleRounded;
+            s_retryButton.target=s_ctrl; s_retryButton.action=@selector(doRetryFile:);
             NSButton *cancel = [[NSButton alloc] initWithFrame:NSMakeRect(500,12,100,28)];
             cancel.title=@"取消传输"; cancel.bezelStyle=NSBezelStyleRounded;
             cancel.target=s_ctrl; cancel.action=@selector(doCancelXfer:);
             [v addSubview:s_transferTitle]; [v addSubview:s_transferDetail];
-            [v addSubview:s_transferCounts]; [v addSubview:s_transferProgress]; [v addSubview:fileScroll]; [v addSubview:historyScroll]; [v addSubview:toggleFolder]; [v addSubview:retry]; [v addSubview:cancel];
+            [v addSubview:s_transferCounts]; [v addSubview:s_transferProgress]; [v addSubview:fileScroll]; [v addSubview:historyScroll]; [v addSubview:toggleFolder]; [v addSubview:s_retryButton]; [v addSubview:cancel];
             [NSTimer scheduledTimerWithTimeInterval:0.4 repeats:YES block:^(NSTimer *timer) {
                 (void)timer; transfer_window_refresh();
             }];

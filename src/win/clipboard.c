@@ -123,22 +123,22 @@ void clip_shutdown(HWND hwnd) {
 
 /* ---- 发送 ---- */
 
-static void send_text(const char *utf8, uint32_t len) {
+static int send_text(const char *utf8, uint32_t len) {
     uint8_t *p = (uint8_t *)malloc(4 + len);
-    if (!p) return;
+    if (!p) return 0;
     hop_put_be32(p, HOP_DEV_SERVER);
     memcpy(p + 4, utf8, len);
-    if (net_server_send(g_app.net, HOP_MSG_CLIP_TEXT, p, 4 + len))
-        hop_log(HOP_LOG_INFO, "clip: text out %u bytes", len);
-    else
-        hop_log(HOP_LOG_WARN, "clip: text out failed (no client?)");
+    int ok = net_server_send(g_app.net, HOP_MSG_CLIP_TEXT, p, 4 + len);
+    if (ok) hop_log(HOP_LOG_INFO, "clip: text out %u bytes", len);
+    else hop_log(HOP_LOG_WARN, "clip: text out failed; will retry");
     free(p);
+    return ok;
 }
 
 /* CF_HDROP：全部条目一次性交给数据通道，目录由 xfer 递归展开 */
-static void send_drop(HDROP drop, UINT count) {
+static int send_drop(HDROP drop, UINT count) {
     wchar_t **paths = (wchar_t **)calloc(count, sizeof(wchar_t *));
-    if (!paths) return;
+    if (!paths) return 0;
 
     int n = 0;
     for (UINT i = 0; i < count && n < 256; ++i) {
@@ -150,26 +150,25 @@ static void send_drop(HDROP drop, UINT count) {
         paths[n++] = buf;
     }
 
+    int ok = 0;
     if (n > 0) {
-        /* %ls 交给窄字符 vsnprintf 时按当前 locale 转换，默认 "C" 下遇到
-         * 中文就停在第一个非 ASCII 字节 —— 日志里只剩 "D://Desktop//"，
-         * 排查时看不到到底是哪个文件。显式转 UTF-8 再打。 */
         char first_utf8[MAX_PATH * 3];
         WideCharToMultiByte(CP_UTF8, 0, paths[0], -1,
                             first_utf8, sizeof(first_utf8), NULL, NULL);
         hop_log(HOP_LOG_INFO, "clip: %d path(s) out (first: %s)", n, first_utf8);
-        if (!xfer_submit_paths((const wchar_t *const *)paths, n))
-            hop_log(HOP_LOG_WARN, "clip: data channel unavailable, paths dropped");
+        ok = xfer_submit_paths((const wchar_t *const *)paths, n);
+        if (!ok) hop_log(HOP_LOG_WARN, "clip: paths not queued; will retry");
     }
 
     for (int i = 0; i < n; ++i) free(paths[i]);
     free(paths);
+    return ok;
 }
 
 /* CF_DIB -> 自上而下 BGRA。只处理 BI_RGB 的 24/32 位，其余（压缩格式）跳过。 */
-static void send_dib(HANDLE h) {
+static int send_dib(HANDLE h) {
     const BITMAPINFOHEADER *bi = (const BITMAPINFOHEADER *)GlobalLock(h);
-    if (!bi) return;
+    if (!bi) return 0;
 
     int w = (int)bi->biWidth;
     int hgt = (int)bi->biHeight;
@@ -181,7 +180,7 @@ static void send_dib(HANDLE h) {
         hop_log(HOP_LOG_INFO, "clip: dib %dx%d %dbpp comp %lu unsupported, skipped",
                 w, hgt, bpp, (unsigned long)bi->biCompression);
         GlobalUnlock(h);
-        return;
+        return 0;
     }
 
     size_t stride = (size_t)w * 4;
@@ -190,12 +189,12 @@ static void send_dib(HANDLE h) {
         hop_log(HOP_LOG_WARN, "clip: image %.1f MB too large, skipped",
                 (double)total / 1048576.0);
         GlobalUnlock(h);
-        return;
+        return 0;
     }
 
     const uint8_t *src = (const uint8_t *)bi + bi->biSize + bi->biClrUsed * 4;
     uint8_t *dst = (uint8_t *)malloc(total);
-    if (!dst) { GlobalUnlock(h); return; }
+    if (!dst) { GlobalUnlock(h); return 0; }
 
     size_t src_stride = (((size_t)w * bpp + 31) / 32) * 4;
     for (int y = 0; y < hgt; ++y) {
@@ -222,8 +221,10 @@ static void send_dib(HANDLE h) {
 
     GlobalUnlock(h);
     hop_log(HOP_LOG_INFO, "clip: image out %dx%d", w, hgt);
-    xfer_submit_image(dst, w, hgt, (int)stride);
+    int ok = xfer_submit_image(dst, w, hgt, (int)stride);
     free(dst);
+    if (!ok) hop_log(HOP_LOG_WARN, "clip: image not queued; will retry");
+    return ok;
 }
 
 /* WM_CLIPBOARDUPDATE -> 广播本机内容 */
@@ -240,7 +241,8 @@ void clip_on_update(void) {
     s_suppress_until = 0;
 
     if (!open_retry(g_app.hwnd)) {
-        hop_log(HOP_LOG_WARN, "clip: clipboard busy, update skipped");
+        hop_log(HOP_LOG_WARN, "clip: clipboard busy, scheduling retry");
+        schedule_clip_retry();
         return;
     }
 
@@ -252,16 +254,18 @@ void clip_on_update(void) {
         HDROP drop = (HDROP)h;
         UINT count = DragQueryFileW(drop, 0xFFFFFFFF, NULL, 0);
         if (count > 0) {
-            send_drop(drop, count);
+            int ok = send_drop(drop, count);
             CloseClipboard();
+            if (!ok) schedule_clip_retry();
             return;
         }
     }
 
     h = GetClipboardData(CF_DIB);
     if (h) {
-        send_dib(h);
+        int ok = send_dib(h);
         CloseClipboard();
+        if (!ok) schedule_clip_retry();
         return;
     }
 
@@ -274,7 +278,7 @@ void clip_on_update(void) {
                 char *u = (char *)malloc((size_t)n);
                 if (u) {
                     if (WideCharToMultiByte(CP_UTF8, 0, w, -1, u, n, NULL, NULL) > 0)
-                        send_text(u, (uint32_t)(n - 1));   /* 不含结尾 NUL */
+                        if (!send_text(u, (uint32_t)(n - 1))) schedule_clip_retry(); /* 不含结尾 NUL */
                     free(u);
                 }
             } else if (n > HOP_TEXT_MAX) {

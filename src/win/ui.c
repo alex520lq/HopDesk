@@ -25,7 +25,7 @@
 #define IDC_XFER_RETRY 2106
 #define IDC_XFER_FILES 2107
 
-static HWND s_xfer_window, s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_progress, s_xfer_history, s_xfer_files;
+static HWND s_xfer_window, s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_progress, s_xfer_history, s_xfer_files, s_xfer_retry;
 static hop_xfer_file_status *s_xfer_file_snapshot;
 static int s_collapsed_folders[HOP_XFER_FILE_LIMIT];
 static uint32_t s_collapsed_batch;
@@ -151,6 +151,7 @@ static void xfer_window_refresh(void) {
     SetWindowTextW(s_xfer_counts, counts);
     int pct=st.bytes_total?(int)((st.bytes_done*100)/st.bytes_total):(st.active?0:100);
     SendMessageW(s_xfer_progress, PBM_SETPOS, (WPARAM)(pct>100?100:pct), 0);
+    if (s_xfer_retry) EnableWindow(s_xfer_retry, st.direction == HOP_XFER_DIR_SEND);
 }
 
 static LRESULT CALLBACK xfer_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
@@ -165,7 +166,7 @@ static LRESULT CALLBACK xfer_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             s_xfer_files=CreateWindowW(L"LISTBOX",L"",WS_CHILD|WS_VISIBLE|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS,20,182,580,210,h,(HMENU)IDC_XFER_FILES,g_app.inst,NULL);
             CreateWindowW(L"STATIC",L"最近 100 次传输",WS_CHILD|WS_VISIBLE,20,405,520,20,h,NULL,g_app.inst,NULL);
             s_xfer_history=CreateWindowW(L"LISTBOX",L"",WS_CHILD|WS_VISIBLE|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS,20,428,580,110,h,NULL,g_app.inst,NULL);
-            CreateWindowW(L"BUTTON",L"重试选中文件",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,360,555,120,30,h,(HMENU)IDC_XFER_RETRY,g_app.inst,NULL);
+            s_xfer_retry=CreateWindowW(L"BUTTON",L"重试选中文件",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,360,555,120,30,h,(HMENU)IDC_XFER_RETRY,g_app.inst,NULL);
             CreateWindowW(L"BUTTON",L"取消传输",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,490,555,110,30,h,(HMENU)IDC_XFER_CANCEL,g_app.inst,NULL);
             SetTimer(h,ID_XFER_TIMER,400,NULL); xfer_window_refresh(); return 0;
         case WM_TIMER: xfer_window_refresh(); return 0;

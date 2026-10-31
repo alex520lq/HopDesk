@@ -180,7 +180,7 @@ static int send_dib(HANDLE h) {
         hop_log(HOP_LOG_INFO, "clip: dib %dx%d %dbpp comp %lu unsupported, skipped",
                 w, hgt, bpp, (unsigned long)bi->biCompression);
         GlobalUnlock(h);
-        return 0;
+        return -1;
     }
 
     size_t stride = (size_t)w * 4;
@@ -189,7 +189,7 @@ static int send_dib(HANDLE h) {
         hop_log(HOP_LOG_WARN, "clip: image %.1f MB too large, skipped",
                 (double)total / 1048576.0);
         GlobalUnlock(h);
-        return 0;
+        return -1;
     }
 
     const uint8_t *src = (const uint8_t *)bi + bi->biSize + bi->biClrUsed * 4;
@@ -265,7 +265,7 @@ void clip_on_update(void) {
     if (h) {
         int ok = send_dib(h);
         CloseClipboard();
-        if (!ok) schedule_clip_retry();
+        if (ok == 0) schedule_clip_retry();
         return;
     }
 
@@ -324,6 +324,7 @@ void clip_apply_remote(const uint8_t *p, uint32_t len) {
     }
 
     if (apply_global(CF_UNICODETEXT, h)) {
+        h = NULL; /* ownership transferred to Windows */
         hop_log(HOP_LOG_INFO, "clip: text in %u bytes", len - 4);
     } else {
         h = NULL; /* apply_global retained ownership for retry */

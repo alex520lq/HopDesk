@@ -158,7 +158,11 @@ static void status_end(int phase,const char *detail){
  }
  pthread_mutex_unlock(&s_status_lock);
 }
-void xfer_get_status(hop_xfer_status *out){if(!out)return;pthread_mutex_lock(&s_status_lock);*out=s_status;pthread_mutex_unlock(&s_status_lock);}
+void xfer_get_status(hop_xfer_status *out){
+ if(!out)return;uint32_t queued=0;
+ pthread_mutex_lock(&s_x.qlock);for(xf_job *j=s_x.q_head;j;j=j->next)queued++;pthread_mutex_unlock(&s_x.qlock);
+ pthread_mutex_lock(&s_status_lock);*out=s_status;out->queued_count=queued;pthread_mutex_unlock(&s_status_lock);
+}
 static void status_set_files(const xf_entry *entries,int n){
  pthread_mutex_lock(&s_status_lock);
  s_file_count=n>HOP_XFER_FILE_LIMIT?HOP_XFER_FILE_LIMIT:n;

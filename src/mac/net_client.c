@@ -143,7 +143,11 @@ static int do_connect(void) {
     hints.ai_socktype = SOCK_STREAM;
     char portstr[16];
     snprintf(portstr, sizeof(portstr), "%u", (unsigned)g_mac.cfg.port);
-    if (getaddrinfo(host, portstr, &hints, &res) != 0) return -1;
+    int gai = getaddrinfo(host, portstr, &hints, &res);
+    if (gai != 0) {
+        hop_log(HOP_LOG_WARN, "net: resolve %s:%s failed: %s", host, portstr, gai_strerror(gai));
+        return -1;
+    }
 
     int s = -1;
     for (struct addrinfo *r = res; r; r = r->ai_next) {
@@ -155,7 +159,12 @@ static int do_connect(void) {
             s = -1;
             continue;
         }
-        if (connect(s, r->ai_addr, r->ai_addrlen) == 0) break;
+        if (connect(s, r->ai_addr, r->ai_addrlen) == 0) {
+            hop_log(HOP_LOG_INFO, "net: connected to %s:%s", host, portstr);
+            break;
+        }
+        hop_log(HOP_LOG_WARN, "net: connect %s:%s failed (errno=%d: %s)",
+                host, portstr, errno, strerror(errno));
         close(s);
         s = -1;
     }
@@ -194,6 +203,7 @@ static void set_connected(int on) {
         g_mac.sharing = 0;
         inject_reset();
     }
+    hop_log(HOP_LOG_INFO, "net: control channel %s", on ? "connected" : "disconnected");
     statusbar_update(on, 0);
 }
 

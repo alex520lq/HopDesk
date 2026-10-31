@@ -5,6 +5,39 @@
 #include "hop.h"
 #include <string.h>
 
+int hop_xfer_decode_file_begin(const uint8_t *p, uint32_t len,
+                               hop_xfer_file_begin_msg *out) {
+    if (!p || !out || len < 29u) return 0;
+    uint16_t nlen = hop_get_be16(p + 25);
+    if (nlen == 0 || nlen > HOP_NAME_LEN_MAX) return 0;
+    if (27u + (uint32_t)nlen + 2u > len) return 0;
+    uint16_t plen = hop_get_be16(p + 27u + nlen);
+    if (plen == 0 || plen > HOP_PATH_LEN_MAX) return 0;
+    if (29u + (uint32_t)nlen + (uint32_t)plen != len) return 0;
+
+    out->batch = hop_get_be32(p);
+    out->id = hop_get_be32(p + 4);
+    out->size = hop_get_be64(p + 8);
+    out->mtime = hop_get_be64(p + 16);
+    out->flags = p[24];
+    out->name_len = nlen;
+    out->name = p + 27;
+    out->relpath_len = plen;
+    out->relpath = p + 29u + nlen;
+    return 1;
+}
+
+int hop_xfer_decode_image_begin(const uint8_t *p, uint32_t len,
+                                hop_xfer_image_begin_msg *out) {
+    if (!p || !out || len != 20u) return 0;
+    out->batch = hop_get_be32(p);
+    out->id = hop_get_be32(p + 4);
+    out->width = hop_get_be32(p + 8);
+    out->height = hop_get_be32(p + 12);
+    out->stride = hop_get_be32(p + 16);
+    return 1;
+}
+
 int hop_xfer_hello_valid(const uint8_t *p, uint32_t len, const char *token) {
     if (!p || !token || len < 2) return 0;
     size_t want = strlen(token);

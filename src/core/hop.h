@@ -238,6 +238,24 @@ uint32_t hop_get_be32(const uint8_t *p);
 uint64_t hop_get_be64(const uint8_t *p);
 
 /* ---- 数据通道输入校验（平台无关，可单元测试） ---- */
+typedef struct {
+    uint32_t batch, id;
+    uint64_t size, mtime;
+    uint8_t flags;
+    const uint8_t *name;
+    uint16_t name_len;
+    const uint8_t *relpath;
+    uint16_t relpath_len;
+} hop_xfer_file_begin_msg;
+
+typedef struct {
+    uint32_t batch, id, width, height, stride;
+} hop_xfer_image_begin_msg;
+
+int hop_xfer_decode_file_begin(const uint8_t *payload, uint32_t len,
+                               hop_xfer_file_begin_msg *out);
+int hop_xfer_decode_image_begin(const uint8_t *payload, uint32_t len,
+                                hop_xfer_image_begin_msg *out);
 int hop_xfer_hello_valid(const uint8_t *payload, uint32_t len, const char *token);
 int hop_xfer_relpath_bytes_safe(const uint8_t *rel, size_t len);
 int hop_xfer_relpath_safe(const char *rel);

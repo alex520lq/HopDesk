@@ -1122,16 +1122,21 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
     switch (type) {
 
         case HOP_MSG_FILE_BEGIN: {
-            if (len < 27) return;
-            uint32_t batch = hop_get_be32(p);
-            uint32_t id    = hop_get_be32(p + 4);
-            uint64_t size  = hop_get_be64(p + 8);
-            uint32_t flags = p[24];
-            uint32_t nlen  = hop_get_be16(p + 25);
-            if (27 + nlen + 2 > len) return;
-            uint32_t plen  = hop_get_be16(p + 27 + nlen);
-            if (29 + nlen + plen > len) return;
-            const char *rel = (const char *)(p + 29 + nlen);
+            hop_xfer_file_begin_msg msg;
+            if (!hop_xfer_decode_file_begin(p, len, &msg)) {
+                hop_log(HOP_LOG_WARN, "xfer: malformed FILE_BEGIN rejected");
+                EnterCriticalSection(&s_x.lock);
+                SOCKET active = s_x.client;
+                LeaveCriticalSection(&s_x.lock);
+                if (active != INVALID_SOCKET) shutdown(active, SD_BOTH);
+                return;
+            }
+            uint32_t batch = msg.batch;
+            uint32_t id = msg.id;
+            uint64_t size = msg.size;
+            uint32_t flags = msg.flags;
+            uint32_t plen = msg.relpath_len;
+            const uint8_t *rel = msg.relpath;
 
             rx_begin_batch(batch);
             if (!s_rx.active) return;
@@ -1153,7 +1158,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             memcpy(relz, rel, plen);
             relz[plen] = '\0';
 
-            if (!hop_xfer_relpath_bytes_safe((const uint8_t *)relz, plen)) {
+            if (!hop_xfer_relpath_bytes_safe(rel, plen)) {
                 hop_log(HOP_LOG_WARN, "xfer: unsafe rel path rejected: %s", relz);
                 free(relz);
                 s_rx.cur_fail = HOP_FILE_ACK_BADPATH;
@@ -1199,14 +1204,18 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
         }
 
         case HOP_MSG_IMAGE_BEGIN: {
-            if (len < 20) return;
-            uint32_t batch = hop_get_be32(p);
+            hop_xfer_image_begin_msg msg;
+            if (!hop_xfer_decode_image_begin(p, len, &msg)) {
+                hop_log(HOP_LOG_WARN, "xfer: malformed IMAGE_BEGIN rejected");
+                return;
+            }
+            uint32_t batch = msg.batch;
             rx_begin_batch(batch);
             if (!s_rx.active) return;
 
-            int w = (int)hop_get_be32(p + 8);
-            int h = (int)hop_get_be32(p + 12);
-            int stride = (int)hop_get_be32(p + 16);
+            int w = (int)msg.width;
+            int h = (int)msg.height;
+            int stride = (int)msg.stride;
 
             /* 对端声称的尺寸必须自己验：不然 w=h=100000 就能把内存吃光。
              * 这正是"避免内存不断增长"的边界。 */
@@ -1221,7 +1230,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             }
 
             s_rx.cur_is_image = 1;
-            s_rx.cur_id = hop_get_be32(p + 4);
+            s_rx.cur_id = msg.id;
             s_rx.img_w = w;
             s_rx.img_h = h;
             s_rx.img_stride = stride;

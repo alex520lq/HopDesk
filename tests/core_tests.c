@@ -354,6 +354,52 @@ static void test_relative_path_wire_bytes(void) {
     CHECK(!hop_xfer_relpath_bytes_safe(nul_inside, sizeof(nul_inside)));
     CHECK(!hop_xfer_relpath_bytes_safe((const uint8_t *)"a\\\\b", 3));
 }
+
+static void test_file_begin_decode(void) {
+    const uint8_t name[] = "report.txt";
+    const uint8_t path[] = "folder/report.txt";
+    uint8_t p[29 + sizeof(name)-1 + sizeof(path)-1];
+    memset(p, 0, sizeof(p));
+    hop_put_be32(p, 0x11223344u);
+    hop_put_be32(p+4, 7);
+    hop_put_be64(p+8, 123456789u);
+    hop_put_be64(p+16, 987654u);
+    p[24] = 0;
+    hop_put_be16(p+25, (uint16_t)(sizeof(name)-1));
+    memcpy(p+27, name, sizeof(name)-1);
+    hop_put_be16(p+27+sizeof(name)-1, (uint16_t)(sizeof(path)-1));
+    memcpy(p+29+sizeof(name)-1, path, sizeof(path)-1);
+
+    hop_xfer_file_begin_msg m;
+    CHECK(hop_xfer_decode_file_begin(p, sizeof(p), &m));
+    CHECK(m.batch == 0x11223344u && m.id == 7);
+    CHECK(m.size == 123456789u && m.mtime == 987654u);
+    CHECK(m.name_len == sizeof(name)-1);
+    CHECK(memcmp(m.name, name, sizeof(name)-1) == 0);
+    CHECK(m.relpath_len == sizeof(path)-1);
+    CHECK(memcmp(m.relpath, path, sizeof(path)-1) == 0);
+    CHECK(!hop_xfer_decode_file_begin(p, sizeof(p)-1, &m));
+
+    uint8_t trailing[sizeof(p)+1];
+    memcpy(trailing,p,sizeof(p)); trailing[sizeof(p)] = 0xEE;
+    CHECK(!hop_xfer_decode_file_begin(trailing,sizeof(trailing),&m));
+    hop_put_be16(p+25,0);
+    CHECK(!hop_xfer_decode_file_begin(p,sizeof(p),&m));
+}
+
+static void test_image_begin_decode(void) {
+    uint8_t p[20] = {0};
+    hop_put_be32(p, 9);
+    hop_put_be32(p+4, 2);
+    hop_put_be32(p+8, 1920);
+    hop_put_be32(p+12, 1080);
+    hop_put_be32(p+16, 7680);
+    hop_xfer_image_begin_msg m;
+    CHECK(hop_xfer_decode_image_begin(p,sizeof(p),&m));
+    CHECK(m.batch==9 && m.id==2 && m.width==1920 && m.height==1080 && m.stride==7680);
+    CHECK(!hop_xfer_decode_image_begin(p,sizeof(p)-1,&m));
+    CHECK(!hop_xfer_decode_image_begin(p,sizeof(p)+1,&m));
+}
 int main(void) {
     hop_crc32_init();
 
@@ -374,6 +420,8 @@ int main(void) {
     test_clipboard_origin_routing();
     test_file_crc_fold();
     test_relative_path_wire_bytes();
+    test_file_begin_decode();
+    test_image_begin_decode();
 
     if (g_failures) {
         fprintf(stderr, "HopDesk core tests: %d failure(s)\n", g_failures);

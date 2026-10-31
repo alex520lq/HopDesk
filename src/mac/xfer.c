@@ -1057,39 +1057,44 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
     switch (type) {
 
         case HOP_MSG_FILE_BEGIN: {
-            if (len < 27) return;
-            uint32_t batch = hop_get_be32(p);
-            uint32_t id    = hop_get_be32(p + 4);
-            uint64_t size  = hop_get_be64(p + 8);
-            uint32_t flags = p[24];
-            uint32_t nlen  = hop_get_be16(p + 25);
-            if (27 + nlen + 2 > len) return;
-            uint32_t plen  = hop_get_be16(p + 27 + nlen);
-            if (29u + nlen + plen > len) return;
+            hop_xfer_file_begin_msg msg;
+            if (!hop_xfer_decode_file_begin(p, len, &msg)) {
+                hop_log(HOP_LOG_WARN, "xfer: malformed FILE_BEGIN rejected");
+                pthread_mutex_lock(&s_x.slock);
+                int active = s_x.sock;
+                pthread_mutex_unlock(&s_x.slock);
+                if (active >= 0) shutdown(active, SHUT_RDWR);
+                return;
+            }
+            uint32_t batch = msg.batch;
+            uint32_t id = msg.id;
+            uint64_t size = msg.size;
+            uint32_t flags = msg.flags;
+            uint32_t plen = msg.relpath_len;
+            uint32_t nlen = msg.name_len;
 
             rx_begin_batch(batch);
             if (!s_rx.active) return;
 
-            char rel[HOP_PATH_LEN_MAX + 1];
-            if (!hop_xfer_relpath_bytes_safe(p + 29 + nlen, plen)) {
-                hop_log(HOP_LOG_WARN, "xfer: unsafe or oversized relative path rejected");
-                s_rx.cur_fail = HOP_FILE_ACK_BADPATH;
-                break;
-            }
-            memcpy(rel, p + 29 + nlen, plen);
-            rel[plen] = '\0';
-
-            /* 先把"当前条目"登记好，哪怕它是坏的：FILE_END 要靠 cur_id 回 ACK，
-             * 漏回一次，发送端就要白等 10 秒超时再重试。 */
+            /* 先登记当前条目，确保坏路径也能在 FILE_END 时回 ACK。 */
             free(s_rx.cur_path);
             s_rx.cur_path     = NULL;
             s_rx.cur_id       = id;
             s_rx.cur_is_image = 0;
             s_rx.cur_is_dir   = (flags & HOP_FILE_FLAG_DIR) ? 1 : 0;
             s_rx.cur_fail     = -1;
-            s_rx.cur_size     = 0;   /* 0 = 任何分块都越界被拒，坏条目不落盘 */
+            s_rx.cur_size     = 0;
             s_rx.fcrc         = 0;
             s_wq.err          = 0;
+
+            char rel[HOP_PATH_LEN_MAX + 1];
+            if (!hop_xfer_relpath_bytes_safe(msg.relpath, plen)) {
+                hop_log(HOP_LOG_WARN, "xfer: unsafe relative path rejected");
+                s_rx.cur_fail = HOP_FILE_ACK_BADPATH;
+                break;
+            }
+            memcpy(rel, msg.relpath, plen);
+            rel[plen] = '\0';
 
             if (!hop_xfer_relpath_safe(rel)) {
                 hop_log(HOP_LOG_WARN, "xfer: unsafe rel path rejected: %s", rel);
@@ -1128,14 +1133,18 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
         }
 
         case HOP_MSG_IMAGE_BEGIN: {
-            if (len < 20) return;
-            uint32_t batch = hop_get_be32(p);
+            hop_xfer_image_begin_msg msg;
+            if (!hop_xfer_decode_image_begin(p, len, &msg)) {
+                hop_log(HOP_LOG_WARN, "xfer: malformed IMAGE_BEGIN rejected");
+                return;
+            }
+            uint32_t batch = msg.batch;
             rx_begin_batch(batch);
             if (!s_rx.active) return;
 
-            int w = (int)hop_get_be32(p + 8);
-            int h = (int)hop_get_be32(p + 12);
-            int stride = (int)hop_get_be32(p + 16);
+            int w = (int)msg.width;
+            int h = (int)msg.height;
+            int stride = (int)msg.stride;
 
             /* 对端声称的尺寸必须自己验：不然 w=h=100000 就能把内存吃光。
              * 这正是"避免内存不断增长"的边界。 */
@@ -1147,7 +1156,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             }
 
             s_rx.cur_is_image = 1;
-            s_rx.cur_id = hop_get_be32(p + 4);
+            s_rx.cur_id = msg.id;
             s_rx.img_w = w;
             s_rx.img_h = h;
             s_rx.img_stride = stride;

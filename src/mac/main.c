@@ -64,17 +64,57 @@ int main(int argc, char **argv) {
              "%s", "192.168.31.8");
 
     /* Finder launches apps with an arbitrary working directory.
-     * Store mutable files in the user's Application Support directory. */
+     * Keep the canonical config in Application Support, but migrate legacy
+     * configs from beside the executable or the old relative working path. */
     const char *home = getenv("HOME");
-    char support[PATH_MAX], config[PATH_MAX], log[PATH_MAX];
+    char library[PATH_MAX], app_support[PATH_MAX], support[PATH_MAX];
+    char config[PATH_MAX], log[PATH_MAX], legacy[PATH_MAX] = {0};
     if (!home || !home[0]) home = "/tmp";
-    snprintf(support, sizeof(support), "%s/Library/Application Support/HopDesk", home);
+    snprintf(library, sizeof(library), "%s/Library", home);
+    snprintf(app_support, sizeof(app_support), "%s/Application Support", library);
+    snprintf(support, sizeof(support), "%s/HopDesk", app_support);
+    (void)mkdir(library, 0700);
+    (void)mkdir(app_support, 0700);
     (void)mkdir(support, 0700);
     snprintf(config, sizeof(config), "%s/hopdesk.conf", support);
     snprintf(log, sizeof(log), "%s/hopdesk.log", support);
-    hop_config_load(&g_mac.cfg, config);
+
+    int config_loaded = hop_config_load(&g_mac.cfg, config);
+    if (!config_loaded) {
+        uint32_t exe_len = (uint32_t)sizeof(legacy);
+        if (_NSGetExecutablePath(legacy, &exe_len) == 0) {
+            char *slash = strrchr(legacy, '/');
+            if (slash) {
+                *slash = '\0';
+                size_t used = strlen(legacy);
+                if (used + sizeof("/hopdesk.conf") < sizeof(legacy))
+                    strcat(legacy, "/hopdesk.conf");
+                else legacy[0] = '\0';
+            }
+        }
+        if (legacy[0]) config_loaded = hop_config_load(&g_mac.cfg, legacy);
+        if (!config_loaded) config_loaded = hop_config_load(&g_mac.cfg, "hopdesk.conf");
+        if (config_loaded && legacy[0]) {
+            FILE *src = fopen(legacy, "rb");
+            if (src) {
+                FILE *dst = fopen(config, "wb");
+                if (dst) {
+                    char copy[4096]; size_t n;
+                    while ((n = fread(copy, 1, sizeof(copy), src)) > 0)
+                        if (fwrite(copy, 1, n, dst) != n) break;
+                    fclose(dst);
+                }
+                fclose(src);
+            }
+        }
+    }
     hop_log_open(log);
     hop_log(HOP_LOG_INFO, "HopDesk %s starting", HOP_VERSION);
+    hop_log(HOP_LOG_INFO, "config: %s (%s), host=%s port=%u data_port=%u token_len=%u",
+            config, config_loaded ? "loaded" : "defaults",
+            g_mac.cfg.peer_host[0] ? g_mac.cfg.peer_host : "192.168.31.8",
+            (unsigned)g_mac.cfg.port, (unsigned)g_mac.cfg.data_port,
+            (unsigned)strlen(g_mac.cfg.token));
 
     inject_init();
     net_loop_run();

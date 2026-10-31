@@ -24,10 +24,31 @@
 #define IDC_XFER_CANCEL 2105
 
 static HWND s_xfer_window, s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_progress;
+static uint32_t s_notified_batch;
+static int s_notified_phase;
+
+static void xfer_notify_if_terminal(const hop_xfer_status *st) {
+    if (!st || st->active || st->batch == 0) return;
+    if (st->phase != HOP_XFER_COMPLETED && st->phase != HOP_XFER_PARTIAL &&
+        st->phase != HOP_XFER_FAILED && st->phase != HOP_XFER_CANCELLED) return;
+    if (s_notified_batch == st->batch && s_notified_phase == st->phase) return;
+    s_notified_batch = st->batch;
+    s_notified_phase = st->phase;
+    NOTIFYICONDATAW nid = g_app.nid;
+    nid.uFlags = NIF_INFO;
+    wcscpy_s(nid.szInfoTitle, ARRAYSIZE(nid.szInfoTitle),
+        st->phase == HOP_XFER_COMPLETED ? L"传输完成" :
+        st->phase == HOP_XFER_PARTIAL ? L"传输部分失败" :
+        st->phase == HOP_XFER_CANCELLED ? L"传输已取消" : L"传输失败");
+    MultiByteToWideChar(CP_UTF8, 0, st->detail, -1, nid.szInfo, ARRAYSIZE(nid.szInfo));
+    nid.dwInfoFlags = st->phase == HOP_XFER_COMPLETED ? NIIF_INFO : NIIF_WARNING;
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
 
 static void xfer_window_refresh(void) {
     if (!s_xfer_window) return;
     hop_xfer_status st; memset(&st, 0, sizeof(st)); xfer_get_status(&st);
+    xfer_notify_if_terminal(&st);
     const wchar_t *phase = L"空闲";
     switch (st.phase) {
         case HOP_XFER_QUEUED: phase=L"排队中"; break;

@@ -11,7 +11,12 @@ $sources = @(
     (Join-Path $root 'src/core/keymap.c'),
     (Join-Path $root 'src/core/xfer_validate.c')
 )
-& gcc -std=c11 -Wall -Wextra -I (Join-Path $root 'src/core') -o $out @sources
+$inc = Join-Path $root 'src/core'
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /O2 /W4 /I $inc /Fe:$out @sources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $out @sources
+}
 if ($LASTEXITCODE -ne 0) { throw "Core test compilation failed ($LASTEXITCODE)" }
 & $out
 if ($LASTEXITCODE -ne 0) { throw "Core tests failed ($LASTEXITCODE)" }

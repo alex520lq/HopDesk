@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<title>HopDesk</title>
+<defs>
+ <linearGradient id="bg" x1="120" y1="80" x2="900" y2="950" gradientUnits="userSpaceOnUse"><stop stop-color="#2678F5"/><stop offset="1" stop-color="#713FE3"/></linearGradient>
+ <linearGradient id="mark" x1="270" y1="270" x2="760" y2="760" gradientUnits="userSpaceOnUse"><stop stop-color="#FFFFFF"/><stop offset="1" stop-color="#DCE8FF"/></linearGradient>
+ <filter id="shadow" x="120" y="120" width="784" height="784" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse"><feGaussianBlur stdDeviation="24"/></filter>
+</defs>
+<rect x="64" y="64" width="896" height="896" rx="224" fill="url(#bg)"/>
+<path d="M300 310V714M724 310V714M300 512H724" stroke="#152A78" stroke-opacity=".22" stroke-width="104" stroke-linecap="round" stroke-linejoin="round" filter="url(#shadow)"/>
+<path d="M300 310V714M724 310V714M300 512H724" stroke="url(#mark)" stroke-width="104" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="300" cy="270" r="72" fill="#FFFFFF"/>
+<circle cx="724" cy="270" r="72" fill="#FFFFFF"/>
+<circle cx="300" cy="754" r="72" fill="#DCE8FF"/>
+<circle cx="724" cy="754" r="72" fill="#DCE8FF"/>
+</svg>

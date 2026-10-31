@@ -254,7 +254,12 @@ static CRITICAL_SECTION s_txlock;
 static int send_all(SOCKET c, const char *p, int len) {
     while (len > 0) {
         int n = send(c, p, len, 0);
-        if (n <= 0) return 0;
+        if (n == SOCKET_ERROR && WSAGetLastError() == WSAEINTR) continue;
+        if (n <= 0) {
+            /* 发送失败可能已写出半帧；关闭双向流以触发接收线程重连。 */
+            shutdown(c, SD_BOTH);
+            return 0;
+        }
         p += n;
         len -= n;
     }

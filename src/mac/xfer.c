@@ -104,7 +104,11 @@ static int send_all(int fd, const void *buf, size_t len) {
     while (len > 0) {
         ssize_t n = write(fd, p, len);
         if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) return 0;
+        if (n <= 0) {
+            /* 部分帧不可重用；唤醒 conn 线程并让作业走断线重试。 */
+            shutdown(fd, SHUT_RDWR);
+            return 0;
+        }
         p += n;
         len -= (size_t)n;
     }

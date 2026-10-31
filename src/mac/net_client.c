@@ -94,7 +94,11 @@ static int socket_send_all(int fd, const void *buf, size_t len) {
     while (len > 0) {
         ssize_t n = write(fd, p, len);
         if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) return 0;
+        if (n <= 0) {
+            /* 帧可能已经部分写出；必须让读线程感知断线，不能复用已损坏的流。 */
+            shutdown(fd, SHUT_RDWR);
+            return 0;
+        }
         p += (size_t)n;
         len -= (size_t)n;
     }

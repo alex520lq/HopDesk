@@ -64,5 +64,6 @@ void ui_init(win_app *app);
 void ui_shutdown(win_app *app);
 void ui_refresh(win_app *app);
 void ui_show_menu(win_app *app);
+void ui_show_transfers(win_app *app);
 
 #endif

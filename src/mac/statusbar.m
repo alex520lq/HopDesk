@@ -17,6 +17,7 @@
 - (void)doTransfers:(id)sender;
 - (void)doRetryFile:(id)sender;
 @end
+static void retry_selected_mac_file(void);
 @implementation HopController
 - (void)doQuit:(id)sender {
     (void)sender;

@@ -86,7 +86,8 @@ static void xfer_window_refresh(void) {
                 indent[spaces] = 0;
                 const wchar_t *state = s_xfer_file_snapshot[i].phase == HOP_XFER_FILE_COMPLETED ? L"完成" :
                     s_xfer_file_snapshot[i].phase == HOP_XFER_FILE_FAILED ? L"失败" :
-                    s_xfer_file_snapshot[i].phase == HOP_XFER_FILE_SENDING ? L"传输中" :
+                    s_xfer_file_snapshot[i].phase == HOP_XFER_FILE_SENDING ? L"发送中" :
+                    s_xfer_file_snapshot[i].phase == HOP_XFER_FILE_RECEIVING ? L"接收中" :
                     s_xfer_file_snapshot[i].phase == HOP_XFER_FILE_VERIFYING ? L"校验中" : L"排队中";
                 swprintf(row, ARRAYSIZE(row), L"%ls%ls %ls  %llu/%llu B  %ls",
                     indent, s_xfer_file_snapshot[i].is_directory ? (s_collapsed_folders[i] ? L"[+目录]" : L"[-目录]") : L"[文件]", path,

@@ -51,6 +51,8 @@ static HopController *s_ctrl;
 static NSWindow *s_transferWindow;
 static NSTextField *s_transferTitle, *s_transferDetail, *s_transferCounts;
 static NSProgressIndicator *s_transferProgress;
+static NSTextView *s_transferHistory;
+static uint32_t s_historyBatch;
 static uint32_t s_notifiedBatch;
 static int s_notifiedPhase;
 
@@ -170,6 +172,23 @@ static void transfer_window_refresh(void) {
     if (!s_transferWindow) return;
     hop_xfer_status st; memset(&st, 0, sizeof(st)); xfer_get_status(&st);
     transfer_notify_if_terminal(&st);
+    hop_xfer_history_entry history[HOP_XFER_HISTORY_LIMIT];
+    int historyCount = xfer_get_history(history, HOP_XFER_HISTORY_LIMIT);
+    if (s_transferHistory && historyCount > 0 && s_historyBatch != history[0].batch) {
+        s_historyBatch = history[0].batch;
+        NSMutableString *rows = [NSMutableString string];
+        for (int i = 0; i < historyCount; ++i) {
+            NSString *name = history[i].name[0] ? [NSString stringWithUTF8String:history[i].name] : @"文件任务";
+            NSString *phaseText = history[i].phase == HOP_XFER_COMPLETED ? @"完成" :
+                                  history[i].phase == HOP_XFER_PARTIAL ? @"部分失败" :
+                                  history[i].phase == HOP_XFER_CANCELLED ? @"已取消" : @"失败";
+            NSString *dirText = history[i].direction == HOP_XFER_DIR_SEND ? @"发送" : @"接收";
+            [rows appendFormat:@"%@  %@  %@  文件 %u/%u  %@\n", dirText, phaseText, name,
+                history[i].files_done, history[i].files_total,
+                [NSByteCountFormatter stringFromByteCount:(long long)history[i].bytes_total countStyle:NSByteCountFormatterFile]];
+        }
+        s_transferHistory.string = rows;
+    }
     NSString *title = st.name[0] ? [NSString stringWithUTF8String:st.name] : @"暂无传输任务";
     NSString *phase = @"空闲";
     switch (st.phase) {
@@ -198,7 +217,7 @@ static void transfer_window_refresh(void) {
 void statusbar_show_transfers(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!s_transferWindow) {
-            s_transferWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,460,190)
+            s_transferWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,620,430)
                 styleMask:(NSWindowStyleMaskTitled|NSWindowStyleMaskClosable)
                 backing:NSBackingStoreBuffered defer:NO];
             s_transferWindow.title = @"HopDesk · 传输管理器";
@@ -206,13 +225,18 @@ void statusbar_show_transfers(void) {
             s_transferTitle = transfer_label(@"暂无传输任务", NSMakeRect(20,140,420,22), 15);
             s_transferDetail = transfer_label(@"等待文件传输", NSMakeRect(20,108,420,20), 12);
             s_transferCounts = transfer_label(@"文件 0 / 0    数据 0 B / 0 B", NSMakeRect(20,78,420,20), 12);
-            s_transferProgress = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(20,48,420,12)];
+            s_transferProgress = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(20,380,580,12)];
             s_transferProgress.minValue=0; s_transferProgress.maxValue=100; s_transferProgress.indeterminate=NO;
-            NSButton *cancel = [[NSButton alloc] initWithFrame:NSMakeRect(340,12,100,28)];
+            NSScrollView *historyScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(20,55,580,300)];
+            historyScroll.hasVerticalScroller = YES;
+            s_transferHistory = [[NSTextView alloc] initWithFrame:NSMakeRect(0,0,560,280)];
+            s_transferHistory.editable = NO; s_transferHistory.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+            historyScroll.documentView = s_transferHistory;
+            NSButton *cancel = [[NSButton alloc] initWithFrame:NSMakeRect(500,12,100,28)];
             cancel.title=@"取消传输"; cancel.bezelStyle=NSBezelStyleRounded;
             cancel.target=s_ctrl; cancel.action=@selector(doCancelXfer:);
             [v addSubview:s_transferTitle]; [v addSubview:s_transferDetail];
-            [v addSubview:s_transferCounts]; [v addSubview:s_transferProgress]; [v addSubview:cancel];
+            [v addSubview:s_transferCounts]; [v addSubview:s_transferProgress]; [v addSubview:historyScroll]; [v addSubview:cancel];
             [NSTimer scheduledTimerWithTimeInterval:0.4 repeats:YES block:^(NSTimer *timer) {
                 (void)timer; transfer_window_refresh();
             }];

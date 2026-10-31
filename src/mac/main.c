@@ -11,7 +11,7 @@
 #include <limits.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <sys/file.h>
+#include <sys/file.h>\n#include <sys/stat.h>
 
 /* ---- 单实例 ----
  * macOS 端是客户端，不 bind 端口，所以不会"抢端口"；但两个实例会同时
@@ -62,9 +62,17 @@ int main(int argc, char **argv) {
     snprintf(g_mac.cfg.peer_host, sizeof(g_mac.cfg.peer_host),
              "%s", "192.168.31.8");
 
-    /* 可选：exe 同目录 hopdesk.conf / hopdesk.log */
-    hop_config_load(&g_mac.cfg, "hopdesk.conf");
-    hop_log_open("hopdesk.log");
+    /* Finder launches apps with an arbitrary working directory.
+     * Store mutable files in the user's Application Support directory. */
+    const char *home = getenv("HOME");
+    char support[PATH_MAX], config[PATH_MAX], log[PATH_MAX];
+    if (!home || !home[0]) home = "/tmp";
+    snprintf(support, sizeof(support), "%s/Library/Application Support/HopDesk", home);
+    (void)mkdir(support, 0700);
+    snprintf(config, sizeof(config), "%s/hopdesk.conf", support);
+    snprintf(log, sizeof(log), "%s/hopdesk.log", support);
+    hop_config_load(&g_mac.cfg, config);
+    hop_log_open(log);
     hop_log(HOP_LOG_INFO, "HopDesk %s starting", HOP_VERSION);
 
     inject_init();

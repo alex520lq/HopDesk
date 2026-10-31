@@ -93,6 +93,11 @@ static void run_file_case(int mode,uint64_t size,uint32_t chunk_size,const char*
         for(uint64_t i=0;i<size;i++)source[i]=(uint8_t)((i*31u+17u)&0xFFu);
         uint32_t chunks=(uint32_t)((size+chunk_size-1)/chunk_size);
         uint32_t whole=0;
+        for(uint64_t pos=0;pos<size;pos+=chunk_size){
+            uint32_t count=(uint32_t)((size-pos)<chunk_size?(size-pos):chunk_size);
+            uint32_t crc=hop_crc32(0,source+pos,count);
+            whole=hop_xfer_file_crc_step(whole,pos,crc);
+        }
         for(uint32_t step=0;step<chunks;step++){
             uint32_t index=(mode==3)?(chunks-1-step):step;
             uint64_t off=(uint64_t)index*chunk_size;
@@ -107,8 +112,6 @@ static void run_file_case(int mode,uint64_t size,uint32_t chunk_size,const char*
             hop_put_be32(cp+16,mode==1&&index==0?(crc^1u):crc);
             memcpy(cp+20,source+off,n);
             feed_frame(d,HOP_MSG_FILE_CHUNK,cp,20u+n);
-            if(mode==0 || (mode==2&&index==0) || mode==3)
-                whole=hop_xfer_file_crc_step(whole,wire_off,crc);
             free(cp);
         }
         uint8_t end[9];hop_put_be32(end,9);end[4]=HOP_FILE_OK;hop_put_be32(end+5,whole);

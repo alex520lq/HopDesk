@@ -101,6 +101,7 @@ static pthread_mutex_t s_txlock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t s_status_lock = PTHREAD_MUTEX_INITIALIZER;
 static hop_xfer_status s_status;
 static hop_xfer_file_status s_files[HOP_XFER_FILE_LIMIT];
+static char * s_retry_paths[HOP_XFER_FILE_LIMIT];
 static int s_file_count;
 static int s_current_file = -1;
 static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];
@@ -161,10 +162,12 @@ void xfer_get_status(hop_xfer_status *out){if(!out)return;pthread_mutex_lock(&s_
 static void status_set_files(const xf_entry *entries,int n){
  pthread_mutex_lock(&s_status_lock);
  s_file_count=n>HOP_XFER_FILE_LIMIT?HOP_XFER_FILE_LIMIT:n;
+ for(int i=0;i<HOP_XFER_FILE_LIMIT;i++){free(s_retry_paths[i]);s_retry_paths[i]=NULL;}
  for(int i=0;i<s_file_count;i++){
   s_files[i].index=(uint32_t)i;s_files[i].phase=HOP_XFER_FILE_QUEUED;
   s_files[i].is_directory=(entries[i].flags & HOP_FILE_FLAG_DIR)!=0;
   s_files[i].bytes_total=entries[i].size;
+  if(entries[i].full)s_retry_paths[i]=strdup(entries[i].full);
   if(entries[i].rel)snprintf(s_files[i].relative_path,sizeof(s_files[i].relative_path),"%s",entries[i].rel);
   else if(entries[i].name)snprintf(s_files[i].relative_path,sizeof(s_files[i].relative_path),"%s",entries[i].name);
  }
@@ -179,6 +182,15 @@ int xfer_get_files(hop_xfer_file_status *out,int capacity){
  if(!out||capacity<=0)return 0;pthread_mutex_lock(&s_status_lock);
  int n=s_file_count<capacity?s_file_count:capacity;memcpy(out,s_files,(size_t)n*sizeof(*out));
  pthread_mutex_unlock(&s_status_lock);return n;
+}
+int xfer_retry_file(int index){
+ char *path=NULL;
+ pthread_mutex_lock(&s_status_lock);
+ if(index>=0&&index<s_file_count&&s_files[index].phase==HOP_XFER_FILE_FAILED&&s_retry_paths[index])
+  path=strdup(s_retry_paths[index]);
+ pthread_mutex_unlock(&s_status_lock);
+ if(!path)return 0;
+ const char *paths[1]={path};int ok=xfer_submit_paths(paths,1);free(path);return ok;
 }
 int xfer_get_history(hop_xfer_history_entry *out,int capacity){
  if(!out||capacity<=0)return 0;pthread_mutex_lock(&s_status_lock);

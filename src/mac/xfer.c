@@ -111,6 +111,16 @@ static void status_progress(uint64_t bytes,uint32_t files_done,const char *name,
  pthread_mutex_lock(&s_status_lock);if(s_status.active){s_status.bytes_done=bytes;s_status.files_done=files_done;
  if(name)snprintf(s_status.name,sizeof(s_status.name),"%s",name);s_status.phase=phase;}pthread_mutex_unlock(&s_status_lock);
 }
+static void status_add_bytes(uint32_t n) {
+ pthread_mutex_lock(&s_status_lock);
+ if(s_status.active){s_status.bytes_done+=n;if(s_status.bytes_done>s_status.bytes_total)s_status.bytes_done=s_status.bytes_total;}
+ pthread_mutex_unlock(&s_status_lock);
+}
+static void status_file_done(uint32_t files,const char *name) {
+ pthread_mutex_lock(&s_status_lock);
+ if(s_status.active){s_status.files_done=files;if(name)snprintf(s_status.name,sizeof(s_status.name),"%s",name);}
+ pthread_mutex_unlock(&s_status_lock);
+}
 static void status_end(int phase,const char *detail){pthread_mutex_lock(&s_status_lock);s_status.active=0;s_status.phase=phase;
  if(detail)snprintf(s_status.detail,sizeof(s_status.detail),"%s",detail);pthread_mutex_unlock(&s_status_lock);}
 void xfer_get_status(hop_xfer_status *out){if(!out)return;pthread_mutex_lock(&s_status_lock);*out=s_status;pthread_mutex_unlock(&s_status_lock);}
@@ -285,6 +295,7 @@ static int send_chunk(int fd, uint8_t *tx, uint32_t id, uint64_t off,
     pthread_mutex_lock(&s_txlock);
     int ok = send_all(fd, tx, CHUNK_HDR + len);
     pthread_mutex_unlock(&s_txlock);
+    if(ok) status_add_bytes(len);
     return ok;
 }
 
@@ -586,8 +597,7 @@ static int run_job(int fd, uint8_t *tx, xf_job *j) {
 
         if (st == HOP_FILE_ACK_OK) {
             j->ok++;
-            uint64_t bytes_done=0;for(int si=0;si<=j->next_i;si++)bytes_done+=j->e[si].size;
-            status_progress(bytes_done,(uint32_t)j->ok,e->name,HOP_XFER_SENDING);
+            status_file_done((uint32_t)j->ok,e->name);
         } else {
             hop_log(HOP_LOG_ERROR, "xfer: giving up on %s after %d attempt(s) (status %d)",
                     e->rel, tries + 1, st);

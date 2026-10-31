@@ -52,6 +52,7 @@ void disp_set_input(uint16_t vcp);
 /* statusbar.m */
 void statusbar_init(void);
 void statusbar_update(int connected, int sharing);
+void statusbar_show_transfers(void);
 void app_run(void);                 /* 启动 NSApplication 主循环 */
 
 #endif

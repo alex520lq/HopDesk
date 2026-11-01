@@ -27,9 +27,12 @@ static struct {
     CONDITION_VARIABLE cv_work, cv_space;
     HANDLE             th;
     HANDLE             f;        /* 写线程独占 */
-    int                err;      /* 写盘失败标记，主路径读 */
+    volatile LONG      err;      /* 写盘失败标记，主路径读 */
     int                stop;
 } s_wq;
+
+static void wq_error_set(int value) { InterlockedExchange(&s_wq.err, value); }
+static int wq_error_get(void) { return InterlockedCompareExchange(&s_wq.err, 0, 0); }
 
 static void wq_task_run(rx_task *t) {
     switch (t->kind) {
@@ -40,7 +43,7 @@ static void wq_task_run(rx_task *t) {
             if (s_wq.f == INVALID_HANDLE_VALUE) {
                 hop_log(HOP_LOG_WARN, "xfer: cannot create %ls (err %lu)",
                         t->path, GetLastError());
-                s_wq.err = 1;
+                wq_error_set(1);
             }
             break;
 
@@ -54,7 +57,7 @@ static void wq_task_run(rx_task *t) {
                     wrote != t->len) {
                     hop_log(HOP_LOG_WARN, "xfer: write failed at %llu (err %lu)",
                             (unsigned long long)t->off, GetLastError());
-                    s_wq.err = 1;
+                    wq_error_set(1);
                 }
             }
             break;
@@ -87,7 +90,9 @@ static DWORD WINAPI writer_thread(LPVOID arg) {
         s_wq.busy = 1;
         LeaveCriticalSection(&s_wq.lock);
 
+        int disk_guard = hop_watchdog_begin("disk writer task", HOP_IO_DEADLINE_MS);
         wq_task_run(&t);
+        hop_watchdog_end(disk_guard);
 
         EnterCriticalSection(&s_wq.lock);
         s_wq.busy = 0;
@@ -104,11 +109,13 @@ static DWORD WINAPI writer_thread(LPVOID arg) {
 
 /* 入队。队列满时阻塞 —— 这就是背压的着力点。 */
 static int wq_push(const rx_task *t) {
+    int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
     EnterCriticalSection(&s_wq.lock);
     while (s_wq.count >= RX_Q_SLOTS && !s_wq.stop)
         SleepConditionVariableCS(&s_wq.cv_space, &s_wq.lock, INFINITE);
     if (s_wq.stop) {
         LeaveCriticalSection(&s_wq.lock);
+        hop_watchdog_end(queue_guard);
         return 0;
     }
     s_wq.ring[s_wq.tail] = *t;
@@ -116,15 +123,18 @@ static int wq_push(const rx_task *t) {
     s_wq.count++;
     WakeConditionVariable(&s_wq.cv_work);
     LeaveCriticalSection(&s_wq.lock);
+    hop_watchdog_end(queue_guard);
     return 1;
 }
 
 /* 等队列排空且写线程空闲。关文件、比对文件 CRC 之前必须调用。 */
 static void wq_drain(void) {
+    int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
     EnterCriticalSection(&s_wq.lock);
     while ((s_wq.count > 0 || s_wq.busy) && !s_wq.stop)
         SleepConditionVariableCS(&s_wq.cv_space, &s_wq.lock, INFINITE);
     LeaveCriticalSection(&s_wq.lock);
+    hop_watchdog_end(queue_guard);
 }
 
 static int wq_start(void) {
@@ -230,6 +240,19 @@ static void rx_reset(void) {
     /* 先把队列排空并关掉文件，再清状态 —— 否则写线程可能还在用旧路径 */
     rx_close_file();
     rx_clear_state();
+}
+
+/* Receiver-owned lifecycle boundary. Only a data reconnect in the SAME control
+ * session may retain ACKs/tombstones; a new control session starts cleanly. */
+static hop_session_id s_rx_session;
+static void rx_bind_session(const hop_session_id *session) {
+    if (!hop_session_id_equal(&s_rx_session, session)) {
+        rx_reset(); s_rx.dead_batch=0; s_rx.dead_reason=0;
+        AcquireSRWLockExclusive(&s_status_lock);
+        memset(&s_receive_status,0,sizeof(s_receive_status));
+        ReleaseSRWLockExclusive(&s_status_lock);
+    } else rx_close_file();
+    s_rx_session=*session;
 }
 
 /* 递归删掉本批临时目录。
@@ -356,10 +379,13 @@ static void rx_begin_batch(uint32_t batch) {
      * 一旦接近 MAX_PATH 就会直接越界写。
      * 注意：swprintf 的 %s 要的是【窄】字符串（%ls 才是宽的），
      * 用 %s 传 L"HopDesk" 只会读到第一个字符 'H'。这里不碰格式化，直接拼。 */
-    wchar_t sub[32];
+    wchar_t sub[80];
+    char session_hex[33]; hop_session_hex(&s_x.session, session_hex);
     wchar_t num[16];
     if (swprintf(num, 16, L"%u", batch) <= 0) { rx_terminate(batch,HOP_ABORT_DISK,1); return; }
     wcscpy(sub, XFER_RX_ROOT);
+    wcscat(sub, L"\\");
+    for (int i=0;i<32;i++) { size_t at=wcslen(sub); sub[at]=(wchar_t)session_hex[i];sub[at+1]=0; }
     wcscat(sub, L"\\");
     wcscat(sub, num);
 
@@ -437,7 +463,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
     if (type == HOP_MSG_XFER_HELLO) {
         size_t want = strlen(s_x.cfg.token);
-        int valid = hop_xfer_hello_valid(p, len, s_x.cfg.token);
+        int valid = hop_xfer_hello_bound(p, len, s_x.cfg.token, &s_x.session) && hop_session_matches(&s_x.session);
         if (!valid) {
             hop_log(HOP_LOG_ERROR,
                     "xfer: peer handshake rejected (protocol/token mismatch)");
@@ -501,7 +527,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             s_rx.cur_fail     = -1;
             s_rx.cur_size     = 0;   /* 0 = 任何分块都越界被拒，坏条目不落盘 */
             s_rx.fcrc         = 0;
-            s_wq.err          = 0;
+            wq_error_set(0);
 
             char *relz = (char *)malloc((size_t)plen + 1);
             if (!relz) { s_rx.cur_fail = HOP_FILE_ACK_DISK; break; }
@@ -692,7 +718,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             } else {
                 rx_close_file();     /* 关文件、比 CRC 之前必须排空写队列 */
 
-                if (s_wq.err) {
+                if (wq_error_get()) {
                     hop_log(HOP_LOG_ERROR, "xfer: disk error, %ls incomplete",
                             s_rx.cur_path ? s_rx.cur_path : L"?");
                     ack = HOP_FILE_ACK_DISK;
@@ -769,6 +795,32 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
     }
 }
 
+/* Transport gate: typed handlers only see frames bound to this control session.
+ * Old batch CHUNK/END are ignored, never applied to the next active file. */
+static void on_data_frame_checked(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
+    if (type == HOP_MSG_XFER_HELLO) { on_data_msg(user, type, p, len); return; }
+    EnterCriticalSection(&s_x.lock);
+    hop_session_id session = s_x.session;
+    LeaveCriticalSection(&s_x.lock);
+    uint32_t batch, body_len; const uint8_t *body;
+    if (!hop_session_matches(&session) ||
+        !hop_data_unwrap(type, p, len, &session, &batch, &body, &body_len)) {
+        EnterCriticalSection(&s_x.lock);
+        if (s_x.client != INVALID_SOCKET) shutdown(s_x.client, SD_BOTH);
+        LeaveCriticalSection(&s_x.lock);
+        return;
+    }
+    if ((type == HOP_MSG_FILE_CHUNK || type == HOP_MSG_FILE_END) &&
+        (!s_rx.active || batch != s_rx.batch)) return;
+    on_data_msg(user, type, body, body_len);
+}
+
+static void on_data_frame(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
+    int guard = hop_watchdog_begin("data receive frame", 60000);
+    on_data_frame_checked(user,type,p,len);
+    hop_watchdog_end(guard);
+}
+
 /* 用户在本端取消接收：通知对端、删掉半成品、立墓碑。
  * 由 listen 线程执行 —— s_rx 只归它所有，别的线程直接碰就是竞态。 */
 static void rx_cancel_local(void) {
@@ -808,14 +860,17 @@ static void retire_data_socket(SOCKET sock) {
 }
 static DWORD WINAPI listen_thread(LPVOID arg) {
     (void)arg;
-    hop_decoder *dec = hop_decoder_new(NULL, on_data_msg);
+    hop_decoder *dec = hop_decoder_new(NULL, on_data_frame);
     if (!dec) return 1;
     SOCKET active = INVALID_SOCKET, pending = INVALID_SOCKET;
-    uint8_t hello[HOP_HEADER_SIZE + 2 + HOP_TOKEN_MAX];
+    uint8_t hello[HOP_HEADER_SIZE + 2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES];
     uint32_t have = 0, need = HOP_HEADER_SIZE;
     uint64_t started = 0, retry_at = 0;
     while (WaitForSingleObject(s_x.stop, 0) != WAIT_OBJECT_0) {
         uint64_t now = hop_monotonic_ms();
+        if (active != INVALID_SOCKET && !hop_session_matches(&s_x.session)) {
+            retire_data_socket(active); active = INVALID_SOCKET; rx_close_file();
+        }
         if (s_x.listen_s == INVALID_SOCKET && now >= retry_at) {
             s_x.listen_s = data_listener(); retry_at = now + 2000;
             InterlockedExchange(&s_x.listening, s_x.listen_s != INVALID_SOCKET);
@@ -855,28 +910,29 @@ static DWORD WINAPI listen_thread(LPVOID arg) {
             if (!bad) have += (uint32_t)n;
             if (!bad && have == HOP_HEADER_SIZE && need == HOP_HEADER_SIZE) {
                 uint32_t len = hop_get_be32(hello + 1);
-                if (hello[0] != HOP_MSG_XFER_HELLO || len < 2 || len > 2 + HOP_TOKEN_MAX) bad = 1;
+                if (hello[0] != HOP_MSG_XFER_HELLO || len < 2 + HOP_SESSION_BYTES || len > 2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES) bad = 1;
                 else need += len;
             }
             if (!bad && have == need) {
-                bad = !hop_xfer_hello_valid(hello + HOP_HEADER_SIZE, need - HOP_HEADER_SIZE, s_x.cfg.token);
+                hop_session_id session;
+                bad = !hop_session_current(&session) ||
+                      !hop_xfer_hello_bound(hello + HOP_HEADER_SIZE, need - HOP_HEADER_SIZE, s_x.cfg.token, &session);
                 if (!bad) {
-                    uint8_t reply[2 + HOP_TOKEN_MAX];
-                    size_t tl = strlen(s_x.cfg.token);
-                    reply[0] = HOP_XFER_PROTO_VER; reply[1] = (uint8_t)tl;
-                    memcpy(reply + 2, s_x.cfg.token, tl);
+                    uint8_t reply[2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES];
+                    uint32_t reply_len = hop_xfer_hello_encode(reply, s_x.cfg.token, &session);
                     uint8_t header[HOP_HEADER_SIZE];
-                    hop_encode_header(header, HOP_MSG_XFER_HELLO, (uint32_t)tl + 2);
-                    /* Unpublished candidate: no application writer can use it yet. */
+                    hop_encode_header(header, HOP_MSG_XFER_HELLO, reply_len);
                     bad = !send_all(pending, (const char *)header, sizeof(header)) ||
-                          !send_all(pending, (const char *)reply, (int)tl + 2);
+                          !send_all(pending, (const char *)reply, (int)reply_len);
                 }
                 if (!bad) {
                     hop_log(HOP_LOG_INFO, active == INVALID_SOCKET ? "xfer: authenticated data channel" :
                             "xfer: replacing stale data connection");
-                    retire_data_socket(active); rx_close_file(); hop_decoder_reset(dec);
+                    retire_data_socket(active);
+                    rx_bind_session(&session); hop_decoder_reset(dec);
                     active = pending; pending = INVALID_SOCKET;
                     EnterCriticalSection(&s_x.lock);
+                    s_x.session = session;
                     s_x.client = active; s_x.peer_ready = 1; ++s_x.epoch; s_x.abort_batch = 0;
                     LeaveCriticalSection(&s_x.lock);
                 }

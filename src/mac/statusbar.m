@@ -334,5 +334,12 @@ void statusbar_show_transfers(void) {
 }
 
 void app_run(void) {
+    int guard = hop_watchdog_begin("macOS main run loop", 30000);
+    NSTimer *timer = [NSTimer timerWithTimeInterval:1 repeats:YES block:^(NSTimer *t) {
+        (void)t; hop_watchdog_ping(guard);
+    }];
+    [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
     [NSApp run];
+    [timer invalidate];
+    hop_watchdog_end(guard);
 }

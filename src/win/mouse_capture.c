@@ -13,6 +13,9 @@
 #include <string.h>
 
 static HHOOK   s_hook;
+static DWORD s_hook_tick, s_last_reinstall;
+static int s_buttons[3];
+static void send_button(int btn, int down);
 static int     s_sharing;
 static POINT   s_anchor;      /* SHARING 时鼠标锁定点 */
 static POINT   s_last;
@@ -32,9 +35,15 @@ static BOOL CALLBACK mon_proc(HMONITOR h, HDC hdc, LPRECT r, LPARAM lp) {
 /* 计算移交边缘的坐标与方向。两个出参总是被写入，返回值只表示"边缘移交是否启用"。
  * 这样调用方不需要先判断返回值再取坐标 —— 未初始化值没有生存空间。 */
 static int edge_boundary(int *edge_x, int *is_left) {
-    struct mon_ctx c;
-    c.has_left = 0;
-    EnumDisplayMonitors(NULL, NULL, mon_proc, (LPARAM)&c);
+    static struct mon_ctx c;
+    static DWORD checked;
+    static int cached;
+    DWORD now = GetTickCount();
+    if (!cached || (DWORD)(now - checked) >= 2000) {
+        c.has_left = 0;
+        EnumDisplayMonitors(NULL, NULL, mon_proc, (LPARAM)&c);
+        checked = now; cached = 1;
+    }
 
     *is_left = (g_app.cfg.server_edge == HOP_EDGE_LEFT);
     if (*is_left)
@@ -98,6 +107,7 @@ static void enter_local(void) {
 
     /* 先把仍按着的键在对端松开，再放开本机输入 —— 顺序不能反 */
     kbd_release_all();
+    for (int i = 0; i < 3; ++i) if (s_buttons[i]) send_button(i, 0);
     s_sharing = 0;
     g_app.state = HOP_LINK_LOCAL;
 
@@ -145,6 +155,7 @@ static void send_move(int dx, int dy) {
 }
 static void send_button(int btn, int down) {
     uint8_t p[2] = { (uint8_t)btn, (uint8_t)down };
+    if (btn >= 0 && btn < 3) s_buttons[btn] = down;
     net_server_send(g_app.net, HOP_MSG_MOUSE_BUTTON, p, 2);
 }
 static void send_wheel(int dx, int dy) {
@@ -157,6 +168,7 @@ static void send_wheel(int dx, int dy) {
 /* ---- 钩子 ---- */
 static LRESULT CALLBACK mouse_proc_hook(int code, WPARAM wp, LPARAM lp) {
     if (code != HC_ACTION) goto pass;
+    s_hook_tick = GetTickCount();
     MSLLHOOKSTRUCT *m = (MSLLHOOKSTRUCT *)lp;
     POINT pt = m->pt;
 
@@ -265,6 +277,7 @@ void capture_on_edge_timer(void) {
 
 void capture_init(win_app *app) {
     (void)app;
+    s_hook_tick = GetTickCount();
     s_sharing = 0;
     s_have_last = 0;
     s_edge_pending = 0;
@@ -281,4 +294,26 @@ void capture_shutdown(void) {
         KillTimer(g_app.hwnd, IDT_EDGE);
     }
     if (s_hook) { UnhookWindowsHookEx(s_hook); s_hook = NULL; }
+}
+
+/* Best-effort recovery: only reinstall after input newer than both callbacks.
+ * Idle machines must not churn hooks. All state stays on the UI thread. */
+void capture_check_hooks(void) {
+    LASTINPUTINFO info;
+    info.cbSize = sizeof(info);
+    DWORD now = GetTickCount();
+    DWORD last = s_hook_tick;
+    DWORD kt = kbd_hook_tick();
+    if ((LONG)(kt - last) > 0) last = kt;
+    if (!GetLastInputInfo(&info)) return;
+    int stale = (DWORD)(now - info.dwTime) < 5000 && (LONG)(info.dwTime - last) > 2000;
+    if ((!s_hook || stale) && (!s_last_reinstall || (DWORD)(now - s_last_reinstall) >= 30000)) {
+        capture_set_sharing(0);
+        if (s_hook) UnhookWindowsHookEx(s_hook);
+        s_hook = SetWindowsHookExW(WH_MOUSE_LL, mouse_proc_hook, g_app.inst, 0);
+        kbd_reinstall();
+        s_hook_tick = s_last_reinstall = now;
+        hop_log(s_hook ? HOP_LOG_WARN : HOP_LOG_ERROR, "capture: reinstalled input hooks (%s)",
+                s_hook ? "mouse ok" : "mouse failed");
+    }
 }

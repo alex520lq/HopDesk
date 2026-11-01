@@ -106,3 +106,12 @@ if (Test-Path -LiteralPath $out) {
     $kb = [math]::Round((Get-Item -LiteralPath $out).Length / 1KB, 1)
     Write-Host "构建成功: $out  (${kb} KB, $Compiler)" -ForegroundColor Green
 }
+
+# Keep optional user-session supervision scripts beside the packaged executable.
+# The existing CI package step archives this directory; no CI permissions change.
+$package = Join-Path $build 'windows-package'
+New-Item -ItemType Directory -Force -Path $package | Out-Null
+Copy-Item -LiteralPath $out -Destination (Join-Path $package 'HopDesk.exe') -Force
+foreach ($name in @('install-autostart-windows.ps1', 'supervise-windows.ps1')) {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $package -Force
+}

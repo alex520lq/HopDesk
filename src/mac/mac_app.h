@@ -7,14 +7,9 @@
 #include "hop.h"
 
 typedef struct {
-    hop_config cfg;
-    int        sock;
-    int        connected;
-    int        sharing;        /* 鼠标当前是否在 Mac（被服务端移交） */
-    double     mouse_x, mouse_y;
+    hop_config cfg; /* immutable after main startup; all threads read-only */
+    /* Geometry initialized before threads; later refresh/read only in input/control dispatch. */
     double     screen_w, screen_h;   /* 本端 CoreGraphics 坐标空间（逻辑点） */
-    double     peer_w, peer_h;       /* 服务端（Windows）坐标空间，用于位移缩放 */
-    int        btn_held[3];
 } mac_app;
 
 extern mac_app g_mac;
@@ -26,9 +21,11 @@ void net_request_stop(void);
 /* 打开 TCP keepalive：空闲连接变黑洞时让内核在一分多钟内判定死亡，
  * 否则阻塞的 read 永远不返回，通道就此僵死。控制/数据通道都要调。 */
 void net_set_keepalive(int s);
+int net_connect_timeout(const char *host, uint16_t port, unsigned timeout_ms);
 
 /* inject.c */
 void inject_init(void);
+void inject_set_peer_geometry(uint32_t w, uint32_t h);
 void inject_enter(int y);          /* 服务端移交：在边缘对应 y 进入 */
 void inject_move(int dx, int dy);
 void inject_button(int button, int down);

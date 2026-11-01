@@ -15,6 +15,11 @@
 
 #include <ApplicationServices/ApplicationServices.h>
 
+static struct {
+    int sharing, btn_held[3];
+    double mouse_x, mouse_y, peer_w, peer_h;
+} s_input; /* control-dispatch owner; never read by UI/data threads */
+void inject_set_peer_geometry(uint32_t w, uint32_t h) { s_input.peer_w = w; s_input.peer_h = h; }
 static double s_w, s_h;
 static int    s_inited;
 
@@ -50,6 +55,7 @@ static int mod_index(int bit) {
 }
 
 static void post(CGEventRef e) {
+    if (!e) return;
     CGEventSetFlags(e, s_flags);
     CGEventPost(kCGHIDEventTap, e);
     CFRelease(e);
@@ -59,10 +65,10 @@ static void post(CGEventRef e) {
  * 当前两端都是 3840×2160，scale 为 1；显示器模式变了会自动跟。
  * peer 尺寸未知时退化为 1:1。 */
 static double scale_x(void) {
-    return g_mac.peer_w > 0 ? s_w / g_mac.peer_w : 1.0;
+    return s_input.peer_w > 0 ? s_w / s_input.peer_w : 1.0;
 }
 static double scale_y(void) {
-    return g_mac.peer_h > 0 ? s_h / g_mac.peer_h : 1.0;
+    return s_input.peer_h > 0 ? s_h / s_input.peer_h : 1.0;
 }
 
 /* 死区宽度：配置项以 Windows 物理像素为单位，换算到本端坐标空间。
@@ -105,6 +111,7 @@ void inject_init(void) {
 }
 
 /* 把仍按着的修饰键全部松开：断线时不能让 Mac 卡住 Cmd */
+static uint8_t s_held_keys[65536 / 8];
 void inject_release_all(void) {
     static const uint16_t pair[4][2] = {
         { 0x38, 0x3C },   /* shift L/R   */
@@ -113,6 +120,23 @@ void inject_release_all(void) {
         { 0x37, 0x36 }    /* command L/R */
     };
     int i, j;
+    for (unsigned kc = 0; kc < 65536u; ++kc) {
+        if (!(s_held_keys[kc / 8] & (1u << (kc % 8)))) continue;
+        s_held_keys[kc / 8] &= (uint8_t)~(1u << (kc % 8));
+        if (hop_mac_key_is_mod((uint16_t)kc)) continue;
+        CGEventRef e = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)kc, 0);
+        post(e);
+    }
+    for (i = 0; i < 3; ++i) {
+        if (!s_input.btn_held[i]) continue;
+        CGPoint pt = CGPointMake(s_input.mouse_x, s_input.mouse_y);
+        CGMouseButton button = i == HOP_BTN_RIGHT ? kCGMouseButtonRight :
+                               i == HOP_BTN_MIDDLE ? kCGMouseButtonCenter : kCGMouseButtonLeft;
+        CGEventType type = i == HOP_BTN_RIGHT ? kCGEventRightMouseUp :
+                           i == HOP_BTN_MIDDLE ? kCGEventOtherMouseUp : kCGEventLeftMouseUp;
+        post(CGEventCreateMouseEvent(NULL, type, pt, button));
+        s_input.btn_held[i] = 0;
+    }
 
     for (i = 0; i < 4; ++i) {
         if (!s_modn[i]) continue;
@@ -131,19 +155,19 @@ void inject_reset(void) {
     s_modn[0] = s_modn[1] = s_modn[2] = s_modn[3] = 0;
     s_caps = 0;
     recompute_flags();
-    g_mac.sharing = 0;
+    s_input.sharing = 0;
     s_inited = 0;
     s_over = 0;
-    g_mac.mouse_x = 0;
-    g_mac.mouse_y = 0;
-    for (int i = 0; i < 3; ++i) g_mac.btn_held[i] = 0;
+    s_input.mouse_x = 0;
+    s_input.mouse_y = 0;
+    for (int i = 0; i < 3; ++i) s_input.btn_held[i] = 0;
 }
 
 /* 按住左键移动必须发 LeftMouseDragged，否则在 Mac 上拖不动东西 */
 static CGEventType move_type(void) {
-    if (g_mac.btn_held[HOP_BTN_LEFT])   return kCGEventLeftMouseDragged;
-    if (g_mac.btn_held[HOP_BTN_RIGHT])  return kCGEventRightMouseDragged;
-    if (g_mac.btn_held[HOP_BTN_MIDDLE]) return kCGEventOtherMouseDragged;
+    if (s_input.btn_held[HOP_BTN_LEFT])   return kCGEventLeftMouseDragged;
+    if (s_input.btn_held[HOP_BTN_RIGHT])  return kCGEventRightMouseDragged;
+    if (s_input.btn_held[HOP_BTN_MIDDLE]) return kCGEventOtherMouseDragged;
     return kCGEventMouseMoved;
 }
 
@@ -157,23 +181,24 @@ static void post_move(CGPoint pt, CGMouseButton btn) {
 void inject_enter(int y) {
     if (!s_inited) inject_init();
     s_over = 0;
-    g_mac.mouse_x = enter_x();
-    g_mac.mouse_y = y;
-    if (g_mac.mouse_y < 0) g_mac.mouse_y = 0;
-    if (g_mac.mouse_y > s_h - 1) g_mac.mouse_y = s_h - 1;
-    g_mac.sharing = 1;
-    post_move(CGPointMake(g_mac.mouse_x, g_mac.mouse_y), kCGMouseButtonLeft);
+    s_input.mouse_x = enter_x();
+    s_input.mouse_y = y;
+    if (s_input.mouse_y < 0) s_input.mouse_y = 0;
+    if (s_input.mouse_y > s_h - 1) s_input.mouse_y = s_h - 1;
+    s_input.sharing = 1;
+    post_move(CGPointMake(s_input.mouse_x, s_input.mouse_y), kCGMouseButtonLeft);
     statusbar_update(1, 1);
 
     /* 打出落点：这是"键鼠到底有没有切过来"唯一的服务端可观测证据。
      * 没有这行说明 MOUSE_ENTER 没送到，问题在传输而不是注入。 */
     hop_log(HOP_LOG_INFO, "inject: enter (%.0f, %.0f) screen %.0fx%.0f",
-            g_mac.mouse_x, g_mac.mouse_y, s_w, s_h);
+            s_input.mouse_x, s_input.mouse_y, s_w, s_h);
 }
 
 static void leave_edge(void) {
     s_over = 0;
-    g_mac.sharing = 0;
+    inject_release_all();
+    s_input.sharing = 0;
     net_send(HOP_MSG_EDGE_LEAVE,
              (uint8_t[]){ (uint8_t)g_mac.cfg.client_edge }, 1);
     statusbar_update(1, 0);
@@ -182,14 +207,14 @@ static void leave_edge(void) {
 void inject_move(int dx, int dy) {
     double sx, sy, nx, ny, m;
 
-    if (!g_mac.sharing) inject_enter((int)(s_h / 2));  /* 未收到 ENTER 的兜底 */
+    if (!s_input.sharing) inject_enter((int)(s_h / 2));  /* 未收到 ENTER 的兜底 */
     if (!s_inited) inject_init();
 
     /* 把 Windows 物理像素增量换算成本端坐标 */
     sx = scale_x();
     sy = scale_y();
-    nx = g_mac.mouse_x + dx * sx;
-    ny = g_mac.mouse_y + dy * sy;
+    nx = s_input.mouse_x + dx * sx;
+    ny = s_input.mouse_y + dy * sy;
     m  = margin();
 
     /* 退出边缘：越界量累计够 margin 才收回；中途回到屏内立即清零。
@@ -214,12 +239,12 @@ void inject_move(int dx, int dy) {
         }
     }
 
-    g_mac.mouse_x = nx;
-    g_mac.mouse_y = ny;
-    if (g_mac.mouse_y < 0) g_mac.mouse_y = 0;
-    if (g_mac.mouse_y > s_h - 1) g_mac.mouse_y = s_h - 1;
+    s_input.mouse_x = nx;
+    s_input.mouse_y = ny;
+    if (s_input.mouse_y < 0) s_input.mouse_y = 0;
+    if (s_input.mouse_y > s_h - 1) s_input.mouse_y = s_h - 1;
 
-    post_move(CGPointMake(g_mac.mouse_x, g_mac.mouse_y), kCGMouseButtonLeft);
+    post_move(CGPointMake(s_input.mouse_x, s_input.mouse_y), kCGMouseButtonLeft);
 }
 
 void inject_button(int button, int down) {
@@ -228,8 +253,9 @@ void inject_button(int button, int down) {
     CGEventType t;
     CGEventRef e;
 
-    if (!g_mac.sharing) inject_enter((int)(s_h / 2));
-    pt = CGPointMake(g_mac.mouse_x, g_mac.mouse_y);
+    if (button < 0 || button >= 3) return;
+    if (!s_input.sharing && down) inject_enter((int)(s_h / 2));
+    pt = CGPointMake(s_input.mouse_x, s_input.mouse_y);
 
     b = button == HOP_BTN_RIGHT  ? kCGMouseButtonRight
       : button == HOP_BTN_MIDDLE ? kCGMouseButtonCenter
@@ -242,7 +268,7 @@ void inject_button(int button, int down) {
     else
         t = down ? kCGEventLeftMouseDown : kCGEventLeftMouseUp;
 
-    if (button >= 0 && button < 3) g_mac.btn_held[button] = down;
+    if (button >= 0 && button < 3) s_input.btn_held[button] = down;
 
     e = CGEventCreateMouseEvent(NULL, t, pt, b);
     post(e);
@@ -250,7 +276,7 @@ void inject_button(int button, int down) {
 
 void inject_wheel(int dx, int dy) {
     CGEventRef e;
-    if (!g_mac.sharing) inject_enter((int)(s_h / 2));
+    if (!s_input.sharing) inject_enter((int)(s_h / 2));
     /* Windows WHEEL_DELTA=120 ≈ 3 行；按像素单位换算 */
     e = CGEventCreateScrollWheelEvent2(NULL, kCGScrollEventUnitPixel, 2,
                                        (int32_t)dy, (int32_t)dx, 0);
@@ -264,10 +290,13 @@ void inject_key(uint16_t kc, int down) {
 
     if (!s_inited) inject_init();
     bit = hop_mac_key_is_mod(kc);
+    int was_held = (s_held_keys[kc / 8] & (1u << (kc % 8))) != 0;
+    if (down) s_held_keys[kc / 8] |= (uint8_t)(1u << (kc % 8));
+    else s_held_keys[kc / 8] &= (uint8_t)~(1u << (kc % 8));
 
     /* 大写锁定是"切换"语义，只在按下时翻转 AlphaShift */
     if (bit == HOP_MOD_CAPS) {
-        if (!down) return;
+        if (!down || was_held) return;
         s_caps = !s_caps;
         recompute_flags();
         e = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)kc, 1);
@@ -279,8 +308,8 @@ void inject_key(uint16_t kc, int down) {
     if (bit) {
         i = mod_index(bit);
         if (i >= 0) {
-            if (down) { if (s_modn[i] < 255) s_modn[i]++; }
-            else      { if (s_modn[i]) s_modn[i]--; }
+            if (down && !was_held) { if (s_modn[i] < 255) s_modn[i]++; }
+            else if (!down && was_held) { if (s_modn[i]) s_modn[i]--; }
             recompute_flags();
         }
         e = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)kc, down ? 1 : 0);

@@ -3,6 +3,9 @@
  *  后台线程：连接 -> 握手 -> 接收；断开指数退避重连。
  * ===================================================================== */
 #include "mac_app.h"
+#include "xfer.h"
+#include <fcntl.h>
+#include <stdatomic.h>
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -20,27 +23,42 @@
 mac_app g_mac;
 
 static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
-static int             s_stop;
+static pthread_mutex_t s_dispatch_lock = PTHREAD_MUTEX_INITIALIZER;
+static int s_sock = -1; /* exclusively under s_lock */
+static hop_session_id s_control_session; /* control reader owns; registry publishes snapshots */
+static _Atomic int     s_stop;
+static int             s_authed, s_rejected;
+static uint64_t        s_last_rx;
+static void set_connected(int on);
 static hop_decoder    *s_dec;
 
-static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
+static void dispatch_message(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
     (void)user;
+    if (s_rejected) return;
+    if (!s_authed) {
+        int ok;
+        uint32_t w, h;
+        hop_session_id session;
+        if (type != HOP_MSG_HELLO_ACK ||
+            !hop_hello_ack_decode(p, len, &ok, &w, &h, &session) || !ok) {
+            s_rejected = 1;
+            return;
+        }
+        inject_set_peer_geometry(w, h);
+        s_control_session = session; hop_session_publish(&session);
+        s_authed = 1; s_last_rx = hop_monotonic_ms();
+        set_connected(1);
+        return;
+    }
+    s_last_rx = hop_monotonic_ms();
     switch (type) {
+        case HOP_MSG_HELLO:
+        case HOP_MSG_HELLO_ACK:
+            s_rejected = 1;
+            break;
         case HOP_MSG_PING:
             net_send(HOP_MSG_PONG, NULL, 0);
             break;
-        case HOP_MSG_HELLO_ACK: {
-            /* {ok, nlen, name, w, h} —— w,h 是服务端（Windows）尺寸，
-             * 存进 peer_* 用于位移缩放，不能覆盖本端自己的 screen_*。 */
-            if (len >= 2) {
-                uint32_t off = 2 + p[1];
-                if (off + 8 <= len) {
-                    g_mac.peer_w = (double)hop_get_be32(p + off);
-                    g_mac.peer_h = (double)hop_get_be32(p + off + 4);
-                }
-            }
-            break;
-        }
         case HOP_MSG_MOUSE_ENTER:
             if (len >= 2) inject_enter((int)hop_get_be16(p));
             break;
@@ -89,6 +107,14 @@ static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
     }
 }
 
+static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
+    int guard = hop_watchdog_begin("control receive frame", HOP_IO_DEADLINE_MS);
+    pthread_mutex_lock(&s_dispatch_lock);
+    if (!s_stop) dispatch_message(user, type, p, len);
+    pthread_mutex_unlock(&s_dispatch_lock);
+    hop_watchdog_end(guard);
+}
+
 static int socket_send_all(int fd, const void *buf, size_t len) {
     const uint8_t *p = (const uint8_t *)buf;
     while (len > 0) {
@@ -106,18 +132,20 @@ static int socket_send_all(int fd, const void *buf, size_t len) {
 }
 
 int net_send(uint8_t type, const void *payload, uint32_t len) {
+    int guard = hop_watchdog_begin("control frame send", 10000);
     uint8_t hdr[HOP_HEADER_SIZE];
     hop_encode_header(hdr, type, len);
 
     pthread_mutex_lock(&s_lock);
-    int s = g_mac.sock;
+    int s = s_sock;
     int ok = 0;
-    if (s >= 0) {
+    if (s >= 0 && (hop_session_current(NULL) || type == HOP_MSG_HELLO)) {
         ok = 1;
         ok = socket_send_all(s, hdr, HOP_HEADER_SIZE);
         if (ok && len) ok = socket_send_all(s, payload, len);
     }
     pthread_mutex_unlock(&s_lock);
+    hop_watchdog_end(guard);
     return ok;
 }
 
@@ -132,44 +160,58 @@ static void send_hello(void) {
     buf[n++] = nl; memcpy(buf + n, nm, nl); n += nl;
     hop_put_be32(buf + n, (uint32_t)g_mac.screen_w); n += 4;
     hop_put_be32(buf + n, (uint32_t)g_mac.screen_h); n += 4;
+    buf[n++] = HOP_CTRL_PROTO_VER;
     net_send(HOP_MSG_HELLO, buf, n);
 }
 
-static int do_connect(void) {
-    const char *host = g_mac.cfg.peer_host[0] ? g_mac.cfg.peer_host : "192.168.31.8";
+/* DNS resolution uses the OS resolver; the TCP attempts share a bounded deadline. */
+int net_connect_timeout(const char *host, uint16_t port, unsigned timeout_ms) {
     struct addrinfo hints, *res = NULL;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
     char portstr[16];
-    snprintf(portstr, sizeof(portstr), "%u", (unsigned)g_mac.cfg.port);
-    int gai = getaddrinfo(host, portstr, &hints, &res);
-    if (gai != 0) {
-        hop_log(HOP_LOG_WARN, "net: resolve %s:%s failed: %s", host, portstr, gai_strerror(gai));
-        return -1;
-    }
-
-    int s = -1;
+    snprintf(portstr, sizeof(portstr), "%u", (unsigned)port);
+    int guard = hop_watchdog_begin("DNS resolution", 5000);
+    int resolved = getaddrinfo(host, portstr, &hints, &res);
+    hop_watchdog_end(guard);
+    if (resolved) return -1;
+    int fd = -1;
+    uint64_t deadline = hop_monotonic_ms() + timeout_ms;
     for (struct addrinfo *r = res; r; r = r->ai_next) {
-        s = socket(r->ai_family, r->ai_socktype, r->ai_protocol);
-        if (s < 0) continue;
-        int no_sigpipe = 1;
-        if (setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe)) != 0) {
-            close(s);
-            s = -1;
-            continue;
+        if (hop_monotonic_ms() >= deadline) break;
+        fd = socket(r->ai_family, r->ai_socktype, r->ai_protocol);
+        if (fd < 0) continue;
+        int on = 1, flags = fcntl(fd, F_GETFL, 0);
+        if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on)) ||
+            flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK)) goto next;
+        int rc = connect(fd, r->ai_addr, r->ai_addrlen);
+        if (rc && errno != EINPROGRESS) goto next;
+        if (rc) {
+            for (;;) {
+                uint64_t now = hop_monotonic_ms();
+                if (now >= deadline) goto next;
+                uint64_t left = deadline - now;
+                struct timeval tv = {(time_t)(left / 1000), (suseconds_t)(left % 1000) * 1000};
+                fd_set wr; FD_ZERO(&wr); FD_SET(fd, &wr);
+                rc = select(fd + 1, NULL, &wr, NULL, &tv);
+                if (rc < 0 && errno == EINTR) continue;
+                if (rc <= 0) goto next;
+                int error = 0; socklen_t size = sizeof(error);
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size) || error) goto next;
+                break;
+            }
         }
-        if (connect(s, r->ai_addr, r->ai_addrlen) == 0) {
-            hop_log(HOP_LOG_INFO, "net: connected to %s:%s", host, portstr);
-            break;
-        }
-        hop_log(HOP_LOG_WARN, "net: connect %s:%s failed (errno=%d: %s)",
-                host, portstr, errno, strerror(errno));
-        close(s);
-        s = -1;
+        if (fcntl(fd, F_SETFL, flags)) goto next;
+        break;
+next:
+        close(fd); fd = -1;
     }
     freeaddrinfo(res);
-    return s;
+    return fd;
+}
+static int do_connect(void) {
+    const char *host = g_mac.cfg.peer_host[0] ? g_mac.cfg.peer_host : "192.168.31.8";
+    return net_connect_timeout(host, g_mac.cfg.port, HOP_CONNECT_TIMEOUT_MS);
 }
 
 /* 给已连接的 socket 打开 TCP keepalive（控制通道与数据通道都用）。
@@ -195,13 +237,11 @@ void net_set_keepalive(int s) {
 }
 
 static void set_connected(int on) {
-    g_mac.connected = on;
-    if (on) {
-        g_mac.sharing = 0;
-        send_hello();
-    } else {
-        g_mac.sharing = 0;
+    if (!on) {
+        hop_session_clear(&s_control_session);
+        pthread_mutex_lock(&s_dispatch_lock);
         inject_reset();
+        pthread_mutex_unlock(&s_dispatch_lock);
     }
     hop_log(HOP_LOG_INFO, "net: control channel %s", on ? "connected" : "disconnected");
     statusbar_update(on, 0);
@@ -210,8 +250,14 @@ static void set_connected(int on) {
 void net_request_stop(void) {
     s_stop = 1;
     pthread_mutex_lock(&s_lock);
-    if (g_mac.sock >= 0) { shutdown(g_mac.sock, SHUT_RDWR); close(g_mac.sock); g_mac.sock = -1; }
+    if (s_sock >= 0) shutdown(s_sock, SHUT_RDWR);
     pthread_mutex_unlock(&s_lock);
+    hop_session_id current;
+    if (hop_session_current(&current)) hop_session_clear(&current);
+    /* The menu can terminate the process before the reader gets scheduled. */
+    pthread_mutex_lock(&s_dispatch_lock);
+    inject_reset();
+    pthread_mutex_unlock(&s_dispatch_lock);
 }
 
 static void *net_thread(void *arg) {
@@ -225,29 +271,39 @@ static void *net_thread(void *arg) {
             continue;
         }
         pthread_mutex_lock(&s_lock);
-        g_mac.sock = s;
+        s_sock = s;
         pthread_mutex_unlock(&s_lock);
         backoff = 1;
 
-        /* 下面的 read 是阻塞的：连接变黑洞时它会永远不返回，
-         * 控制通道就此彻底僵死。keepalive 是唯一能让它返回的机制。 */
         net_set_keepalive(s);
-
+        struct timeval rcv = {0, 500000}, snd = {HOP_CTRL_SEND_TIMEOUT_MS / 1000, 0};
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &rcv, sizeof(rcv));
+        setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &snd, sizeof(snd));
         hop_decoder_reset(s_dec);
-        set_connected(1);
-
+        s_authed = s_rejected = 0;
+        uint64_t started = hop_monotonic_ms(), last_ping = started;
+        s_last_rx = started;
+        send_hello();
         char buf[2048];
-        for (;;) {
+        while (!s_stop && !s_rejected) {
+            uint64_t now = hop_monotonic_ms();
+            if ((!s_authed && hop_handshake_expired(now, started)) ||
+                (s_authed && hop_peer_silent(now, s_last_rx))) break;
+            if (s_authed && hop_heartbeat_due(now, last_ping)) {
+                if (!net_send(HOP_MSG_PING, NULL, 0)) break;
+                last_ping = now;
+            }
             ssize_t r = read(s, buf, sizeof(buf));
-            if (r <= 0) break;
-            hop_decoder_feed(s_dec, (uint8_t *)buf, (uint32_t)r);
+            if (r < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+            if (r <= 0 || !hop_decoder_feed(s_dec, (uint8_t *)buf, (uint32_t)r)) break;
         }
 
         pthread_mutex_lock(&s_lock);
-        g_mac.sock = -1;
+        s_sock = -1;
         close(s);
         pthread_mutex_unlock(&s_lock);
-        if (!s_stop) set_connected(0);
+        set_connected(0);
+        xfer_kick();
         if (!s_stop) sleep(backoff);
         backoff = backoff < 10 ? backoff * 2 : 10;
     }
@@ -256,7 +312,12 @@ static void *net_thread(void *arg) {
 
 void net_loop_run(void) {
     s_dec = hop_decoder_new(NULL, on_message);
+    if (!s_dec) { hop_log(HOP_LOG_ERROR, "net: decoder allocation failed"); return; }
     pthread_t t;
-    pthread_create(&t, NULL, net_thread, NULL);
+    if (pthread_create(&t, NULL, net_thread, NULL)) {
+        hop_decoder_free(s_dec); s_dec = NULL;
+        hop_log(HOP_LOG_ERROR, "net: thread creation failed");
+        return;
+    }
     pthread_detach(t);
 }

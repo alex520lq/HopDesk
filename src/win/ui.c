@@ -214,6 +214,8 @@ void ui_show_transfers(win_app *app) {
 }
 
 static const wchar_t *state_text_w(win_app *app) {
+    if (!app->net) return L"HopDesk · 网络初始化失败";
+    if (!net_server_listening(app->net) || !xfer_listening()) return L"HopDesk · 端口不可用，重试中";
     switch (app->state) {
         case HOP_LINK_SHARING: return L"HopDesk · 键鼠在 Mac";
         case HOP_LINK_LOCAL:   return L"HopDesk · 已连接（Windows）";

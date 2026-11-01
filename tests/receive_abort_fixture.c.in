@@ -1,3 +1,5 @@
+#define wq_error_set(v) (s_wq.err=(v))
+#define wq_error_get() (s_wq.err)
 /* Generated with verbatim production receive cases/functions by test-regressions.py.
  * OS/network/filesystem doubles isolate lifecycle, not real desktop integration. */
 #include "hop.h"
@@ -24,7 +26,7 @@
 #define SetEvent(p) ((void)(p))
 typedef unsigned long DWORD;
 typedef int SOCKET;
-static struct {int lock,slock,qlock,client,sock,cancel_rx;uint32_t cur_batch,abort_batch;void*q_head;} s_x;
+static struct {int lock,slock,qlock,client,sock,cancel_rx;uint32_t cur_batch,abort_batch;void*q_head;hop_session_id session;} s_x;
 static struct {int lock,cond,ev;} s_ack;
 static int s_status_lock;
 static uint64_t s_status_revision;
@@ -34,7 +36,7 @@ static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];static int s_his
 static int saved,closed,closes,discarded,applied,fail_directory,fail_alloc,fail_send;
 static int notified;static uint8_t last_reason;
 static void history_save(void);
-static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n){
+static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t batch){(void)batch;
     (void)fd;if(fail_send)assert(!closed);assert(type==HOP_MSG_XFER_ABORT && n==5);last_reason=p[4];notified++;return !fail_send;
 }
 typedef struct {int kind;uint64_t off;uint32_t len;uint8_t*data;} rx_task;

@@ -27,9 +27,12 @@ static struct {
     CONDITION_VARIABLE cv_work, cv_space;
     HANDLE             th;
     HANDLE             f;        /* 写线程独占 */
-    int                err;      /* 写盘失败标记，主路径读 */
+    volatile LONG      err;      /* 写盘失败标记，主路径读 */
     int                stop;
 } s_wq;
+
+static void wq_error_set(int value) { InterlockedExchange(&s_wq.err, value); }
+static int wq_error_get(void) { return InterlockedCompareExchange(&s_wq.err, 0, 0); }
 
 static void wq_task_run(rx_task *t) {
     switch (t->kind) {
@@ -40,7 +43,7 @@ static void wq_task_run(rx_task *t) {
             if (s_wq.f == INVALID_HANDLE_VALUE) {
                 hop_log(HOP_LOG_WARN, "xfer: cannot create %ls (err %lu)",
                         t->path, GetLastError());
-                s_wq.err = 1;
+                wq_error_set(1);
             }
             break;
 
@@ -54,7 +57,7 @@ static void wq_task_run(rx_task *t) {
                     wrote != t->len) {
                     hop_log(HOP_LOG_WARN, "xfer: write failed at %llu (err %lu)",
                             (unsigned long long)t->off, GetLastError());
-                    s_wq.err = 1;
+                    wq_error_set(1);
                 }
             }
             break;
@@ -87,7 +90,9 @@ static DWORD WINAPI writer_thread(LPVOID arg) {
         s_wq.busy = 1;
         LeaveCriticalSection(&s_wq.lock);
 
+        int disk_guard = hop_watchdog_begin("disk writer task", HOP_IO_DEADLINE_MS);
         wq_task_run(&t);
+        hop_watchdog_end(disk_guard);
 
         EnterCriticalSection(&s_wq.lock);
         s_wq.busy = 0;
@@ -104,11 +109,13 @@ static DWORD WINAPI writer_thread(LPVOID arg) {
 
 /* 入队。队列满时阻塞 —— 这就是背压的着力点。 */
 static int wq_push(const rx_task *t) {
+    int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
     EnterCriticalSection(&s_wq.lock);
     while (s_wq.count >= RX_Q_SLOTS && !s_wq.stop)
         SleepConditionVariableCS(&s_wq.cv_space, &s_wq.lock, INFINITE);
     if (s_wq.stop) {
         LeaveCriticalSection(&s_wq.lock);
+        hop_watchdog_end(queue_guard);
         return 0;
     }
     s_wq.ring[s_wq.tail] = *t;
@@ -116,15 +123,18 @@ static int wq_push(const rx_task *t) {
     s_wq.count++;
     WakeConditionVariable(&s_wq.cv_work);
     LeaveCriticalSection(&s_wq.lock);
+    hop_watchdog_end(queue_guard);
     return 1;
 }
 
 /* 等队列排空且写线程空闲。关文件、比对文件 CRC 之前必须调用。 */
 static void wq_drain(void) {
+    int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
     EnterCriticalSection(&s_wq.lock);
     while ((s_wq.count > 0 || s_wq.busy) && !s_wq.stop)
         SleepConditionVariableCS(&s_wq.cv_space, &s_wq.lock, INFINITE);
     LeaveCriticalSection(&s_wq.lock);
+    hop_watchdog_end(queue_guard);
 }
 
 static int wq_start(void) {
@@ -230,6 +240,19 @@ static void rx_reset(void) {
     /* 先把队列排空并关掉文件，再清状态 —— 否则写线程可能还在用旧路径 */
     rx_close_file();
     rx_clear_state();
+}
+
+/* Receiver-owned lifecycle boundary. Only a data reconnect in the SAME control
+ * session may retain ACKs/tombstones; a new control session starts cleanly. */
+static hop_session_id s_rx_session;
+static void rx_bind_session(const hop_session_id *session) {
+    if (!hop_session_id_equal(&s_rx_session, session)) {
+        rx_reset(); s_rx.dead_batch=0; s_rx.dead_reason=0;
+        AcquireSRWLockExclusive(&s_status_lock);
+        memset(&s_receive_status,0,sizeof(s_receive_status));
+        ReleaseSRWLockExclusive(&s_status_lock);
+    } else rx_close_file();
+    s_rx_session=*session;
 }
 
 /* 递归删掉本批临时目录。
@@ -356,10 +379,13 @@ static void rx_begin_batch(uint32_t batch) {
      * 一旦接近 MAX_PATH 就会直接越界写。
      * 注意：swprintf 的 %s 要的是【窄】字符串（%ls 才是宽的），
      * 用 %s 传 L"HopDesk" 只会读到第一个字符 'H'。这里不碰格式化，直接拼。 */
-    wchar_t sub[32];
+    wchar_t sub[80];
+    char session_hex[33]; hop_session_hex(&s_x.session, session_hex);
     wchar_t num[16];
     if (swprintf(num, 16, L"%u", batch) <= 0) { rx_terminate(batch,HOP_ABORT_DISK,1); return; }
     wcscpy(sub, XFER_RX_ROOT);
+    wcscat(sub, L"\\");
+    for (int i=0;i<32;i++) { size_t at=wcslen(sub); sub[at]=(wchar_t)session_hex[i];sub[at+1]=0; }
     wcscat(sub, L"\\");
     wcscat(sub, num);
 
@@ -437,7 +463,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
     if (type == HOP_MSG_XFER_HELLO) {
         size_t want = strlen(s_x.cfg.token);
-        int valid = hop_xfer_hello_valid(p, len, s_x.cfg.token);
+        int valid = hop_xfer_hello_bound(p, len, s_x.cfg.token, &s_x.session) && hop_session_matches(&s_x.session);
         if (!valid) {
             hop_log(HOP_LOG_ERROR,
                     "xfer: peer handshake rejected (protocol/token mismatch)");
@@ -501,7 +527,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             s_rx.cur_fail     = -1;
             s_rx.cur_size     = 0;   /* 0 = 任何分块都越界被拒，坏条目不落盘 */
             s_rx.fcrc         = 0;
-            s_wq.err          = 0;
+            wq_error_set(0);
 
             char *relz = (char *)malloc((size_t)plen + 1);
             if (!relz) { s_rx.cur_fail = HOP_FILE_ACK_DISK; break; }
@@ -692,7 +718,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             } else {
                 rx_close_file();     /* 关文件、比 CRC 之前必须排空写队列 */
 
-                if (s_wq.err) {
+                if (wq_error_get()) {
                     hop_log(HOP_LOG_ERROR, "xfer: disk error, %ls incomplete",
                             s_rx.cur_path ? s_rx.cur_path : L"?");
                     ack = HOP_FILE_ACK_DISK;
@@ -769,6 +795,32 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
     }
 }
 
+/* Transport gate: typed handlers only see frames bound to this control session.
+ * Old batch CHUNK/END are ignored, never applied to the next active file. */
+static void on_data_frame_checked(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
+    if (type == HOP_MSG_XFER_HELLO) { on_data_msg(user, type, p, len); return; }
+    EnterCriticalSection(&s_x.lock);
+    hop_session_id session = s_x.session;
+    LeaveCriticalSection(&s_x.lock);
+    uint32_t batch, body_len; const uint8_t *body;
+    if (!hop_session_matches(&session) ||
+        !hop_data_unwrap(type, p, len, &session, &batch, &body, &body_len)) {
+        EnterCriticalSection(&s_x.lock);
+        if (s_x.client != INVALID_SOCKET) shutdown(s_x.client, SD_BOTH);
+        LeaveCriticalSection(&s_x.lock);
+        return;
+    }
+    if ((type == HOP_MSG_FILE_CHUNK || type == HOP_MSG_FILE_END) &&
+        (!s_rx.active || batch != s_rx.batch)) return;
+    on_data_msg(user, type, body, body_len);
+}
+
+static void on_data_frame(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
+    int guard = hop_watchdog_begin("data receive frame", 60000);
+    on_data_frame_checked(user,type,p,len);
+    hop_watchdog_end(guard);
+}
+
 /* 用户在本端取消接收：通知对端、删掉半成品、立墓碑。
  * 由 listen 线程执行 —— s_rx 只归它所有，别的线程直接碰就是竞态。 */
 static void rx_cancel_local(void) {
@@ -778,100 +830,137 @@ static void rx_cancel_local(void) {
     hop_log(HOP_LOG_INFO, "xfer: batch %u cancelled locally", batch);
 }
 
+/* A pending handshake is incremental, separate from the active stream. A slow
+ * unauthenticated client cannot stop the current peer from receiving data. */
+static SOCKET data_listener(void) {
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock == INVALID_SOCKET) return sock;
+    BOOL yes = TRUE;
+    setsockopt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (char *)&yes, sizeof(yes));
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr)); addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY); addr.sin_port = htons(s_x.cfg.data_port);
+    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) || listen(sock, 8)) {
+        hop_log(HOP_LOG_WARN, "xfer: port %u unavailable (%d), retrying", s_x.cfg.data_port, WSAGetLastError());
+        closesocket(sock); return INVALID_SOCKET;
+    }
+    return sock;
+}
+static void retire_data_socket(SOCKET sock) {
+    if (sock == INVALID_SOCKET) return;
+    EnterCriticalSection(&s_x.lock);
+    if (s_x.client == sock) {
+        s_x.client = INVALID_SOCKET; s_x.peer_ready = 0; ++s_x.epoch;
+    }
+    shutdown(sock, SD_BOTH);
+    LeaveCriticalSection(&s_x.lock);
+    EnterCriticalSection(&s_txlock);
+    closesocket(sock);
+    LeaveCriticalSection(&s_txlock);
+}
 static DWORD WINAPI listen_thread(LPVOID arg) {
     (void)arg;
-    hop_decoder *dec = hop_decoder_new(NULL, on_data_msg);
+    hop_decoder *dec = hop_decoder_new(NULL, on_data_frame);
     if (!dec) return 1;
-
+    SOCKET active = INVALID_SOCKET, pending = INVALID_SOCKET;
+    uint8_t hello[HOP_HEADER_SIZE + 2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES];
+    uint32_t have = 0, need = HOP_HEADER_SIZE;
+    uint64_t started = 0, retry_at = 0;
     while (WaitForSingleObject(s_x.stop, 0) != WAIT_OBJECT_0) {
-        struct sockaddr_in addr;
-        int alen = sizeof(addr);
-        SOCKET c = accept(s_x.listen_s, (struct sockaddr *)&addr, &alen);
-        if (c == INVALID_SOCKET) {
-            if (WaitForSingleObject(s_x.stop, 0) == WAIT_OBJECT_0) break;
-            Sleep(100);
+        uint64_t now = hop_monotonic_ms();
+        if (active != INVALID_SOCKET && !hop_session_matches(&s_x.session)) {
+            retire_data_socket(active); active = INVALID_SOCKET; rx_close_file();
+        }
+        if (s_x.listen_s == INVALID_SOCKET && now >= retry_at) {
+            s_x.listen_s = data_listener(); retry_at = now + 2000;
+            InterlockedExchange(&s_x.listening, s_x.listen_s != INVALID_SOCKET);
+        }
+        if (pending != INVALID_SOCKET && hop_handshake_expired(now, started)) {
+            closesocket(pending); pending = INVALID_SOCKET;
+        }
+        if (InterlockedExchange(&s_x.cancel_rx, 0)) rx_cancel_local();
+        fd_set rd; FD_ZERO(&rd);
+        if (s_x.listen_s != INVALID_SOCKET) FD_SET(s_x.listen_s, &rd);
+        if (active != INVALID_SOCKET) FD_SET(active, &rd);
+        if (pending != INVALID_SOCKET) FD_SET(pending, &rd);
+        if (!rd.fd_count) { WaitForSingleObject(s_x.stop, 200); continue; }
+        struct timeval tv = {0, 200000};
+        int ready = select(0, &rd, NULL, NULL, &tv);
+        if (ready == SOCKET_ERROR) {
+            retire_data_socket(active); active = INVALID_SOCKET;
+            if (pending != INVALID_SOCKET) closesocket(pending);
+            pending = INVALID_SOCKET;
+            if (s_x.listen_s != INVALID_SOCKET) closesocket(s_x.listen_s);
+            s_x.listen_s = INVALID_SOCKET; InterlockedExchange(&s_x.listening, 0);
             continue;
         }
-
-        int bufsz = 4 * 1024 * 1024;
-        setsockopt(c, SOL_SOCKET, SO_RCVBUF, (char *)&bufsz, sizeof(bufsz));
-        setsockopt(c, SOL_SOCKET, SO_SNDBUF, (char *)&bufsz, sizeof(bufsz));
-
-        /* 数据通道是空闲时间最长的：不开 keepalive 的话，链路中间设备
-         * 丢掉空闲连接表项后这条 socket 就变黑洞，send 返回成功但字节
-         * 永远到不了对端，两端还都以为连着。 */
-        net_set_keepalive(c);
-
-        /* 发送超时：ABORT 是从接收线程发的，如果发送线程正卡在 send 里
-         * （对端窗口满），接收线程拿不到发送锁就会跟着卡死 —— 那是死锁。
-         * 给个上限，卡住就当作传输失败，别把整个通道拖死。
-         * 256 KB 块在 100 Mbps 链路上只要 20 ms，5 秒是极宽的余量。 */
-        DWORD sndto = 5000;
-        setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, (char *)&sndto, sizeof(sndto));
-
-        /* 接收超时不是错误处理，是给取消请求开一条唤醒通道：
-         * 对端暂停发送时 recv 会一直阻塞，而 s_rx 只归本线程所有，
-         * 取消就只能干等 —— 用户点了"取消"，界面 30 秒没反应。
-         * 200 ms 醒一次，代价是空闲时每秒 5 次空转，可以忽略。 */
-        DWORD rxto = 200;
-        setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, (char *)&rxto, sizeof(rxto));
-
-        EnterCriticalSection(&s_x.lock);
-        s_x.client = c;
-        s_x.peer_ready = 0;
-        s_x.abort_batch = 0;          /* 新会话，上一轮的 ABORT 不再算数 */
-        LeaveCriticalSection(&s_x.lock);
-
-        hop_decoder_reset(dec);
-        rx_close_file(); /* keep the batch and ACKed paths across reconnect */
-
-        /* 对称握手：Mac 端（客户端）连上后会发 HELLO，服务端这边原来只
-         * 接收不发，于是 Mac 端永远打不出 "peer data channel ready"，
-         * 版本不一致时也发现不了 —— 一条静默的协议漂移。两边都发。 */
-        {
-            uint8_t hello[2 + HOP_TOKEN_MAX];
-            size_t token_len = strlen(s_x.cfg.token);
-            hello[0] = HOP_XFER_PROTO_VER;
-            hello[1] = (uint8_t)token_len;
-            if (token_len) memcpy(hello + 2, s_x.cfg.token, token_len);
-            if (!send_small(c, HOP_MSG_XFER_HELLO, hello, (uint32_t)(2 + token_len)))
-                shutdown(c, SD_BOTH);
-        }
-
-        hop_log(HOP_LOG_INFO, "xfer: data channel connected; waiting for peer authentication");
-
-        char buf[65536];
-        for (;;) {
-            int r = recv(c, buf, sizeof(buf), 0);
-
-            if (r < 0) {
-                int e = WSAGetLastError();
-                if (e == WSAETIMEDOUT || e == WSAEWOULDBLOCK) {
-                    /* 不是断线，只是这 200 ms 没数据：借这次醒来处理取消请求。
-                     * s_rx 只归本线程所有，别的线程不能直接碰。 */
-                    if (InterlockedExchange(&s_x.cancel_rx, 0)) rx_cancel_local();
-                    continue;
-                }
-                break;
+        if (!ready) continue;
+        /* Process active input first, then reset its decoder on replacement. */
+        if (active != INVALID_SOCKET && FD_ISSET(active, &rd)) {
+            uint8_t buf[65536];
+            int n = recv(active, (char *)buf, sizeof(buf), 0);
+            if (n <= 0 || !hop_decoder_feed(dec, buf, (uint32_t)n)) {
+                retire_data_socket(active); active = INVALID_SOCKET; rx_close_file();
+                hop_log(HOP_LOG_WARN, "xfer: data channel closed");
             }
-            if (r == 0) break;                 /* 对端正常关闭 */
-
-            hop_decoder_feed(dec, (const uint8_t *)buf, (uint32_t)r);
-            if (InterlockedExchange(&s_x.cancel_rx, 0)) rx_cancel_local();
         }
-
-        EnterCriticalSection(&s_x.lock);
-        s_x.client = INVALID_SOCKET;
-        s_x.peer_ready = 0;
-        LeaveCriticalSection(&s_x.lock);
-        closesocket(c);
-        /* 只关文件，不清批次：发送端会带着同一个 batch 号回来，
-         * 从断点条目继续发。这里清掉就变成"从头重传整批"了。 */
-        rx_close_file();
-        hop_log(HOP_LOG_WARN, "xfer: data channel closed");
+        if (pending != INVALID_SOCKET && FD_ISSET(pending, &rd)) {
+            int n = recv(pending, (char *)hello + have, (int)(need - have), 0);
+            int bad = n <= 0;
+            if (!bad) have += (uint32_t)n;
+            if (!bad && have == HOP_HEADER_SIZE && need == HOP_HEADER_SIZE) {
+                uint32_t len = hop_get_be32(hello + 1);
+                if (hello[0] != HOP_MSG_XFER_HELLO || len < 2 + HOP_SESSION_BYTES || len > 2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES) bad = 1;
+                else need += len;
+            }
+            if (!bad && have == need) {
+                hop_session_id session;
+                bad = !hop_session_current(&session) ||
+                      !hop_xfer_hello_bound(hello + HOP_HEADER_SIZE, need - HOP_HEADER_SIZE, s_x.cfg.token, &session);
+                if (!bad) {
+                    uint8_t reply[2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES];
+                    uint32_t reply_len = hop_xfer_hello_encode(reply, s_x.cfg.token, &session);
+                    uint8_t header[HOP_HEADER_SIZE];
+                    hop_encode_header(header, HOP_MSG_XFER_HELLO, reply_len);
+                    bad = !send_all(pending, (const char *)header, sizeof(header)) ||
+                          !send_all(pending, (const char *)reply, (int)reply_len);
+                }
+                if (!bad) {
+                    hop_log(HOP_LOG_INFO, active == INVALID_SOCKET ? "xfer: authenticated data channel" :
+                            "xfer: replacing stale data connection");
+                    retire_data_socket(active);
+                    rx_bind_session(&session); hop_decoder_reset(dec);
+                    active = pending; pending = INVALID_SOCKET;
+                    EnterCriticalSection(&s_x.lock);
+                    s_x.session = session;
+                    s_x.client = active; s_x.peer_ready = 1; ++s_x.epoch; s_x.abort_batch = 0;
+                    LeaveCriticalSection(&s_x.lock);
+                }
+            }
+            if (bad) { closesocket(pending); pending = INVALID_SOCKET; }
+        }
+        if (s_x.listen_s != INVALID_SOCKET && FD_ISSET(s_x.listen_s, &rd)) {
+            SOCKET sock = accept(s_x.listen_s, NULL, NULL);
+            if (sock != INVALID_SOCKET) {
+                /* Only authenticated active peers are protected from replacement. */
+                if (pending != INVALID_SOCKET) closesocket(pending);
+                {
+                    pending = sock; have = 0; need = HOP_HEADER_SIZE; started = hop_monotonic_ms();
+                    DWORD snd = 3000, rcv = 200;
+                    int bufsz = 4 * 1024 * 1024;
+                    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&snd, sizeof(snd));
+                    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&rcv, sizeof(rcv));
+                    setsockopt(sock, SOL_SOCKET, SO_RCVBUF, (char *)&bufsz, sizeof(bufsz));
+                    setsockopt(sock, SOL_SOCKET, SO_SNDBUF, (char *)&bufsz, sizeof(bufsz));
+                    net_set_keepalive(sock);
+                }
+            }
+        }
     }
-
+    if (pending != INVALID_SOCKET) closesocket(pending);
+    retire_data_socket(active);
+    if (s_x.listen_s != INVALID_SOCKET) closesocket(s_x.listen_s);
+    s_x.listen_s = INVALID_SOCKET; InterlockedExchange(&s_x.listening, 0);
     hop_decoder_free(dec);
     return 0;
 }
-

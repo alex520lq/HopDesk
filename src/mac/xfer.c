@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdatomic.h>
 
 #define XFER_MAX_ENTRIES 8192
 
@@ -49,6 +50,7 @@ typedef struct {
 
 typedef struct xf_job {
     struct xf_job *next;
+    hop_session_id session;
     uint32_t  batch;
     int       is_image;
     int       n;
@@ -75,11 +77,13 @@ typedef struct {
 
 static struct {
     int              sock;
+    hop_session_id   session;
+    unsigned long    epoch;
     int              peer_ready;     /* 数据通道版本与 token 握手通过 */
     pthread_mutex_t  slock;          /* 保护 sock */
     pthread_mutex_t  qlock;          /* 保护作业队列 */
     pthread_cond_t   qcond;
-    int              stop;
+    _Atomic int      stop;
     xf_job          *q_head, *q_tail;
     uint32_t         batch_seq;
     uint32_t         chunk;
@@ -100,6 +104,12 @@ static struct {
  * socket 写。一次 send_all 内部可能分多次 write，两线程交错就会把
  * 帧字节搅在一起 —— 锁的粒度必须是"整帧"，不是"单次 write"。 */
 static pthread_mutex_t s_txlock = PTHREAD_MUTEX_INITIALIZER;
+static _Thread_local unsigned long s_send_epoch;
+static int send_session_current(int fd) {
+    pthread_mutex_lock(&s_x.slock);
+    int ok = s_x.sock == fd && (!s_send_epoch || s_x.epoch == s_send_epoch) && hop_session_matches(&s_x.session);
+    pthread_mutex_unlock(&s_x.slock); return ok;
+}
 static pthread_mutex_t s_status_lock = PTHREAD_MUTEX_INITIALIZER;
 static hop_xfer_tracking s_send_status, s_receive_status;
 static uint64_t s_status_revision;
@@ -246,6 +256,13 @@ static void status_add_received_file(uint32_t batch,uint32_t id,const char *path
         snprintf(s_receive_status.status.name,sizeof(s_receive_status.status.name),"%s",path);
     pthread_mutex_unlock(&s_status_lock);
 }
+static void job_bind_session(xf_job *j, const hop_session_id *current) {
+    if (!hop_session_id_valid(current) || hop_session_id_equal(&j->session,current)) return;
+    j->session=*current; j->next_i=0; j->ok=0;
+    pthread_mutex_lock(&s_status_lock);
+    memset(&s_send_status,0,sizeof(s_send_status));
+    pthread_mutex_unlock(&s_status_lock);
+}
 static void status_start_job(const xf_job *j) {
     uint64_t total_bytes=0;
     for(int i=0;i<j->n;i++)total_bytes+=j->e[i].size;
@@ -310,13 +327,24 @@ static int send_all(int fd, const void *buf, size_t len) {
     return 1;
 }
 
-static int send_small(int fd, uint8_t type, const uint8_t *p, uint32_t len) {
-    uint8_t hdr[HOP_HEADER_SIZE];
-    hop_encode_header(hdr, type, len);
+static int send_small(int fd, uint8_t type, const uint8_t *p, uint32_t len, uint32_t batch) {
+    int send_guard = hop_watchdog_begin("data frame send", 10000);
+    uint8_t hdr[HOP_HEADER_SIZE], prefix[HOP_DATA_PREFIX];
     pthread_mutex_lock(&s_txlock);
-    int ok = send_all(fd, hdr, HOP_HEADER_SIZE);
+    int ok = send_session_current(fd);
+    if (ok && type != HOP_MSG_XFER_HELLO) {
+        pthread_mutex_lock(&s_x.slock);
+        hop_data_prefix(prefix, &s_x.session, batch);
+        pthread_mutex_unlock(&s_x.slock);
+        hop_encode_header(hdr, type, len + HOP_DATA_PREFIX);
+        ok = send_all(fd, hdr, HOP_HEADER_SIZE) && send_all(fd, prefix, HOP_DATA_PREFIX);
+    } else if (ok) {
+        hop_encode_header(hdr, type, len);
+        ok = send_all(fd, hdr, HOP_HEADER_SIZE);
+    }
     if (ok && len) ok = send_all(fd, p, len);
     pthread_mutex_unlock(&s_txlock);
+    hop_watchdog_end(send_guard);
     return ok;
 }
 
@@ -387,9 +415,15 @@ static void elist_free(elist *l) {
 }
 
 /* 递归收集。lstat 而不是 stat：符号链接跳过，避免环和越界。 */
+static struct dirent *guarded_readdir(DIR *directory) {
+    int guard = hop_watchdog_begin("directory next", HOP_IO_DEADLINE_MS);
+    struct dirent *entry = readdir(directory); hop_watchdog_end(guard); return entry;
+}
 static void walk_into(elist *l, const char *full, const char *rel) {
     struct stat st;
-    if (lstat(full, &st) != 0) return;
+    int stat_guard = hop_watchdog_begin("file attributes", HOP_IO_DEADLINE_MS);
+    int stat_ok = lstat(full, &st); hop_watchdog_end(stat_guard);
+    if (stat_ok != 0) return;
     if (S_ISLNK(st.st_mode)) return;             /* 不跟随符号链接 */
 
     const char *bn = strrchr(full, '/');
@@ -422,11 +456,12 @@ static void walk_into(elist *l, const char *full, const char *rel) {
     e.flags = HOP_FILE_FLAG_DIR;
     if (!elist_push(l, &e)) { free(e.full); free(e.name); free(e.rel); return; }
 
-    DIR *d = opendir(full);
+    int open_guard = hop_watchdog_begin("directory open", HOP_IO_DEADLINE_MS);
+    DIR *d = opendir(full); hop_watchdog_end(open_guard);
     if (!d) return;
 
     struct dirent *de;
-    while ((de = readdir(d)) != NULL) {
+    while ((de = guarded_readdir(d)) != NULL) {
         if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
 
         size_t fl = strlen(full), nl = strlen(de->d_name), rl = strlen(rel);
@@ -450,20 +485,25 @@ static void walk_into(elist *l, const char *full, const char *rel) {
  * 数据直接读进发送缓冲的 CHUNK_HDR 处，省掉一次内存拷贝。
  * 每块带 CRC32：TCP 的 16 位校验和配合网卡 offload 有可能漏检，
  * GB 级传输漏检一次就是静默损坏。 */
-#define CHUNK_HDR 25u   /* 5 帧头 + 4 id + 8 off + 4 len + 4 crc */
+#define CHUNK_HDR (25u + HOP_DATA_PREFIX)   /* 5 帧头 + 4 id + 8 off + 4 len + 4 crc */
 
 static int send_chunk(int fd, uint8_t *tx, uint32_t batch, uint32_t id, uint64_t off,
                       const uint8_t *data, uint32_t len, uint32_t crc) {
-    hop_encode_header(tx, HOP_MSG_FILE_CHUNK, 20 + len);
-    hop_put_be32(tx + 5, id);
-    hop_put_be64(tx + 9, off);
-    hop_put_be32(tx + 17, len);
-    hop_put_be32(tx + 21, crc);
+    int send_guard = hop_watchdog_begin("data frame send", 10000);
+    hop_encode_header(tx, HOP_MSG_FILE_CHUNK, 20 + HOP_DATA_PREFIX + len);
+    hop_put_be32(tx + HOP_DATA_PREFIX + 5, id);
+    hop_put_be64(tx + HOP_DATA_PREFIX + 9, off);
+    hop_put_be32(tx + HOP_DATA_PREFIX + 17, len);
+    hop_put_be32(tx + HOP_DATA_PREFIX + 21, crc);
     if (data != tx + CHUNK_HDR) memcpy(tx + CHUNK_HDR, data, len);
     pthread_mutex_lock(&s_txlock);
-    int ok = send_all(fd, tx, CHUNK_HDR + len);
+    pthread_mutex_lock(&s_x.slock);
+    hop_data_prefix(tx + HOP_HEADER_SIZE, &s_x.session, batch);
+    pthread_mutex_unlock(&s_x.slock);
+    int ok = send_session_current(fd) && send_all(fd, tx, CHUNK_HDR + len);
     pthread_mutex_unlock(&s_txlock);
     if(ok) status_chunk(HOP_XFER_DIR_SEND,batch,id,off,len);
+    hop_watchdog_end(send_guard);
     return ok;
 }
 
@@ -593,7 +633,7 @@ static int send_file_entry(int fd, uint8_t *tx, uint32_t batch,
     hop_put_be16(bp + o, (uint16_t)plen); o += 2;
     memcpy(bp + o, e->rel, plen); o += plen;
 
-    int ok = send_small(fd, HOP_MSG_FILE_BEGIN, bp, blen);
+    int ok = send_small(fd, HOP_MSG_FILE_BEGIN, bp, blen, batch);
     free(bp);
     if (!ok) return XFER_SEND_DEAD;
 
@@ -606,7 +646,8 @@ static int send_file_entry(int fd, uint8_t *tx, uint32_t batch,
     int      local_fail = 0;
 
     if (!(e->flags & HOP_FILE_FLAG_DIR) && e->size > 0) {
-        int f = open(e->full, O_RDONLY);
+        int open_guard = hop_watchdog_begin("file open", HOP_IO_DEADLINE_MS);
+        int f = open(e->full, O_RDONLY); hop_watchdog_end(open_guard);
         if (f < 0) {
             hop_log(HOP_LOG_WARN, "xfer: open failed, %s (%s)",
                     e->rel, strerror(errno));
@@ -615,7 +656,9 @@ static int send_file_entry(int fd, uint8_t *tx, uint32_t batch,
         } else {
             uint64_t off = 0;
             for (;;) {
+                int read_guard = hop_watchdog_begin("file chunk read", HOP_IO_DEADLINE_MS);
                 ssize_t got = read(f, tx + CHUNK_HDR, s_x.chunk);
+                hop_watchdog_end(read_guard);
                 if (got <= 0) break;
                 uint32_t ccrc = hop_crc32(0, tx + CHUNK_HDR, (size_t)got);
                 if (!send_chunk(fd, tx, batch, id, off, tx + CHUNK_HDR, (uint32_t)got, ccrc)) {
@@ -639,7 +682,7 @@ static int send_file_entry(int fd, uint8_t *tx, uint32_t batch,
     hop_put_be32(endp, id);
     endp[4] = end_status;
     hop_put_be32(endp + 5, fcrc);
-    if (!send_small(fd, HOP_MSG_FILE_END, endp, 9)) return XFER_SEND_DEAD;
+    if (!send_small(fd, HOP_MSG_FILE_END, endp, 9, batch)) return XFER_SEND_DEAD;
 
     /* 本地就没读成功，没必要再等回执：接收端那份注定是残缺的 */
     if (local_fail) return XFER_LOCAL_IO;
@@ -662,7 +705,7 @@ static int send_done(int fd, const xf_job *j) {
     hop_put_be32(dp + 4,  (uint32_t)j->ok);
     hop_put_be32(dp + 8,  hop_xfer_job_total(j->is_image,j->n));
     hop_put_be64(dp + 12, 0);
-    return send_small(fd, HOP_MSG_XFER_DONE, dp, 20);
+    return send_small(fd, HOP_MSG_XFER_DONE, dp, 20, j->batch);
 }
 
 /* 发一个批量级 ABORT（取消时通知对端丢弃本批） */
@@ -670,7 +713,7 @@ static void send_abort_msg(int fd, uint32_t batch, uint8_t reason) {
     uint8_t ab[5];
     hop_put_be32(ab, batch);
     ab[4] = reason;
-    send_small(fd, HOP_MSG_XFER_ABORT, ab, 5);
+    send_small(fd, HOP_MSG_XFER_ABORT, ab, 5, batch);
 }
 
 /* 取当前连接再发 ABORT。sock 由 slock 保护，不能裸读。
@@ -683,7 +726,7 @@ static void send_abort(uint32_t batch, uint8_t reason) {
     pthread_mutex_lock(&s_x.slock);
     int fd = s_x.sock;
     pthread_mutex_unlock(&s_x.slock);
-    if (fd >= 0) send_small(fd, HOP_MSG_XFER_ABORT, ab, 5);
+    if (fd >= 0) send_small(fd, HOP_MSG_XFER_ABORT, ab, 5, batch);
 }
 
 /* 接收线程调用：把一个文件的结论真正发回对端。
@@ -693,10 +736,11 @@ static void send_ack(int fd, uint32_t batch, uint32_t id, int status) {
     hop_put_be32(b, batch);
     hop_put_be32(b + 4, id);
     b[8] = (uint8_t)status;
-    send_small(fd, HOP_MSG_FILE_ACK, b, 9);
+    send_small(fd, HOP_MSG_FILE_ACK, b, 9, batch);
 }
 
 static int run_job(int fd, uint8_t *tx, xf_job *j) {
+
     if(cancel_requested(j->batch))return JOB_CANCELLED;
     if(peer_aborted(j->batch))return JOB_PEER_ABORT;
     if (j->is_image) {
@@ -706,7 +750,7 @@ static int run_job(int fd, uint8_t *tx, xf_job *j) {
         hop_put_be32(bp + 8, (uint32_t)j->w);
         hop_put_be32(bp + 12, (uint32_t)j->h);
         hop_put_be32(bp + 16, (uint32_t)j->stride);
-        if (!send_small(fd, HOP_MSG_IMAGE_BEGIN, bp, 20)) return JOB_NET_DOWN;
+        if (!send_small(fd, HOP_MSG_IMAGE_BEGIN, bp, 20, j->batch)) return JOB_NET_DOWN;
 
         uint64_t total = (uint64_t)j->stride * (uint64_t)j->h;
         uint64_t off = 0;
@@ -723,7 +767,7 @@ static int run_job(int fd, uint8_t *tx, xf_job *j) {
         hop_put_be32(endp, 1);
         endp[4] = HOP_FILE_OK;
         hop_put_be32(endp + 5, 0);      /* 图片不做整文件 CRC，块 CRC 已足够 */
-        if (!send_small(fd, HOP_MSG_FILE_END, endp, 9)) return JOB_NET_DOWN;
+        if (!send_small(fd, HOP_MSG_FILE_END, endp, 9, j->batch)) return JOB_NET_DOWN;
 
         j->ok = 1;
         j->next_i = j->n;
@@ -878,11 +922,13 @@ static void *send_thread(void *arg) {
             continue;
         }
         if (!j) continue;
-        status_start_job(j);
-
         pthread_mutex_lock(&s_x.slock);
-        fd = s_x.sock;
+        fd = s_x.peer_ready ? s_x.sock : -1;
+        s_send_epoch = s_x.epoch;
+        hop_session_id transport_session = s_x.session;
         pthread_mutex_unlock(&s_x.slock);
+        job_bind_session(j, &transport_session);
+        status_start_job(j);
 
         int r = (fd >= 0) ? run_job(fd, tx, j) : JOB_NET_DOWN;
 
@@ -970,7 +1016,7 @@ void xfer_shutdown(void) {
     s_x.stop = 1;
 
     pthread_mutex_lock(&s_x.slock);
-    if (s_x.sock >= 0) { shutdown(s_x.sock, SHUT_RDWR); close(s_x.sock); s_x.sock = -1; }
+    if (s_x.sock >= 0) shutdown(s_x.sock, SHUT_RDWR);
     pthread_mutex_unlock(&s_x.slock);
 
     pthread_mutex_lock(&s_x.qlock);
@@ -1023,7 +1069,7 @@ void xfer_cancel(void) {
     } else if (s_x.q_head) {
         s_x.cancel_batch = s_x.q_head->batch;
     }
-    s_x.cancel_rx = 1;
+    __sync_lock_test_and_set(&s_x.cancel_rx, 1);
     pthread_cond_signal(&s_x.qcond);      /* 唤醒发送线程，别让它等满 200 ms */
     pthread_mutex_unlock(&s_x.qlock);
 
@@ -1066,7 +1112,7 @@ int xfer_submit_paths(const char *const *paths, int n) {
     xf_job *j = (xf_job *)calloc(1, sizeof(*j));
     if (!j) { elist_free(&l); return 0; }
 
-    j->batch = __sync_add_and_fetch(&s_x.batch_seq, 1);
+    do { j->batch = __sync_add_and_fetch(&s_x.batch_seq, 1); } while (!j->batch);
     j->n = l.n;
     j->e = l.v;
 
@@ -1094,7 +1140,7 @@ int xfer_submit_image(const uint8_t *bgra, int w, int h, int stride) {
     xf_job *j = (xf_job *)calloc(1, sizeof(*j));
     if (!j) { free(copy); return 0; }
 
-    j->batch = __sync_add_and_fetch(&s_x.batch_seq, 1);
+    do { j->batch = __sync_add_and_fetch(&s_x.batch_seq, 1); } while (!j->batch);
     j->is_image = 1;
     j->pixels = copy;
     j->w = w; j->h = h; j->stride = stride;
@@ -1103,4 +1149,10 @@ int xfer_submit_image(const uint8_t *bgra, int w, int h, int stride) {
             w, h, (double)total / 1048576.0);
 
     return submit(j);
+}
+
+void xfer_kick(void) {
+    pthread_mutex_lock(&s_x.slock);
+    if (s_x.sock >= 0) shutdown(s_x.sock, SHUT_RDWR);
+    pthread_mutex_unlock(&s_x.slock);
 }

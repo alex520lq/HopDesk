@@ -1,362 +1,346 @@
-/* =====================================================================
- *  HopDesk - Windows 网络服务端实现
- *
- *  两条通道，各有各的线程：
- *    控制通道（port）：鼠标/键盘/显示/剪贴板文本 —— 发送走队列 + 独立线程，
- *                      调用方（钩子回调、窗口消息）只入队，绝不阻塞。
- *    数据通道（port+1）：文件字节，见 xfer.c。
- *
- *  为什么控制通道必须异步：
- *    WH_MOUSE_LL / WH_KEYBOARD_LL 的回调跑在装钩子的线程上，也就是主线程；
- *    WM_CLIPBOARDUPDATE 也在主线程。原来的实现是持锁阻塞 send，
- *    一次大载荷就能让本机鼠标键盘整体僵住，再久一点 Windows 会直接摘钩，
- *    输入捕获永久失效。
- * ===================================================================== */
-/* winsock2 必须在 windows.h 之前 */
+/* Authenticated control sessions. Accept never waits for a peer's recv;
+ * a newly authenticated session replaces the old one. Socket ownership stays
+ * with its reader until the sender is no longer using it. */
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <mstcpip.h>
 #include "net_server.h"
-
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _MSC_VER
-#pragma comment(lib, "ws2_32.lib")
-#endif
-
-/* 队列深度上限。正常情况远到不了；到得了说明对端收不动，
- * 与其无限吃内存，不如丢弃（鼠标移动见 queue_push_locked 的合并逻辑）。 */
-#define Q_MAX 2048
-
+#define MAX_CONNECTIONS 8
+struct connection;
 typedef struct send_item {
     struct send_item *next;
-    uint8_t           type;
-    uint32_t          len;
-    uint8_t           data[1];      /* 柔性数组 */
+    uint8_t type;
+    uint32_t len;
+    uint8_t data[1];
 } send_item;
-
+typedef struct connection {
+    struct net_server *server;
+    SOCKET sock;
+    HANDLE thread;
+    hop_decoder *decoder;
+    hop_session_id session;
+    unsigned long epoch;
+    int authed, rejected;
+    uint64_t started, last_rx;
+} connection;
 struct net_server {
-    HWND            hwnd;
-    hop_config      cfg;
-    SOCKET          listen_s;
-    SOCKET          client;
-    CRITICAL_SECTION lock;          /* 保护 client 与发送队列 */
-    HANDLE          stop;
-    HANDLE          thread;
-    HANDLE          q_evt;          /* 队列非空 */
-    HANDLE          sender;
-    send_item      *q_head, *q_tail;
-    int             q_count;
-    hop_decoder    *decoder;
+    HWND hwnd;
+    hop_config cfg;
+    SOCKET listen_s, client;
+    CRITICAL_SECTION lock, send_lock;
+    HANDLE stop, q_evt, thread, sender;
+    send_item *q_head, *q_tail;
+    int q_count, listening;
+    size_t q_bytes;
+    unsigned long epoch;
+    uint64_t last_ping;
+    connection peers[MAX_CONNECTIONS];
 };
-
-/* ---- decoder 回调（在网络线程）：转主线程 ---- */
-static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
-    net_server *s = (net_server *)user;
-    if (type == HOP_MSG_PING) {
-        net_server_send(s, HOP_MSG_PONG, NULL, 0);
-        return;
-    }
-    hop_recv *r = (hop_recv *)malloc(sizeof(hop_recv) + len);
-    if (!r) return;
-    r->type = type;
-    r->len = len;
-    if (len) memcpy(r->data, p, len);
-    if (!PostMessageW(s->hwnd, WM_APP_RECV, (WPARAM)type, (LPARAM)r)) {
-        free(r);
-    }
-}
-
-static void post_link(net_server *s, int up) {
-    PostMessageW(s->hwnd, WM_APP_LINK, (WPARAM)up, 0);
-}
-
-/* ---- 发送队列 ---- */
 
 static void queue_clear(net_server *s) {
     send_item *it = s->q_head;
-    while (it) {
-        send_item *nx = it->next;
-        free(it);
-        it = nx;
-    }
+    while (it) { send_item *next = it->next; free(it); it = next; }
     s->q_head = s->q_tail = NULL;
-    s->q_count = 0;
+    s->q_count = 0; s->q_bytes = 0;
 }
-
-/* 入队。调用方已持锁。 */
-static void queue_push_locked(net_server *s, uint8_t type,
-                              const void *p, uint32_t len) {
-    /* 鼠标移动合并：队列尾也是 MOVE 就把位移累加进去，不新增节点。
-     * 必须累加而非覆盖 —— 相对位移一旦丢掉就是永久落后，光标会越用越偏。 */
-    if (type == HOP_MSG_MOUSE_MOVE && len == 4 &&
-        s->q_tail && s->q_tail->type == HOP_MSG_MOUSE_MOVE) {
-        int dx = (int)(int16_t)hop_get_be16((const uint8_t *)p) +
-                 (int)(int16_t)hop_get_be16(s->q_tail->data);
-        int dy = (int)(int16_t)hop_get_be16((const uint8_t *)p + 2) +
-                 (int)(int16_t)hop_get_be16(s->q_tail->data + 2);
-        /* 溢出就另起一帧，交给下面正常入队 —— 钳位会丢位移 */
-        if (dx > -32768 && dx < 32767 && dy > -32768 && dy < 32767) {
+/* lock held. Critical-event overflow disconnects instead of losing a key-up. */
+static int queue_push(net_server *s, uint8_t type, const void *p, uint32_t len) {
+    hop_queue_verdict v = hop_ctrl_queue_admit(type, s->q_count, s->q_bytes, len);
+    if (v == HOP_Q_DROP) return 1;
+    if (v == HOP_Q_OVERFLOW) goto overflow;
+    if (type == HOP_MSG_MOUSE_MOVE && len == 4 && s->q_tail &&
+        s->q_tail->type == type && s->q_tail->len == 4) {
+        int dx = (int16_t)hop_get_be16(p) + (int16_t)hop_get_be16(s->q_tail->data);
+        int dy = (int16_t)hop_get_be16((const uint8_t *)p + 2) +
+                 (int16_t)hop_get_be16(s->q_tail->data + 2);
+        if (dx >= -32768 && dx <= 32767 && dy >= -32768 && dy <= 32767) {
             hop_put_be16(s->q_tail->data, (uint16_t)(int16_t)dx);
             hop_put_be16(s->q_tail->data + 2, (uint16_t)(int16_t)dy);
-            return;
-        }
-    }
-
-    if (s->q_count >= Q_MAX) return;   /* 对端收不动，丢弃而不是无限吃内存 */
-
-    send_item *it = (send_item *)malloc(sizeof(send_item) + len);
-    if (!it) return;
-    it->next = NULL;
-    it->type = type;
-    it->len = len;
-    if (len && p) memcpy(it->data, p, len);
-
-    if (s->q_tail) s->q_tail->next = it;
-    else           s->q_head = it;
-    s->q_tail = it;
-    s->q_count++;
-}
-
-/* 逐个取出队首，锁外发送。 */
-static int sender_flush(net_server *s) {
-    for (;;) {
-        EnterCriticalSection(&s->lock);
-        send_item *it = s->q_head;
-        SOCKET c = s->client;
-        if (!it || c == INVALID_SOCKET) {
-            LeaveCriticalSection(&s->lock);
             return 1;
         }
-        s->q_head = it->next;
-        if (!s->q_head) s->q_tail = NULL;
-        s->q_count--;
-        LeaveCriticalSection(&s->lock);
-
-        uint8_t hdr[HOP_HEADER_SIZE];
-        hop_encode_header(hdr, it->type, it->len);
-        int ok = 1;
-        if (send(c, (char *)hdr, HOP_HEADER_SIZE, 0) != HOP_HEADER_SIZE) ok = 0;
-        if (ok && it->len &&
-            send(c, (const char *)it->data, (int)it->len, 0) != (int)it->len) ok = 0;
-        free(it);
-
-        if (!ok) {
-            EnterCriticalSection(&s->lock);
-            queue_clear(s);
-            LeaveCriticalSection(&s->lock);
-            return 0;
-        }
     }
+    send_item *it = (send_item *)malloc(sizeof(*it) + len);
+    if (!it) goto overflow;
+    it->next = NULL; it->type = type; it->len = len;
+    if (len) memcpy(it->data, p, len);
+    if (s->q_tail) s->q_tail->next = it; else s->q_head = it;
+    s->q_tail = it; s->q_count++; s->q_bytes += len;
+    SetEvent(s->q_evt);
+    return 1;
+overflow:
+    hop_log(HOP_LOG_WARN, "net: control queue overflow, resetting session");
+    if (s->client != INVALID_SOCKET) shutdown(s->client, SD_BOTH);
+    queue_clear(s);
+    return 0;
 }
-
+static int post_message(connection *c, uint8_t type, const uint8_t *p, uint32_t len) {
+    hop_recv *r = (hop_recv *)malloc(sizeof(*r) + len);
+    if (!r) return 0;
+    r->type = type; r->len = len; r->epoch = c->epoch;
+    if (len) memcpy(r->data, p, len);
+    if (!PostMessageW(c->server->hwnd, WM_APP_RECV, type, (LPARAM)r)) {
+        free(r); return 0;
+    }
+    return 1;
+}
+static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
+    connection *c = (connection *)user;
+    net_server *s = c->server;
+    if (c->rejected) return;
+    if (!c->authed) {
+        hop_hello_msg hello;
+        if (type != HOP_MSG_HELLO || !hop_hello_decode(p, len, &hello) ||
+            !hop_token_matches(s->cfg.token, hello.token, hello.token_len)) {
+            c->rejected = 1; shutdown(c->sock, SD_BOTH); return;
+        }
+        if (!hop_session_generate(&c->session)) { c->rejected = 1; shutdown(c->sock, SD_BOTH); return; }
+        EnterCriticalSection(&s->lock);
+        if (WaitForSingleObject(s->stop, 0) == WAIT_OBJECT_0) {
+            c->rejected = 1;
+        } else {
+            int replaced = s->client != INVALID_SOCKET;
+            if (replaced) shutdown(s->client, SD_BOTH);
+            queue_clear(s);
+            s->client = c->sock; c->epoch = ++s->epoch; c->authed = 1;
+            hop_session_publish(&c->session);
+            c->last_rx = s->last_ping = hop_monotonic_ms();
+            uint8_t ack[2 + HOP_NAME_MAX + 9 + HOP_SESSION_BYTES];
+            const char *name = s->cfg.device_name[0] ? s->cfg.device_name : "HopDesk";
+            size_t nl = strlen(name);
+            ack[0] = 1; ack[1] = (uint8_t)nl;
+            memcpy(ack + 2, name, nl);
+            hop_put_be32(ack + 2 + nl, (uint32_t)s->cfg.screen_w);
+            hop_put_be32(ack + 6 + nl, (uint32_t)s->cfg.screen_h);
+            ack[nl + 10] = HOP_CTRL_PROTO_VER;
+            memcpy(ack + nl + 11, c->session.bytes, HOP_SESSION_BYTES);
+            queue_push(s, HOP_MSG_HELLO_ACK, ack, (uint32_t)nl + 11 + HOP_SESSION_BYTES);
+            PostMessageW(s->hwnd, WM_APP_LINK, replaced ? 2 : 1, (LPARAM)c->epoch);
+            if (!post_message(c, type, p, len)) c->rejected = 1;
+            hop_log(HOP_LOG_INFO, "net: authenticated control session %lu%s",
+                    c->epoch, replaced ? " (replaced old peer)" : "");
+        }
+        LeaveCriticalSection(&s->lock);
+        return;
+    }
+    EnterCriticalSection(&s->lock);
+    if (s->client != c->sock || s->epoch != c->epoch) c->rejected = 1;
+    else {
+        c->last_rx = hop_monotonic_ms();
+        if (type == HOP_MSG_HELLO || type == HOP_MSG_HELLO_ACK) c->rejected = 1;
+        else if (type == HOP_MSG_PING) queue_push(s, HOP_MSG_PONG, NULL, 0);
+        else if (type != HOP_MSG_PONG && !post_message(c, type, p, len)) c->rejected = 1;
+    }
+    LeaveCriticalSection(&s->lock);
+}
+void net_set_keepalive(SOCKET sock) {
+    struct tcp_keepalive ka = {1, 60000, 10000};
+    DWORD bytes;
+    WSAIoctl(sock, SIO_KEEPALIVE_VALS, &ka, sizeof(ka), NULL, 0, &bytes, NULL, NULL);
+}
+static DWORD WINAPI reader_thread(LPVOID arg) {
+    connection *c = (connection *)arg;
+    net_server *s = c->server;
+    char buf[8192];
+    c->decoder = hop_decoder_new(c, on_message);
+    while (c->decoder && !c->rejected && WaitForSingleObject(s->stop, 0) != WAIT_OBJECT_0) {
+        uint64_t now = hop_monotonic_ms();
+        if ((!c->authed && hop_handshake_expired(now, c->started)) ||
+            (c->authed && hop_peer_silent(now, c->last_rx))) break;
+        int n = recv(c->sock, buf, sizeof(buf), 0);
+        if (n == 0) break;
+        if (n < 0) {
+            int e = WSAGetLastError();
+            if (e == WSAETIMEDOUT || e == WSAEWOULDBLOCK || e == WSAEINTR) continue;
+            break;
+        }
+        int guard = hop_watchdog_begin("control receive frame", HOP_IO_DEADLINE_MS);
+        int decoded = hop_decoder_feed(c->decoder, (uint8_t *)buf, (uint32_t)n);
+        hop_watchdog_end(guard);
+        if (!decoded) break;
+    }
+    EnterCriticalSection(&s->lock);
+    if (c->authed && s->client == c->sock && s->epoch == c->epoch) {
+        hop_session_clear(&c->session);
+        s->client = INVALID_SOCKET; queue_clear(s);
+        PostMessageW(s->hwnd, WM_APP_LINK, 0, (LPARAM)c->epoch);
+    }
+    shutdown(c->sock, SD_BOTH);
+    LeaveCriticalSection(&s->lock);
+    EnterCriticalSection(&s->send_lock);
+    EnterCriticalSection(&s->lock);
+    closesocket(c->sock); c->sock = INVALID_SOCKET;
+    LeaveCriticalSection(&s->lock);
+    LeaveCriticalSection(&s->send_lock);
+    hop_decoder_free(c->decoder); c->decoder = NULL;
+    return 0;
+}
+static int send_all(SOCKET sock, const void *data, uint32_t len) {
+    const char *p = (const char *)data;
+    while (len) {
+        int n = send(sock, p, (int)len, 0);
+        if (n == SOCKET_ERROR && WSAGetLastError() == WSAEINTR) continue;
+        if (n <= 0) return 0;
+        p += n; len -= (uint32_t)n;
+    }
+    return 1;
+}
 static DWORD WINAPI sender_thread(LPVOID arg) {
     net_server *s = (net_server *)arg;
-    HANDLE ev[2] = { s->stop, s->q_evt };
-    for (;;) {
-        DWORD w = WaitForMultipleObjects(2, ev, FALSE, 200);
-        if (w == WAIT_OBJECT_0) break;              /* stop */
-        sender_flush(s);
+    HANDLE events[2] = {s->stop, s->q_evt};
+    while (WaitForMultipleObjects(2, events, FALSE, 200) != WAIT_OBJECT_0) {
+        EnterCriticalSection(&s->send_lock);
+        EnterCriticalSection(&s->lock);
+        uint64_t now = hop_monotonic_ms();
+        if (s->client != INVALID_SOCKET && hop_heartbeat_due(now, s->last_ping)) {
+            queue_push(s, HOP_MSG_PING, NULL, 0); s->last_ping = now;
+        }
+        send_item *it = s->q_head;
+        SOCKET sock = s->client;
+        unsigned long epoch = s->epoch;
+        if (it) {
+            s->q_head = it->next; if (!s->q_head) s->q_tail = NULL;
+            s->q_count--; s->q_bytes -= it->len;
+            if (s->q_head) SetEvent(s->q_evt);
+        }
+        LeaveCriticalSection(&s->lock);
+        if (it) {
+            int guard = hop_watchdog_begin("control frame send", 10000);
+            uint8_t hdr[HOP_HEADER_SIZE];
+            hop_encode_header(hdr, it->type, it->len);
+            int ok = sock != INVALID_SOCKET && send_all(sock, hdr, sizeof(hdr)) &&
+                     send_all(sock, it->data, it->len);
+            hop_watchdog_end(guard);
+            free(it);
+            if (!ok) {
+                EnterCriticalSection(&s->lock);
+                if (s->client == sock && s->epoch == epoch) {
+                    shutdown(sock, SD_BOTH); queue_clear(s);
+                }
+                LeaveCriticalSection(&s->lock);
+            }
+        }
+        LeaveCriticalSection(&s->send_lock);
     }
     return 0;
 }
-
-void net_set_keepalive(SOCKET s) {
-    struct tcp_keepalive ka;
-    DWORD bytes = 0;
-
-    /* 60s 空闲后开始探测，每 10s 一次，3 次无响应判定死亡 —— 约 90 秒。
-     * 探测包只在完全空闲时才发，局域网里开销可忽略。 */
-    ka.onoff             = 1;
-    ka.keepalivetime     = 60000;
-    ka.keepaliveinterval = 10000;
-
-    if (WSAIoctl(s, SIO_KEEPALIVE_VALS, &ka, sizeof(ka),
-                 NULL, 0, &bytes, NULL, NULL) != 0)
-        hop_log(HOP_LOG_WARN, "net: keepalive 设置失败 (%d)", WSAGetLastError());
-}
-
-static void handle_client(net_server *s, SOCKET c) {
-    EnterCriticalSection(&s->lock);
-    if (s->client != INVALID_SOCKET) {
-        LeaveCriticalSection(&s->lock);
-        closesocket(c);
-        return;
+static SOCKET open_listener(net_server *s) {
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock == INVALID_SOCKET) return sock;
+    BOOL yes = TRUE;
+    setsockopt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (char *)&yes, sizeof(yes));
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr)); addr.sin_family = AF_INET;
+    addr.sin_port = htons(s->cfg.port); addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) || listen(sock, 8)) {
+        hop_log(HOP_LOG_WARN, "net: port %u unavailable (%d), retrying",
+                s->cfg.port, WSAGetLastError());
+        closesocket(sock); return INVALID_SOCKET;
     }
-    s->client = c;
-    LeaveCriticalSection(&s->lock);
-
-    net_set_keepalive(c);
-    post_link(s, 1);
-
-    /* 握手回 ACK：{ok=1, name, w, h} */
-    uint8_t ack[2 + HOP_NAME_MAX + 8];
-    uint32_t n = 0;
-    ack[n++] = 1;
-    const char *nm = s->cfg.device_name[0] ? s->cfg.device_name : "Alex";
-    uint8_t nlen = (uint8_t)strlen(nm);
-    ack[n++] = nlen;
-    memcpy(ack + n, nm, nlen); n += nlen;
-    hop_put_be32(ack + n, (uint32_t)s->cfg.screen_w); n += 4;
-    hop_put_be32(ack + n, (uint32_t)s->cfg.screen_h); n += 4;
-    net_server_send(s, HOP_MSG_HELLO_ACK, ack, n);
-
-    hop_decoder_reset(s->decoder);
-
-    int rcv = 256 * 1024;
-    setsockopt(c, SOL_SOCKET, SO_RCVBUF, (char *)&rcv, sizeof(rcv));
-
-    char buf[8192];
-    for (;;) {
-        int r = recv(c, buf, sizeof(buf), 0);
-        if (r <= 0) break;
-        hop_decoder_feed(s->decoder, (const uint8_t *)buf, (uint32_t)r);
-    }
-
-    EnterCriticalSection(&s->lock);
-    s->client = INVALID_SOCKET;
-    queue_clear(s);
-    LeaveCriticalSection(&s->lock);
-    post_link(s, 0);
+    return sock;
 }
-
 static DWORD WINAPI server_thread(LPVOID arg) {
     net_server *s = (net_server *)arg;
     while (WaitForSingleObject(s->stop, 0) != WAIT_OBJECT_0) {
-        struct sockaddr_in addr;
-        int alen = sizeof(addr);
-        SOCKET c = accept(s->listen_s, (struct sockaddr *)&addr, &alen);
-        if (c == INVALID_SOCKET) {
-            if (WaitForSingleObject(s->stop, 0) == WAIT_OBJECT_0) break;
-            Sleep(100);
-            continue;
+        if (s->listen_s == INVALID_SOCKET) {
+            s->listen_s = open_listener(s);
+            InterlockedExchange((LONG *)&s->listening, s->listen_s != INVALID_SOCKET);
+            if (s->listen_s == INVALID_SOCKET) { WaitForSingleObject(s->stop, 2000); continue; }
         }
-        handle_client(s, c);
+        fd_set rd; FD_ZERO(&rd); FD_SET(s->listen_s, &rd);
+        struct timeval tv = {0, 250000};
+        int ready = select(0, &rd, NULL, NULL, &tv);
+        if (ready == SOCKET_ERROR) {
+            closesocket(s->listen_s); s->listen_s = INVALID_SOCKET;
+            InterlockedExchange((LONG *)&s->listening, 0); continue;
+        }
+        if (!ready) continue;
+        SOCKET sock = accept(s->listen_s, NULL, NULL);
+        if (sock == INVALID_SOCKET) continue;
+        connection *slot = NULL;
+        for (int i = 0; i < MAX_CONNECTIONS; ++i) {
+            connection *c = &s->peers[i];
+            if (c->thread && WaitForSingleObject(c->thread, 0) == WAIT_OBJECT_0) {
+                CloseHandle(c->thread); c->thread = NULL;
+            }
+            if (!c->thread && !slot) slot = c;
+        }
+        if (!slot) { closesocket(sock); continue; }
+        DWORD rcv = 500, snd = HOP_CTRL_SEND_TIMEOUT_MS;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&rcv, sizeof(rcv));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&snd, sizeof(snd));
+        net_set_keepalive(sock);
+        EnterCriticalSection(&s->lock);
+        memset(slot, 0, sizeof(*slot)); slot->server = s; slot->sock = sock;
+        slot->started = hop_monotonic_ms();
+        slot->thread = CreateThread(NULL, 0, reader_thread, slot, 0, NULL);
+        if (!slot->thread) { closesocket(sock); slot->sock = INVALID_SOCKET; }
+        LeaveCriticalSection(&s->lock);
+    }
+    if (s->listen_s != INVALID_SOCKET) closesocket(s->listen_s);
+    InterlockedExchange((LONG *)&s->listening, 0);
+    EnterCriticalSection(&s->lock);
+    for (int i = 0; i < MAX_CONNECTIONS; ++i)
+        if (s->peers[i].sock != INVALID_SOCKET) shutdown(s->peers[i].sock, SD_BOTH);
+    LeaveCriticalSection(&s->lock);
+    for (int i = 0; i < MAX_CONNECTIONS; ++i) {
+        if (s->peers[i].thread) {
+            WaitForSingleObject(s->peers[i].thread, INFINITE);
+            CloseHandle(s->peers[i].thread);
+        }
     }
     return 0;
 }
-
 net_server *net_server_start(HWND hwnd, const hop_config *cfg) {
     WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return NULL;
-
+    if (WSAStartup(MAKEWORD(2,2), &wsa)) return NULL;
     net_server *s = (net_server *)calloc(1, sizeof(*s));
     if (!s) { WSACleanup(); return NULL; }
-    s->hwnd = hwnd;
-    s->cfg = *cfg;
-    s->client = INVALID_SOCKET;
-    s->listen_s = INVALID_SOCKET;
-    InitializeCriticalSection(&s->lock);
+    s->hwnd = hwnd; s->cfg = *cfg; s->client = s->listen_s = INVALID_SOCKET;
+    for (int i = 0; i < MAX_CONNECTIONS; ++i) s->peers[i].sock = INVALID_SOCKET;
+    InitializeCriticalSection(&s->lock); InitializeCriticalSection(&s->send_lock);
     s->stop = CreateEventW(NULL, TRUE, FALSE, NULL);
     s->q_evt = CreateEventW(NULL, FALSE, FALSE, NULL);
-    s->decoder = hop_decoder_new(s, on_message);
-
-    s->listen_s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (s->listen_s == INVALID_SOCKET) goto fail;
-
-    /* SO_EXCLUSIVEADDRUSE，不是 SO_REUSEADDR。
-     *
-     * 这两个在 Windows 上语义相反：SO_REUSEADDR 允许**别人**绑同一个端口
-     * 并把连接抢走（Unix 上它只是允许绕过 TIME_WAIT，没有这个问题）；
-     * SO_EXCLUSIVEADDRUSE 则独占端口，别人再绑直接失败。
-     * 抢连接的症状是"连上了但键鼠时灵时不灵"，从日志里根本看不出来，
-     * 所以宁可让后来者 bind 失败、报一条明确的错误。 */
-    BOOL yes = TRUE;
-    if (setsockopt(s->listen_s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
-                   (char *)&yes, sizeof(yes)) != 0) {
-        hop_log(HOP_LOG_WARN, "net: SO_EXCLUSIVEADDRUSE failed (%d)",
-                WSAGetLastError());
-    }
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(cfg->port);
-    if (bind(s->listen_s, (struct sockaddr *)&addr, sizeof(addr)) != 0) goto fail;
-    if (listen(s->listen_s, 2) != 0) goto fail;
-
-    s->sender = CreateThread(NULL, 0, sender_thread, s, 0, NULL);
-    if (!s->sender) goto fail;
-    s->thread = CreateThread(NULL, 0, server_thread, s, 0, NULL);
-    if (!s->thread) goto fail;
-
-    hop_log(HOP_LOG_INFO, "listening on port %u", (unsigned)cfg->port);
+    if (s->stop && s->q_evt) s->sender = CreateThread(NULL, 0, sender_thread, s, 0, NULL);
+    if (s->sender) s->thread = CreateThread(NULL, 0, server_thread, s, 0, NULL);
+    if (!s->thread) { net_server_stop(s); return NULL; }
     return s;
-
-fail:
-    if (s->listen_s != INVALID_SOCKET) closesocket(s->listen_s);
-    if (s->decoder) hop_decoder_free(s->decoder);
-    if (s->stop) CloseHandle(s->stop);
-    if (s->q_evt) CloseHandle(s->q_evt);
-    DeleteCriticalSection(&s->lock);
-    free(s);
-    WSACleanup();
-    return NULL;
 }
-
 void net_server_stop(net_server *s) {
     if (!s) return;
-    SetEvent(s->stop);
-    if (s->listen_s != INVALID_SOCKET) closesocket(s->listen_s);
-    EnterCriticalSection(&s->lock);
-    if (s->client != INVALID_SOCKET) {
-        shutdown(s->client, SD_BOTH);
-        closesocket(s->client);
-        s->client = INVALID_SOCKET;
-    }
+    if (s->stop) SetEvent(s->stop);
+    if (s->thread) { WaitForSingleObject(s->thread, INFINITE); CloseHandle(s->thread); }
+    if (s->sender) { WaitForSingleObject(s->sender, INFINITE); CloseHandle(s->sender); }
     queue_clear(s);
-    LeaveCriticalSection(&s->lock);
-
-    /* 线程没退出就不能删临界区 —— 那是释放后使用 */
-    int joined = 1;
-    if (s->sender) {
-        if (WaitForSingleObject(s->sender, 3000) != WAIT_OBJECT_0) joined = 0;
-        CloseHandle(s->sender);
-    }
-    if (s->thread) {
-        if (WaitForSingleObject(s->thread, 3000) != WAIT_OBJECT_0) joined = 0;
-        CloseHandle(s->thread);
-    }
-
-    hop_decoder_free(s->decoder);
-    CloseHandle(s->stop);
-    CloseHandle(s->q_evt);
-    if (joined) DeleteCriticalSection(&s->lock);
-    free(s);
-    WSACleanup();
+    if (s->stop) CloseHandle(s->stop);
+    if (s->q_evt) CloseHandle(s->q_evt);
+    DeleteCriticalSection(&s->send_lock); DeleteCriticalSection(&s->lock);
+    free(s); WSACleanup();
 }
-
 int net_server_has_client(net_server *s) {
-    int has = 0;
     if (!s) return 0;
-    EnterCriticalSection(&s->lock);
-    has = (s->client != INVALID_SOCKET);
-    LeaveCriticalSection(&s->lock);
-    return has;
+    EnterCriticalSection(&s->lock); int on = s->client != INVALID_SOCKET;
+    LeaveCriticalSection(&s->lock); return on;
 }
-
+unsigned long net_server_epoch(net_server *s) {
+    if (!s) return 0;
+    EnterCriticalSection(&s->lock); unsigned long epoch = s->epoch;
+    LeaveCriticalSection(&s->lock); return epoch;
+}
+int net_server_listening(net_server *s) {
+    return s && InterlockedCompareExchange((LONG *)&s->listening, 0, 0);
+}
 void net_server_drop(net_server *s) {
     if (!s) return;
     EnterCriticalSection(&s->lock);
-    if (s->client != INVALID_SOCKET) {
-        shutdown(s->client, SD_BOTH);   /* 让接收线程的 recv 立刻返回 0 */
-    }
+    if (s->client != INVALID_SOCKET) shutdown(s->client, SD_BOTH);
     LeaveCriticalSection(&s->lock);
 }
-
-/* 异步发送：只入队，立即返回。返回值只表示"有没有连接可以收"，
- * 不代表已经写进内核缓冲。 */
 int net_server_send(net_server *s, uint8_t type, const void *payload, uint32_t len) {
-    if (!s) return 0;
-    int ok = 0;
+    if (!s || len > HOP_MAX_PAYLOAD || (len && !payload)) return 0;
     EnterCriticalSection(&s->lock);
-    if (s->client != INVALID_SOCKET) {
-        queue_push_locked(s, type, payload, len);
-        ok = 1;
-    }
-    LeaveCriticalSection(&s->lock);
-    if (ok) SetEvent(s->q_evt);
-    return ok;
+    int ok = s->client != INVALID_SOCKET && queue_push(s, type, payload, len);
+    LeaveCriticalSection(&s->lock); return ok;
 }

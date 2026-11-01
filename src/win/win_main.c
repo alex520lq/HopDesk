@@ -10,6 +10,7 @@
 #include <string.h>
 
 win_app g_app;
+static int s_ui_guard;
 
 /* 声明为 PerMonitorV2 DPI aware：统一使用物理像素，避免坐标虚拟化混乱。
  * 必须在创建任何窗口 / 取坐标之前调用。 */
@@ -38,41 +39,23 @@ static void beside(wchar_t *out, int n, const wchar_t *name) {
 
 static void on_link(int up) {
     if (up) {
+        if (up == 2 && g_app.state == HOP_LINK_SHARING) capture_set_sharing(0);
         if (g_app.state == HOP_LINK_DOWN) g_app.state = HOP_LINK_LOCAL;
     } else {
         if (g_app.state == HOP_LINK_SHARING) capture_set_sharing(0);
         g_app.state = HOP_LINK_DOWN;
+        xfer_kick();
     }
     ui_refresh(&g_app);
 }
 
 /* HELLO: {tlen, token, nlen, name, w(4), h(4)} */
 static void on_hello(const uint8_t *p, uint32_t len) {
-    uint32_t off = 1;
-    uint8_t tlen, nlen;
-    const char *tok;
-
-    if (len < 1) return;
-    tlen = p[0];
-    if (off + tlen + 1 > len) { hop_log(HOP_LOG_WARN, "HELLO truncated"); return; }
-    tok = (const char *)(p + off);
-    off += tlen;
-    nlen = p[off++];
-    if (off + nlen + 8 > len) { hop_log(HOP_LOG_WARN, "HELLO truncated"); return; }
-    off += nlen;
-
-    g_app.peer_w = (int)hop_get_be32(p + off);
-    g_app.peer_h = (int)hop_get_be32(p + off + 4);
-
-    /* token 为空 = 不校验（局域网自用）；配置了就必须匹配 */
-    if (g_app.cfg.token[0]) {
-        size_t want = strlen(g_app.cfg.token);
-        if (want != (size_t)tlen || memcmp(tok, g_app.cfg.token, want) != 0) {
-            hop_log(HOP_LOG_ERROR, "HELLO token mismatch, dropping client");
-            net_server_drop(g_app.net);
-            return;
-        }
-    }
+    hop_hello_msg hello;
+    /* The network thread validates the token before publishing a session. */
+    if (!hop_hello_decode(p, len, &hello)) return;
+    g_app.peer_w = (int)hello.width;
+    g_app.peer_h = (int)hello.height;
 
     hop_log(HOP_LOG_INFO, "peer screen %dx%d", g_app.peer_w, g_app.peer_h);
 }
@@ -128,14 +111,17 @@ static void disp_sleep_mac(void) {
 static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_APP_LINK:
-            on_link((int)wp);
+            if ((unsigned long)lp == net_server_epoch(g_app.net)) on_link((int)wp);
             return 0;
         case WM_APP_RECV: {
             hop_recv *r = (hop_recv *)lp;
-            on_recv(r);
+            if (r->epoch == net_server_epoch(g_app.net)) on_recv(r);
             free(r);
             return 0;
         }
+        case WM_APP_CLIP:
+            clip_on_worker_message((UINT)wp, (HGLOBAL)lp);
+            return 0;
         case WM_APP_TRAY:
             if (LOWORD(lp) == WM_LBUTTONUP || LOWORD(lp) == WM_RBUTTONUP)
                 ui_show_menu(&g_app);
@@ -144,6 +130,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             clip_on_update();
             return 0;
         case WM_TIMER:
+            if (wp == IDT_HOOK) { hop_watchdog_ping(s_ui_guard); capture_check_hooks(); ui_refresh(&g_app); return 0; }
             if (wp == IDT_XFER_NOTIFY) { ui_transfer_poll(); return 0; }
             if (wp == IDT_CLIP_RETRY) {
                 clip_retry_pending();
@@ -203,6 +190,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
         return 0;
     }
 
+    int startup_guard = hop_watchdog_begin("Windows startup", 30000);
     g_app.inst = inst;
     g_app.state = HOP_LINK_DOWN;
 
@@ -237,10 +225,19 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
 
     ui_init(&g_app);
     g_app.net = net_server_start(g_app.hwnd, &g_app.cfg);
-    xfer_init(g_app.hwnd, &g_app.cfg);
+    if (!g_app.net || !xfer_init(g_app.hwnd, &g_app.cfg)) {
+        hop_log(HOP_LOG_ERROR, "network worker initialization failed");
+        if (g_app.net) net_server_stop(g_app.net);
+        ui_shutdown(&g_app);
+        DestroyWindow(g_app.hwnd);
+        return 1; /* supervisor may restart; do not call failed subsystem locks */
+    }
     clip_init(g_app.hwnd);
     capture_init(&g_app);
     kbd_init(&g_app);
+    hop_watchdog_end(startup_guard);
+    s_ui_guard = hop_watchdog_begin("Windows message loop", 30000);
+    SetTimer(g_app.hwnd, IDT_HOOK, 3000, NULL);
 
     MSG m;
     while (GetMessageW(&m, NULL, 0, 0) > 0) {
@@ -248,6 +245,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
         DispatchMessageW(&m);
     }
 
+    hop_watchdog_end(s_ui_guard);
+    KillTimer(g_app.hwnd, IDT_HOOK);
     kbd_shutdown();
     capture_shutdown();
     clip_shutdown(g_app.hwnd);

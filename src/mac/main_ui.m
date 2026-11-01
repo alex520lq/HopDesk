@@ -241,7 +241,7 @@ static void refresh_transfer_page(void) {
         [files appendFormat:@"%@%@ %@    %@ / %@    %@\n",indent,kind,path,
             byte_count(s_fileSnapshot[i].bytes_done),byte_count(s_fileSnapshot[i].bytes_total),state];
     }
-    s_xferFiles.string=files.length?files:@"当前没有文件明细";
+    NSString *nextFiles=files.length?files:@"当前没有文件明细";\n    if(![s_xferFiles.string isEqualToString:nextFiles])s_xferFiles.string=nextFiles;
     hop_xfer_history_entry history[HOP_XFER_HISTORY_LIMIT];
     int hn=xfer_get_history(history,HOP_XFER_HISTORY_LIMIT);
     NSMutableString *rows=[NSMutableString string];
@@ -253,7 +253,7 @@ static void refresh_transfer_page(void) {
         [rows appendFormat:@"%@  ·  %@  ·  %@  ·  文件 %u/%u  ·  %@\n",
             d,p,utf8(history[i].name),history[i].files_done,history[i].files_total,byte_count(history[i].bytes_total)];
     }
-    s_xferHistory.string=rows.length?rows:@"暂无传输历史";
+    NSString *nextHistory=rows.length?rows:@"暂无传输历史";\n    if(![s_xferHistory.string isEqualToString:nextHistory])s_xferHistory.string=nextHistory;
 }
 static void refresh_logs(void) {
     if (!s_logView) return;

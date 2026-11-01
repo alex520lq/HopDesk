@@ -261,6 +261,11 @@ static void start_update_download(hop_update_manifest manifest) {
 
 static void check_for_updates(void) {
     if (s_updateBusy) return;
+    if (xfer_busy()) {
+        update_alert(@"暂不能更新", @"当前仍有文件传输任务。请等待传输结束后再更新，避免中断文件传输。",
+                     NSAlertStyleWarning);
+        return;
+    }
     s_updateBusy = YES;
     NSURL *url = [NSURL URLWithString:@HOP_UPDATE_MANIFEST_URL];
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url

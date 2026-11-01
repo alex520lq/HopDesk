@@ -28,8 +28,8 @@
 static HWND s_xfer_window, s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_progress, s_xfer_history, s_xfer_files, s_xfer_retry;
 static hop_xfer_file_status *s_xfer_file_snapshot;
 static int s_collapsed_folders[HOP_XFER_FILE_LIMIT];
-static uint32_t s_collapsed_batch;
-static uint32_t s_history_batch;
+static uint32_t s_collapsed_batch, s_file_batch;
+static int s_collapsed_direction, s_file_direction, s_notified_direction;
 static uint32_t s_notified_batch;
 static int s_notified_phase;
 
@@ -37,9 +37,9 @@ static void xfer_notify_if_terminal(const hop_xfer_status *st) {
     if (!st || st->active || st->batch == 0) return;
     if (st->phase != HOP_XFER_COMPLETED && st->phase != HOP_XFER_PARTIAL &&
         st->phase != HOP_XFER_FAILED && st->phase != HOP_XFER_CANCELLED) return;
-    if (s_notified_batch == st->batch && s_notified_phase == st->phase) return;
+    if (s_notified_batch == st->batch && s_notified_phase == st->phase && s_notified_direction == st->direction) return;
     s_notified_batch = st->batch;
-    s_notified_phase = st->phase;
+    s_notified_phase = st->phase; s_notified_direction=st->direction;
     NOTIFYICONDATAW nid = g_app.nid;
     nid.uFlags = NIF_INFO;
     wcscpy_s(nid.szInfoTitle, ARRAYSIZE(nid.szInfoTitle),
@@ -56,14 +56,15 @@ static void xfer_window_refresh(void) {
     hop_xfer_status st; memset(&st, 0, sizeof(st)); xfer_get_status(&st);
     xfer_notify_if_terminal(&st);
     if (s_xfer_files) {
-        if (s_collapsed_batch != st.batch) {
+        if (s_collapsed_batch != st.batch || s_collapsed_direction != st.direction) {
             memset(s_collapsed_folders, 0, sizeof(s_collapsed_folders));
-            s_collapsed_batch = st.batch;
+            s_collapsed_batch = st.batch; s_collapsed_direction = st.direction;
         }
         if (!s_xfer_file_snapshot) s_xfer_file_snapshot = (hop_xfer_file_status *)calloc(HOP_XFER_FILE_LIMIT, sizeof(*s_xfer_file_snapshot));
-        int fileCount = s_xfer_file_snapshot ? xfer_get_files(s_xfer_file_snapshot, HOP_XFER_FILE_LIMIT) : 0;
+        int fileCount = s_xfer_file_snapshot ? xfer_get_files(st.direction, st.batch, s_xfer_file_snapshot, HOP_XFER_FILE_LIMIT) : 0;
+        s_file_batch=st.batch; s_file_direction=st.direction;
         static uint64_t lastFileSignature = 0;
-        uint64_t fileSignature = ((uint64_t)st.batch << 32) ^ (uint64_t)fileCount;
+        uint64_t fileSignature = ((uint64_t)st.batch << 32) ^ (uint64_t)fileCount ^ ((uint64_t)st.direction << 56);
         for (int i = 0; i < fileCount; ++i)
             fileSignature = (fileSignature * 1315423911ULL) ^ ((uint64_t)s_xfer_file_snapshot[i].phase << 32) ^ s_xfer_file_snapshot[i].bytes_done;
         for (int i = 0; i < fileCount; ++i)
@@ -108,8 +109,7 @@ static void xfer_window_refresh(void) {
     if (s_xfer_history) {
         hop_xfer_history_entry history[HOP_XFER_HISTORY_LIMIT];
         int n = xfer_get_history(history, HOP_XFER_HISTORY_LIMIT);
-        if (n > 0 && s_history_batch != history[0].batch) {
-            s_history_batch = history[0].batch;
+        if (n > 0) {
             SendMessageW(s_xfer_history, LB_RESETCONTENT, 0, 0);
             for (int i = 0; i < n; ++i) {
                 wchar_t name[HOP_XFER_STATUS_NAME], row[512];
@@ -188,7 +188,7 @@ static LRESULT CALLBACK xfer_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 int selected=(int)SendMessageW(s_xfer_files,LB_GETCURSEL,0,0);
                 if(selected!=LB_ERR){
                     int fileIndex=(int)SendMessageW(s_xfer_files,LB_GETITEMDATA,(WPARAM)selected,0);
-                    xfer_retry_file(fileIndex);
+                    if(s_file_direction==HOP_XFER_DIR_SEND)xfer_retry_file(s_file_batch,fileIndex);
                 }
                 return 0;
             }

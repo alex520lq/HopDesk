@@ -31,10 +31,10 @@ int  xfer_busy(void);
 void xfer_get_status(hop_xfer_status *out);
 /* Most recent completed batches first; returns number of records copied. */
 int xfer_get_history(hop_xfer_history_entry *out, int capacity);
-/* Snapshot the current batch's per-file state; caller owns the output buffer. */
-int xfer_get_files(hop_xfer_file_status *out, int capacity);
+/* Snapshot an explicitly identified task; stale snapshots return no files. */
+int xfer_get_files(int direction, uint32_t batch, hop_xfer_file_status *out, int capacity);
 /* Re-enqueue one failed source file from the latest visible batch. */
-int xfer_retry_file(int index);
+int xfer_retry_file(uint32_t batch, int index);
 
 /* 取消当前批次：停发、通知对端、删掉接收侧半成品。
  * 发送端每块之后检查一次，所以响应延迟上限是一个分块（默认 256 KB）。 */

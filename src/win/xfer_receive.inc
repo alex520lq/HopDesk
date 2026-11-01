@@ -816,9 +816,14 @@ static void on_data_frame_checked(void *user, uint8_t type, const uint8_t *p, ui
 }
 
 static void on_data_frame(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
+    if (!hop_update_work_enter()) {
+        xfer_kick();
+        return;
+    }
     int guard = hop_watchdog_begin("data receive frame", 60000);
     on_data_frame_checked(user,type,p,len);
     hop_watchdog_end(guard);
+    hop_update_work_leave();
 }
 
 /* 用户在本端取消接收：通知对端、删掉半成品、立墓碑。

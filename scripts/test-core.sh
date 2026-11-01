@@ -10,7 +10,8 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
   "$ROOT/src/core/crc32.c" \
   "$ROOT/src/core/config.c" \
   "$ROOT/src/core/keymap.c" \
-  "$ROOT/src/core/xfer_validate.c"
+  "$ROOT/src/core/xfer_validate.c" \
+  "$ROOT/src/core/update_manifest.c"
 "$BUILD/hopdesk-core-tests"
 python3 "$ROOT/scripts/test-regressions.py"
 clang -std=c11 -Wall -Wextra -Werror -pthread -I "$ROOT/src/core" \

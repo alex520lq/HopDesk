@@ -207,12 +207,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     beside(conf_path, MAX_PATH, L"hopdesk.conf");
     char conf_utf8[MAX_PATH * 3];
     WideCharToMultiByte(CP_UTF8, 0, conf_path, -1, conf_utf8, sizeof(conf_utf8), NULL, NULL);
+    snprintf(g_app.config_path, sizeof(g_app.config_path), "%s", conf_utf8);
     hop_config_load(&g_app.cfg, conf_utf8);
 
     wchar_t log_path[MAX_PATH];
     beside(log_path, MAX_PATH, L"hopdesk.log");
     char log_utf8[MAX_PATH * 3];
     WideCharToMultiByte(CP_UTF8, 0, log_path, -1, log_utf8, sizeof(log_utf8), NULL, NULL);
+    snprintf(g_app.log_path, sizeof(g_app.log_path), "%s", log_utf8);
     hop_log_open(log_utf8);
 
     hop_log(HOP_LOG_INFO, "HopDesk %s starting", HOP_VERSION);

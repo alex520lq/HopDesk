@@ -32,10 +32,10 @@ with tempfile.TemporaryDirectory(prefix='hopdesk-regression-') as directory:
         subprocess.run(cmd,cwd=work,check=True)
         subprocess.run([str(exe)],cwd=work,check=True,timeout=30)
 
-    run('tracking_config',(ROOT/'tests/regression_tests.c').read_text(),['src/core/config.c'])
+    run('tracking_config',(ROOT/'tests/regression_tests.c').read_text(encoding='utf-8'),['src/core/config.c'])
     assert not list(work.glob('*.tmp.*')), 'failed migration leaked temporary files'
 
-    clip=(ROOT/'src/win/clipboard.c').read_text()
+    clip=(ROOT/'src/win/clipboard.c').read_text(encoding='utf-8')
     clip_preamble=r'''
 #include <stdint.h>
 #include <stdio.h>
@@ -75,7 +75,7 @@ int main(void){
 '''
     run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','apply_global','clip_retry_pending'])+clip_main)
     for platform in ['win','mac']:
-        source=(ROOT/f'src/{platform}/xfer.c').read_text().replace('#include "xfer_receive.inc"', (ROOT/f'src/{platform}/xfer_receive.inc').read_text())
+        source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', (ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8'))
         common=r'''
 #include "hop.h"
 #include "xfer_tracking.h"
@@ -129,7 +129,7 @@ int main(void){
         run('image_'+platform,common+extract(source,'send_done')+'\n'+extract(source,'rx_finish_batch')+main,['src/core/protocol.c'])
     # Run the actual per-platform state wrappers, not only a reimplemented model.
     for platform in ['win','mac']:
-        source=(ROOT/f'src/{platform}/xfer.c').read_text().replace('#include "xfer_receive.inc"', (ROOT/f'src/{platform}/xfer_receive.inc').read_text())
+        source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', (ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8'))
         preamble=r'''
 #include "hop.h"
 #include "xfer_tracking.h"
@@ -168,7 +168,7 @@ int main(void){
         run('wrappers_'+platform,preamble+'\n'.join(extract(source,n) for n in names)+main)
 
     if os.name!='nt':
-        source=(ROOT/'src/mac/xfer.c').read_text()
+        source=(ROOT/'src/mac/xfer.c').read_text(encoding='utf-8')
         preamble=r'''
 #include <stdio.h>
 #include <stdint.h>
@@ -218,5 +218,38 @@ int main(void){
 }
 '''
         run('history',preamble+code+main,threads=True)
+
+    # Exact production case bodies + lifecycle helpers; only OS I/O is doubled.
+    for platform in ['win','mac']:
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        receiver=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        state_start=receiver.index('typedef struct {',receiver.index('/* ---------------- 接收')) if platform=='win' else receiver.index('static struct {',receiver.index('/* ---------------- 接收'))
+        state_end=receiver.index('static xfer_rx s_rx;',state_start)+len('static xfer_rx s_rx;') if platform=='win' else receiver.index('} s_rx;',state_start)+len('} s_rx;')
+        handler=extract(receiver,'on_data_msg')
+        def cases(first,after):
+            return handler[handler.index('        case '+first+':'):handler.index('        case '+after+':')]
+        selected=cases('HOP_MSG_IMAGE_BEGIN','HOP_MSG_FILE_ACK')+cases('HOP_MSG_XFER_ABORT','HOP_MSG_XFER_DONE')
+        selected+=handler[handler.index('        case HOP_MSG_XFER_DONE:'):handler.index('        default:')]
+        fixture=(ROOT/'tests/receive_abort_fixture.c.in').read_text(encoding='utf-8')
+        values={
+            'RX_STATE':receiver[state_start:state_end],
+            'WIRE_SEND':extract(sender,'send_abort_msg' if platform=='win' else 'send_abort'),
+            'STATUS_FUNCTIONS':'\n'.join(extract(sender,n) for n in ['status_for','status_begin','status_end']),
+            'CLOSE_FILE':extract(receiver,'rx_close_file'),
+            'CLEAR_STATE':extract(receiver,'rx_clear_state'),
+            'RESET_STATE':extract(receiver,'rx_reset'),
+            'TERMINATE':extract(receiver,'rx_terminate'),
+            'BEGIN_BATCH':extract(receiver,'rx_begin_batch'),
+            'FINISH_BATCH':extract(receiver,'rx_finish_batch'),
+            'CANCEL_LOCAL':extract(receiver,'rx_cancel_local'),
+            'BUSY':extract(sender,'xfer_busy'),
+            'RECEIVE_CASES':selected,
+        }
+        for key,value in values.items():fixture=fixture.replace('@'+key+'@',value)
+        assert '@' not in fixture
+        assert 'if (!s_rx.active || s_rx.batch != batch) return;' in cases('HOP_MSG_FILE_BEGIN','HOP_MSG_IMAGE_BEGIN')
+        assert 'if (!s_rx.active || s_rx.batch != batch) return;' in cases('HOP_MSG_IMAGE_BEGIN','HOP_MSG_FILE_CHUNK')
+        if platform=='win':fixture='#define FIXTURE_WINDOWS 1\n'+fixture
+        run('abort_'+platform,fixture,['src/core/protocol.c','src/core/crc32.c','src/core/xfer_validate.c'])
 
     print('All targeted regressions passed.',flush=True)

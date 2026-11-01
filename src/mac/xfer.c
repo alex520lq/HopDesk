@@ -676,7 +676,6 @@ static void send_abort_msg(int fd, uint32_t batch, uint8_t reason) {
 /* 取当前连接再发 ABORT。sock 由 slock 保护，不能裸读。
  * 锁序固定 slock -> txlock，不会和发送线程反序。 */
 static void send_abort(uint32_t batch, uint8_t reason) {
-    status_end(HOP_XFER_DIR_RECEIVE,batch,reason==HOP_ABORT_CANCEL?HOP_XFER_CANCELLED:HOP_XFER_FAILED,"Receive aborted");
     uint8_t ab[5];
     hop_put_be32(ab, batch);
     ab[4] = reason;

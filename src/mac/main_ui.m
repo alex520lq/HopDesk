@@ -479,7 +479,7 @@ static void create_main_window(void) {
         backing:NSBackingStoreBuffered defer:NO];
     s_mainWindow.releasedWhenClosed=NO;
     s_mainWindow.title=@"HopDesk";
-    s_mainWindow.minSize=NSMakeSize(1040,700);
+    s_mainWindow.minSize=NSMakeSize(1140,760);
     s_uiController=[[HopDeskMainController alloc] init];
     s_mainWindow.delegate=(id<NSWindowDelegate>)s_uiController;
     NSView *root=s_mainWindow.contentView;

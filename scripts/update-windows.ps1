@@ -11,13 +11,16 @@ $targetExe = Join-Path $TargetDir 'HopDesk.exe'
 $incomingExe = Join-Path $TargetDir 'HopDesk.exe.new'
 $backupExe = Join-Path $TargetDir 'HopDesk.exe.previous'
 $log = Join-Path $env:TEMP 'HopDesk-update-error.log'
+$scriptToDelete = $PSCommandPath
+$replacementDone = $false
+$restartStarted = $false
 
 function Show-UpdateFailure([string]$Message) {
     $Message | Set-Content -LiteralPath $log -Encoding UTF8
     try {
         Add-Type -AssemblyName System.Windows.Forms
         [System.Windows.Forms.MessageBox]::Show(
-            ($Message + [Environment]::NewLine + [Environment]::NewLine + "旧版本仍然保留。日志：$log"),
+            ($Message + [Environment]::NewLine + [Environment]::NewLine + "更新未能正常完成。请检查日志：$log"),
             'HopDesk 更新失败',
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Error
@@ -90,6 +93,7 @@ try {
     }
     try {
         Move-Item -LiteralPath $incomingExe -Destination $targetExe
+        $replacementDone = $true
     } catch {
         if (Test-Path -LiteralPath $backupExe) {
             Move-Item -LiteralPath $backupExe -Destination $targetExe -Force
@@ -100,13 +104,24 @@ try {
     foreach ($name in @('update-windows.ps1', 'install-autostart-windows.ps1', 'supervise-windows.ps1')) {
         $source = Join-Path $stage $name
         if (Test-Path -LiteralPath $source -PathType Leaf) {
-            Copy-Item -LiteralPath $source -Destination (Join-Path $resolvedTarget $name) -Force
+            try {
+                Copy-Item -LiteralPath $source -Destination (Join-Path $resolvedTarget $name) -Force
+            } catch {
+                # A failed helper-script refresh must not invalidate the already
+                # verified executable; the installed previous helper remains usable.
+            }
         }
     }
 
     Start-Process -FilePath $targetExe -WorkingDirectory $resolvedTarget
+    $restartStarted = $true
     Remove-Item -LiteralPath $resolvedArchive -Force -ErrorAction SilentlyContinue
 } catch {
+    if ($replacementDone -and !$restartStarted -and (Test-Path -LiteralPath $backupExe)) {
+        Remove-Item -LiteralPath $targetExe -Force -ErrorAction SilentlyContinue
+        Move-Item -LiteralPath $backupExe -Destination $targetExe -Force -ErrorAction SilentlyContinue
+        $replacementDone = $false
+    }
     if (!(Test-Path -LiteralPath $targetExe) -and (Test-Path -LiteralPath $backupExe)) {
         Move-Item -LiteralPath $backupExe -Destination $targetExe -Force
     }
@@ -117,5 +132,8 @@ try {
     }
     if (Test-Path -LiteralPath $incomingExe) {
         Remove-Item -LiteralPath $incomingExe -Force -ErrorAction SilentlyContinue
+    }
+    if ($scriptToDelete -and (Test-Path -LiteralPath $scriptToDelete)) {
+        Remove-Item -LiteralPath $scriptToDelete -Force -ErrorAction SilentlyContinue
     }
 }

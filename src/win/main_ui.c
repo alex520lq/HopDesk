@@ -6,6 +6,7 @@
 #include "xfer.h"
 #include "update.h"
 #include "main_ui.h"
+#include "main_ui.h"
 #include "../core/xfer_status.h"
 
 #include <commctrl.h>
@@ -402,11 +403,10 @@ static void create_pages(HWND h) {
     s_overview_channels=label(p,L"控制通道：等待连接    数据通道：等待连接",42,124,740,24);
     group(p,L"常用操作",20,185,800,145);
     s_overview_sharing=label(p,L"键鼠共享：等待连接",42,218,740,24);
-    button(p,L"切换键鼠",42,260,120,34,UI_ID_TOGGLE);
-    button(p,L"切换到 Mac 显示",180,260,150,34,UI_ID_SWITCH_MAC);
-    button(p,L"切回 Windows 显示",348,260,160,34,UI_ID_SWITCH_WIN);
-    button(p,L"唤醒显示",526,260,120,34,UI_ID_WAKE);
-    button(p,L"显示睡眠",664,260,120,34,UI_ID_SLEEP);
+    button(p,L"切换到 Mac 显示",42,260,150,34,UI_ID_SWITCH_MAC);
+    button(p,L"切回 Windows 显示",210,260,160,34,UI_ID_SWITCH_WIN);
+    button(p,L"唤醒显示",388,260,120,34,UI_ID_WAKE);
+    button(p,L"显示睡眠",526,260,120,34,UI_ID_SLEEP);
     group(p,L"快速入口",20,352,800,125);
     button(p,L"打开传输管理",42,398,150,36,UI_ID_OPEN_TRANSFERS);
     label(p,L"连接、设备设置、传输记录、运行日志和软件更新都集中在左侧导航中。",220,404,560,28);
@@ -530,7 +530,6 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
                 case UI_ID_UPDATE: update_check_async(s_main); return 0;
                 case UI_ID_OPEN_TRANSFERS: show_page(3); return 0;
-                case UI_ID_TOGGLE: SendMessageW(g_app.hwnd,WM_COMMAND,1001,0); return 0;
                 case UI_ID_SWITCH_MAC: SendMessageW(g_app.hwnd,WM_COMMAND,1003,0); return 0;
                 case UI_ID_SWITCH_WIN: SendMessageW(g_app.hwnd,WM_COMMAND,1004,0); return 0;
                 case UI_ID_WAKE: SendMessageW(g_app.hwnd,WM_COMMAND,1009,0); return 0;

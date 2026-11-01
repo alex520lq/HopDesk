@@ -4,7 +4,7 @@ set -euo pipefail
 ARCHIVE="$1"
 TARGET_APP="$2"
 APP_PID="$3"
-TMP_BASE="$TMPDIR"
+TMP_BASE="$(/usr/bin/printenv TMPDIR 2>/dev/null || true)"
 if [[ -z "$TMP_BASE" ]]; then TMP_BASE="/tmp"; fi
 LOG="$TMP_BASE/HopDesk-update-error.log"
 STAGE="$(mktemp -d "$TMP_BASE/hopdesk-update.XXXXXX")"
@@ -13,6 +13,7 @@ BACKUP_APP="$TARGET_APP.previous"
 
 cleanup() {
   rm -rf "$STAGE"
+  rm -f "$0"
 }
 fail() {
   printf '%s\n' "$1" > "$LOG"

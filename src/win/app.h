@@ -10,6 +10,8 @@
 
 #define WM_APP_TRAY    (WM_APP + 3)
 #define WM_APP_STATE   (WM_APP + 4)   /* 状态变化，刷新 UI */
+#define WM_APP_CLIP (WM_APP + 5) /* format + owned HGLOBAL; 0 = retry */
+#define IDT_HOOK 5
 #define IDT_CLIP_RETRY 3              /* 剪贴板读写/发送延迟重试 */
 
 /* 切到 Mac 显示时，先唤醒再切源；这两步之间要等一会儿 */
@@ -37,6 +39,7 @@ extern win_app g_app;
 /* mouse_capture.c */
 void capture_init(win_app *app);
 void capture_shutdown(void);
+void capture_check_hooks(void);
 void capture_set_sharing(int sharing);
 void capture_force_toggle(void);   /* 手动切换 */
 void capture_on_edge_timer(void);  /* WM_TIMER(IDT_EDGE)：停留够时长才移交 */
@@ -44,11 +47,14 @@ void capture_on_edge_timer(void);  /* WM_TIMER(IDT_EDGE)：停留够时长才移
 /* kbd_capture.c（阶段 2） */
 void kbd_init(win_app *app);
 void kbd_shutdown(void);
+DWORD kbd_hook_tick(void);
+void kbd_reinstall(void);
 void kbd_release_all(void);        /* 交还键鼠时松开对端仍按着的键 */
 
 /* clipboard.c */
 void clip_init(HWND hwnd);
 void clip_shutdown(HWND hwnd);
+void clip_on_worker_message(UINT format, HGLOBAL h);
 void clip_on_update(void);                              /* WM_CLIPBOARDUPDATE */
 void clip_retry_pending(void);                          /* WM_TIMER(IDT_CLIP_RETRY) */
 void clip_apply_remote(const uint8_t *p, uint32_t len); /* 收到 CLIP_TEXT */

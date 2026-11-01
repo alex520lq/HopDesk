@@ -680,31 +680,7 @@ static int do_connect(void) {
     const char *host = g_mac.cfg.peer_host[0] ? g_mac.cfg.peer_host : "192.168.31.8";
     uint16_t port = g_mac.cfg.data_port ? g_mac.cfg.data_port : HOP_DATA_PORT;
 
-    struct addrinfo hints, *res = NULL;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-
-    char portstr[16];
-    snprintf(portstr, sizeof(portstr), "%u", (unsigned)port);
-    if (getaddrinfo(host, portstr, &hints, &res) != 0) return -1;
-
-    int s = -1;
-    for (struct addrinfo *r = res; r; r = r->ai_next) {
-        s = socket(r->ai_family, r->ai_socktype, r->ai_protocol);
-        if (s < 0) continue;
-        int no_sigpipe = 1;
-        if (setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe)) != 0) {
-            close(s);
-            s = -1;
-            continue;
-        }
-        if (connect(s, r->ai_addr, r->ai_addrlen) == 0) break;
-        close(s);
-        s = -1;
-    }
-    freeaddrinfo(res);
-    return s;
+    return net_connect_timeout(host, port, HOP_CONNECT_TIMEOUT_MS);
 }
 
 /* 用户在本端取消接收：通知对端、删掉半成品、立墓碑。
@@ -762,6 +738,7 @@ static void *conn_thread(void *arg) {
 
         pthread_mutex_lock(&s_x.slock);
         s_x.sock = s;
+        ++s_x.epoch;
         s_x.peer_ready = 0;
         pthread_mutex_unlock(&s_x.slock);
 
@@ -782,11 +759,17 @@ static void *conn_thread(void *arg) {
         }
         hop_log(HOP_LOG_INFO, "xfer: data channel connected; waiting for peer authentication");
 
+        uint64_t started = hop_monotonic_ms();
         char buf[65536];
-        for (;;) {
+        while (!s_x.stop) {
+            pthread_mutex_lock(&s_x.slock);
+            int authenticated = s_x.peer_ready;
+            pthread_mutex_unlock(&s_x.slock);
+            if (!authenticated && hop_handshake_expired(hop_monotonic_ms(), started)) break;
             ssize_t r = read(s, buf, sizeof(buf));
 
             if (r < 0) {
+                if (errno == EINTR) continue;
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     /* 不是断线，只是这 200 ms 没数据：借这次醒来处理取消请求 */
                     if (__sync_lock_test_and_set(&s_x.cancel_rx, 0)) rx_cancel_local();
@@ -796,15 +779,19 @@ static void *conn_thread(void *arg) {
             }
             if (r == 0) break;                 /* 对端正常关闭 */
 
-            hop_decoder_feed(dec, (const uint8_t *)buf, (uint32_t)r);
+            if (!hop_decoder_feed(dec, (const uint8_t *)buf, (uint32_t)r)) break;
             if (__sync_lock_test_and_set(&s_x.cancel_rx, 0)) rx_cancel_local();
         }
 
         pthread_mutex_lock(&s_x.slock);
         s_x.sock = -1;
+        ++s_x.epoch;
         s_x.peer_ready = 0;
         pthread_mutex_unlock(&s_x.slock);
+        shutdown(s, SHUT_RDWR);
+        pthread_mutex_lock(&s_txlock);
         close(s);
+        pthread_mutex_unlock(&s_txlock);
         /* 只关文件，不清批次：发送端会带着同一个 batch 号回来，
          * 从断点条目继续发。这里清掉就变成"从头重传整批"了。 */
         rx_close_file();

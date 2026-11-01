@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <limits.h>
 
 /* DROPFILES 在 MSVC 的 shellapi.h 里，MinGW 的 shellapi.h 没有（在 shlobj.h）。
  * 自己定义，省掉一个头文件版本差异 —— 布局是 ABI 固定的 20 字节。 */
@@ -49,6 +50,9 @@ static int open_retry(HWND hwnd); /* used by pending remote-clipboard writer */
 static HGLOBAL s_pending_global;
 static UINT s_pending_format;
 static DWORD s_pending_sequence;
+static DWORD s_remote_sequence;
+static HANDLE s_image_thread;
+static volatile LONG s_image_busy;
 
 static void discard_pending(void) {
     if(s_pending_global)GlobalFree(s_pending_global);
@@ -68,6 +72,7 @@ static int apply_global(UINT format, HGLOBAL h) {
             CloseClipboard(); GlobalFree(h); return 0;
         }
         if (EmptyClipboard() && SetClipboardData(format, h)) {
+            s_remote_sequence = GetClipboardSequenceNumber();
             s_suppress = 1;
             s_suppress_until = GetTickCount() + CLIP_SUPPRESS_MS;
             CloseClipboard();
@@ -94,6 +99,7 @@ void clip_retry_pending(void) {
             }
             if (EmptyClipboard() && SetClipboardData(s_pending_format, s_pending_global)) {
                 s_pending_global = NULL; /* ownership transferred to Windows */
+                s_remote_sequence = GetClipboardSequenceNumber();
                 s_suppress = 1;
                 s_suppress_until = GetTickCount() + CLIP_SUPPRESS_MS;
                 hop_log(HOP_LOG_INFO, "clip: pending remote clipboard applied");
@@ -117,12 +123,8 @@ void clip_retry_pending(void) {
 
 /* 剪贴板是全局独占资源，别的程序可能正拿着 —— 短暂重试 */
 static int open_retry(HWND hwnd) {
-    int i;
-    for (i = 0; i < 6; ++i) {
-        if (OpenClipboard(hwnd)) return 1;
-        Sleep(15);
-    }
-    return 0;
+    /* UI-thread path: never sleep while low-level hooks need this thread. */
+    return OpenClipboard(hwnd) != 0;
 }
 
 void clip_init(HWND hwnd) {
@@ -136,6 +138,10 @@ void clip_init(HWND hwnd) {
 
 void clip_shutdown(HWND hwnd) {
     RemoveClipboardFormatListener(hwnd);
+    if (s_image_thread) { WaitForSingleObject(s_image_thread, INFINITE); CloseHandle(s_image_thread); s_image_thread = NULL; }
+    MSG pending;
+    while (PeekMessageW(&pending, hwnd, WM_APP_CLIP, WM_APP_CLIP, PM_REMOVE))
+        if (pending.lParam) GlobalFree((HGLOBAL)pending.lParam);
     KillTimer(hwnd, IDT_CLIP_RETRY);
     if (s_pending_global) { GlobalFree(s_pending_global); s_pending_global = NULL; }
 }
@@ -156,6 +162,7 @@ static int send_text(const char *utf8, uint32_t len) {
 
 /* CF_HDROP：全部条目一次性交给数据通道，目录由 xfer 递归展开 */
 static int send_drop(HDROP drop, UINT count) {
+    if (count > 256) count = 256;
     wchar_t **paths = (wchar_t **)calloc(count, sizeof(wchar_t *));
     if (!paths) return 0;
 
@@ -185,7 +192,9 @@ static int send_drop(HDROP drop, UINT count) {
 }
 
 /* CF_DIB -> 自上而下 BGRA。只处理 BI_RGB 的 24/32 位，其余（压缩格式）跳过。 */
-static int send_dib(HANDLE h) {
+static int send_dib(HANDLE h, DWORD sequence) {
+    SIZE_T available = GlobalSize(h);
+    if (available < sizeof(BITMAPINFOHEADER)) return -1;
     const BITMAPINFOHEADER *bi = (const BITMAPINFOHEADER *)GlobalLock(h);
     if (!bi) return 0;
 
@@ -194,6 +203,7 @@ static int send_dib(HANDLE h) {
     int bpp = (int)bi->biBitCount;
     int topdown = 0;
 
+    if (hgt == INT_MIN) { GlobalUnlock(h); return -1; }
     if (hgt < 0) { topdown = 1; hgt = -hgt; }
     if (w <= 0 || hgt <= 0 || bi->biCompression != BI_RGB || (bpp != 24 && bpp != 32)) {
         hop_log(HOP_LOG_INFO, "clip: dib %dx%d %dbpp comp %lu unsupported, skipped",
@@ -211,11 +221,16 @@ static int send_dib(HANDLE h) {
         return -1;
     }
 
-    const uint8_t *src = (const uint8_t *)bi + bi->biSize + bi->biClrUsed * 4;
+    size_t src_stride = (((size_t)w * bpp + 31) / 32) * 4;
+    uint64_t offset = (uint64_t)bi->biSize + (uint64_t)bi->biClrUsed * 4;
+    if (bi->biSize < sizeof(*bi) || offset > available ||
+        (uint64_t)src_stride * (unsigned)hgt > available - offset) {
+        GlobalUnlock(h); return -1;
+    }
+    const uint8_t *src = (const uint8_t *)bi + (size_t)offset;
     uint8_t *dst = (uint8_t *)malloc(total);
     if (!dst) { GlobalUnlock(h); return 0; }
 
-    size_t src_stride = (((size_t)w * bpp + 31) / 32) * 4;
     for (int y = 0; y < hgt; ++y) {
         /* DIB 默认自下而上；topdown 时行序已经正确 */
         int sy = topdown ? y : (hgt - 1 - y);
@@ -240,15 +255,84 @@ static int send_dib(HANDLE h) {
 
     GlobalUnlock(h);
     hop_log(HOP_LOG_INFO, "clip: image out %dx%d", w, hgt);
+    if (GetClipboardSequenceNumber() != sequence) { free(dst); return -1; }
     int ok = xfer_submit_image(dst, w, hgt, (int)stride);
     free(dst);
     if (!ok) hop_log(HOP_LOG_WARN, "clip: image not queued; will retry");
     return ok;
 }
 
+/* Snapshot and conversion run on a single worker. Closing the clipboard before
+ * pixel conversion avoids holding the global clipboard lock during CPU work. */
+static DWORD WINAPI image_worker(LPVOID arg) {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    DWORD sequence = (DWORD)(ULONG_PTR)arg;
+    UINT format = CF_DIB;
+    HGLOBAL copy = NULL;
+    int opened = 0, result = 0;
+    for (int i = 0; i < 6 && !opened; ++i) {
+        opened = OpenClipboard(NULL) != 0;
+        if (!opened) Sleep(15);
+    }
+    if (opened) {
+        if (GetClipboardSequenceNumber() == sequence) {
+            if (IsClipboardFormatAvailable(CF_HDROP)) format = CF_HDROP;
+            HANDLE src = GetClipboardData(format);
+            SIZE_T bytes = src ? GlobalSize(src) : 0;
+            if (bytes >= (format == CF_DIB ? sizeof(BITMAPINFOHEADER) : sizeof(HOP_DROPFILES)) &&
+                bytes <= CLIP_IMG_MAX_BYTES) {
+                copy = GlobalAlloc(GMEM_MOVEABLE, bytes);
+                void *from = GlobalLock(src);
+                void *to = copy ? GlobalLock(copy) : NULL;
+                if (from && to) memcpy(to, from, bytes);
+                if (from) GlobalUnlock(src);
+                if (to) GlobalUnlock(copy);
+                if (!from || !to) { if (copy) GlobalFree(copy); copy = NULL; }
+            } else result = -1;
+        }
+        CloseClipboard();
+    }
+    if (copy) {
+        if (GetClipboardSequenceNumber() != sequence) result = -1;
+        else if (format == CF_HDROP) {
+            UINT count = DragQueryFileW((HDROP)copy, 0xFFFFFFFF, NULL, 0);
+            result = count ? send_drop((HDROP)copy, count) : -1;
+        } else result = send_dib(copy, sequence);
+        GlobalFree(copy);
+    }
+    InterlockedExchange(&s_image_busy, 0);
+    if (!result || GetClipboardSequenceNumber() != sequence)
+        PostMessageW(g_app.hwnd, WM_APP_CLIP, 0, 0);
+    return 0;
+}
+static void queue_image(void) {
+    if (InterlockedCompareExchange(&s_image_busy, 1, 0)) {
+        schedule_clip_retry(); return;
+    }
+    if (s_image_thread) {
+        if (WaitForSingleObject(s_image_thread, 0) != WAIT_OBJECT_0) {
+            InterlockedExchange(&s_image_busy, 0); schedule_clip_retry(); return;
+        }
+        CloseHandle(s_image_thread);
+    }
+    DWORD sequence = GetClipboardSequenceNumber();
+    s_image_thread = CreateThread(NULL, 0, image_worker, (LPVOID)(ULONG_PTR)sequence, 0, NULL);
+    if (!s_image_thread) { InterlockedExchange(&s_image_busy, 0); schedule_clip_retry(); }
+}
+/* This is the only cross-thread entry into main-thread clipboard state. */
+void clip_on_worker_message(UINT format, HGLOBAL h) {
+    if (!format) schedule_clip_retry();
+    else apply_global(format, h);
+}
+static void post_remote_global(UINT format, HGLOBAL h) {
+    if (!PostMessageW(g_app.hwnd, WM_APP_CLIP, format, (LPARAM)h)) GlobalFree(h);
+}
+
 /* WM_CLIPBOARDUPDATE -> 广播本机内容 */
 void clip_on_update(void) {
     HANDLE h;
+
+    if (s_remote_sequence && GetClipboardSequenceNumber() == s_remote_sequence) return;
 
     /* 抑制窗口内的所有通知都吃掉。
      * EmptyClipboard + SetClipboardData 会各触发一次，只挡一次挡不住。 */
@@ -259,33 +343,18 @@ void clip_on_update(void) {
     }
     s_suppress_until = 0;
 
+    if (IsClipboardFormatAvailable(CF_DIB) || IsClipboardFormatAvailable(CF_HDROP)) {
+        queue_image(); return;
+    }
     if (!open_retry(g_app.hwnd)) {
         hop_log(HOP_LOG_WARN, "clip: clipboard busy, scheduling retry");
         schedule_clip_retry();
         return;
     }
 
-    /* 文件优先：复制文件时剪贴板里也可能带文件名文本，但用户要的是文件。
-     * 从浏览器"复制图片"常常同时给 CF_HDROP（临时文件）和 CF_DIB，
-     * 发文件更忠实原样。 */
-    h = GetClipboardData(CF_HDROP);
-    if (h) {
-        HDROP drop = (HDROP)h;
-        UINT count = DragQueryFileW(drop, 0xFFFFFFFF, NULL, 0);
-        if (count > 0) {
-            int ok = send_drop(drop, count);
-            CloseClipboard();
-            if (!ok) schedule_clip_retry();
-            return;
-        }
-    }
-
-    h = GetClipboardData(CF_DIB);
-    if (h) {
-        int ok = send_dib(h);
-        CloseClipboard();
-        if (ok == 0) schedule_clip_retry();
-        return;
+    /* Clipboard can change between availability check and OpenClipboard. */
+    if (IsClipboardFormatAvailable(CF_HDROP) || IsClipboardFormatAvailable(CF_DIB)) {
+        CloseClipboard(); queue_image(); return;
     }
 
     h = GetClipboardData(CF_UNICODETEXT);
@@ -381,18 +450,15 @@ void clip_apply_remote_paths(const wchar_t *const *paths, int n) {
     }
     GlobalUnlock(h);
 
-    if (apply_global(CF_HDROP, h)) {
-        hop_log(HOP_LOG_INFO, "clip: %d path(s) in (first: %ls)", n, paths[0]);
-    } else {
-        hop_log(HOP_LOG_WARN, "clip: received paths queued for clipboard retry");
-    }
+    post_remote_global(CF_HDROP, h);
 }
 
 /* 收到图片：裸 BGRA 自上而下 -> CF_DIB（32 位，自下而上，BI_RGB） */
 void clip_apply_remote_image(const uint8_t *bgra, int w, int h, int stride) {
-    if (!bgra || w <= 0 || h <= 0 || stride < w * 4) return;
+    if (!bgra || w <= 0 || h <= 0 || w > INT_MAX / 4 || stride < w * 4) return;
 
-    size_t need = sizeof(BITMAPINFOHEADER) + (size_t)stride * (size_t)h;
+    size_t out_stride = (size_t)w * 4;
+    size_t need = sizeof(BITMAPINFOHEADER) + out_stride * (size_t)h;
     if (need > CLIP_IMG_MAX_BYTES) {
         hop_log(HOP_LOG_WARN, "clip: incoming image too large, skipped");
         return;
@@ -411,18 +477,14 @@ void clip_apply_remote_image(const uint8_t *bgra, int w, int h, int stride) {
     bi->biPlanes = 1;
     bi->biBitCount = 32;
     bi->biCompression = BI_RGB;
-    bi->biSizeImage = (DWORD)((size_t)stride * (size_t)h);
+    bi->biSizeImage = (DWORD)(out_stride * (size_t)h);
 
     uint8_t *dst = base + sizeof(BITMAPINFOHEADER);
     for (int y = 0; y < h; ++y) {
-        memcpy(dst + (size_t)y * stride,
-               bgra + (size_t)(h - 1 - y) * stride, (size_t)stride);
+        memcpy(dst + (size_t)y * out_stride,
+               bgra + (size_t)(h - 1 - y) * stride, out_stride);
     }
     GlobalUnlock(gh);
 
-    if (apply_global(CF_DIB, gh)) {
-        hop_log(HOP_LOG_INFO, "clip: image in %dx%d", w, h);
-    } else {
-        hop_log(HOP_LOG_WARN, "clip: received image queued for clipboard retry");
-    }
+    post_remote_global(CF_DIB, gh);
 }

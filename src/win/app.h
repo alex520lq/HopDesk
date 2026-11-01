@@ -71,7 +71,7 @@ void ui_init(win_app *app);
 void ui_shutdown(win_app *app);
 void ui_refresh(win_app *app);
 void ui_show_menu(win_app *app);
-void ui_show_transfers(win_app *app);\nvoid ui_show_main(win_app *app);
+void ui_show_transfers(win_app *app);\nvoid ui_show_main(win_app *app);\nvoid main_ui_show_page(int page);\nvoid main_ui_refresh(void);\nvoid main_ui_shutdown(void);
 void ui_transfer_poll(void);
 
 #endif

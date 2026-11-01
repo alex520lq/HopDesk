@@ -104,8 +104,14 @@ static void test_decoder_rejects_oversized_frame(void) {
     const uint8_t payload[] = {0xAA, 0xBB};
     uint32_t valid = hop_encode_frame(9, payload, sizeof(payload),
                                      stream + HOP_HEADER_SIZE);
-    hop_decoder_feed(d, stream, HOP_HEADER_SIZE + valid);
-
+    CHECK(!hop_decoder_feed(d, stream, HOP_HEADER_SIZE + valid));
+    CHECK(hop_decoder_failed(d));
+    CHECK(g_messages == 0);
+    CHECK(!hop_decoder_feed(d, stream + HOP_HEADER_SIZE, valid));
+    CHECK(g_messages == 0);
+    hop_decoder_reset(d);
+    CHECK(!hop_decoder_failed(d));
+    CHECK(hop_decoder_feed(d, stream + HOP_HEADER_SIZE, valid));
     CHECK(g_messages == 1);
     CHECK(g_types[0] == 9);
     CHECK(g_lengths[0] == sizeof(payload));

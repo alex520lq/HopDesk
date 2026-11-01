@@ -266,4 +266,12 @@ int main(void){
         fixture=fixture.replace('@FUNCTIONS@',functions)
         run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c'],threads=True)
 
+    control=(ROOT/'src/mac/net_client.c').read_text(encoding='utf-8')
+    dispatch=extract(control,'dispatch_message')
+    dispatch=dispatch.replace('dispatch_async(dispatch_get_main_queue(),^{mac_capture_peer_geometry(pw,ph);});','mac_capture_peer_geometry(pw,ph);')
+    dispatch=dispatch.replace('dispatch_async(dispatch_get_main_queue(),^{mac_capture_return();});','mac_capture_return();')
+    assert 'dispatch_async' not in dispatch
+    fixture=(ROOT/'tests/dual_role_control_fixture.c.in').read_text(encoding='utf-8').replace('@DISPATCH@',dispatch)
+    run('dual_role_control',fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/xfer_validate.c','src/core/crc32.c'],threads=True)
+
     print('All targeted regressions passed.',flush=True)

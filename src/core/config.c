@@ -123,7 +123,7 @@ static void config_safe_value(const char *src, char *dst, size_t cap) {
         if (ch == '\r' || ch == '\n' || ch == 0) continue;
         dst[n++] = (char)ch;
     }
-    dst[n] = '\\0';
+    dst[n] = '\0';
 }
 
 #if defined(_WIN32)

@@ -15,7 +15,7 @@
 /* ---- 退出动作的 target ----
  * 必须显式声明 NSMenuItemValidation：10.14 之后 NSMenu 只对声明了该协议的
  * target 调用 validateMenuItem:，否则"取消当前传输"永远是亮的。 */
-@interface HopController : NSObject <NSMenuItemValidation>
+@interface HopController : NSObject <NSMenuItemValidation, NSWindowDelegate>
 - (void)doQuit:(id)sender;
 - (void)doWake:(id)sender;
 - (void)doInputWin:(id)sender;
@@ -24,11 +24,14 @@
 - (void)doRetryFile:(id)sender;
 - (void)doToggleFolder:(id)sender;
 - (void)doCheckUpdates:(id)sender;
+- (void)windowWillClose:(NSNotification *)notification;
 @end
 static void retry_selected_mac_file(void);
 static void toggle_selected_mac_folder(void);
 static BOOL s_updateBusy;
 static void check_for_updates(void);
+static NSWindow *s_transferWindow;
+static NSTimer *s_transferTimer;
 @implementation HopController
 - (void)doQuit:(id)sender {
     (void)sender;
@@ -60,12 +63,16 @@ static void check_for_updates(void);
     if ([item action] == @selector(doCheckUpdates:)) return !s_updateBusy;
     return YES;
 }
+- (void)windowWillClose:(NSNotification *)notification {
+    if (notification.object != s_transferWindow) return;
+    [s_transferTimer invalidate];
+    s_transferTimer = nil;
+}
 @end
 
 static NSStatusItem *s_item;
 static NSMenuItem   *s_state;
 static HopController *s_ctrl;
-static NSWindow *s_transferWindow;
 static NSTextField *s_transferTitle, *s_transferDetail, *s_transferCounts;
 static NSProgressIndicator *s_transferProgress;
 static NSTextView *s_transferHistory, *s_transferFiles;
@@ -532,6 +539,9 @@ void statusbar_show_transfers(void) {
             s_transferWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,620,620)
                 styleMask:(NSWindowStyleMaskTitled|NSWindowStyleMaskClosable)
                 backing:NSBackingStoreBuffered defer:NO];
+            /* Keep the reusable window alive after the user closes it. */
+            s_transferWindow.releasedWhenClosed = NO;
+            s_transferWindow.delegate = s_ctrl;
             s_transferWindow.title = @"HopDesk · 传输管理器";
             NSView *v = s_transferWindow.contentView;
             s_transferTitle = transfer_label(@"暂无传输任务", NSMakeRect(20,580,580,22), 15);
@@ -560,7 +570,9 @@ void statusbar_show_transfers(void) {
             cancel.target=s_ctrl; cancel.action=@selector(doCancelXfer:);
             [v addSubview:s_transferTitle]; [v addSubview:s_transferDetail];
             [v addSubview:s_transferCounts]; [v addSubview:s_transferProgress]; [v addSubview:fileScroll]; [v addSubview:historyScroll]; [v addSubview:toggleFolder]; [v addSubview:s_retryButton]; [v addSubview:cancel];
-            [NSTimer scheduledTimerWithTimeInterval:0.4 repeats:YES block:^(NSTimer *timer) {
+        }
+        if (!s_transferTimer) {
+            s_transferTimer = [NSTimer scheduledTimerWithTimeInterval:0.4 repeats:YES block:^(NSTimer *timer) {
                 (void)timer; transfer_window_refresh();
             }];
         }

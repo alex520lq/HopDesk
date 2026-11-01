@@ -173,8 +173,11 @@ typedef enum {
     HOP_LINK_SHARING   = 2    /* 键鼠在对端      */
 } hop_link_state;
 
+typedef enum { HOP_ROLE_SERVER = 0, HOP_ROLE_CLIENT = 1 } hop_role;
+
 /* ---- 配置 ---- */
 typedef struct {
+    hop_role role; /* independent of operating system; restart to change */
     uint16_t port;
     char     token[HOP_TOKEN_MAX];
     char     peer_host[64];        /* 客户端用：服务端地址 */
@@ -209,6 +212,7 @@ int  hop_config_save_atomic(const hop_config *c, const char *path); /* 同目录
 
 /* ---- Windows VK -> macOS 虚拟键码（平台无关的表，阶段 2） ---- */
 #define HOP_KEY_NONE 0xFFFFu
+uint16_t hop_mac_to_vk(uint16_t kc); /* inverse canonical wire key mapping */
 uint16_t hop_vk_to_mac(int vk);                 /* 不支持返回 HOP_KEY_NONE */
 int      hop_mac_key_is_mod(uint16_t mac_key);  /* 返回 HOP_MOD_* 位，非修饰键返回 0 */
 

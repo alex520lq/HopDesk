@@ -117,7 +117,7 @@ static BOOL send_text(NSString *s) {
 
     p = (uint8_t *)malloc(4 + n);
     if (!p) return NO;
-    hop_put_be32(p, HOP_DEV_CLIENT);
+    hop_put_be32(p, (g_mac.cfg.role==HOP_ROLE_SERVER?HOP_DEV_SERVER:HOP_DEV_CLIENT));
     memcpy(p + 4, u, n);
     BOOL ok = net_send(HOP_MSG_CLIP_TEXT, p, 4 + n) ? YES : NO;
     if (ok) hop_log(HOP_LOG_INFO, "clip: text out %u bytes", n);

@@ -17,10 +17,15 @@
 #include <io.h>
 #else
 #include <unistd.h>
+#include <fcntl.h>
 #endif
 
 void hop_config_defaults(hop_config *c) {
     memset(c, 0, sizeof(*c));
+    c->role = HOP_ROLE_SERVER;
+#if !defined(_WIN32)
+    c->role = HOP_ROLE_CLIENT; /* preserve existing macOS installations */
+#endif
     c->port            = HOP_DEFAULT_PORT;
     c->server_edge     = HOP_EDGE_LEFT;
     c->client_edge     = HOP_EDGE_RIGHT;
@@ -69,7 +74,12 @@ static char *trim(char *s) {
 }
 
 static int set_kv(hop_config *c, const char *k, const char *v) {
-    if (!strcmp(k, "port"))          c->port = (uint16_t)atoi(v);
+    if (!strcmp(k, "role")) {
+        if (!strcmp(v,"server")) c->role=HOP_ROLE_SERVER;
+        else if (!strcmp(v,"client")) c->role=HOP_ROLE_CLIENT;
+        else return -1;
+    }
+    else if (!strcmp(k, "port"))          c->port = (uint16_t)atoi(v);
     else if (!strcmp(k, "token"))    snprintf(c->token, sizeof(c->token), "%s", v);
     else if (!strcmp(k, "host"))     snprintf(c->peer_host, sizeof(c->peer_host), "%s", v);
     else if (!strcmp(k, "name"))     snprintf(c->device_name, sizeof(c->device_name), "%s", v);
@@ -91,10 +101,16 @@ static int set_kv(hop_config *c, const char *k, const char *v) {
 }
 
 int hop_config_load(hop_config *c, const char *path) {
+#if defined(_WIN32)
+    wchar_t wide[1024];
+    if(!MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,path,-1,wide,1024))return 0;
+    FILE *f=_wfopen(wide,L"r");
+#else
     FILE *f = fopen(path, "r");
+#endif
     if (!f) return 0;
     hop_config candidate=*c;
-    int recognized=0;
+    int recognized=0, invalid=0;
     char line[256];
     while (fgets(line, sizeof(line), f)) {
         char *p = trim(line);
@@ -104,9 +120,10 @@ int hop_config_load(hop_config *c, const char *path) {
         *eq = '\0';
         char *k = trim(p);
         char *v = trim(eq + 1);
-        recognized+=set_kv(&candidate, k, v);
+        int result=set_kv(&candidate,k,v);
+        if(result<0) invalid=1; else recognized+=result;
     }
-    int ok=!ferror(f) && recognized>0;
+    int ok=!ferror(f) && recognized>0 && !invalid;
     if(fclose(f)!=0)ok=0;
     if(ok)*c=candidate;
     return ok;
@@ -133,7 +150,8 @@ static int config_utf8_path(const char *src, wchar_t *dst, int cap) {
 #endif
 
 int hop_config_save_atomic(const hop_config *c, const char *path) {
-    if (!c || !path || !path[0] || strlen(path) > 900) return 0;
+    if (!c || !path || !path[0] || strlen(path) > 900 ||
+        (c->role!=HOP_ROLE_SERVER && c->role!=HOP_ROLE_CLIENT)) return 0;
     char temp[1024];
     int temp_len = snprintf(temp, sizeof(temp), "%s.tmp", path);
     if (temp_len <= 0 || (size_t)temp_len >= sizeof(temp)) return 0;
@@ -142,7 +160,10 @@ int hop_config_save_atomic(const hop_config *c, const char *path) {
     if (!config_utf8_path(temp, wtemp, 1024) || !config_utf8_path(path, wpath, 1024)) return 0;
     FILE *f = _wfopen(wtemp, L"wb");
 #else
-    FILE *f = fopen(temp, "wb");
+    snprintf(temp,sizeof(temp),"%s.tmp.XXXXXX",path);
+    int fd=mkstemp(temp);
+    FILE *f=fd<0?NULL:fdopen(fd,"wb");
+    if(fd>=0 && !f){close(fd);unlink(temp);}
 #endif
     if (!f) return 0;
 
@@ -157,6 +178,7 @@ int hop_config_save_atomic(const hop_config *c, const char *path) {
     int ok = 1;
 #define CFG_WRITE(...) do { if (fprintf(f, __VA_ARGS__) < 0) ok = 0; } while (0)
     CFG_WRITE("# HopDesk configuration — edited by the native UI\n");
+    CFG_WRITE("role=%s\n",c->role==HOP_ROLE_SERVER?"server":"client");
     CFG_WRITE("name=%s\n", name);
     CFG_WRITE("host=%s\n", host);
     CFG_WRITE("port=%u\n", (unsigned)c->port);

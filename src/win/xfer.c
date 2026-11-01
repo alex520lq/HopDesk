@@ -995,7 +995,7 @@ int xfer_init(HWND hwnd, const hop_config *cfg) {
     /* 写盘线程要先起来，接收路径一进来就会往队列里塞 */
     if (!wq_start()) goto fail;
 
-    s_x.th_listen = CreateThread(NULL, 0, listen_thread, NULL, 0, NULL);
+    s_x.th_listen = CreateThread(NULL, 0, cfg->role==HOP_ROLE_SERVER?listen_thread:data_client_thread, NULL, 0, NULL);
     s_x.th_send = CreateThread(NULL, 0, send_thread, NULL, 0, NULL);
     if (!s_x.th_listen || !s_x.th_send) goto fail;
 

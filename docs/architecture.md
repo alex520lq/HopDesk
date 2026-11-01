@@ -131,6 +131,7 @@ src/
 | 尺寸边界 | `FILE_CHUNK` 超出 `FILE_BEGIN` 声明的 size 直接丢弃；`IMAGE_BEGIN` 的 w/h/stride 全部校验，上限 `32768` 边长 / `256 MB` |
 | 发送互斥 | 接收线程出错时要回 `XFER_ABORT`，和发送线程写同一个 socket。锁粒度是**整帧**，不是单次 `send`/`write`，否则两线程交错会把帧字节搅乱。配套设 `SO_SNDTIMEO = 5 s`，避免发送线程卡死时把接收线程一起拖住 |
 | 数据通道身份校验 | v4 HELLO 双向携带协议版本与共享 token；两端校验成功前不接受文件/图片帧、不报告数据通道可用。空 token 按配置语义跳过身份校验；token 不加密，TCP 载荷也未启用 TLS |
+| 文件 CRC fold | v5 将每块的 64 位 offset 与 chunk CRC 一起折入整文件 CRC；块顺序或位置改变都会改变最终校验值 |
 
 **尚未实现**：
 

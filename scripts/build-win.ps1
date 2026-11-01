@@ -23,8 +23,31 @@ $core = Get-ChildItem -LiteralPath (Join-Path $root 'src/core') -Filter *.c
 $win = Get-ChildItem -LiteralPath (Join-Path $root 'src/win') -Filter *.c
 $src = @($core.FullName) + @($win.FullName)
 $inc = Join-Path $root 'src/core'
+$iconInc = Join-Path $root 'assets/appicon'
 $out = Join-Path $build 'hopdesk.exe'
 $libs = 'ws2_32', 'dxva2', 'gdi32', 'shell32', 'user32', 'comctl32'
+$iconPng = Join-Path $root 'assets/appicon/hopdesk.png'
+$iconIco = Join-Path $root 'assets/appicon/hopdesk.ico'
+$resource = Join-Path $root 'assets/appicon/hopdesk.rc'
+$res = Join-Path $build 'hopdesk-res.res'
+
+if (-not (Test-Path -LiteralPath $iconPng) -or -not (Test-Path -LiteralPath $iconIco)) {
+    throw 'Pre-generated app icons are missing. Run scripts/generate-app-icons.py once and commit assets/appicon/hopdesk.png and hopdesk.ico.'
+}
+Push-Location $root
+try {
+    if ($Compiler -eq 'msvc') {
+        $rc = (Get-Command rc.exe -ErrorAction SilentlyContinue).Source
+        if (-not $rc) { throw 'rc.exe not found; initialize the Visual Studio x64 developer environment.' }
+        & $rc /nologo /fo $res $resource
+        if ($LASTEXITCODE -ne 0) { throw 'MSVC resource compiler failed' }
+    } else {
+        $windres = (Get-Command windres.exe -ErrorAction SilentlyContinue).Source
+        if (-not $windres) { throw 'windres.exe not found; install mingw-w64 binutils' }
+        & $windres -i $resource -o $res
+        if ($LASTEXITCODE -ne 0) { throw 'windres failed to compile the icon resource' }
+    }
+} finally { Pop-Location }
 
 function Find-Clang {
     $c = (Get-Command clang.exe -ErrorAction SilentlyContinue).Source
@@ -55,7 +78,7 @@ switch ($Compiler) {
         if (-not $clang) { throw '未找到 clang；安装 llvm-mingw（winget install MartinStorsjo.LLVM-MinGW.UCRT）或改用 -Compiler gcc。' }
 
         $libArgs = $libs | ForEach-Object { '-l' + $_ }
-        & $clang --target=x86_64-w64-mingw32 -O2 -Wall -Wextra @clangFlags -I $inc -o $out $src @libArgs
+        & $clang --target=x86_64-w64-mingw32 -O2 -Wall -Wextra @clangFlags -I $inc -I $iconInc -o $out $src $res @libArgs
         if ($LASTEXITCODE -ne 0) { throw "clang 编译失败（退出码 $LASTEXITCODE）" }
     }
     'gcc' {
@@ -67,14 +90,14 @@ switch ($Compiler) {
         if (-not $gcc) { throw '未找到 gcc；可运行 w64devkit，或用 -Compiler clang。' }
 
         $libArgs = $libs | ForEach-Object { '-l' + $_ }
-        & $gcc -O2 -Wall -Wextra -municode -mwindows -I $inc -o $out $src @libArgs
+        & $gcc -O2 -Wall -Wextra -municode -mwindows -I $inc -I $iconInc -o $out $src $res @libArgs
         if ($LASTEXITCODE -ne 0) { throw "gcc 编译失败（退出码 $LASTEXITCODE）" }
     }
     'msvc' {
         $cl = (Get-Command cl.exe -ErrorAction SilentlyContinue).Source
         if (-not $cl) { throw '未找到 cl.exe；请在 x64 Native Tools for VS 终端运行。' }
         $libArgs = $libs | ForEach-Object { $_ + '.lib' }
-        & cl /nologo /O2 /MT /W3 /I $inc /Fe:$out $src /Fo"$build\\" @libArgs
+        & cl /nologo /O2 /MT /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I $inc /I $iconInc /Fe:$out /Fo"$build\\" $src $res @libArgs /link /SUBSYSTEM:WINDOWS
         if ($LASTEXITCODE -ne 0) { throw "cl 编译失败（退出码 $LASTEXITCODE）" }
     }
 }

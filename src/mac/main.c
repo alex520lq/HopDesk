@@ -4,6 +4,8 @@
  * ===================================================================== */
 #include "mac_app.h"
 #include "xfer.h"
+#include "../core/config_migrate.h"
+#include <mach-o/dyld.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -12,6 +14,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 
 /* ---- 单实例 ----
  * macOS 端是客户端，不 bind 端口，所以不会"抢端口"；但两个实例会同时
@@ -62,10 +65,55 @@ int main(int argc, char **argv) {
     snprintf(g_mac.cfg.peer_host, sizeof(g_mac.cfg.peer_host),
              "%s", "192.168.31.8");
 
-    /* 可选：exe 同目录 hopdesk.conf / hopdesk.log */
-    hop_config_load(&g_mac.cfg, "hopdesk.conf");
-    hop_log_open("hopdesk.log");
+    /* Finder launches apps with an arbitrary working directory.
+     * Keep the canonical config in Application Support, but migrate legacy
+     * configs from beside the executable or the old relative working path. */
+    const char *home = getenv("HOME");
+    char library[PATH_MAX], app_support[PATH_MAX], support[PATH_MAX];
+    char config[PATH_MAX], log[PATH_MAX], legacy[PATH_MAX] = {0};
+    if (!home || !home[0]) home = "/tmp";
+    snprintf(library, sizeof(library), "%s/Library", home);
+    snprintf(app_support, sizeof(app_support), "%s/Application Support", library);
+    snprintf(support, sizeof(support), "%s/HopDesk", app_support);
+    (void)mkdir(library, 0700);
+    (void)mkdir(app_support, 0700);
+    (void)mkdir(support, 0700);
+    snprintf(config, sizeof(config), "%s/hopdesk.conf", support);
+    snprintf(log, sizeof(log), "%s/hopdesk.log", support);
+
+    hop_log_open(log);
+    const char *loaded_from=config;
+    int config_loaded = hop_config_load(&g_mac.cfg, config);
+    if (!config_loaded) {
+        uint32_t exe_len = (uint32_t)sizeof(legacy);
+        if (_NSGetExecutablePath(legacy, &exe_len) == 0) {
+            char *slash = strrchr(legacy, '/');
+            if (slash) {
+                *slash = '\0';
+                size_t used = strlen(legacy);
+                if (used + sizeof("/hopdesk.conf") < sizeof(legacy))
+                    strcat(legacy, "/hopdesk.conf");
+                else legacy[0] = '\0';
+            } else legacy[0] = '\0';
+        } else legacy[0] = '\0';
+        if (legacy[0]) config_loaded = hop_config_load(&g_mac.cfg, legacy);
+        if (!config_loaded) {
+            config_loaded = hop_config_load(&g_mac.cfg, "hopdesk.conf");
+            if (config_loaded) snprintf(legacy, sizeof(legacy), "%s", "hopdesk.conf");
+        }
+        if (config_loaded && legacy[0]) {
+            loaded_from=legacy;
+            if(!hop_config_copy_atomic(legacy,config))
+                hop_log(HOP_LOG_WARN,"config: migration %s -> %s failed: %s; keeping legacy source",
+                        legacy,config,strerror(errno));
+        }
+    }
     hop_log(HOP_LOG_INFO, "HopDesk %s starting", HOP_VERSION);
+    hop_log(HOP_LOG_INFO, "config: %s (%s), host=%s port=%u data_port=%u token_len=%u",
+            loaded_from, config_loaded ? "loaded" : "defaults",
+            g_mac.cfg.peer_host[0] ? g_mac.cfg.peer_host : "192.168.31.8",
+            (unsigned)g_mac.cfg.port, (unsigned)g_mac.cfg.data_port,
+            (unsigned)strlen(g_mac.cfg.token));
 
     inject_init();
     net_loop_run();

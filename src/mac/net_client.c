@@ -65,7 +65,7 @@ static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
             break;
         case HOP_MSG_CLIP_TEXT:
             /* origin(4) + UTF-8；自己发出去的不写回 */
-            if (len > 4 && hop_get_be32(p) != HOP_DEV_CLIENT) {
+            if (len > 4 && hop_clip_should_apply_remote(hop_get_be32(p), HOP_DEV_CLIENT)) {
                 char *u = (char *)malloc((size_t)(len - 3));
                 if (u) {
                     memcpy(u, p + 4, len - 4);
@@ -143,7 +143,11 @@ static int do_connect(void) {
     hints.ai_socktype = SOCK_STREAM;
     char portstr[16];
     snprintf(portstr, sizeof(portstr), "%u", (unsigned)g_mac.cfg.port);
-    if (getaddrinfo(host, portstr, &hints, &res) != 0) return -1;
+    int gai = getaddrinfo(host, portstr, &hints, &res);
+    if (gai != 0) {
+        hop_log(HOP_LOG_WARN, "net: resolve %s:%s failed: %s", host, portstr, gai_strerror(gai));
+        return -1;
+    }
 
     int s = -1;
     for (struct addrinfo *r = res; r; r = r->ai_next) {
@@ -155,7 +159,12 @@ static int do_connect(void) {
             s = -1;
             continue;
         }
-        if (connect(s, r->ai_addr, r->ai_addrlen) == 0) break;
+        if (connect(s, r->ai_addr, r->ai_addrlen) == 0) {
+            hop_log(HOP_LOG_INFO, "net: connected to %s:%s", host, portstr);
+            break;
+        }
+        hop_log(HOP_LOG_WARN, "net: connect %s:%s failed (errno=%d: %s)",
+                host, portstr, errno, strerror(errno));
         close(s);
         s = -1;
     }
@@ -194,6 +203,7 @@ static void set_connected(int on) {
         g_mac.sharing = 0;
         inject_reset();
     }
+    hop_log(HOP_LOG_INFO, "net: control channel %s", on ? "connected" : "disconnected");
     statusbar_update(on, 0);
 }
 

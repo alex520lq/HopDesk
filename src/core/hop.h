@@ -104,10 +104,11 @@ typedef enum {
  * v2: FILE_CHUNK 加 crc(4)，FILE_END 加 file_crc(4)，新增 XFER_ABORT
  * v3: 新增 FILE_ACK（逐文件确认），XFER_DONE 载荷改为 20 字节并带真实计数
  * v4: 数据通道 HELLO 增加 token 身份校验，握手未通过不得传输。
+ * v5: 整文件 CRC fold 同时纳入 chunk offset 与 chunk CRC，校验块位置。
  * 两端必须同版本：旧端发来的块在新端会按错位的 CRC 字段解析，
  * 结果是每块都校验失败。所以连上就先比版本，别让用户对着
  * "传输一直失败"猜原因。 */
-#define HOP_XFER_PROTO_VER   4
+#define HOP_XFER_PROTO_VER   5
 
 /* ---- XFER_ABORT 的 reason ---- */
 #define HOP_ABORT_CRC        1
@@ -236,6 +237,63 @@ void hop_put_be64(uint8_t *p, uint64_t v);
 uint16_t hop_get_be16(const uint8_t *p);
 uint32_t hop_get_be32(const uint8_t *p);
 uint64_t hop_get_be64(const uint8_t *p);
+
+/* ---- 数据通道输入校验（平台无关，可单元测试） ---- */
+typedef struct {
+    uint32_t batch, id;
+    uint64_t size, mtime;
+    uint8_t flags;
+    const uint8_t *name;
+    uint16_t name_len;
+    const uint8_t *relpath;
+    uint16_t relpath_len;
+} hop_xfer_file_begin_msg;
+
+typedef struct {
+    uint32_t batch, id, width, height, stride;
+} hop_xfer_image_begin_msg;
+
+typedef struct {
+    uint32_t id;
+    uint8_t status;
+    uint32_t file_crc;
+} hop_xfer_file_end_msg;
+
+typedef struct {
+    uint32_t batch, id;
+    uint8_t status;
+} hop_xfer_file_ack_msg;
+
+typedef struct {
+    uint32_t batch;
+    uint8_t reason;
+} hop_xfer_abort_msg;
+
+typedef struct {
+    uint32_t batch, ok, total;
+    uint64_t bytes;
+} hop_xfer_done_msg;
+
+int hop_xfer_decode_file_begin(const uint8_t *payload, uint32_t len,
+                               hop_xfer_file_begin_msg *out);
+int hop_xfer_decode_image_begin(const uint8_t *payload, uint32_t len,
+                                hop_xfer_image_begin_msg *out);
+int hop_xfer_decode_file_end(const uint8_t *payload, uint32_t len,
+                             hop_xfer_file_end_msg *out);
+int hop_xfer_decode_file_ack(const uint8_t *payload, uint32_t len,
+                             hop_xfer_file_ack_msg *out);
+int hop_xfer_decode_abort(const uint8_t *payload, uint32_t len,
+                          hop_xfer_abort_msg *out);
+int hop_xfer_decode_done(const uint8_t *payload, uint32_t len,
+                         hop_xfer_done_msg *out);
+int hop_xfer_hello_valid(const uint8_t *payload, uint32_t len, const char *token);
+int hop_xfer_relpath_bytes_safe(const uint8_t *rel, size_t len);
+int hop_xfer_relpath_safe(const char *rel);
+int hop_clip_should_apply_remote(uint32_t origin, uint32_t local_device);
+uint32_t hop_xfer_file_crc_step(uint32_t seed, uint64_t offset, uint32_t chunk_crc);
+int hop_xfer_image_valid(int32_t width, int32_t height, int32_t stride);
+int hop_xfer_chunk_valid(const uint8_t *payload, uint32_t len,
+                         uint64_t declared_size, int is_image);
 
 /* ---- CRC32（IEEE 802.3，增量式） ---- */
 void     hop_crc32_init(void);

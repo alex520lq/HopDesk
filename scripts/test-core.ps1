@@ -8,9 +8,17 @@ $sources = @(
     (Join-Path $root 'src/core/protocol.c'),
     (Join-Path $root 'src/core/crc32.c'),
     (Join-Path $root 'src/core/config.c'),
-    (Join-Path $root 'src/core/keymap.c')
+    (Join-Path $root 'src/core/keymap.c'),
+    (Join-Path $root 'src/core/xfer_validate.c')
 )
-& gcc -std=c11 -Wall -Wextra -I (Join-Path $root 'src/core') -o $out @sources
+$inc = Join-Path $root 'src/core'
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /O2 /W4 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I $inc /Fe:$out @sources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $out @sources
+}
 if ($LASTEXITCODE -ne 0) { throw "Core test compilation failed ($LASTEXITCODE)" }
 & $out
 if ($LASTEXITCODE -ne 0) { throw "Core tests failed ($LASTEXITCODE)" }
+& python (Join-Path $root 'scripts/test-regressions.py')
+if ($LASTEXITCODE -ne 0) { throw "Targeted regression tests failed ($LASTEXITCODE)" }

@@ -2,11 +2,10 @@ name: Build HopDesk
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+    tags: ['v*']
   pull_request:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -17,86 +16,190 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build on ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            artifact: hopdesk-windows
-          - os: macos-latest
-            artifact: hopdesk-macos
-
-    runs-on: ${{ matrix.os }}
-
+  prepare-icons:
+    name: Prepare committed app icons (one-time)
+    runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
-      - name: Set up MinGW GCC
-        if: runner.os == 'Windows'
-        uses: msys2/setup-msys2@v2
+      - uses: actions/checkout@v4
         with:
-          msystem: MINGW64
-          update: true
-          install: mingw-w64-x86_64-gcc
+          ref: ${{ github.head_ref || github.ref_name }}
 
-      - name: Build Windows executable
-        if: runner.os == 'Windows'
+      - name: Check committed icon assets
+        id: icons
         shell: pwsh
-        run: ./scripts/build-win.ps1 -Compiler gcc
+        run: |
+          if ((Test-Path assets/appicon/hopdesk.png) -and (Test-Path assets/appicon/hopdesk.ico)) {
+            "missing=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "missing=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
 
-      - name: Build macOS executable
-        if: runner.os == 'macOS'
-        run: sh scripts/build-mac.sh
-
-      - name: Upload Windows build
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+      - name: Set up Python for one-time icon generation
+        if: steps.icons.outputs.missing == 'true'
+        uses: actions/setup-python@v5
         with:
-          name: ${{ matrix.artifact }}
-          path: build/hopdesk.exe
-          if-no-files-found: error
-          retention-days: 14
+          python-version: '3.x'
 
-      - name: Upload macOS build
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: build/hopdesk
-          if-no-files-found: error
-          retention-days: 14
+      - name: Generate PNG and ICO once
+        if: steps.icons.outputs.missing == 'true'
+        shell: pwsh
+        run: |
+          python -m pip install Pillow
+          python scripts/generate-app-icons.py
+          if (!(Test-Path assets/appicon/hopdesk.png) -or !(Test-Path assets/appicon/hopdesk.ico)) {
+            throw 'Icon generation did not produce both PNG and ICO assets.'
+          }
 
-  core-tests:
-    name: Core tests on ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-          - os: macos-latest
+      - name: Commit generated icon assets
+        if: steps.icons.outputs.missing == 'true'
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/appicon/hopdesk.png assets/appicon/hopdesk.ico
+          git commit -m "Add pre-generated HopDesk app icons"
+          git push
 
-    runs-on: ${{ matrix.os }}
-
+  windows:
+    name: Windows build, tests and package (MSVC)
+    needs: [prepare-icons]
+    runs-on: windows-latest
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
-      - name: Set up MinGW GCC
-        if: runner.os == 'Windows'
-        uses: msys2/setup-msys2@v2
+      - uses: actions/checkout@v4
         with:
-          msystem: MINGW64
-          update: true
-          install: mingw-w64-x86_64-gcc
+          ref: ${{ github.sha }}
 
-      - name: Run portable core tests (Windows)
-        if: runner.os == 'Windows'
+      - name: Initialize Visual Studio x64 tools
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build Windows executable with MSVC (timed)
+        shell: pwsh
+        run: |
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          ./scripts/build-win.ps1 -Compiler msvc
+          $timer.Stop()
+          "Windows MSVC compile and link: $([math]::Round($timer.Elapsed.TotalSeconds, 2)) sec" | Tee-Object -FilePath build-timing.txt
+
+      - name: Run portable core tests
         shell: pwsh
         run: ./scripts/test-core.ps1
 
-      - name: Run portable core tests (macOS)
-        if: runner.os == 'macOS'
+      - name: Run file-transfer protocol tests
+        shell: pwsh
+        run: ./scripts/test-xfer-protocol.ps1
+
+      - name: Run TCP loopback tests
+        shell: pwsh
+        run: ./scripts/test-network.ps1
+
+      - name: Package Windows
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build/windows-package | Out-Null
+          Copy-Item build/hopdesk.exe build/windows-package/HopDesk.exe
+          Compress-Archive -Path build/windows-package/* -DestinationPath build/HopDesk-Windows.zip -Force
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: hopdesk-windows
+          path: build/HopDesk-Windows.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Windows timing
+        uses: actions/upload-artifact@v4
+        with:
+          name: hopdesk-windows-timing
+          path: build-timing.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    name: macOS build, tests and package
+    needs: [prepare-icons]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Build macOS app (timed)
+        run: |
+          start=$SECONDS
+          sh scripts/build-mac.sh
+          echo "macOS compile, bundle and signing: $((SECONDS-start)) sec" | tee build-timing.txt
+
+      - name: Run portable core tests
         run: sh scripts/test-core.sh
+
+      - name: Run file-transfer protocol tests
+        run: sh scripts/test-xfer-protocol.sh
+
+      - name: Run TCP loopback tests
+        run: sh scripts/test-network.sh
+
+      - name: Verify macOS app and shared branding
+        run: |
+          test -d build/HopDesk.app
+          test -x build/HopDesk.app/Contents/MacOS/HopDesk
+          plutil -lint build/HopDesk.app/Contents/Info.plist
+          codesign --verify --deep --strict build/HopDesk.app
+          test -s build/HopDesk.app/Contents/Resources/HopDesk.icns
+          test -s build/HopDesk.app/Contents/Resources/hopdesk.png
+          test -s build/HopDesk-macOS.zip
+          unzip -l build/HopDesk-macOS.zip | grep -q 'install-macos.command'
+
+      - name: Upload macOS install archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: hopdesk-macos
+          path: build/HopDesk-macOS.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload macOS app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: hopdesk-macos-app
+          path: build/HopDesk.app
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload macOS timing
+        uses: actions/upload-artifact@v4
+        with:
+          name: hopdesk-macos-timing
+          path: build-timing.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows package
+        uses: actions/download-artifact@v4
+        with:
+          name: hopdesk-windows
+          path: release-assets
+
+      - name: Download macOS package
+        uses: actions/download-artifact@v4
+        with:
+          name: hopdesk-macos
+          path: release-assets
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true

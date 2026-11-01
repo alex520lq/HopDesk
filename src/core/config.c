@@ -57,7 +57,7 @@ static char *trim(char *s) {
     return s;
 }
 
-static void set_kv(hop_config *c, const char *k, const char *v) {
+static int set_kv(hop_config *c, const char *k, const char *v) {
     if (!strcmp(k, "port"))          c->port = (uint16_t)atoi(v);
     else if (!strcmp(k, "token"))    snprintf(c->token, sizeof(c->token), "%s", v);
     else if (!strcmp(k, "host"))     snprintf(c->peer_host, sizeof(c->peer_host), "%s", v);
@@ -75,11 +75,15 @@ static void set_kv(hop_config *c, const char *k, const char *v) {
     else if (!strcmp(k, "mac_sleep_cmd"))  snprintf(c->mac_sleep_cmd, sizeof(c->mac_sleep_cmd), "%s", v);
     else if (!strcmp(k, "data_port"))      c->data_port = (uint16_t)to_int(v);
     else if (!strcmp(k, "xfer_chunk_kb"))  c->xfer_chunk_kb = atoi(v);
+    else return 0;
+    return 1;
 }
 
 int hop_config_load(hop_config *c, const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) return 0;
+    hop_config candidate=*c;
+    int recognized=0;
     char line[256];
     while (fgets(line, sizeof(line), f)) {
         char *p = trim(line);
@@ -89,8 +93,10 @@ int hop_config_load(hop_config *c, const char *path) {
         *eq = '\0';
         char *k = trim(p);
         char *v = trim(eq + 1);
-        set_kv(c, k, v);
+        recognized+=set_kv(&candidate, k, v);
     }
-    fclose(f);
-    return 1;
+    int ok=!ferror(f) && recognized>0;
+    if(fclose(f)!=0)ok=0;
+    if(ok)*c=candidate;
+    return ok;
 }

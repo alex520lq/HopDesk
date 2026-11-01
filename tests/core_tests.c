@@ -172,6 +172,267 @@ static void test_keymap(void) {
     CHECK(hop_mac_key_is_mod(0x00) == 0);
 }
 
+
+static void test_xfer_hello_validation(void) {
+    uint8_t hello[2 + HOP_TOKEN_MAX];
+    hello[0] = HOP_XFER_PROTO_VER;
+    hello[1] = 4;
+    memcpy(hello + 2, "test", 4);
+    CHECK(hop_xfer_hello_valid(hello, 6, "test") == 1);
+    CHECK(hop_xfer_hello_valid(hello, 6, "nope") == 0);
+    CHECK(hop_xfer_hello_valid(hello, 5, "test") == 0);
+    CHECK(hop_xfer_hello_valid(hello, 7, "test") == 0);
+    hello[0] = (uint8_t)(HOP_XFER_PROTO_VER - 1);
+    CHECK(hop_xfer_hello_valid(hello, 6, "test") == 0);
+    CHECK(hop_xfer_hello_valid(NULL, 6, "test") == 0);
+    CHECK(hop_xfer_hello_valid(hello, 6, NULL) == 0);
+
+    hello[0] = HOP_XFER_PROTO_VER;
+    hello[1] = 0;
+    CHECK(hop_xfer_hello_valid(hello, 2, "") == 1);
+    CHECK(hop_xfer_hello_valid(hello, 2, "x") == 0);
+    char too_long[HOP_TOKEN_MAX + 2];
+    memset(too_long, 'x', sizeof(too_long));
+    too_long[sizeof(too_long) - 1] = '\0';
+    CHECK(hop_xfer_hello_valid(hello, 2, too_long) == 0);
+}
+
+static void test_xfer_relative_path_validation(void) {
+    CHECK(hop_xfer_relpath_safe("file.txt"));
+    CHECK(hop_xfer_relpath_safe("folder/sub/file.bin"));
+    CHECK(hop_xfer_relpath_safe("a..b"));
+    CHECK(hop_xfer_relpath_safe("你好/文件.txt"));
+
+    CHECK(!hop_xfer_relpath_safe(NULL));
+    CHECK(!hop_xfer_relpath_safe(""));
+    CHECK(!hop_xfer_relpath_safe("../escape"));
+    CHECK(!hop_xfer_relpath_safe("folder/../escape"));
+    CHECK(!hop_xfer_relpath_safe("..\\escape"));
+    CHECK(!hop_xfer_relpath_safe("folder\\..\\escape"));
+    CHECK(!hop_xfer_relpath_safe("/etc/passwd"));
+    CHECK(!hop_xfer_relpath_safe("\\\\server\\share"));
+    CHECK(!hop_xfer_relpath_safe("C:\\Windows\\file"));
+    CHECK(!hop_xfer_relpath_safe("folder//file"));
+    CHECK(!hop_xfer_relpath_safe("folder/"));
+    CHECK(!hop_xfer_relpath_safe("./file"));
+    CHECK(!hop_xfer_relpath_safe("folder/./file"));
+    CHECK(!hop_xfer_relpath_safe("file:stream"));
+    CHECK(!hop_xfer_relpath_safe("bad\nname"));
+}
+
+static void test_xfer_image_bounds(void) {
+    CHECK(hop_xfer_image_valid(1, 1, 4));
+    CHECK(hop_xfer_image_valid(1920, 1080, 1920 * 4));
+    CHECK(hop_xfer_image_valid(32768, 2048, 32768 * 4));
+    CHECK(!hop_xfer_image_valid(0, 1, 4));
+    CHECK(!hop_xfer_image_valid(1, 0, 4));
+    CHECK(!hop_xfer_image_valid(-1, 1, 4));
+    CHECK(!hop_xfer_image_valid(32769, 1, 32769 * 4));
+    CHECK(!hop_xfer_image_valid(10, 10, 39));
+    CHECK(!hop_xfer_image_valid(32768, 2049, 32768 * 4));
+    CHECK(!hop_xfer_image_valid(1, 1, -1));
+}
+
+static void make_chunk(uint8_t *p, uint64_t off, uint32_t n) {
+    memset(p, 0, 20 + n);
+    hop_put_be64(p + 4, off);
+    hop_put_be32(p + 12, n);
+}
+
+static void test_xfer_chunk_bounds(void) {
+    uint8_t p[24];
+    make_chunk(p, 0, 4);
+    CHECK(hop_xfer_chunk_valid(p, sizeof(p), 4, 0));
+    CHECK(!hop_xfer_chunk_valid(p, sizeof(p), 3, 0));
+    CHECK(hop_xfer_chunk_valid(p, sizeof(p), 4, 1));
+    CHECK(!hop_xfer_chunk_valid(p, sizeof(p), 3, 1));
+    CHECK(!hop_xfer_chunk_valid(p, 19, 4, 0));
+    CHECK(!hop_xfer_chunk_valid(p, 23, 4, 0));
+    CHECK(!hop_xfer_chunk_valid(p, 25, 4, 0));
+
+    make_chunk(p, UINT64_MAX - 2u, 4);
+    CHECK(!hop_xfer_chunk_valid(p, sizeof(p), UINT64_MAX, 0));
+    make_chunk(p, HOP_IMG_MAX_BYTES - 2u, 4);
+    CHECK(!hop_xfer_chunk_valid(p, sizeof(p), 0, 1));
+    make_chunk(p, 0, 0);
+    CHECK(!hop_xfer_chunk_valid(p, 20, 0, 0));
+}
+
+static void test_xfer_retry_policy(void) {
+    CHECK(hop_xfer_file_retry_delay_ms(1) == 200);
+    CHECK(hop_xfer_file_retry_delay_ms(2) == 400);
+    CHECK(hop_xfer_file_retry_delay_ms(3) == 800);
+    CHECK(hop_xfer_job_retry_delay_ms(1) == 500);
+    CHECK(hop_xfer_job_retry_delay_ms(2) == 1000);
+    CHECK(hop_xfer_job_retry_delay_ms(3) == 2000);
+    CHECK(hop_xfer_job_retry_delay_ms(4) == 4000);
+    CHECK(hop_xfer_job_retry_delay_ms(5) == 8000);
+    CHECK(hop_xfer_job_retry_delay_ms(20) == 8000);
+    CHECK(HOP_XFER_FILE_RETRY_MAX == 3);
+    CHECK(HOP_XFER_JOB_RETRY_MAX == 5);
+    CHECK(HOP_XFER_RECONNECT_BUDGET_MS == 30000);
+}
+
+static void test_keymap_ranges(void) {
+    for (int vk = 0x70; vk <= 0x83; ++vk)
+        CHECK(hop_vk_to_mac(vk) != HOP_KEY_NONE);
+    for (int vk = 0x60; vk <= 0x69; ++vk)
+        CHECK(hop_vk_to_mac(vk) != HOP_KEY_NONE);
+    for (int vk = 0; vk <= 0xFF; ++vk) {
+        uint16_t kc = hop_vk_to_mac(vk);
+        CHECK(kc == HOP_KEY_NONE || kc <= 0x7E);
+    }
+    CHECK(hop_mac_key_is_mod(0x3B) == HOP_MOD_CONTROL);
+    CHECK(hop_mac_key_is_mod(0x3A) == HOP_MOD_ALT);
+    CHECK(hop_mac_key_is_mod(0x39) == HOP_MOD_CAPS);
+}
+
+static void test_decoder_reset_mid_frame(void) {
+    reset_messages();
+    hop_decoder *d = hop_decoder_new(NULL, on_message);
+    CHECK(d != NULL);
+    if (!d) return;
+    uint8_t a[32], b[32];
+    const uint8_t pa[] = {1, 2, 3, 4};
+    const uint8_t pb[] = {9, 8};
+    hop_encode_frame(31, pa, sizeof(pa), a);
+    uint32_t nb = hop_encode_frame(32, pb, sizeof(pb), b);
+    hop_decoder_feed(d, a, HOP_HEADER_SIZE + 2);
+    CHECK(g_messages == 0);
+    hop_decoder_reset(d);
+    hop_decoder_feed(d, b, nb);
+    CHECK(g_messages == 1);
+    CHECK(g_types[0] == 32);
+    CHECK(g_lengths[0] == sizeof(pb));
+    CHECK(memcmp(g_payloads[0], pb, sizeof(pb)) == 0);
+    hop_decoder_free(d);
+}
+
+static void test_decoder_all_split_points(void) {
+    const uint8_t payload[] = {0, 1, 2, 3, 4, 5, 6};
+    uint8_t frame[32];
+    uint32_t n = hop_encode_frame(77, payload, sizeof(payload), frame);
+    for (uint32_t split = 1; split < n; ++split) {
+        reset_messages();
+        hop_decoder *d = hop_decoder_new(NULL, on_message);
+        CHECK(d != NULL);
+        if (!d) return;
+        hop_decoder_feed(d, frame, split);
+        hop_decoder_feed(d, frame + split, n - split);
+        CHECK(g_messages == 1);
+        CHECK(g_types[0] == 77);
+        CHECK(g_lengths[0] == sizeof(payload));
+        CHECK(memcmp(g_payloads[0], payload, sizeof(payload)) == 0);
+        hop_decoder_free(d);
+    }
+}
+
+
+static void test_clipboard_origin_routing(void) {
+    CHECK(hop_clip_should_apply_remote(HOP_DEV_CLIENT, HOP_DEV_SERVER));
+    CHECK(hop_clip_should_apply_remote(HOP_DEV_SERVER, HOP_DEV_CLIENT));
+    CHECK(!hop_clip_should_apply_remote(HOP_DEV_SERVER, HOP_DEV_SERVER));
+    CHECK(!hop_clip_should_apply_remote(HOP_DEV_CLIENT, HOP_DEV_CLIENT));
+    CHECK(hop_clip_should_apply_remote(0, HOP_DEV_SERVER));
+}
+
+static void test_file_crc_fold(void) {
+    const char a[] = "chunk-A";
+    const char b[] = "chunk-B";
+    uint32_t ca = hop_crc32(0, a, sizeof(a)-1);
+    uint32_t cb = hop_crc32(0, b, sizeof(b)-1);
+    uint32_t ab = hop_xfer_file_crc_step(hop_xfer_file_crc_step(0, 0, ca), 7, cb);
+    uint32_t ba = hop_xfer_file_crc_step(hop_xfer_file_crc_step(0, 7, cb), 0, ca);
+    uint32_t moved = hop_xfer_file_crc_step(0, 1, ca);
+    CHECK(ab != ba);
+    CHECK(hop_xfer_file_crc_step(0, 0, ca) != moved);
+    CHECK(hop_xfer_file_crc_step(0, 0, ca) != hop_xfer_file_crc_step(0, 0, cb));
+}
+
+static void test_relative_path_wire_bytes(void) {
+    const uint8_t good[] = "dir/file.txt";
+    const uint8_t nul_inside[] = {'d','i','r',0,'/','x'};
+    CHECK(hop_xfer_relpath_bytes_safe(good, sizeof(good)-1));
+    CHECK(!hop_xfer_relpath_bytes_safe(good, HOP_PATH_LEN_MAX+1u));
+    CHECK(!hop_xfer_relpath_bytes_safe(nul_inside, sizeof(nul_inside)));
+    CHECK(!hop_xfer_relpath_bytes_safe((const uint8_t *)"a\\\\b", 3));
+}
+
+static void test_file_begin_decode(void) {
+    const uint8_t name[] = "report.txt";
+    const uint8_t path[] = "folder/report.txt";
+    uint8_t p[29 + sizeof(name)-1 + sizeof(path)-1];
+    memset(p, 0, sizeof(p));
+    hop_put_be32(p, 0x11223344u);
+    hop_put_be32(p+4, 7);
+    hop_put_be64(p+8, 123456789u);
+    hop_put_be64(p+16, 987654u);
+    p[24] = 0;
+    hop_put_be16(p+25, (uint16_t)(sizeof(name)-1));
+    memcpy(p+27, name, sizeof(name)-1);
+    hop_put_be16(p+27+sizeof(name)-1, (uint16_t)(sizeof(path)-1));
+    memcpy(p+29+sizeof(name)-1, path, sizeof(path)-1);
+
+    hop_xfer_file_begin_msg m;
+    CHECK(hop_xfer_decode_file_begin(p, sizeof(p), &m));
+    CHECK(m.batch == 0x11223344u && m.id == 7);
+    CHECK(m.size == 123456789u && m.mtime == 987654u);
+    CHECK(m.name_len == sizeof(name)-1);
+    CHECK(memcmp(m.name, name, sizeof(name)-1) == 0);
+    CHECK(m.relpath_len == sizeof(path)-1);
+    CHECK(memcmp(m.relpath, path, sizeof(path)-1) == 0);
+    CHECK(!hop_xfer_decode_file_begin(p, sizeof(p)-1, &m));
+
+    uint8_t trailing[sizeof(p)+1];
+    memcpy(trailing,p,sizeof(p)); trailing[sizeof(p)] = 0xEE;
+    CHECK(!hop_xfer_decode_file_begin(trailing,sizeof(trailing),&m));
+    hop_put_be16(p+25,0);
+    CHECK(!hop_xfer_decode_file_begin(p,sizeof(p),&m));
+}
+
+static void test_image_begin_decode(void) {
+    uint8_t p[20] = {0};
+    hop_put_be32(p, 9);
+    hop_put_be32(p+4, 2);
+    hop_put_be32(p+8, 1920);
+    hop_put_be32(p+12, 1080);
+    hop_put_be32(p+16, 7680);
+    hop_xfer_image_begin_msg m;
+    CHECK(hop_xfer_decode_image_begin(p,sizeof(p),&m));
+    CHECK(m.batch==9 && m.id==2 && m.width==1920 && m.height==1080 && m.stride==7680);
+    CHECK(!hop_xfer_decode_image_begin(p,sizeof(p)-1,&m));
+    CHECK(!hop_xfer_decode_image_begin(p,sizeof(p)+1,&m));
+}
+
+static void test_file_end_ack_abort_done_decoders(void) {
+    uint8_t end[9] = {0}, ack[9] = {0}, abortp[5] = {0}, donep[20] = {0};
+    hop_put_be32(end, 17); end[4] = HOP_FILE_OK; hop_put_be32(end+5, 0xAABBCCDDu);
+    hop_xfer_file_end_msg e;
+    CHECK(hop_xfer_decode_file_end(end,sizeof(end),&e));
+    CHECK(e.id==17 && e.status==HOP_FILE_OK && e.file_crc==0xAABBCCDDu);
+    CHECK(!hop_xfer_decode_file_end(end,8,&e));
+    CHECK(!hop_xfer_decode_file_end(end,10,&e));
+
+    hop_put_be32(ack, 21); hop_put_be32(ack+4, 17); ack[8]=HOP_FILE_ACK_CRC;
+    hop_xfer_file_ack_msg a;
+    CHECK(hop_xfer_decode_file_ack(ack,sizeof(ack),&a));
+    CHECK(a.batch==21 && a.id==17 && a.status==HOP_FILE_ACK_CRC);
+    CHECK(!hop_xfer_decode_file_ack(ack,8,&a));
+
+    hop_put_be32(abortp, 21); abortp[4]=HOP_ABORT_CANCEL;
+    hop_xfer_abort_msg ab;
+    CHECK(hop_xfer_decode_abort(abortp,sizeof(abortp),&ab));
+    CHECK(ab.batch==21 && ab.reason==HOP_ABORT_CANCEL);
+    CHECK(!hop_xfer_decode_abort(abortp,6,&ab));
+
+    hop_put_be32(donep,21); hop_put_be32(donep+4,2); hop_put_be32(donep+8,3);
+    hop_put_be64(donep+12,123456);
+    hop_xfer_done_msg d;
+    CHECK(hop_xfer_decode_done(donep,sizeof(donep),&d));
+    CHECK(d.batch==21 && d.ok==2 && d.total==3 && d.bytes==123456);
+    CHECK(!hop_xfer_decode_done(donep,19,&d));
+    CHECK(!hop_xfer_decode_done(donep,21,&d));
+}
 int main(void) {
     hop_crc32_init();
 
@@ -181,6 +442,20 @@ int main(void) {
     test_crc32();
     test_config_defaults_and_loading();
     test_keymap();
+    test_keymap_ranges();
+    test_decoder_reset_mid_frame();
+    test_decoder_all_split_points();
+    test_xfer_hello_validation();
+    test_xfer_relative_path_validation();
+    test_xfer_image_bounds();
+    test_xfer_chunk_bounds();
+    test_xfer_retry_policy();
+    test_clipboard_origin_routing();
+    test_file_crc_fold();
+    test_relative_path_wire_bytes();
+    test_file_begin_decode();
+    test_image_begin_decode();
+    test_file_end_ack_abort_done_decoders();
 
     if (g_failures) {
         fprintf(stderr, "HopDesk core tests: %d failure(s)\n", g_failures);

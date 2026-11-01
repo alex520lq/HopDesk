@@ -279,7 +279,7 @@ static void refresh_connection_labels(void) {
     s_overviewSharing.stringValue=s_sharing?@"键鼠共享：当前由 Mac 接收输入":@"键鼠共享：等待鼠标边缘切换";
     s_connectionRole.stringValue=@"本机角色：macOS 客户端";
     s_connectionStatus.stringValue=status;
-    s_connectionPeer.stringValue=[NSString stringWithFormat:@"服务端地址：%@",utf8(g_mac.cfg.peer_host)];
+    s_connectionPeer.stringValue=[NSString stringWithFormat:@"对端设备：Windows  ·  服务端 %@",utf8(g_mac.cfg.peer_host)];
     s_connectionPorts.stringValue=[NSString stringWithFormat:@"控制端口：%u    数据端口：%u",
         (unsigned)g_mac.cfg.port,(unsigned)g_mac.cfg.data_port];
     s_footer.stringValue=[NSString stringWithFormat:@"HopDesk  v%s    ·    %@",HOP_VERSION,status];
@@ -326,7 +326,7 @@ static void build_settings_page(NSView *p) {
     s_cfg[CFG_MAC_INPUT]=ui_field(right,@"",NSMakeRect(18,64,360,28),NO);
     ui_label(right,@"Mac 睡眠命令",NSMakeRect(18,36,160,20),12,NO);
     s_cfg[CFG_MAC_SLEEP]=ui_field(right,@"",NSMakeRect(18,6,360,28),NO);
-    ui_label(p,@"输入源支持十六进制（如 0x0F）。保存后，连接和认证参数将在重启后完整生效。",NSMakeRect(22,132,810,22),11,NO);
+    ui_label(p,@"输入源支持十六进制（例如 0x0F）。保存后，连接和认证参数将在重启后完整生效。",NSMakeRect(22,132,810,22),11,NO);
     ui_button(p,@"保存设置",NSMakeRect(610,78,112,34),s_uiController,@selector(saveSettings:));
     ui_button(p,@"恢复默认",NSMakeRect(738,78,112,34),s_uiController,@selector(resetSettings:));
     s_cfgNote=ui_label(p,@"修改配置后点击保存。",NSMakeRect(22,38,560,24),11,NO);
@@ -360,7 +360,7 @@ static void build_pages(NSView *root) {
     s_connectionPeer=ui_label(card,@"服务端地址：未配置",NSMakeRect(22,70,780,22),12,NO);
     s_connectionPorts=ui_label(card,@"控制端口：24817    数据端口：24818",NSMakeRect(22,38,780,22),12,NO);
     ui_button(card,@"重新连接",NSMakeRect(22,0,130,32),s_uiController,@selector(reconnect:));
-    ui_label(p,@"Mac 客户端会持续自动重连。点击“重新连接”会关闭当前控制连接并立即进入重连流程。",
+    ui_label(p,@"HopDesk 会自动重连。点击“重新连接”会关闭当前控制连接，并立即尝试重新建立连接。",
         NSMakeRect(22,360,810,42),11,NO);
 
     p=s_pages[2]; build_settings_page(p);

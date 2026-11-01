@@ -969,3 +969,33 @@ static DWORD WINAPI listen_thread(LPVOID arg) {
     hop_decoder_free(dec);
     return 0;
 }
+
+static DWORD WINAPI data_client_thread(LPVOID unused){
+    (void)unused;unsigned delay=500;
+    hop_decoder *dec=hop_decoder_new(NULL,on_data_frame);if(!dec)return 1;
+    while(WaitForSingleObject(s_x.stop,0)!=WAIT_OBJECT_0){
+        hop_session_id session;
+        if(!hop_session_current(&session)){WaitForSingleObject(s_x.stop,200);continue;}
+        SOCKET sock=net_connect_timeout_win(s_x.cfg.peer_host,s_x.cfg.data_port,s_x.stop);
+        if(sock==INVALID_SOCKET){WaitForSingleObject(s_x.stop,delay);delay=delay<8000?delay*2:8000;continue;}
+        DWORD snd=5000,rcv=200;net_set_keepalive(sock);
+        setsockopt(sock,SOL_SOCKET,SO_SNDTIMEO,(char*)&snd,sizeof(snd));setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,(char*)&rcv,sizeof(rcv));
+        rx_bind_session(&session);hop_decoder_reset(dec);
+        EnterCriticalSection(&s_x.lock);s_x.session=session;s_x.client=sock;s_x.peer_ready=0;++s_x.epoch;s_x.abort_batch=0;LeaveCriticalSection(&s_x.lock);
+        uint8_t hello[2+HOP_TOKEN_MAX+HOP_SESSION_BYTES],header[HOP_HEADER_SIZE];
+        uint32_t len=hop_xfer_hello_encode(hello,s_x.cfg.token,&session);hop_encode_header(header,HOP_MSG_XFER_HELLO,len);
+        if(!send_all(sock,(const char*)header,sizeof(header)) || !send_all(sock,(const char*)hello,(int)len))shutdown(sock,SD_BOTH);
+        uint64_t started=hop_monotonic_ms();int authed=0;
+        while(WaitForSingleObject(s_x.stop,0)!=WAIT_OBJECT_0 && hop_session_matches(&session)){
+            EnterCriticalSection(&s_x.lock);authed=s_x.peer_ready;LeaveCriticalSection(&s_x.lock);
+            if(!authed && hop_handshake_expired(hop_monotonic_ms(),started))break;
+            if(InterlockedExchange(&s_x.cancel_rx,0))rx_cancel_local();
+            uint8_t buf[65536];int n=recv(sock,(char*)buf,sizeof(buf),0);
+            if(n==SOCKET_ERROR){int e=WSAGetLastError();if(e==WSAETIMEDOUT||e==WSAEWOULDBLOCK||e==WSAEINTR)continue;break;}
+            if(n<=0||!hop_decoder_feed(dec,buf,(uint32_t)n))break;
+        }
+        retire_data_socket(sock);rx_close_file();
+        delay=authed?500:(delay<8000?delay*2:8000);WaitForSingleObject(s_x.stop,delay);
+    }
+    hop_decoder_free(dec);return 0;
+}

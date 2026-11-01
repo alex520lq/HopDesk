@@ -68,3 +68,10 @@ A green compile is not evidence that those manual/device cases passed.
 - Section B becomes automated before transport implementation changes.
 - Section C is recorded PASS / FAIL / BLOCKED with OS, hardware and evidence.
 - Never mark hardware cases passed based only on successful compilation.
+
+## Dual-role branch acceptance
+
+- Portable core: both role values persist/reload, legacy defaults, invalid role preserves live config, reverse VK mapping.
+- Extracted production macOS server dispatch: token/protocol rejection, authenticated ACK/session geometry, input-role gate, clipboard origin (platform effects doubled; scheduling not tested).
+- Native Windows HA runner: existing server tests plus client control/data HELLO, peer/session binding and reconnect using a loopback protocol double.
+- Physical desktops (pending): Windows server/macOS client AND macOS server/Windows client, four edges, modifiers/drag, Unicode clipboard, images/files in both directions, network failure and history; six UI pages at 100–200% DPI.

@@ -6,6 +6,7 @@
 #include "mac_app.h"
 #include "xfer.h"
 #include "update_manifest.h"
+#include "../core/update_state.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <stdio.h>
 #include <strings.h>
@@ -238,17 +239,58 @@ static void start_update_download(hop_update_manifest manifest) {
             return;
         }
 
-        NSTask *installer = [[NSTask alloc] init];
-        installer.executableURL = [NSURL fileURLWithPath:@"/bin/sh"];
-        installer.arguments = @[helperCopy, archive, appPath,
-                                [NSString stringWithFormat:@"%d", getpid()]];
-        NSError *launchError = nil;
-        if (![installer launchAndReturnError:&launchError]) {
+        if (!hop_update_install_begin(xfer_busy)) {
             [[NSFileManager defaultManager] removeItemAtPath:archive error:nil];
             [[NSFileManager defaultManager] removeItemAtPath:helperCopy error:nil];
             dispatch_async(dispatch_get_main_queue(), ^{
                 s_updateBusy = NO;
-                update_alert(@"更新失败", launchError.localizedDescription ?: @"无法启动更新辅助程序。", NSAlertStyleCritical);
+                update_alert(@"暂不能安装", @"传输已开始或仍在扫描，请等待完成后重试。", NSAlertStyleWarning);
+            });
+            return;
+        }
+        NSString *nonce = [[[NSUUID UUID] UUIDString] stringByReplacingOccurrencesOfString:@"-" withString:@""];
+        nonce = [nonce lowercaseString];
+        NSString *transaction = [NSTemporaryDirectory() stringByAppendingPathComponent:
+            [@"HopDesk-update-" stringByAppendingString:nonce]];
+        if (![[NSFileManager defaultManager] createDirectoryAtPath:transaction withIntermediateDirectories:NO
+            attributes:@{NSFilePosixPermissions:@0700} error:&fileError]) {
+            hop_update_install_end();
+            [[NSFileManager defaultManager] removeItemAtPath:archive error:nil];
+            [[NSFileManager defaultManager] removeItemAtPath:helperCopy error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                s_updateBusy = NO;
+                update_alert(@"更新失败", @"无法创建更新事务。", NSAlertStyleCritical);
+            });
+            return;
+        }
+        NSTask *installer = [[NSTask alloc] init];
+        installer.executableURL = [NSURL fileURLWithPath:@"/bin/bash"];
+        installer.arguments = @[helperCopy, archive, appPath,
+                                [NSString stringWithFormat:@"%d", getpid()], transaction, nonce,
+                                [NSString stringWithUTF8String:manifest.version]];
+        NSError *launchError = nil;
+        BOOL launched = [installer launchAndReturnError:&launchError];
+        BOOL prepared = NO;
+        NSString *preparedFile = [transaction stringByAppendingPathComponent:@"prepared"];
+        if (launched) {
+            for (int i=0;i<240 && installer.running;i++) {
+                NSString *ack = [NSString stringWithContentsOfFile:preparedFile encoding:NSUTF8StringEncoding error:nil];
+                if ([[ack stringByTrimmingCharactersInSet:[NSCharacterSet newlineCharacterSet]] isEqualToString:nonce]) {
+                    prepared = YES; break;
+                }
+                [NSThread sleepForTimeInterval:0.25];
+            }
+        }
+        [[NSFileManager defaultManager] removeItemAtPath:helperCopy error:nil];
+        if (!prepared) {
+            if (installer.running) [installer terminate];
+            if (!launched) [[NSFileManager defaultManager] removeItemAtPath:transaction error:nil];
+            hop_update_install_end();
+            // The old process is alive: the helper cannot have replaced it.
+            [[NSFileManager defaultManager] removeItemAtPath:archive error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                s_updateBusy = NO;
+                update_alert(@"更新失败", launchError.localizedDescription ?: @"安装准备失败，当前版本继续运行。", NSAlertStyleCritical);
             });
             return;
         }
@@ -531,7 +573,7 @@ void statusbar_show_transfers(void) {
 void app_run(void) {
     int guard = hop_watchdog_begin("macOS main run loop", 30000);
     NSTimer *timer = [NSTimer timerWithTimeInterval:1 repeats:YES block:^(NSTimer *t) {
-        (void)t; hop_watchdog_ping(guard);
+        (void)t; hop_update_report_ready(HOP_VERSION); hop_watchdog_ping(guard);
     }];
     [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
     [NSApp run];

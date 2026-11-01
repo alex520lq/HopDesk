@@ -46,7 +46,7 @@ if ! unzip -Z1 "$ARCHIVE" >/dev/null 2>&1; then
 fi
 while IFS= read -r entry; do
   case "$entry" in
-    HopDesk.app/*|install-macos.command|install-launchagent.command|__MACOSX/*) ;;
+    HopDesk.app/*|install-macos.command|install-launchagent.command|macos-package/*|__MACOSX/*) ;;
     *) fail "更新包包含不允许的文件路径。" ;;
   esac
   case "/$entry/" in
@@ -56,6 +56,9 @@ done < <(unzip -Z1 "$ARCHIVE")
 
 ditto -x -k "$ARCHIVE" "$STAGE" || fail "无法解压更新包。"
 NEW_APP="$STAGE/HopDesk.app"
+if [[ ! -d "$NEW_APP" && -d "$STAGE/macos-package/HopDesk.app" ]]; then
+  NEW_APP="$STAGE/macos-package/HopDesk.app"
+fi
 if [[ ! -d "$NEW_APP" || ! -x "$NEW_APP/Contents/MacOS/HopDesk" ]]; then
   fail "更新包中缺少有效的 HopDesk.app。"
 fi

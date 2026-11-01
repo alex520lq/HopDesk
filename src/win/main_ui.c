@@ -133,7 +133,7 @@ static unsigned long parse_number(HWND h, unsigned long fallback) {
     if (!h) return fallback;
     GetWindowTextW(h, b, 64);
     if (!b[0]) return fallback;
-    unsigned long v = wcstoul(b, &end, 0);
+    unsigned long v = wcstoul(b, &end, (b[0] == L'0' && (b[1] == L'x' || b[1] == L'X')) ? 16 : 10);
     return end == b || *end ? fallback : v;
 }
 static void show_page(int page) {
@@ -231,8 +231,8 @@ static void populate_settings(void) {
     set_int(s_cfg[CFG_PORT], c->port);
     set_int(s_cfg[CFG_DATA_PORT], c->data_port);
     utf8_to_wide(c->token, b, 128); set_text(s_cfg[CFG_TOKEN], b);
-    SendMessageW(s_cfg[CFG_SERVER_EDGE], CB_SETCURSEL, c->server_edge == HOP_EDGE_RIGHT ? 1 : 0, 0);
-    SendMessageW(s_cfg[CFG_CLIENT_EDGE], CB_SETCURSEL, c->client_edge == HOP_EDGE_RIGHT ? 1 : 0, 0);
+    SendMessageW(s_cfg[CFG_SERVER_EDGE], CB_SETCURSEL, c->server_edge >= HOP_EDGE_LEFT && c->server_edge <= HOP_EDGE_BOTTOM ? c->server_edge : HOP_EDGE_LEFT, 0);
+    SendMessageW(s_cfg[CFG_CLIENT_EDGE], CB_SETCURSEL, c->client_edge >= HOP_EDGE_LEFT && c->client_edge <= HOP_EDGE_BOTTOM ? c->client_edge : HOP_EDGE_RIGHT, 0);
     set_int(s_cfg[CFG_SWITCH_DELAY], c->switch_delay_ms);
     set_int(s_cfg[CFG_COOLDOWN], c->switch_cooldown_ms);
     set_int(s_cfg[CFG_MARGIN], c->edge_margin_px);
@@ -374,10 +374,10 @@ static void create_settings_page(HWND p) {
     label(p,L"共享 Token",38,186,120,20); s_cfg[CFG_TOKEN]=edit(p,L"",160,182,225,26,0,1);
     label(p,L"服务端边缘",38,222,120,20);
     s_cfg[CFG_SERVER_EDGE]=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,160,218,225,120,0);
-    SendMessageW(s_cfg[CFG_SERVER_EDGE],CB_ADDSTRING,0,(LPARAM)L"左边缘"); SendMessageW(s_cfg[CFG_SERVER_EDGE],CB_ADDSTRING,0,(LPARAM)L"右边缘");
+    SendMessageW(s_cfg[CFG_SERVER_EDGE],CB_ADDSTRING,0,(LPARAM)L"左边缘"); SendMessageW(s_cfg[CFG_SERVER_EDGE],CB_ADDSTRING,0,(LPARAM)L"右边缘"); SendMessageW(s_cfg[CFG_SERVER_EDGE],CB_ADDSTRING,0,(LPARAM)L"上边缘"); SendMessageW(s_cfg[CFG_SERVER_EDGE],CB_ADDSTRING,0,(LPARAM)L"下边缘");
     label(p,L"客户端边缘",38,258,120,20);
     s_cfg[CFG_CLIENT_EDGE]=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,160,254,225,120,0);
-    SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_ADDSTRING,0,(LPARAM)L"左边缘"); SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_ADDSTRING,0,(LPARAM)L"右边缘");
+    SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_ADDSTRING,0,(LPARAM)L"左边缘"); SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_ADDSTRING,0,(LPARAM)L"右边缘"); SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_ADDSTRING,0,(LPARAM)L"上边缘"); SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_ADDSTRING,0,(LPARAM)L"下边缘");
 
     group(p,L"交互与显示器",430,14,390,455);
     label(p,L"边缘触发延迟（ms）",448,42,170,20); s_cfg[CFG_SWITCH_DELAY]=edit(p,L"",635,38,165,26,0,0);

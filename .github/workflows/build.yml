@@ -79,6 +79,9 @@ jobs:
       - name: Build Windows executable with MSVC (timed)
         shell: pwsh
         run: |
+          $version = '0.5.0'
+          if ($env:GITHUB_REF -like 'refs/tags/v*') { $version = $env:GITHUB_REF_NAME.Substring(1) }
+          $env:HOPDESK_VERSION = $version
           $timer = [Diagnostics.Stopwatch]::StartNew()
           ./scripts/build-win.ps1 -Compiler msvc
           $timer.Stop()
@@ -130,6 +133,11 @@ jobs:
 
       - name: Build macOS app (timed)
         run: |
+          VERSION=0.5.0
+          case "$GITHUB_REF" in
+            refs/tags/v*) VERSION="$(printf '%s' "$GITHUB_REF_NAME" | sed 's/^v//')" ;;
+          esac
+          export HOPDESK_VERSION="$VERSION"
           start=$SECONDS
           sh scripts/build-mac.sh
           echo "macOS compile, bundle and signing: $((SECONDS-start)) sec" | tee build-timing.txt
@@ -151,8 +159,10 @@ jobs:
           codesign --verify --deep --strict build/HopDesk.app
           test -s build/HopDesk.app/Contents/Resources/HopDesk.icns
           test -s build/HopDesk.app/Contents/Resources/hopdesk.png
+          test -s build/HopDesk.app/Contents/Resources/update-macos.command
           test -s build/HopDesk-macOS.zip
           unzip -l build/HopDesk-macOS.zip | grep -q 'install-macos.command'
+          unzip -l build/HopDesk-macOS.zip | grep -q 'update-macos.command'
 
       - name: Upload macOS install archive
         uses: actions/upload-artifact@v4
@@ -179,12 +189,13 @@ jobs:
           retention-days: 14
 
   release:
-    name: Publish GitHub Release
+    name: Publish public update release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [windows, macos]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    concurrency:
+      group: hopdesk-release-publish
+      cancel-in-progress: false
     steps:
       - name: Download Windows package
         uses: actions/download-artifact@v4
@@ -198,8 +209,64 @@ jobs:
           name: hopdesk-macos
           path: release-assets
 
-      - name: Publish release
+      - name: Generate versioned update manifest
+        shell: bash
+        run: |
+          VERSION="$(printf '%s' "$GITHUB_REF_NAME" | sed 's/^v//')"
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Release tags must use vMAJOR.MINOR.PATCH (for example v0.5.1)."
+            exit 1
+          fi
+          TAG="$GITHUB_REF_NAME"
+          WIN_SHA="$(sha256sum release-assets/HopDesk-Windows.zip | cut -d ' ' -f 1)"
+          MAC_SHA="$(sha256sum release-assets/HopDesk-macOS.zip | cut -d ' ' -f 1)"
+          {
+            echo "format=1"
+            echo "version=$VERSION"
+            echo "tag=$TAG"
+            echo "windows_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/$TAG/HopDesk-Windows.zip"
+            echo "windows_sha256=$WIN_SHA"
+            echo "macos_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/$TAG/HopDesk-macOS.zip"
+            echo "macos_sha256=$MAC_SHA"
+            echo "notes_url=https://github.com/alex520lq/HopDesk-Releases/releases/tag/$TAG"
+          } > release-assets/latest.txt
+
+      - name: Validate public release repository credentials
+        env:
+          RELEASE_TOKEN: ${{ secrets.HOPDESK_RELEASE_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "::error::Create the public alex520lq/HopDesk-Releases repository and add HOPDESK_RELEASE_TOKEN (Contents: read/write) to this private repository's Actions secrets."
+            exit 1
+          fi
+
+      - name: Publish GitHub Release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: release-assets/*
+          repository: alex520lq/HopDesk-Releases
+          token: ${{ secrets.HOPDESK_RELEASE_TOKEN }}
+          tag_name: ${{ github.ref_name }}
+          target_commitish: main
+          files: |
+            release-assets/HopDesk-Windows.zip
+            release-assets/HopDesk-macOS.zip
+            release-assets/latest.txt
           generate_release_notes: true
+          fail_on_unmatched_files: true
+
+      - name: Update public latest manifest
+        env:
+          RELEASE_TOKEN: ${{ secrets.HOPDESK_RELEASE_TOKEN }}
+        shell: bash
+        run: |
+          RELEASE_REPO="alex520lq/HopDesk-Releases"
+          git clone --depth 1 --branch main "https://x-access-token:$RELEASE_TOKEN@github.com/$RELEASE_REPO.git" release-repo
+          cp release-assets/latest.txt release-repo/latest.txt
+          cd release-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add latest.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "release: update latest HopDesk manifest"
+            git push origin main
+          fi

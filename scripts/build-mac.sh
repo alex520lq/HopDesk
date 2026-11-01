@@ -53,12 +53,15 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>HopDesk</string>
 <key>CFBundleIconFile</key><string>HopDesk</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>0.5.0</string>
-<key>CFBundleShortVersionString</key><string>0.5.0</string>
+<key>CFBundleVersion</key><string>$VERSION</string>
+<key>CFBundleShortVersionString</key><string>$VERSION</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
+
+cp "$ROOT/scripts/update-macos.command" "$RESOURCES/update-macos.command"
+chmod +x "$RESOURCES/update-macos.command"
 
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict "$APP"

@@ -5,6 +5,7 @@
 #include "app.h"
 #include "xfer.h"
 #include "update.h"
+#include "../core/update_state.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -131,7 +132,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             clip_on_update();
             return 0;
         case WM_TIMER:
-            if (wp == IDT_HOOK) { hop_watchdog_ping(s_ui_guard); capture_check_hooks(); ui_refresh(&g_app); return 0; }
+            if (wp == IDT_HOOK) { hop_update_report_ready(HOP_VERSION); hop_watchdog_ping(s_ui_guard); capture_check_hooks(); ui_refresh(&g_app); return 0; }
             if (wp == IDT_XFER_NOTIFY) { ui_transfer_poll(); return 0; }
             if (wp == IDT_CLIP_RETRY) {
                 clip_retry_pending();

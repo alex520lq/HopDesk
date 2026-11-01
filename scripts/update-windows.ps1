@@ -2,21 +2,28 @@
 param(
     [Parameter(Mandatory = $true)][string]$Archive,
     [Parameter(Mandatory = $true)][string]$TargetDir,
-    [Parameter(Mandatory = $true)][int]$ProcessId
+    [Parameter(Mandatory = $true)][int]$ProcessId,
+    [Parameter(Mandatory = $true)][string]$Transaction,
+    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{32}$')][string]$Nonce,
+    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9]+[.][0-9]+[.][0-9]+$')][string]$ExpectedVersion,
+    [switch]$Quiet
 )
 
 $ErrorActionPreference = 'Stop'
 $stage = Join-Path $env:TEMP ("HopDesk-update-" + [guid]::NewGuid().ToString('N'))
 $targetExe = Join-Path $TargetDir 'HopDesk.exe'
-$incomingExe = Join-Path $TargetDir 'HopDesk.exe.new'
-$backupExe = Join-Path $TargetDir 'HopDesk.exe.previous'
+$incomingExe = Join-Path $TargetDir ('HopDesk.exe.new.' + $Nonce)
+$backupExe = Join-Path $TargetDir ('HopDesk.exe.previous.' + $Nonce)
 $log = Join-Path $env:TEMP 'HopDesk-update-error.log'
 $scriptToDelete = $PSCommandPath
 $replacementDone = $false
-$restartStarted = $false
+$healthy = $false
+$newProcess = $null
+$ready = Join-Path $Transaction 'ready'
 
 function Show-UpdateFailure([string]$Message) {
     $Message | Set-Content -LiteralPath $log -Encoding UTF8
+    if ($Quiet) { return }
     try {
         Add-Type -AssemblyName System.Windows.Forms
         [System.Windows.Forms.MessageBox]::Show(
@@ -35,14 +42,6 @@ try {
     $resolvedTarget = (Resolve-Path -LiteralPath $TargetDir).Path
     if ([IO.Path]::GetExtension($resolvedArchive) -ne '.zip') {
         throw '更新包不是 ZIP 文件。'
-    }
-
-    $deadline = [DateTime]::UtcNow.AddSeconds(60)
-    while (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) {
-        if ([DateTime]::UtcNow -gt $deadline) {
-            throw 'HopDesk 未能在 60 秒内退出，取消安装以避免覆盖正在运行的程序。'
-        }
-        Start-Sleep -Milliseconds 250
     }
 
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
@@ -85,22 +84,52 @@ try {
     }
 
     Copy-Item -LiteralPath $newExe -Destination $incomingExe -Force
+    # Preparation is acknowledged before the old process is asked to exit.
+    Set-Content -LiteralPath (Join-Path $Transaction 'prepared.tmp') -Value $Nonce -Encoding ascii
+    Move-Item -LiteralPath (Join-Path $Transaction 'prepared.tmp') -Destination (Join-Path $Transaction 'prepared')
+    $deadline = [DateTime]::UtcNow.AddSeconds(60)
+    while (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) {
+        if ([DateTime]::UtcNow -gt $deadline) {
+            throw 'HopDesk 未能在 60 秒内退出，取消安装以避免覆盖正在运行的程序。'
+        }
+        Start-Sleep -Milliseconds 250
+    }
+
     if (Test-Path -LiteralPath $backupExe) {
         Remove-Item -LiteralPath $backupExe -Force
     }
     if (Test-Path -LiteralPath $targetExe) {
         Move-Item -LiteralPath $targetExe -Destination $backupExe
     }
-    try {
-        Move-Item -LiteralPath $incomingExe -Destination $targetExe
-        $replacementDone = $true
-    } catch {
-        if (Test-Path -LiteralPath $backupExe) {
-            Move-Item -LiteralPath $backupExe -Destination $targetExe -Force
-        }
-        throw
-    }
+    $replacementDone = $true # Backup is now authoritative, even if the next move fails.
+    Move-Item -LiteralPath $incomingExe -Destination $targetExe
 
+    $env:HOPDESK_UPDATE_READY = $ready
+    $env:HOPDESK_UPDATE_NONCE = $Nonce
+    $env:HOPDESK_UPDATE_VERSION = $ExpectedVersion
+    try {
+        $newProcess = Start-Process -FilePath $targetExe -WorkingDirectory $resolvedTarget -PassThru
+    } finally {
+        Remove-Item Env:HOPDESK_UPDATE_READY,Env:HOPDESK_UPDATE_NONCE,Env:HOPDESK_UPDATE_VERSION -ErrorAction SilentlyContinue
+    }
+    $deadline = [DateTime]::UtcNow.AddSeconds(45)
+    while ([DateTime]::UtcNow -lt $deadline -and !$newProcess.HasExited) {
+        if (Test-Path -LiteralPath $ready -PathType Leaf) {
+            $lines = @(Get-Content -LiteralPath $ready)
+            if ($lines.Count -eq 3 -and $lines[0] -ceq $Nonce -and
+                $lines[1] -ceq $ExpectedVersion -and $lines[2] -ceq [string]$newProcess.Id) {
+                $healthy = $true
+                break
+            }
+        }
+        Start-Sleep -Milliseconds 250
+        $newProcess.Refresh()
+    }
+    if ($healthy) {
+        # Receipt proves initialization; require a short survival window as well.
+        if ($newProcess.WaitForExit(5000)) { $healthy = $false }
+    }
+    if (!$healthy) { throw 'New application did not confirm readiness; restoring the previous version.' }
     foreach ($name in @('update-windows.ps1', 'install-autostart-windows.ps1', 'supervise-windows.ps1')) {
         $source = Join-Path $stage $name
         if (Test-Path -LiteralPath $source -PathType Leaf) {
@@ -113,19 +142,25 @@ try {
         }
     }
 
-    Start-Process -FilePath $targetExe -WorkingDirectory $resolvedTarget
-    $restartStarted = $true
+    Remove-Item -LiteralPath $backupExe -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $resolvedArchive -Force -ErrorAction SilentlyContinue
 } catch {
-    if ($replacementDone -and !$restartStarted -and (Test-Path -LiteralPath $backupExe)) {
-        Remove-Item -LiteralPath $targetExe -Force -ErrorAction SilentlyContinue
-        Move-Item -LiteralPath $backupExe -Destination $targetExe -Force -ErrorAction SilentlyContinue
-        $replacementDone = $false
+    $installError = $_.Exception.Message
+    if ($replacementDone -and !$healthy) {
+        try {
+            if ($newProcess -and !$newProcess.HasExited) {
+                $newProcess.Kill()
+                if (!$newProcess.WaitForExit(5000)) { throw 'Replacement process did not terminate.' }
+            }
+            if (Test-Path -LiteralPath $targetExe) { Remove-Item -LiteralPath $targetExe -Force }
+            Move-Item -LiteralPath $backupExe -Destination $targetExe -Force
+            $replacementDone = $false
+            Start-Process -FilePath $targetExe -WorkingDirectory $resolvedTarget
+        } catch {
+            Show-UpdateFailure ("Rollback failed; recover the previous executable from $backupExe. " + $_.Exception.Message)
+        }
     }
-    if (!(Test-Path -LiteralPath $targetExe) -and (Test-Path -LiteralPath $backupExe)) {
-        Move-Item -LiteralPath $backupExe -Destination $targetExe -Force
-    }
-    Show-UpdateFailure $_.Exception.Message
+    Show-UpdateFailure $installError
 } finally {
     if (Test-Path -LiteralPath $stage) {
         Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
@@ -133,6 +168,7 @@ try {
     if (Test-Path -LiteralPath $incomingExe) {
         Remove-Item -LiteralPath $incomingExe -Force -ErrorAction SilentlyContinue
     }
+    if (Test-Path -LiteralPath $Transaction) { Remove-Item -LiteralPath $Transaction -Recurse -Force -ErrorAction SilentlyContinue }
     if ($scriptToDelete -and (Test-Path -LiteralPath $scriptToDelete)) {
         Remove-Item -LiteralPath $scriptToDelete -Force -ErrorAction SilentlyContinue
     }

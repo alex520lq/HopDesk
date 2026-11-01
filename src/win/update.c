@@ -1,5 +1,6 @@
 #include "app.h"
 #include "update_manifest.h"
+#include "../core/update_state.h"
 #include "xfer.h"
 
 #include <windows.h>
@@ -186,9 +187,10 @@ done:
     return ok;
 }
 
-static int launch_installer(HWND owner, const char *url, const char *sha256) {
+static int launch_installer(HWND owner, const char *url, const char *sha256, const char *version) {
     wchar_t temp[MAX_PATH], archive[MAX_PATH], exe[MAX_PATH], helper[MAX_PATH], helper_run[MAX_PATH];
-    wchar_t command[8192], target_dir[MAX_PATH];
+    wchar_t command[8192], target_dir[MAX_PATH], transaction[MAX_PATH], prepared[MAX_PATH], wversion[64];
+    char nonce[33]; hop_session_id id;
     DWORD n;
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
@@ -197,6 +199,7 @@ static int launch_installer(HWND owner, const char *url, const char *sha256) {
     n = GetTempPathW(ARRAYSIZE(temp), temp);
     if (!n || n >= ARRAYSIZE(temp) || !GetTempFileNameW(temp, L"hop", 0, archive))
         return 0;
+    DeleteFileW(archive); /* GetTempFileName creates a .tmp: do not leak it. */
     dot = wcsrchr(archive, L'.');
     if (dot) wcscpy_s(dot, 5, L".zip");
     DeleteFileW(archive);
@@ -221,27 +224,49 @@ static int launch_installer(HWND owner, const char *url, const char *sha256) {
         return 0;
     }
 
-    /* Run a temporary copy: the helper can then replace the installed script
-     * together with the executable without trying to overwrite itself. */
-    if (swprintf(helper_run, ARRAYSIZE(helper_run), L"%lsHopDesk-update-%lu.ps1",
-                 temp, GetCurrentProcessId()) < 0) {
+    /* Close admission only at install time, after download and user confirmation.
+     * Producer/receiver reservations make the busy check race-free. */
+    if (!hop_update_install_begin(xfer_busy)) {
         DeleteFileW(archive);
+        MessageBoxW(owner, L"传输已开始或仍在扫描。请等待完成后重试更新。",
+                    L"HopDesk 更新", MB_OK | MB_ICONWARNING);
         return 0;
     }
-    DeleteFileW(helper_run);
-    if (!CopyFileW(helper, helper_run, TRUE)) {
-        DeleteFileW(archive);
-        MessageBoxW(owner, L"无法准备临时更新辅助程序。旧版本未被修改。",
-                    L"HopDesk 更新", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
-        return 0;
+    if (!hop_session_generate(&id) || !utf8_wide(version,wversion,ARRAYSIZE(wversion))) goto prepare_fail;
+    hop_session_hex(&id,nonce);
+    wchar_t wnonce[33];
+    if (!utf8_wide(nonce,wnonce,ARRAYSIZE(wnonce)) ||
+        swprintf(transaction,ARRAYSIZE(transaction),L"%lsHopDesk-update-%ls",temp,wnonce)<0 ||
+        !CreateDirectoryW(transaction,NULL)) goto prepare_fail;
+    if (swprintf(helper_run,ARRAYSIZE(helper_run),L"%ls\\installer.ps1",transaction)<0 ||
+        swprintf(prepared,ARRAYSIZE(prepared),L"%ls\\prepared",transaction)<0 ||
+        !CopyFileW(helper,helper_run,TRUE)) {
+        RemoveDirectoryW(transaction); goto prepare_fail;
+    }
+    /* powershell.exe is Windows PowerShell 5.1. Add a UTF-8 BOM to its temporary
+     * script so non-ASCII diagnostics parse consistently on non-UTF8 systems. */
+    {
+        HANDLE f=CreateFileW(helper_run,GENERIC_READ|GENERIC_WRITE,0,NULL,OPEN_EXISTING,0,NULL);
+        DWORD size=f==INVALID_HANDLE_VALUE?0:GetFileSize(f,NULL),read=0;
+        BYTE *bytes=size && size<1024*1024?(BYTE *)malloc(size):NULL;
+        int ok=bytes && ReadFile(f,bytes,size,&read,NULL) && read==size;
+        if (ok) {
+            SetFilePointer(f,0,NULL,FILE_BEGIN);
+            BYTE bom[3]={0xef,0xbb,0xbf};
+            ok=write_all(f,bom,3) && write_all(f,bytes,size) && SetEndOfFile(f);
+        }
+        free(bytes); if(f!=INVALID_HANDLE_VALUE)CloseHandle(f);
+        if(!ok) { DeleteFileW(helper_run);RemoveDirectoryW(transaction);goto prepare_fail; }
     }
 
     if (swprintf(command, ARRAYSIZE(command),
         L"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass "
-        L"-File \"%ls\" -Archive \"%ls\" -TargetDir \"%ls\" -ProcessId %lu",
-        helper_run, archive, target_dir, GetCurrentProcessId()) < 0) {
+        L"-File \"%ls\" -Archive \"%ls\" -TargetDir \"%ls\" -ProcessId %lu -Transaction \"%ls\" -Nonce %hs -ExpectedVersion %ls",
+        helper_run, archive, target_dir, GetCurrentProcessId(), transaction, nonce, wversion) < 0) {
         DeleteFileW(archive);
         DeleteFileW(helper_run);
+        hop_update_install_end();
+        RemoveDirectoryW(transaction);
         return 0;
     }
     memset(&si, 0, sizeof(si)); si.cb = sizeof(si);
@@ -252,14 +277,47 @@ static int launch_installer(HWND owner, const char *url, const char *sha256) {
         DeleteFileW(helper_run);
         MessageBoxW(owner, L"无法启动更新辅助程序。旧版本未被修改。",
                     L"HopDesk 更新", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        hop_update_install_end();
+        RemoveDirectoryW(transaction);
         return 0;
     }
     CloseHandle(pi.hThread);
+    /* No user-facing modal exists after the helper starts its exit deadline.
+     * Keep the old app alive unless preparation actually succeeded. */
+    int prepared_ok=0;
+    for (int i=0;i<240;i++) {
+        if (WaitForSingleObject(pi.hProcess,0)==WAIT_OBJECT_0) break;
+        HANDLE ack=CreateFileW(prepared,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);
+        if(ack!=INVALID_HANDLE_VALUE) {
+            char value[64]={0};DWORD got=0;
+            prepared_ok=ReadFile(ack,value,63,&got,NULL) && !memcmp(value,nonce,32) &&
+                ((got==33 && value[32]=='\n') || (got==34 && value[32]=='\r' && value[33]=='\n'));
+            CloseHandle(ack);
+            if(prepared_ok)break;
+        }
+        Sleep(250);
+    }
+    if (!prepared_ok) {
+        /* It cannot have replaced a live old executable: safe to cancel here. */
+        TerminateProcess(pi.hProcess,1); WaitForSingleObject(pi.hProcess,5000);
+        CloseHandle(pi.hProcess);
+        hop_update_install_end();
+        DeleteFileW(helper_run);DeleteFileW(archive);DeleteFileW(prepared);RemoveDirectoryW(transaction);
+        MessageBoxW(owner,L"更新准备失败，当前版本继续运行。",L"HopDesk 更新",MB_OK|MB_ICONERROR);
+        return 0;
+    }
     CloseHandle(pi.hProcess);
-    MessageBoxW(owner, L"更新包已校验。HopDesk 将退出并自动安装新版本，然后重新启动。",
-                L"HopDesk 更新", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
-    PostMessageW(owner, WM_CLOSE, 0, 0);
-    return 1;
+    if (!PostMessageW(owner, WM_CLOSE, 0, 0)) {
+        hop_update_install_end();
+        return 0; /* helper times out safely without replacing the live app */
+    }
+    return 1; /* admission stays closed until this process exits */
+
+prepare_fail:
+    DeleteFileW(archive);
+    hop_update_install_end();
+    MessageBoxW(owner,L"无法准备更新事务，当前版本继续运行。",L"HopDesk 更新",MB_OK|MB_ICONERROR);
+    return 0;
 }
 
 static DWORD WINAPI update_worker(void *arg) {
@@ -308,7 +366,7 @@ static DWORD WINAPI update_worker(void *arg) {
         version, current);
     if (MessageBoxW(owner, message, L"HopDesk 更新",
                     MB_YESNO | MB_ICONINFORMATION | MB_SETFOREGROUND) == IDYES) {
-        (void)launch_installer(owner, manifest.windows_url, manifest.windows_sha256);
+        (void)launch_installer(owner, manifest.windows_url, manifest.windows_sha256, manifest.version);
     }
 
 done:

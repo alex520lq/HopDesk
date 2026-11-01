@@ -1,5 +1,6 @@
 #include "app.h"
 #include "update_manifest.h"
+#include "xfer.h"
 
 #include <windows.h>
 #include <winhttp.h>
@@ -268,6 +269,11 @@ static DWORD WINAPI update_worker(void *arg) {
     int valid = 0, cmp;
     wchar_t message[1024], version[64], current[64];
 
+    if (xfer_busy()) {
+        MessageBoxW(owner, L"当前仍有文件传输任务。请等待传输结束后再更新，避免中断文件传输。",
+                    L"HopDesk 更新", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+        goto done;
+    }
     if (!http_get_manifest(text, sizeof(text)) ||
         !hop_update_manifest_parse(text, strlen(text), &manifest)) {
         MessageBoxW(owner, L"无法读取有效的更新清单。请检查网络，或稍后重试。",

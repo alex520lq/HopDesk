@@ -14,6 +14,8 @@
 void clip_apply_remote_paths(const wchar_t *const *paths, int n) {(void)paths;(void)n;assert(0);}
 void clip_apply_remote_image(const uint8_t *p,int w,int h,int stride) {(void)p;(void)w;(void)h;(void)stride;assert(0);}
 
+static hop_session_id s_last_ack;
+
 static LRESULT CALLBACK window_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_APP_RECV) { free((hop_recv *)lp); return 0; }
     return DefWindowProcW(h, msg, wp, lp);
@@ -50,6 +52,9 @@ static int read_frame(SOCKET s) {
     if (!read_exact(s, header, sizeof(header))) return -1;
     uint32_t len = hop_get_be32(header + 1); assert(len <= sizeof(body));
     assert(read_exact(s, body, len));
+    if (header[0] == HOP_MSG_HELLO_ACK) {
+        int ok; assert(hop_hello_ack_decode(body,len,&ok,NULL,NULL,&s_last_ack));
+    }
     return header[0];
 }
 static void hello(SOCKET s, const char *token) {
@@ -57,7 +62,8 @@ static void hello(SOCKET s, const char *token) {
     p[0] = (uint8_t)tl; memcpy(p + 1, token, tl);
     p[tl + 1] = 1; p[tl + 2] = 'M';
     hop_put_be32(p + tl + 3, 1920); hop_put_be32(p + tl + 7, 1080);
-    write_frame(s, HOP_MSG_HELLO, p, (uint32_t)tl + 11);
+    p[tl+11]=HOP_CTRL_PROTO_VER;
+    write_frame(s, HOP_MSG_HELLO, p, (uint32_t)tl + 12);
 }
 static int wait_client(net_server *s, int expected, unsigned ms) {
     uint64_t deadline = hop_monotonic_ms() + ms;
@@ -101,20 +107,29 @@ int main(void) {
     deadline = hop_monotonic_ms() + 4000;
     while (!xfer_listening() && hop_monotonic_ms() < deadline) Sleep(20);
     assert(xfer_listening());
+    SOCKET silent = connect_peer(cfg.port);
+    SOCKET rejected = connect_peer(cfg.port);
+    write_frame(rejected, HOP_MSG_KEY_DOWN, NULL, 0);
+    assert(read_frame(rejected) == -1); closesocket(rejected);
+    assert(!net_server_has_client(server));
+    SOCKET first = connect_peer(cfg.port); hello(first, "test-secret");
+    assert(read_frame(first) == HOP_MSG_HELLO_ACK); assert(wait_client(server, 1, 1000));
     SOCKET data_silent = connect_peer(cfg.data_port);
     SOCKET data_first = connect_peer(cfg.data_port);
-    uint8_t data_hello[] = {HOP_XFER_PROTO_VER, 11, 't','e','s','t','-','s','e','c','r','e','t'};
-    write_frame(data_first, HOP_MSG_XFER_HELLO, data_hello, sizeof(data_hello));
+    uint8_t data_hello[2+HOP_TOKEN_MAX+HOP_SESSION_BYTES];
+    uint32_t data_hello_len=hop_xfer_hello_encode(data_hello,"test-secret",&s_last_ack);
+    hop_session_id first_session=s_last_ack;
+    write_frame(data_first, HOP_MSG_XFER_HELLO, data_hello, data_hello_len);
     assert(read_frame(data_first) == HOP_MSG_XFER_HELLO);
     deadline = hop_monotonic_ms() + 1500;
     while (!xfer_connected() && hop_monotonic_ms() < deadline) Sleep(20);
     assert(xfer_connected());
     SOCKET data_second = connect_peer(cfg.data_port);
-    write_frame(data_second, HOP_MSG_XFER_HELLO, data_hello, sizeof(data_hello));
+    write_frame(data_second, HOP_MSG_XFER_HELLO, data_hello, data_hello_len);
     assert(read_frame(data_second) == HOP_MSG_XFER_HELLO);
     assert(read_frame(data_first) == -1); closesocket(data_first);
     SOCKET data_bad = connect_peer(cfg.data_port); data_hello[2] = 'X';
-    write_frame(data_bad, HOP_MSG_XFER_HELLO, data_hello, sizeof(data_hello));
+    write_frame(data_bad, HOP_MSG_XFER_HELLO, data_hello, data_hello_len);
     assert(read_frame(data_bad) == -1); closesocket(data_bad);
     assert(xfer_connected());
     uint8_t oversized[HOP_HEADER_SIZE]; hop_encode_header(oversized, 99, HOP_MAX_PAYLOAD + 1u);
@@ -123,20 +138,28 @@ int main(void) {
     while (xfer_connected() && hop_monotonic_ms() < deadline) Sleep(20);
     assert(!xfer_connected()); closesocket(data_second);
     assert(read_frame(data_silent) == -1); closesocket(data_silent);
-    SOCKET data_timeout = connect_peer(cfg.data_port);
 
-    SOCKET silent = connect_peer(cfg.port);
-    SOCKET rejected = connect_peer(cfg.port);
-    write_frame(rejected, HOP_MSG_KEY_DOWN, NULL, 0);
-    assert(read_frame(rejected) == -1); closesocket(rejected);
-    assert(!net_server_has_client(server));
-    SOCKET first = connect_peer(cfg.port); hello(first, "test-secret");
-    assert(read_frame(first) == HOP_MSG_HELLO_ACK); assert(wait_client(server, 1, 1000));
+
+
     unsigned long old_epoch = net_server_epoch(server);
     SOCKET second = connect_peer(cfg.port); Sleep(100);
     assert(net_server_epoch(server) == old_epoch); /* TCP != authenticated */
     hello(second, "test-secret"); assert(read_frame(second) == HOP_MSG_HELLO_ACK);
     assert(net_server_epoch(server) != old_epoch);
+    /* A data connection from the previous control session must now be rejected. */
+    SOCKET stale_data=connect_peer(cfg.data_port);
+    data_hello_len=hop_xfer_hello_encode(data_hello,"test-secret",&first_session);
+    write_frame(stale_data,HOP_MSG_XFER_HELLO,data_hello,data_hello_len);
+    assert(read_frame(stale_data)==-1);closesocket(stale_data);
+    SOCKET fresh_data=connect_peer(cfg.data_port);
+    data_hello_len=hop_xfer_hello_encode(data_hello,"test-secret",&s_last_ack);
+    write_frame(fresh_data,HOP_MSG_XFER_HELLO,data_hello,data_hello_len);
+    assert(read_frame(fresh_data)==HOP_MSG_XFER_HELLO);
+    /* An unbound v5 data frame is never processed as v6 content. */
+    write_frame(fresh_data,HOP_MSG_FILE_END,(const uint8_t *)"123456789",9);
+    assert(read_frame(fresh_data)==-1);closesocket(fresh_data);
+    SOCKET data_timeout=connect_peer(cfg.data_port);
+
     closesocket(first);
     rejected = connect_peer(cfg.port); hello(rejected, "wrong-token");
     assert(read_frame(rejected) == -1); closesocket(rejected);

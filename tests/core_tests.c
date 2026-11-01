@@ -180,27 +180,25 @@ static void test_keymap(void) {
 
 
 static void test_xfer_hello_validation(void) {
-    uint8_t hello[2 + HOP_TOKEN_MAX];
-    hello[0] = HOP_XFER_PROTO_VER;
-    hello[1] = 4;
-    memcpy(hello + 2, "test", 4);
-    CHECK(hop_xfer_hello_valid(hello, 6, "test") == 1);
-    CHECK(hop_xfer_hello_valid(hello, 6, "nope") == 0);
-    CHECK(hop_xfer_hello_valid(hello, 5, "test") == 0);
-    CHECK(hop_xfer_hello_valid(hello, 7, "test") == 0);
-    hello[0] = (uint8_t)(HOP_XFER_PROTO_VER - 1);
-    CHECK(hop_xfer_hello_valid(hello, 6, "test") == 0);
-    CHECK(hop_xfer_hello_valid(NULL, 6, "test") == 0);
-    CHECK(hop_xfer_hello_valid(hello, 6, NULL) == 0);
-
-    hello[0] = HOP_XFER_PROTO_VER;
-    hello[1] = 0;
-    CHECK(hop_xfer_hello_valid(hello, 2, "") == 1);
-    CHECK(hop_xfer_hello_valid(hello, 2, "x") == 0);
+    uint8_t hello[2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES];
+    hop_session_id session = {{1}};
+    uint32_t n = hop_xfer_hello_encode(hello, "test", &session);
+    CHECK(n == 6 + HOP_SESSION_BYTES);
+    CHECK(hop_xfer_hello_valid(hello, n, "test"));
+    CHECK(!hop_xfer_hello_valid(hello, n, "nope"));
+    CHECK(!hop_xfer_hello_valid(hello, n - 1, "test"));
+    CHECK(!hop_xfer_hello_valid(hello, n + 1, "test"));
+    hello[0] = HOP_XFER_PROTO_VER - 1;
+    CHECK(!hop_xfer_hello_valid(hello, n, "test"));
+    CHECK(!hop_xfer_hello_valid(NULL, n, "test"));
+    CHECK(!hop_xfer_hello_valid(hello, n, NULL));
+    n = hop_xfer_hello_encode(hello, "", &session);
+    CHECK(hop_xfer_hello_valid(hello, n, ""));
+    CHECK(!hop_xfer_hello_valid(hello, n, "x"));
+    CHECK(!hop_xfer_hello_valid(hello, 2, "")); /* v5 is not a session handshake */
     char too_long[HOP_TOKEN_MAX + 2];
-    memset(too_long, 'x', sizeof(too_long));
-    too_long[sizeof(too_long) - 1] = '\0';
-    CHECK(hop_xfer_hello_valid(hello, 2, too_long) == 0);
+    memset(too_long, 'x', sizeof(too_long)); too_long[sizeof(too_long)-1] = 0;
+    CHECK(!hop_xfer_hello_valid(hello, n, too_long));
 }
 
 static void test_xfer_relative_path_validation(void) {

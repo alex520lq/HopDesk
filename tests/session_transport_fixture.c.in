@@ -1,0 +1,68 @@
+#include "hop.h"
+#include <assert.h>
+#include <string.h>
+#include <stdio.h>
+#define HOP_XFER_DIR_SEND 1
+#define SD_BOTH 2
+#define SHUT_RDWR 2
+#define INVALID_SOCKET -1
+typedef int SOCKET;
+static struct {int client,sock,lock,slock;hop_session_id session;} s_x;
+static struct {int active;uint32_t batch,dead_batch;uint8_t dead_reason;} s_rx;
+static hop_session_id s_rx_session;
+static struct {int marker;} s_send_status,s_receive_status;
+static int s_status_lock,resets,closes;
+static void rx_reset(void){s_rx.active=0;resets++;}
+static void rx_close_file(void){closes++;}
+typedef struct {hop_session_id session;int next_i,ok;} xf_job;
+typedef xf_job xfer_job;
+#define AcquireSRWLockExclusive(p) ((void)(p))
+#define ReleaseSRWLockExclusive(p) ((void)(p))
+static uint8_t captured[512];static size_t captured_len;static int delivered,closed;
+#define EnterCriticalSection(p) ((void)(p))
+#define LeaveCriticalSection(p) ((void)(p))
+#define pthread_mutex_lock(p) ((void)(p))
+#define pthread_mutex_unlock(p) ((void)(p))
+static int s_txlock;
+static int send_session_current(int fd){return fd==7 && hop_session_matches(&s_x.session);}
+static int send_all(int fd,const void *p,size_t n){assert(fd==7);assert(captured_len+n<=sizeof(captured));memcpy(captured+captured_len,p,n);captured_len+=n;return 1;}
+static void status_chunk(int d,uint32_t batch,uint32_t id,uint64_t off,uint32_t len){(void)d;(void)batch;(void)id;(void)off;(void)len;}
+static int shutdown(int fd,int how){(void)fd;(void)how;closed++;return 0;}
+static void on_data_msg(void *user,uint8_t type,const uint8_t *p,uint32_t len){(void)user;(void)type;(void)p;(void)len;delivered++;}
+#define CHUNK_HDR (25u + HOP_DATA_PREFIX)
+@FUNCTIONS@
+int main(void){
+ s_x.session.bytes[0]=1;s_x.client=s_x.sock=7;hop_session_publish(&s_x.session);
+ s_rx.dead_batch=42;s_receive_status.marker=9;rx_bind_session(&s_x.session);
+ assert(resets==1 && !s_rx.dead_batch && !s_receive_status.marker);
+ s_rx.active=1;s_rx.dead_batch=42;rx_bind_session(&s_x.session);
+ assert(resets==1 && closes==1 && s_rx.dead_batch==42);
+ hop_session_id next={{2}};rx_bind_session(&next);assert(resets==2 && !s_rx.dead_batch);
+ rx_bind_session(&s_x.session);s_rx.batch=42;s_rx.active=1;
+ xf_job job={0};job.session=next;job.next_i=3;job.ok=3;s_send_status.marker=9;
+ job_bind_session(&job, &s_x.session);assert(!job.next_i && !job.ok && !s_send_status.marker);
+ job.next_i=2;job.ok=2;job_bind_session(&job, &s_x.session);assert(job.next_i==2 && job.ok==2);
+ uint8_t end[9]={0};hop_put_be32(end,3);
+ assert(send_small(7,HOP_MSG_FILE_END,end,sizeof(end),42));
+ assert(captured_len==HOP_HEADER_SIZE+HOP_DATA_PREFIX+sizeof(end));
+ assert(hop_get_be32(captured+1)==HOP_DATA_PREFIX+sizeof(end));
+ const uint8_t *body;uint32_t batch,n;
+ assert(hop_data_unwrap(HOP_MSG_FILE_END,captured+HOP_HEADER_SIZE,(uint32_t)captured_len-HOP_HEADER_SIZE,&s_x.session,&batch,&body,&n));
+ assert(batch==42 && n==sizeof(end) && !memcmp(body,end,n));
+ s_rx.active=1;s_rx.batch=43;
+ on_data_frame(NULL,HOP_MSG_FILE_END,captured+HOP_HEADER_SIZE,(uint32_t)captured_len-HOP_HEADER_SIZE);
+ assert(delivered==0 && !closed); /* old END cannot finalize the new batch */
+ s_rx.batch=42;on_data_frame(NULL,HOP_MSG_FILE_END,captured+HOP_HEADER_SIZE,(uint32_t)captured_len-HOP_HEADER_SIZE);
+ assert(delivered==1 && !closed);
+ captured_len=0;uint8_t tx[CHUNK_HDR+2],pixels[2]={4,5};
+ assert(send_chunk(7,tx,42,3,9,pixels,2,123));
+ assert(captured_len==CHUNK_HDR+2 && hop_get_be32(captured+1)==40+2);
+ assert(hop_data_unwrap(HOP_MSG_FILE_CHUNK,captured+5,(uint32_t)captured_len-5,&s_x.session,&batch,&body,&n));
+ assert(batch==42 && n==22 && hop_get_be32(body)==3 && hop_get_be64(body+4)==9 && !memcmp(body+20,pixels,2));
+ s_rx.batch=43;on_data_frame(NULL,HOP_MSG_FILE_CHUNK,captured+5,(uint32_t)captured_len-5);assert(delivered==1);
+ captured[5]^=2;on_data_frame(NULL,HOP_MSG_FILE_CHUNK,captured+5,(uint32_t)captured_len-5);assert(closed==1 && delivered==1);
+ captured[5]^=2;hop_session_clear(&s_x.session);
+ on_data_frame(NULL,HOP_MSG_FILE_CHUNK,captured+5,(uint32_t)captured_len-5);assert(closed==2);
+ captured_len=0;assert(!send_small(7,HOP_MSG_FILE_END,end,9,42) && !captured_len);
+ puts("PASS: production v6 sender/receiver rejects foreign sessions and late batch CHUNK/END");return 0;
+}

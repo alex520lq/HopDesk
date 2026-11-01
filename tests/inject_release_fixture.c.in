@@ -16,11 +16,11 @@ enum {kCGEventFlagMaskShift=1,kCGEventFlagMaskControl=2,kCGEventFlagMaskAlternat
 typedef struct {int type,down;unsigned code;CGEventFlags flags;} Event;
 typedef Event *CGEventRef;
 static int keyups,mouseups,enters;
-static struct {int sharing,btn_held[3];double mouse_x,mouse_y;} g_mac;
+static struct {int sharing,btn_held[3];double mouse_x,mouse_y;} s_input;
 static uint8_t s_held_keys[65536/8],s_modn[4];
 static int s_caps,s_inited=1;static double s_over,s_h=1080;static CGEventFlags s_flags;
 static void inject_init(void){s_inited=1;}
-static void inject_enter(int y){(void)y;enters++;g_mac.sharing=1;}
+static void inject_enter(int y){(void)y;enters++;s_input.sharing=1;}
 static CGEventRef CGEventCreateKeyboardEvent(void *src,CGKeyCode kc,int down){
  (void)src;Event *e=calloc(1,sizeof(*e));assert(e);e->code=kc;e->down=down;return e;
 }
@@ -39,12 +39,12 @@ static void CFRelease(CGEventRef e){free(e);}
 int main(void){
  inject_key(0,1);inject_key(7,1);
  inject_key(0x37,1);inject_key(0x37,1);assert(s_modn[3]==1); /* repeat != two held modifiers */
- g_mac.sharing=1;inject_button(HOP_BTN_LEFT,1);inject_button(HOP_BTN_RIGHT,1);
- inject_reset();assert(keyups==2 && mouseups==2 && !s_modn[3] && !g_mac.sharing);
+ s_input.sharing=1;inject_button(HOP_BTN_LEFT,1);inject_button(HOP_BTN_RIGHT,1);
+ inject_reset();assert(keyups==2 && mouseups==2 && !s_modn[3] && !s_input.sharing);
  for(unsigned i=0;i<sizeof(s_held_keys);++i)assert(!s_held_keys[i]);
  inject_reset();assert(keyups==2 && mouseups==2); /* idempotent */
- inject_button(HOP_BTN_LEFT,0);assert(!g_mac.sharing && !enters); /* late UP cannot re-enter */
- inject_button(HOP_BTN_LEFT,1);assert(g_mac.sharing && enters==1);
- inject_release_all();assert(!g_mac.btn_held[HOP_BTN_LEFT]);
+ inject_button(HOP_BTN_LEFT,0);assert(!s_input.sharing && !enters); /* late UP cannot re-enter */
+ inject_button(HOP_BTN_LEFT,1);assert(s_input.sharing && enters==1);
+ inject_release_all();assert(!s_input.btn_held[HOP_BTN_LEFT]);
  puts("PASS: production macOS releases normal keys, modifiers and mouse buttons without re-entry");return 0;
 }

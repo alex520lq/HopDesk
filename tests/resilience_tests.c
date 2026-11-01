@@ -9,14 +9,42 @@
 static DWORD WINAPI log_worker(LPVOID arg) {
 #else
 #include <pthread.h>
+#include <time.h>
 static void *log_worker(void *arg) {
 #endif
     (void)arg;
     for (int i = 0; i < 100; ++i) hop_log(HOP_LOG_INFO, "concurrent log %d", i);
     return 0;
 }
+static void pause_ms(unsigned ms) {
+#if defined(_WIN32)
+    Sleep(ms);
+#else
+    struct timespec t = {(time_t)(ms/1000), (long)(ms%1000)*1000000}; nanosleep(&t,NULL);
+#endif
+}
+static void test_sessions(void) {
+    hop_session_id a={{1}}, b={{2}}, out;
+    assert(!hop_session_current(&out));
+    hop_session_publish(&a); assert(hop_session_matches(&a));
+    uint64_t generation=hop_session_generation();
+    hop_session_publish(&b);hop_session_clear(&a);
+    assert(hop_session_current(&out) && hop_session_id_equal(&out,&b));
+    assert(hop_session_generation()>generation); /* stale close cannot kill replacement */
+    uint8_t packet[HOP_DATA_PREFIX+4];hop_data_prefix(packet,&b,42);hop_put_be32(packet+HOP_DATA_PREFIX,42);
+    const uint8_t *body;uint32_t batch,n;
+    for(uint32_t i=0;i<HOP_DATA_PREFIX;i++)assert(!hop_data_unwrap(HOP_MSG_FILE_END,packet,i,&b,&batch,&body,&n));
+    assert(!hop_data_unwrap(HOP_MSG_FILE_END,packet,sizeof(packet),&a,&batch,&body,&n));
+    assert(hop_data_unwrap(HOP_MSG_FILE_BEGIN,packet,sizeof(packet),&b,&batch,&body,&n) && batch==42);
+    hop_put_be32(packet+HOP_DATA_PREFIX,43);
+    assert(!hop_data_unwrap(HOP_MSG_FILE_BEGIN,packet,sizeof(packet),&b,&batch,&body,&n));
+    assert(!hop_data_unwrap(99,packet,sizeof(packet),&b,&batch,&body,&n));
+    hop_session_clear(&b);assert(!hop_session_current(NULL));
+    assert(hop_session_generate(&a) && hop_session_generate(&b));
+    assert(!hop_session_id_equal(&a,&b));
+}
 static void test_handshake(void) {
-    uint8_t p[] = {3, 'a', 'b', 'c', 1, 'M', 0, 0, 7, 128, 0, 0, 4, 56};
+    uint8_t p[] = {3, 'a', 'b', 'c', 1, 'M', 0, 0, 7, 128, 0, 0, 4, 56, HOP_CTRL_PROTO_VER};
     hop_hello_msg h;
     for (uint32_t i = 0; i < sizeof(p); ++i) assert(!hop_hello_decode(p, i, &h));
     assert(hop_hello_decode(p, sizeof(p), &h));
@@ -29,13 +57,13 @@ static void test_handshake(void) {
     assert(!hop_token_matches(NULL, h.token, h.token_len));
     uint8_t extra[sizeof(p) + 1]; memcpy(extra, p, sizeof(p)); extra[sizeof(p)] = 0;
     assert(!hop_hello_decode(extra, sizeof(extra), &h));
-    uint8_t ack[] = {1, 1, 'W', 0, 0, 7, 128, 0, 0, 4, 56};
+    uint8_t ack[12 + HOP_SESSION_BYTES] = {1, 1, 'W', 0, 0, 7, 128, 0, 0, 4, 56, HOP_CTRL_PROTO_VER, 1};
     int ok = 0; uint32_t w = 0, height = 0;
-    for (uint32_t i = 0; i < sizeof(ack); ++i) assert(!hop_hello_ack_decode(ack, i, &ok, &w, &height));
-    assert(hop_hello_ack_decode(ack, sizeof(ack), &ok, &w, &height));
+    for (uint32_t i = 0; i < sizeof(ack); ++i) assert(!hop_hello_ack_decode(ack, i, &ok, &w, &height, NULL));
+    assert(hop_hello_ack_decode(ack, sizeof(ack), &ok, &w, &height, NULL));
     assert(ok && w == 1920 && height == 1080);
     ack[0] = 0;
-    assert(hop_hello_ack_decode(ack, sizeof(ack), &ok, NULL, NULL) && !ok);
+    assert(!hop_hello_ack_decode(ack, sizeof(ack), &ok, NULL, NULL, NULL));
 }
 static void test_queue(void) {
     assert(hop_ctrl_queue_admit(HOP_MSG_MOUSE_MOVE, HOP_CTRL_QUEUE_SOFT, 0, 4) == HOP_Q_DROP);
@@ -88,6 +116,15 @@ static void test_log(const char *path) {
 }
 int main(int argc, char **argv) {
     assert(argc == 2);
+    if(!strcmp(argv[1],"--watchdog-hang")) {
+        hop_watchdog_begin("injected stalled OS call",200);pause_ms(3000);return 99;
+    }
+    if(!strcmp(argv[1],"--watchdog-progress")) {
+        int ticket=hop_watchdog_begin("progressing long operation",500);
+        for(int i=0;i<10;i++){pause_ms(100);hop_watchdog_ping(ticket);}
+        hop_watchdog_end(ticket);pause_ms(600);return 0;
+    }
+    test_sessions();
     test_handshake(); test_queue(); test_deadlines(); test_log(argv[1]);
     puts("PASS: handshake, bounded queue, heartbeat deadlines, clock and concurrent log rotation");
     return 0;

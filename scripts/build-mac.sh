@@ -8,6 +8,16 @@ MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 ICONSET="$BUILD/HopDesk.iconset"
 PACKAGE="$BUILD/macos-package"
+VERSION="${HOPDESK_VERSION:-0.5.0}"
+case "$VERSION" in
+    *[!0-9.]*|'') echo "Invalid HOPDESK_VERSION: $VERSION" >&2; exit 1 ;;
+esac
+if [ "$(printf '%s' "$VERSION" | tr -cd '.' | wc -c | tr -d ' ')" -ne 2 ]; then
+    echo "HOPDESK_VERSION must be major.minor.patch." >&2
+    exit 1
+fi
+VERSION_HEADER="$BUILD/hop_version.h"
+printf '#define HOP_VERSION "%s"\n' "$VERSION" > "$VERSION_HEADER"
 
 rm -rf "$APP" "$ICONSET" "$PACKAGE" "$BUILD/HopDesk-macOS.zip"
 mkdir -p "$MACOS" "$RESOURCES" "$ICONSET" "$PACKAGE"
@@ -31,7 +41,7 @@ if [ -z "$CORE$MAC_C$MAC_M" ]; then echo "No HopDesk source files found." >&2; e
 INC="$ROOT/src/core"
 FRAMEWORKS="-framework Cocoa -framework ApplicationServices -framework CoreGraphics -framework IOKit"
 # shellcheck disable=SC2086
-clang -O2 -Wall -Wextra -fobjc-arc -I "$INC" -o "$MACOS/HopDesk" $CORE $MAC_C $MAC_M $FRAMEWORKS
+clang -O2 -Wall -Wextra -fobjc-arc -include "$VERSION_HEADER" -I "$INC" -o "$MACOS/HopDesk" $CORE $MAC_C $MAC_M $FRAMEWORKS
 
 cat > "$CONTENTS/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

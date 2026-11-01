@@ -31,7 +31,7 @@ typedef struct {
     int            tray_added;
     hop_link_state state;
     HICON          icons[3];      /* down / local / sharing */
-    int            peer_w, peer_h; /* 客户端（Mac）屏幕尺寸，握手时取得 */
+    int            peer_w, peer_h; /* 客户端（Mac）屏幕尺寸，握手时取得 */\n    char           config_path[1024]; /* UTF-8 canonical config path */\n    char           log_path[1024];    /* UTF-8 active log path */
 } win_app;
 
 extern win_app g_app;
@@ -71,7 +71,7 @@ void ui_init(win_app *app);
 void ui_shutdown(win_app *app);
 void ui_refresh(win_app *app);
 void ui_show_menu(win_app *app);
-void ui_show_transfers(win_app *app);
+void ui_show_transfers(win_app *app);\nvoid ui_show_main(win_app *app);
 void ui_transfer_poll(void);
 
 #endif

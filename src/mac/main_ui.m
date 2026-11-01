@@ -239,8 +239,7 @@ static void refresh_transfer_page(void) {
             s_fileSnapshot[i].phase==HOP_XFER_FILE_RECEIVING?@"接收中":
             s_fileSnapshot[i].phase==HOP_XFER_FILE_VERIFYING?@"校验中":@"排队中";
         NSString *kind=s_fileSnapshot[i].is_directory?(s_collapsedFolders[i]?@"▸ 目录":@"▾ 目录"):@"文件";
-        [files appendFormat:@"%@%@ %@    %@ / %@    %@
-",indent,kind,path,
+        [files appendFormat:@"%@%@ %@    %@ / %@    %@\n",indent,kind,path,
             byte_count(s_fileSnapshot[i].bytes_done),byte_count(s_fileSnapshot[i].bytes_total),state];
     }
     NSString *nextFiles=files.length?files:@"当前没有文件明细";
@@ -253,8 +252,7 @@ static void refresh_transfer_page(void) {
         NSString *p=history[i].phase==HOP_XFER_COMPLETED?@"完成":
             history[i].phase==HOP_XFER_PARTIAL?@"部分失败":
             history[i].phase==HOP_XFER_CANCELLED?@"已取消":@"失败";
-        [rows appendFormat:@"%@  ·  %@  ·  %@  ·  文件 %u/%u  ·  %@
-",
+        [rows appendFormat:@"%@  ·  %@  ·  %@  ·  文件 %u/%u  ·  %@\n",
             d,p,utf8(history[i].name),history[i].files_done,history[i].files_total,byte_count(history[i].bytes_total)];
     }
     NSString *nextHistory=rows.length?rows:@"暂无传输历史";
@@ -447,8 +445,7 @@ static void build_pages(NSView *root) {
     if(!s_fileSnapshot||s_fileDirection!=HOP_XFER_DIR_SEND||!s_xferFiles)return;
     NSString *text=s_xferFiles.string ?: @"";
     NSUInteger line=0,limit=MIN(s_xferFiles.selectedRange.location,text.length);
-    for(NSUInteger i=0;i<limit;++i)if([text characterAtIndex:i]=='
-')line++;
+    for(NSUInteger i=0;i<limit;++i)if([text characterAtIndex:i]=='\n')line++;
     if(line<(NSUInteger)s_visibleFileCount)(void)xfer_retry_file(s_fileBatch,s_visibleFileIndices[line]);
 }
 - (void)toggleFolder:(id)sender {
@@ -494,7 +491,7 @@ static void create_main_window(void) {
 
     NSVisualEffectView *sidebar=[[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0,0,210,800)];
     sidebar.material=NSVisualEffectMaterialSidebar;sidebar.blendingMode=NSVisualEffectBlendingModeBehindWindow;
-    sidebar.state=NSVisualEffectStateFollowsWindow;sidebar.autoresizingMask=NSViewHeightSizable;
+    sidebar.autoresizingMask=NSViewHeightSizable;
     [root addSubview:sidebar];
     NSTextField *brand=ui_label(sidebar,@"HopDesk",NSMakeRect(24,740,160,32),22,YES);
     ui_label(sidebar,@"跨设备协作",NSMakeRect(26,714,150,20),11,NO);

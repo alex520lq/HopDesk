@@ -48,7 +48,7 @@ static HWND s_title, s_header_status, s_footer;
 static HWND s_overview_status, s_overview_peer, s_overview_channels, s_overview_sharing;
 static HWND s_connection_role, s_connection_status, s_connection_peer, s_connection_ports;
 static HWND s_cfg[CFG_COUNT], s_cfg_note;
-static HWND s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_progress, s_xfer_files, s_xfer_history;
+static HWND s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_progress, s_xfer_files, s_xfer_history, s_xfer_retry_button;
 static HWND s_log_edit;
 static HWND s_update_version, s_update_source;
 static HFONT s_font, s_font_title, s_font_small;
@@ -317,14 +317,14 @@ static void refresh_transfers(void) {
              (unsigned long long)(st.bytes_total / 1048576ULL));
     set_text(s_xfer_counts, row);
     int pct = st.bytes_total ? (int)(100ULL * st.bytes_done / st.bytes_total) : (st.active ? 0 : 100);
-    SendMessageW(s_xfer_progress, PBM_SETPOS, pct > 100 ? 100 : pct, 0);
+    SendMessageW(s_xfer_progress, PBM_SETPOS, pct > 100 ? 100 : pct, 0);\n    if (s_xfer_retry_button) EnableWindow(s_xfer_retry_button, st.direction == HOP_XFER_DIR_SEND);
 
     if (!s_file_snapshot) s_file_snapshot = (hop_xfer_file_status *)calloc(HOP_XFER_FILE_LIMIT, sizeof(*s_file_snapshot));
     int n = s_file_snapshot ? xfer_get_files(st.direction, st.batch, s_file_snapshot, HOP_XFER_FILE_LIMIT) : 0;
     if (s_file_batch != st.batch || s_file_direction != st.direction) {
         memset(s_collapsed, 0, sizeof(s_collapsed)); s_file_batch = st.batch; s_file_direction = st.direction;
     }
-    SendMessageW(s_xfer_files, LB_RESETCONTENT, 0, 0);
+    int oldSelected = (int)SendMessageW(s_xfer_files, LB_GETCURSEL, 0, 0);\n    int oldSelectedIndex = oldSelected == LB_ERR ? -1 : (int)SendMessageW(s_xfer_files, LB_GETITEMDATA, (WPARAM)oldSelected, 0);\n    SendMessageW(s_xfer_files, LB_RESETCONTENT, 0, 0);
     s_visible_count = 0;
     for (int i=0; i<n; ++i) {
         int hidden = 0;
@@ -349,7 +349,7 @@ static void refresh_transfers(void) {
             path,(unsigned long long)s_file_snapshot[i].bytes_done,
             (unsigned long long)s_file_snapshot[i].bytes_total,state);
         LRESULT idx=SendMessageW(s_xfer_files,LB_ADDSTRING,0,(LPARAM)row);
-        if(idx!=LB_ERR){SendMessageW(s_xfer_files,LB_SETITEMDATA,(WPARAM)idx,(LPARAM)i);s_visible_indices[s_visible_count++]=i;}
+        if(idx!=LB_ERR){SendMessageW(s_xfer_files,LB_SETITEMDATA,(WPARAM)idx,(LPARAM)i);s_visible_indices[s_visible_count++]=i;if(i==oldSelectedIndex)SendMessageW(s_xfer_files,LB_SETCURSEL,(WPARAM)idx,0);}
     }
     hop_xfer_history_entry hist[HOP_XFER_HISTORY_LIMIT];
     int hn=xfer_get_history(hist,HOP_XFER_HISTORY_LIMIT);
@@ -435,7 +435,7 @@ static void create_pages(HWND h) {
     s_xfer_files=child(p,L"LISTBOX",L"",WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS|WS_TABSTOP,40,198,760,155,UI_ID_FILES);
     group(p,L"传输历史",20,386,800,175);
     s_xfer_history=child(p,L"LISTBOX",L"",WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS,40,410,760,135,0);
-    button(p,L"重试选中文件",500,572,140,34,UI_ID_XFER_RETRY);
+    s_xfer_retry_button=button(p,L"重试选中文件",500,572,140,34,UI_ID_XFER_RETRY);
     button(p,L"取消传输",660,572,140,34,UI_ID_XFER_CANCEL);
 
     p=s_pages[4];

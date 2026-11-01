@@ -7,6 +7,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <errno.h>
+#include <stdint.h>
+#if defined(_WIN32)
+#include <windows.h>
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 void hop_config_defaults(hop_config *c) {
     memset(c, 0, sizeof(*c));
@@ -99,4 +107,97 @@ int hop_config_load(hop_config *c, const char *path) {
     if(fclose(f)!=0)ok=0;
     if(ok)*c=candidate;
     return ok;
+}
+
+/* Save a complete, canonical config through a same-directory temporary file.
+ * The previous file remains intact unless the new file is fully flushed and
+ * atomically committed. Paths are UTF-8 on every platform. */
+static void config_safe_value(const char *src, char *dst, size_t cap) {
+    size_t n = 0;
+    if (!cap) return;
+    while (src && *src && n + 1 < cap) {
+        unsigned char ch = (unsigned char)*src++;
+        if (ch == '\\r' || ch == '\\n' || ch == 0) continue;
+        dst[n++] = (char)ch;
+    }
+    dst[n] = '\\0';
+}
+
+#if defined(_WIN32)
+static int config_utf8_path(const char *src, wchar_t *dst, int cap) {
+    return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, src, -1, dst, cap) > 0;
+}
+#endif
+
+int hop_config_save_atomic(const hop_config *c, const char *path) {
+    if (!c || !path || !path[0] || strlen(path) > 900) return 0;
+    char temp[1024];
+    if (snprintf(temp, sizeof(temp), "%s.tmp", path) <= 0 || strlen(temp) >= sizeof(temp)) return 0;
+#if defined(_WIN32)
+    wchar_t wtemp[1024], wpath[1024];
+    if (!config_utf8_path(temp, wtemp, 1024) || !config_utf8_path(path, wpath, 1024)) return 0;
+    FILE *f = _wfopen(wtemp, L"wb");
+#else
+    FILE *f = fopen(temp, "wb");
+#endif
+    if (!f) return 0;
+
+    char host[128], token[HOP_TOKEN_MAX + 1], name[HOP_NAME_MAX + 1];
+    char input_cmd[sizeof(c->mac_input_cmd) + 1], sleep_cmd[sizeof(c->mac_sleep_cmd) + 1];
+    config_safe_value(c->peer_host, host, sizeof(host));
+    config_safe_value(c->token, token, sizeof(token));
+    config_safe_value(c->device_name, name, sizeof(name));
+    config_safe_value(c->mac_input_cmd, input_cmd, sizeof(input_cmd));
+    config_safe_value(c->mac_sleep_cmd, sleep_cmd, sizeof(sleep_cmd));
+
+    int ok = 1;
+#define CFG_WRITE(...) do { if (fprintf(f, __VA_ARGS__) < 0) ok = 0; } while (0)
+    CFG_WRITE("# HopDesk configuration — edited by the native UI\\n");
+    CFG_WRITE("name=%s\\n", name);
+    CFG_WRITE("host=%s\\n", host);
+    CFG_WRITE("port=%u\\n", (unsigned)c->port);
+    CFG_WRITE("data_port=%u\\n", (unsigned)c->data_port);
+    CFG_WRITE("token=%s\\n", token);
+    CFG_WRITE("server_edge=%d\\n", c->server_edge);
+    CFG_WRITE("client_edge=%d\\n", c->client_edge);
+    CFG_WRITE("switch_delay_ms=%d\\n", c->switch_delay_ms);
+    CFG_WRITE("switch_cooldown_ms=%d\\n", c->switch_cooldown_ms);
+    CFG_WRITE("edge_margin_px=%d\\n", c->edge_margin_px);
+    CFG_WRITE("disp_win_input=0x%04X\\n", (unsigned)c->disp_win_input);
+    CFG_WRITE("disp_mac_input=0x%04X\\n", (unsigned)c->disp_mac_input);
+    CFG_WRITE("disp_wake_sec=%d\\n", c->disp_wake_sec);
+    CFG_WRITE("mac_input_cmd=%s\\n", input_cmd);
+    CFG_WRITE("mac_sleep_cmd=%s\\n", sleep_cmd);
+    CFG_WRITE("xfer_chunk_kb=%d\\n", c->xfer_chunk_kb);
+#undef CFG_WRITE
+    if (fflush(f) != 0) ok = 0;
+    if (ok) {
+#if defined(_WIN32)
+        if (_commit(_fileno(f)) != 0) ok = 0;
+#else
+        if (fsync(fileno(f)) != 0) ok = 0;
+#endif
+    }
+    if (fclose(f) != 0) ok = 0;
+    if (!ok) {
+#if defined(_WIN32)
+        _wremove(wtemp);
+#else
+        unlink(temp);
+#endif
+        return 0;
+    }
+#if defined(_WIN32)
+    if (!MoveFileExW(wtemp, wpath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        _wremove(wtemp);
+        return 0;
+    }
+#else
+    if (rename(temp, path) != 0) {
+        unlink(temp);
+        return 0;
+    }
+    (void)chmod(path, 0600);
+#endif
+    return 1;
 }

@@ -182,7 +182,7 @@ int hop_hello_decode(const uint8_t *p, uint32_t len, hop_hello_msg *out) {
     out->token = p + off;
     off += out->token_len;
     out->name_len = p[off++];
-    if ((uint32_t)out->name_len + 8u != len - off) return 0;
+    if ((uint32_t)out->name_len + 9u != len - off || p[len - 1] != HOP_CTRL_PROTO_VER) return 0;
     out->name = p + off;
     off += out->name_len;
     out->width = hop_get_be32(p + off);
@@ -206,13 +206,76 @@ int hop_token_matches(const char *expected, const uint8_t *got, size_t got_len) 
 }
 
 int hop_hello_ack_decode(const uint8_t *p, uint32_t len, int *ok,
-                         uint32_t *width, uint32_t *height) {
+                         uint32_t *width, uint32_t *height, hop_session_id *session) {
     uint32_t off;
     if (!p || len < 2) return 0;
     off = 2u + p[1];
-    if (off + 8u != len) return 0;
+    if (off + 9u + HOP_SESSION_BYTES != len || p[off + 8] != HOP_CTRL_PROTO_VER || p[0] != 1) return 0;
+    hop_session_id id;
+    memcpy(id.bytes, p + off + 9, HOP_SESSION_BYTES);
+    if (!hop_session_id_valid(&id)) return 0;
+    if (session) *session = id;
     if (ok) *ok = p[0] != 0;
     if (width) *width = hop_get_be32(p + off);
     if (height) *height = hop_get_be32(p + off + 4);
     return 1;
+}
+
+int hop_session_id_valid(const hop_session_id *id) {
+    unsigned bits = 0;
+    if (!id) return 0;
+    for (size_t i = 0; i < HOP_SESSION_BYTES; ++i) bits |= id->bytes[i];
+    return bits != 0;
+}
+int hop_session_id_equal(const hop_session_id *a, const hop_session_id *b) {
+    return hop_session_id_valid(a) && hop_session_id_valid(b) &&
+           memcmp(a->bytes, b->bytes, HOP_SESSION_BYTES) == 0;
+}
+void hop_data_prefix(uint8_t out[HOP_DATA_PREFIX], const hop_session_id *id, uint32_t batch) {
+    memcpy(out, id->bytes, HOP_SESSION_BYTES);
+    hop_put_be32(out + HOP_SESSION_BYTES, batch);
+}
+int hop_data_unwrap(uint8_t type, const uint8_t *p, uint32_t len,
+                    const hop_session_id *expected, uint32_t *batch,
+                    const uint8_t **body, uint32_t *body_len) {
+    if (!p || len < HOP_DATA_PREFIX || !batch || !body || !body_len) return 0;
+    hop_session_id id; memcpy(id.bytes, p, HOP_SESSION_BYTES);
+    if (!hop_session_id_equal(&id, expected)) return 0;
+    uint32_t b = hop_get_be32(p + HOP_SESSION_BYTES);
+    if (!b) return 0;
+    p += HOP_DATA_PREFIX; len -= HOP_DATA_PREFIX;
+    switch (type) {
+        case HOP_MSG_FILE_BEGIN: case HOP_MSG_IMAGE_BEGIN:
+        case HOP_MSG_FILE_ACK: case HOP_MSG_XFER_DONE: case HOP_MSG_XFER_ABORT:
+            if (len < 4 || hop_get_be32(p) != b) return 0;
+            break;
+        case HOP_MSG_FILE_CHUNK: case HOP_MSG_FILE_END: break;
+        default: return 0;
+    }
+    *batch = b; *body = p; *body_len = len;
+    return 1;
+}
+uint32_t hop_xfer_hello_encode(uint8_t *out, const char *token, const hop_session_id *id) {
+    size_t n = strlen(token);
+    if (n >= HOP_TOKEN_MAX || !hop_session_id_valid(id)) return 0;
+    out[0] = HOP_XFER_PROTO_VER; out[1] = (uint8_t)n;
+    memcpy(out + 2, token, n); memcpy(out + 2 + n, id->bytes, HOP_SESSION_BYTES);
+    return (uint32_t)n + 2 + HOP_SESSION_BYTES;
+}
+int hop_xfer_hello_bound(const uint8_t *p, uint32_t len, const char *token,
+                         const hop_session_id *expected) {
+    if (!p || !token || len < 2 + HOP_SESSION_BYTES) return 0;
+    size_t n = strlen(token);
+    if (p[0] != HOP_XFER_PROTO_VER || len != 2 + n + HOP_SESSION_BYTES ||
+        p[1] != n || !hop_token_matches(token, p + 2, n)) return 0;
+    hop_session_id id; memcpy(id.bytes, p + 2 + n, HOP_SESSION_BYTES);
+    return hop_session_id_equal(&id, expected);
+}
+
+void hop_session_hex(const hop_session_id *id, char out[33]) {
+    static const char digits[]="0123456789abcdef";
+    for(size_t i=0;i<HOP_SESSION_BYTES;i++) {
+        out[i*2]=digits[id->bytes[i]>>4]; out[i*2+1]=digits[id->bytes[i]&15];
+    }
+    out[32]=0;
 }

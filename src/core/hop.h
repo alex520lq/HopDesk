@@ -39,8 +39,8 @@ extern "C" {
 
 /* ---- 消息类型 ---- */
 typedef enum {
-    HOP_MSG_HELLO        = 1,   /* C -> S: 握手 {token, name, w, h} */
-    HOP_MSG_HELLO_ACK    = 2,   /* S -> C: 结果 {ok, name, w, h}   */
+    HOP_MSG_HELLO        = 1,   /* C -> S: 握手 {token, name, w, h, ver} */
+    HOP_MSG_HELLO_ACK    = 2,   /* S -> C: 结果 {ok, name, w, h, ver, session}   */
     HOP_MSG_PING         = 3,
     HOP_MSG_PONG         = 4,
 
@@ -66,7 +66,7 @@ typedef enum {
      * 与控制通道分开，是为了让大载荷不挤占鼠标/键盘帧：
      * 单条 TCP 流上的大块数据会造成队头阻塞，鼠标事件要等整块发完。
      * 图片也走这里 —— 一张 4K 截图裸 BGRA 就是 33 MB，塞不进控制通道。 */
-    HOP_MSG_XFER_HELLO   = 50,  /* 双向: ver(1)+token_len(1)+token */
+    HOP_MSG_XFER_HELLO   = 50,  /* 双向: ver(1)+token_len(1)+token+session(16) */
     HOP_MSG_FILE_BEGIN   = 51,  /* S -> C: id(4)+size(8)+mtime(8)+flags(1)
                                  *         +nlen(2)+name+plen(2)+relpath */
     HOP_MSG_FILE_CHUNK   = 52,  /* 双向: id(4)+off(8)+len(4)+crc(4)+data */
@@ -105,10 +105,12 @@ typedef enum {
  * v3: 新增 FILE_ACK（逐文件确认），XFER_DONE 载荷改为 20 字节并带真实计数
  * v4: 数据通道 HELLO 增加 token 身份校验，握手未通过不得传输。
  * v5: 整文件 CRC fold 同时纳入 chunk offset 与 chunk CRC，校验块位置。
+ * v6: 控制握手协商 session；数据 HELLO 绑定它，所有数据帧携带 session+batch。
  * 两端必须同版本：旧端发来的块在新端会按错位的 CRC 字段解析，
  * 结果是每块都校验失败。所以连上就先比版本，别让用户对着
  * "传输一直失败"猜原因。 */
-#define HOP_XFER_PROTO_VER   5
+#define HOP_XFER_PROTO_VER   6
+#define HOP_CTRL_PROTO_VER   6
 
 /* ---- XFER_ABORT 的 reason ---- */
 #define HOP_ABORT_CRC        1
@@ -246,8 +248,7 @@ void         hop_decoder_free(hop_decoder *d);
  * 连接的生死由应用层判定，不靠 TCP keepalive：keepalive 要 ~90 秒才报死，
  * 期间键鼠全部落进黑洞。两端各自每 HOP_HEARTBEAT_INTERVAL_MS 发一次 PING，
  * 收到任何帧都算对端活着；HOP_HEARTBEAT_TIMEOUT_MS 内一帧都没收到就断开重连。
- * 旧版本对端只会回 PONG、不主动发 PING —— 这里任一端主动发即可保证双向都有流量，
- * 所以新旧混跑时检测仍然成立。 */
+ * v6 不兼容旧版握手；必须同时升级两端。 */
 #define HOP_HANDSHAKE_TIMEOUT_MS   5000   /* 连上后多久必须完成 HELLO / HELLO_ACK */
 #define HOP_HEARTBEAT_INTERVAL_MS  2000
 #define HOP_HEARTBEAT_TIMEOUT_MS   6000
@@ -266,7 +267,30 @@ int hop_msg_droppable(uint8_t type);
 hop_queue_verdict hop_ctrl_queue_admit(uint8_t type, int count, size_t queued_bytes,
                                        uint32_t len);
 
-/* HELLO: {tlen, token, nlen, name, w(4), h(4)}；指针指向 payload 内部 */
+/* v6 is deliberately incompatible with older peers: upgrade both endpoints. */
+#define HOP_SESSION_BYTES 16u
+#define HOP_DATA_PREFIX (HOP_SESSION_BYTES + 4u)
+typedef struct { uint8_t bytes[HOP_SESSION_BYTES]; } hop_session_id;
+int hop_session_id_valid(const hop_session_id *id);
+void hop_session_hex(const hop_session_id *id, char out[33]);
+int hop_session_id_equal(const hop_session_id *a, const hop_session_id *b);
+int hop_session_generate(hop_session_id *out);
+void hop_session_publish(const hop_session_id *id);
+int hop_session_current(hop_session_id *out);
+int hop_session_matches(const hop_session_id *id);
+void hop_session_clear(const hop_session_id *expected);
+uint64_t hop_session_generation(void);
+/* Every non-HELLO data frame: session[16] + batch[4] + existing typed body.
+ * CHUNK/END therefore carry explicit session AND batch without implicit state. */
+void hop_data_prefix(uint8_t out[HOP_DATA_PREFIX], const hop_session_id *id, uint32_t batch);
+int hop_data_unwrap(uint8_t type, const uint8_t *p, uint32_t len,
+                    const hop_session_id *expected, uint32_t *batch,
+                    const uint8_t **body, uint32_t *body_len);
+uint32_t hop_xfer_hello_encode(uint8_t *out, const char *token, const hop_session_id *id);
+int hop_xfer_hello_bound(const uint8_t *p, uint32_t len, const char *token,
+                         const hop_session_id *expected);
+
+/* HELLO: {tlen, token, nlen, name, w(4), h(4), ver(1)}；指针指向 payload 内部 */
 typedef struct {
     const uint8_t *token;
     uint8_t        token_len;
@@ -278,9 +302,9 @@ int hop_hello_decode(const uint8_t *p, uint32_t len, hop_hello_msg *out);
 /* expected 为空串 = 不校验（局域网自用，与旧行为一致）；否则长度与内容都必须相等。
  * 比较耗时不随第一个不同字节的位置变化。 */
 int hop_token_matches(const char *expected, const uint8_t *got, size_t got_len);
-/* HELLO_ACK: {ok, nlen, name, w(4), h(4)} */
+/* HELLO_ACK: {ok, nlen, name, w(4), h(4), ver(1), session(16)} */
 int hop_hello_ack_decode(const uint8_t *p, uint32_t len, int *ok,
-                         uint32_t *width, uint32_t *height);
+                         uint32_t *width, uint32_t *height, hop_session_id *session);
 
 /* 心跳判定。now/last 用同一个单调时钟（毫秒），回绕安全。 */
 static inline int hop_heartbeat_due(uint64_t now, uint64_t last_sent) {
@@ -295,6 +319,12 @@ static inline int hop_handshake_expired(uint64_t now, uint64_t started) {
 
 /* 单调时钟（毫秒）。clock.c，平台代码用；不受系统改时间影响。 */
 uint64_t hop_monotonic_ms(void);
+#define HOP_WATCHDOG_EXIT 70
+#define HOP_IO_DEADLINE_MS 15000u
+int hop_watchdog_start(void);
+int hop_watchdog_begin(const char *operation, unsigned timeout_ms);
+void hop_watchdog_ping(int ticket);
+void hop_watchdog_end(int ticket);
 
 /* ---- 小工具 ---- */
 void hop_put_be16(uint8_t *p, uint16_t v);

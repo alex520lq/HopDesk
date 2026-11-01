@@ -75,13 +75,12 @@ int hop_xfer_decode_done(const uint8_t *p, uint32_t len,
 }
 
 int hop_xfer_hello_valid(const uint8_t *p, uint32_t len, const char *token) {
-    if (!p || !token || len < 2) return 0;
-    size_t want = strlen(token);
-    if (want > HOP_TOKEN_MAX || want > 255u) return 0;
-    return p[0] == HOP_XFER_PROTO_VER &&
-           p[1] == (uint8_t)want &&
-           len == 2u + (uint32_t)want &&
-           (want == 0 || memcmp(p + 2, token, want) == 0);
+    if (!p || !token || len < 2 + HOP_SESSION_BYTES) return 0;
+    size_t n = strlen(token);
+    if (n >= HOP_TOKEN_MAX || len != 2 + n + HOP_SESSION_BYTES) return 0;
+    hop_session_id id;
+    memcpy(id.bytes, p + 2 + n, HOP_SESSION_BYTES);
+    return hop_xfer_hello_bound(p, len, token, &id);
 }
 
 int hop_xfer_relpath_bytes_safe(const uint8_t *rel, size_t len) {

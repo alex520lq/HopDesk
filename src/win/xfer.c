@@ -32,6 +32,7 @@ typedef struct {
 
 typedef struct xfer_job {
     struct xfer_job *next;
+    hop_session_id session;
     uint32_t    batch;
     int         is_image;
     int         n;              /* JOB_FILES 的条目数 */
@@ -199,6 +200,13 @@ static void status_add_received_file(uint32_t batch,uint32_t id,const char *path
         snprintf(s_receive_status.status.name,sizeof(s_receive_status.status.name),"%s",path);
     ReleaseSRWLockExclusive(&s_status_lock);
 }
+static void job_bind_session(xfer_job *j, const hop_session_id *current) {
+    if (!hop_session_id_valid(current) || hop_session_id_equal(&j->session,current)) return;
+    j->session=*current; j->next_i=0; j->ok=0;
+    AcquireSRWLockExclusive(&s_status_lock);
+    memset(&s_send_status,0,sizeof(s_send_status));
+    ReleaseSRWLockExclusive(&s_status_lock);
+}
 static void status_start_job(const xfer_job *j) {
     uint64_t total_bytes=0;
     for(int i=0;i<j->n;i++)total_bytes+=j->e[i].size;
@@ -241,6 +249,7 @@ static struct {
     SOCKET           listen_s;
     SOCKET           client;
     volatile LONG    listening;
+    hop_session_id   session;
     unsigned long    epoch;
     int              peer_ready;    /* 数据通道版本与 token 握手通过 */
     CRITICAL_SECTION lock;      /* 保护 client + 作业队列 + 取消标记 */
@@ -339,9 +348,16 @@ static void elist_free(elist *l) {
 }
 
 /* 递归收集。rel 是 UTF-8 相对路径（不含首尾斜杠）。 */
+static BOOL guarded_find_next(HANDLE h, WIN32_FIND_DATAW *data) {
+    int guard = hop_watchdog_begin("directory next", HOP_IO_DEADLINE_MS);
+    BOOL ok = FindNextFileW(h, data); hop_watchdog_end(guard); return ok;
+}
 static void walk_into(elist *l, const wchar_t *full, const char *rel) {
     WIN32_FILE_ATTRIBUTE_DATA fad;
-    if (!GetFileAttributesExW(full, GetFileExInfoStandard, &fad)) return;
+    int stat_guard = hop_watchdog_begin("file attributes", HOP_IO_DEADLINE_MS);
+    int stat_ok = GetFileAttributesExW(full, GetFileExInfoStandard, &fad);
+    hop_watchdog_end(stat_guard);
+    if (!stat_ok) return;
 
     int is_dir = (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
     const wchar_t *bn = base_name(full);
@@ -383,7 +399,9 @@ static void walk_into(elist *l, const wchar_t *full, const char *rel) {
     wcscat(pat, L"*");
 
     WIN32_FIND_DATAW fd;
+    int find_guard = hop_watchdog_begin("directory enumerate", HOP_IO_DEADLINE_MS);
     HANDLE h = FindFirstFileW(pat, &fd);
+    hop_watchdog_end(find_guard);
     free(pat);
     if (h == INVALID_HANDLE_VALUE) return;
 
@@ -415,7 +433,7 @@ static void walk_into(elist *l, const wchar_t *full, const char *rel) {
         if (crel) walk_into(l, child, crel);
         free(crel);
         free(child);
-    } while (FindNextFileW(h, &fd));
+    } while (guarded_find_next(h, &fd));
 
     FindClose(h);
 }
@@ -433,7 +451,7 @@ static __thread unsigned long s_send_epoch;
 #endif
 static int send_session_current(SOCKET sock) {
     EnterCriticalSection(&s_x.lock);
-    int ok = s_x.client == sock && (!s_send_epoch || s_x.epoch == s_send_epoch);
+    int ok = s_x.client == sock && (!s_send_epoch || s_x.epoch == s_send_epoch) && hop_session_matches(&s_x.session);
     LeaveCriticalSection(&s_x.lock); return ok;
 }
 
@@ -458,13 +476,24 @@ static int send_all(SOCKET c, const char *p, int len) {
 static void yield_cpu(void) { Sleep(0); }
 
 /* 小帧：头 + 载荷两次 send。载荷都在 1 KB 级别，不值得拼缓冲。 */
-static int send_small(SOCKET c, uint8_t type, const uint8_t *p, uint32_t len) {
-    uint8_t hdr[HOP_HEADER_SIZE];
-    hop_encode_header(hdr, type, len);
+static int send_small(SOCKET c, uint8_t type, const uint8_t *p, uint32_t len, uint32_t batch) {
+    int send_guard = hop_watchdog_begin("data frame send", 10000);
+    uint8_t hdr[HOP_HEADER_SIZE], prefix[HOP_DATA_PREFIX];
     EnterCriticalSection(&s_txlock);
-    int ok = send_session_current(c) && send_all(c, (const char *)hdr, HOP_HEADER_SIZE);
-    if (ok && len) ok = send_all(c, (const char *)p, (int)len);
+    int ok = send_session_current(c);
+    if (ok && type != HOP_MSG_XFER_HELLO) {
+        EnterCriticalSection(&s_x.lock);
+        hop_data_prefix(prefix, &s_x.session, batch);
+        LeaveCriticalSection(&s_x.lock);
+        hop_encode_header(hdr, type, len + HOP_DATA_PREFIX);
+        ok = send_all(c, (const char *)hdr, HOP_HEADER_SIZE) && send_all(c, (const char *)prefix, HOP_DATA_PREFIX);
+    } else if (ok) {
+        hop_encode_header(hdr, type, len);
+        ok = send_all(c, (const char *)hdr, HOP_HEADER_SIZE);
+    }
+    if (ok && len) ok = send_all(c, (const char *)p, len);
     LeaveCriticalSection(&s_txlock);
+    hop_watchdog_end(send_guard);
     return ok;
 }
 
@@ -472,20 +501,25 @@ static int send_small(SOCKET c, uint8_t type, const uint8_t *p, uint32_t len) {
  * 数据直接读进发送缓冲的 CHUNK_HDR 处，省掉一次内存拷贝。
  * 每块带 CRC32：TCP 的 16 位校验和配合网卡 offload 有可能漏检，
  * GB 级传输漏检一次就是静默损坏。 */
-#define CHUNK_HDR 25u   /* 5 帧头 + 4 id + 8 off + 4 len + 4 crc */
+#define CHUNK_HDR (25u + HOP_DATA_PREFIX)   /* 5 帧头 + 4 id + 8 off + 4 len + 4 crc */
 
 static int send_chunk(SOCKET c, uint8_t *tx, uint32_t batch, uint32_t id, uint64_t off,
                       const uint8_t *data, uint32_t len, uint32_t crc) {
-    hop_encode_header(tx, HOP_MSG_FILE_CHUNK, 20 + len);
-    hop_put_be32(tx + 5, id);
-    hop_put_be64(tx + 9, off);
-    hop_put_be32(tx + 17, len);
-    hop_put_be32(tx + 21, crc);
+    int send_guard = hop_watchdog_begin("data frame send", 10000);
+    hop_encode_header(tx, HOP_MSG_FILE_CHUNK, 20 + HOP_DATA_PREFIX + len);
+    hop_put_be32(tx + HOP_DATA_PREFIX + 5, id);
+    hop_put_be64(tx + HOP_DATA_PREFIX + 9, off);
+    hop_put_be32(tx + HOP_DATA_PREFIX + 17, len);
+    hop_put_be32(tx + HOP_DATA_PREFIX + 21, crc);
     if (data != tx + CHUNK_HDR) memcpy(tx + CHUNK_HDR, data, len);
     EnterCriticalSection(&s_txlock);
+    EnterCriticalSection(&s_x.lock);
+    hop_data_prefix(tx + HOP_HEADER_SIZE, &s_x.session, batch);
+    LeaveCriticalSection(&s_x.lock);
     int ok = send_session_current(c) && send_all(c, (const char *)tx, (int)(CHUNK_HDR + len));
     LeaveCriticalSection(&s_txlock);
     if(ok) status_chunk(HOP_XFER_DIR_SEND,batch,id,off,len);
+    hop_watchdog_end(send_guard);
     return ok;
 }
 
@@ -604,7 +638,7 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
     hop_put_be16(bp + o, (uint16_t)plen); o += 2;
     memcpy(bp + o, e->rel, plen); o += plen;
 
-    int ok = send_small(c, HOP_MSG_FILE_BEGIN, bp, blen);
+    int ok = send_small(c, HOP_MSG_FILE_BEGIN, bp, blen, batch);
     free(bp);
     if (!ok) return XFER_SEND_DEAD;
 
@@ -617,10 +651,12 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
     int      local_fail = 0;
 
     if (!(e->flags & HOP_FILE_FLAG_DIR) && e->size > 0) {
+        int open_guard = hop_watchdog_begin("file open", HOP_IO_DEADLINE_MS);
         HANDLE h = CreateFileW(e->full, GENERIC_READ,
                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                NULL, OPEN_EXISTING,
                                FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+        hop_watchdog_end(open_guard);
         if (h == INVALID_HANDLE_VALUE) {
             hop_log(HOP_LOG_WARN, "xfer: open failed, %s (err %lu)",
                     e->rel, GetLastError());
@@ -630,8 +666,10 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
             uint64_t off = 0;
             for (;;) {
                 DWORD got = 0;
-                if (!ReadFile(h, tx + CHUNK_HDR, (DWORD)s_x.chunk, &got, NULL) || got == 0)
-                    break;
+                int read_guard = hop_watchdog_begin("file chunk read", HOP_IO_DEADLINE_MS);
+                int read_ok = ReadFile(h, tx + CHUNK_HDR, (DWORD)s_x.chunk, &got, NULL);
+                hop_watchdog_end(read_guard);
+                if (!read_ok || got == 0) break;
                 uint32_t ccrc = hop_crc32(0, tx + CHUNK_HDR, got);
                 if (!send_chunk(c, tx, batch, id, off, tx + CHUNK_HDR, got, ccrc)) {
                     CloseHandle(h);
@@ -655,7 +693,7 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
     hop_put_be32(endp, id);
     endp[4] = end_status;
     hop_put_be32(endp + 5, fcrc);
-    if (!send_small(c, HOP_MSG_FILE_END, endp, 9)) return XFER_SEND_DEAD;
+    if (!send_small(c, HOP_MSG_FILE_END, endp, 9, batch)) return XFER_SEND_DEAD;
 
     /* 本地就没读成功，没必要再等回执：接收端那份注定是残缺的，
      * 等到的结论也只会是"失败"。直接进重试。 */
@@ -671,7 +709,7 @@ static int send_image_job(SOCKET c, uint8_t *tx, xfer_job *j) {
     hop_put_be32(bp + 8, (uint32_t)j->w);
     hop_put_be32(bp + 12, (uint32_t)j->h);
     hop_put_be32(bp + 16, (uint32_t)j->stride);
-    if (!send_small(c, HOP_MSG_IMAGE_BEGIN, bp, 20)) return 0;
+    if (!send_small(c, HOP_MSG_IMAGE_BEGIN, bp, 20, j->batch)) return 0;
 
     uint64_t total = (uint64_t)j->stride * (uint64_t)j->h;
     uint64_t off = 0;
@@ -687,7 +725,7 @@ static int send_image_job(SOCKET c, uint8_t *tx, xfer_job *j) {
     hop_put_be32(endp, 1);
     endp[4] = HOP_FILE_OK;
     hop_put_be32(endp + 5, 0);
-    return send_small(c, HOP_MSG_FILE_END, endp, 9);
+    return send_small(c, HOP_MSG_FILE_END, endp, 9, j->batch);
 }
 
 /* 收尾：告诉接收端本批实际送达了多少。
@@ -699,7 +737,7 @@ static int send_done(SOCKET c, const xfer_job *j) {
     hop_put_be32(dp + 4,  (uint32_t)j->ok);
     hop_put_be32(dp + 8,  hop_xfer_job_total(j->is_image,j->n));
     hop_put_be64(dp + 12, 0);
-    return send_small(c, HOP_MSG_XFER_DONE, dp, 20);
+    return send_small(c, HOP_MSG_XFER_DONE, dp, 20, j->batch);
 }
 
 /* run_job 的结局 */
@@ -710,6 +748,7 @@ static int send_done(SOCKET c, const xfer_job *j) {
 
 /* 实际发送（send 线程持有 tx 缓冲）。 */
 static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
+
     if(cancel_requested(j->batch))return JOB_CANCELLED;
     if(peer_aborted(j->batch))return JOB_PEER_ABORT;
     if (j->is_image) {
@@ -800,7 +839,7 @@ static void send_abort_msg(SOCKET c, uint32_t batch, uint8_t reason) {
     uint8_t ab[5];
     hop_put_be32(ab, batch);
     ab[4] = reason;
-    send_small(c, HOP_MSG_XFER_ABORT, ab, 5);
+    send_small(c, HOP_MSG_XFER_ABORT, ab, 5, batch);
 }
 
 /* 接收线程调用：把一个文件的结论真正发回对端。
@@ -810,7 +849,7 @@ static void send_ack(SOCKET c, uint32_t batch, uint32_t id, int status) {
     hop_put_be32(b, batch);
     hop_put_be32(b + 4, id);
     b[8] = (uint8_t)status;
-    send_small(c, HOP_MSG_FILE_ACK, b, 9);
+    send_small(c, HOP_MSG_FILE_ACK, b, 9, batch);
 }
 
 static DWORD WINAPI send_thread(LPVOID arg) {
@@ -835,6 +874,7 @@ static DWORD WINAPI send_thread(LPVOID arg) {
             EnterCriticalSection(&s_x.lock);
             SOCKET c = s_x.peer_ready ? s_x.client : INVALID_SOCKET;
             s_send_epoch = s_x.epoch;
+            hop_session_id transport_session = s_x.session;
             xfer_job *j = NULL, *expired = NULL;
             uint64_t now = now_ms();
 
@@ -873,6 +913,7 @@ static DWORD WINAPI send_thread(LPVOID arg) {
             }
 
             if (!j) break;
+            job_bind_session(j, &transport_session);
             status_start_job(j);
 
             int r = run_job(c, tx, j);
@@ -1102,7 +1143,7 @@ int xfer_submit_paths(const wchar_t *const *paths, int n) {
     xfer_job *j = (xfer_job *)calloc(1, sizeof(*j));
     if (!j) { elist_free(&l); return 0; }
 
-    j->batch = InterlockedIncrement((LONG *)&s_x.batch_seq);
+    do { j->batch = InterlockedIncrement((LONG *)&s_x.batch_seq); } while (!j->batch);
     j->n = l.n;
     j->e = l.v;                 /* 直接接管 */
 
@@ -1131,7 +1172,7 @@ int xfer_submit_image(const uint8_t *bgra, int w, int h, int stride) {
     xfer_job *j = (xfer_job *)calloc(1, sizeof(*j));
     if (!j) { free(copy); return 0; }
 
-    j->batch = InterlockedIncrement((LONG *)&s_x.batch_seq);
+    do { j->batch = InterlockedIncrement((LONG *)&s_x.batch_seq); } while (!j->batch);
     j->is_image = 1;
     j->pixels = copy;
     j->w = w; j->h = h; j->stride = stride;

@@ -9,7 +9,8 @@ $sources = @(
     (Join-Path $root 'src/core/crc32.c'),
     (Join-Path $root 'src/core/config.c'),
     (Join-Path $root 'src/core/keymap.c'),
-    (Join-Path $root 'src/core/xfer_validate.c')
+    (Join-Path $root 'src/core/xfer_validate.c'),
+    (Join-Path $root 'src/core/update_manifest.c')
 )
 $inc = Join-Path $root 'src/core'
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
@@ -47,3 +48,7 @@ if ($LASTEXITCODE -ne 0) { throw "Progressing watchdog operation unexpectedly fa
 if ($LASTEXITCODE -ne 70) { throw "Watchdog did not fail-stop a stalled operation" }
 
 $global:LASTEXITCODE = 0 # Expected watchdog exit 70 is a successful test.
+
+& python (Join-Path $root 'scripts/test-updates.py')
+if ($LASTEXITCODE -ne 0) { throw "Update lifecycle regressions failed" }
+& (Join-Path $PSScriptRoot 'test-update-windows.ps1')

@@ -12,7 +12,9 @@
 extern "C" {
 #endif
 
-#define HOP_VERSION        "0.1.0"
+#ifndef HOP_VERSION
+#define HOP_VERSION        "0.5.0"
+#endif
 #define HOP_DEFAULT_PORT   24817
 #define HOP_DATA_PORT      24818         /* 文件数据通道，与控制通道分离 */
 #define HOP_TOKEN_MAX      128

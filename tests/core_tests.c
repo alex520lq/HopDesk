@@ -3,6 +3,7 @@
  * These tests intentionally exercise only platform-independent code.
  */
 #include "hop.h"
+#include "update_manifest.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -437,6 +438,45 @@ static void test_file_end_ack_abort_done_decoders(void) {
     CHECK(!hop_xfer_decode_done(donep,19,&d));
     CHECK(!hop_xfer_decode_done(donep,21,&d));
 }
+
+static void test_update_manifest_validation(void) {
+    const char manifest[] =
+        "format=1\n"
+        "version=0.5.1\n"
+        "tag=v0.5.1\n"
+        "windows_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v0.5.1/HopDesk-Windows.zip\n"
+        "windows_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        "macos_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v0.5.1/HopDesk-macOS.zip\n"
+        "macos_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+        "notes_url=https://github.com/alex520lq/HopDesk-Releases/releases/tag/v0.5.1\n";
+    hop_update_manifest parsed;
+    int valid = 0;
+    CHECK(hop_update_manifest_parse(manifest, sizeof(manifest) - 1, &parsed));
+    CHECK(strcmp(parsed.version, "0.5.1") == 0);
+    CHECK(strcmp(parsed.tag, "v0.5.1") == 0);
+    CHECK(strcmp(parsed.windows_sha256, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") == 0);
+    CHECK(hop_version_compare("0.5.0", "0.5.1", &valid) < 0 && valid);
+    CHECK(hop_version_compare("1.0.0", "0.9.99", &valid) > 0 && valid);
+    CHECK(hop_version_compare("0.5.1", "0.5.1", &valid) == 0 && valid);
+    CHECK(hop_version_compare("0.5.1-dev", "0.5.1", &valid) == 0 && !valid);
+
+    char tampered[sizeof(manifest) + 1];
+    memcpy(tampered, manifest, sizeof(manifest));
+    char *url = strstr(tampered, "https://github.com/alex520lq/HopDesk-Releases");
+    CHECK(url != NULL);
+    if (url) url[8] = 'x';
+    CHECK(!hop_update_manifest_parse(tampered, sizeof(manifest) - 1, &parsed));
+
+    const char duplicate[] =
+        "format=1\nversion=0.5.1\nversion=0.5.2\n"
+        "tag=v0.5.1\nwindows_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v0.5.1/HopDesk-Windows.zip\n"
+        "windows_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        "macos_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v0.5.1/HopDesk-macOS.zip\n"
+        "macos_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+        "notes_url=https://github.com/alex520lq/HopDesk-Releases/releases/tag/v0.5.1\n";
+    CHECK(!hop_update_manifest_parse(duplicate, sizeof(duplicate) - 1, &parsed));
+}
+
 int main(void) {
     hop_crc32_init();
 
@@ -460,6 +500,7 @@ int main(void) {
     test_file_begin_decode();
     test_image_begin_decode();
     test_file_end_ack_abort_done_decoders();
+    test_update_manifest_validation();
 
     if (g_failures) {
         fprintf(stderr, "HopDesk core tests: %d failure(s)\n", g_failures);

@@ -11,6 +11,7 @@
  * ===================================================================== */
 #include "mac_app.h"
 #include "xfer.h"
+#include "../core/update_state.h"
 #include "../core/xfer_tracking.h"
 
 #include <arpa/inet.h>
@@ -1053,7 +1054,8 @@ int xfer_busy(void) {
     b = (s_x.cur_batch != 0 || s_x.q_head != NULL);
     pthread_mutex_unlock(&s_x.qlock);
     pthread_mutex_lock(&s_status_lock);
-    b=b||s_receive_status.status.active;
+    /* Include a sender between dequeue/completion and retry requeue. */
+    b=b||s_send_status.status.active||s_receive_status.status.active;
     pthread_mutex_unlock(&s_status_lock);
     return b;
 }
@@ -1090,7 +1092,7 @@ static int submit(xf_job *j) {
     return 1;
 }
 
-int xfer_submit_paths(const char *const *paths, int n) {
+static int xfer_submit_paths_impl(const char *const *paths, int n) {
     if (!paths || n <= 0) return 0;
     if (!xfer_connected()) {
         hop_log(HOP_LOG_WARN, "xfer: data channel not connected, drop %d path(s)", n);
@@ -1125,7 +1127,7 @@ int xfer_submit_paths(const char *const *paths, int n) {
     return submit(j);
 }
 
-int xfer_submit_image(const uint8_t *bgra, int w, int h, int stride) {
+static int xfer_submit_image_impl(const uint8_t *bgra, int w, int h, int stride) {
     if (!bgra || w <= 0 || h <= 0 || stride < w * 4) return 0;
     if (!xfer_connected()) {
         hop_log(HOP_LOG_WARN, "xfer: data channel not connected, drop image");
@@ -1155,4 +1157,18 @@ void xfer_kick(void) {
     pthread_mutex_lock(&s_x.slock);
     if (s_x.sock >= 0) shutdown(s_x.sock, SHUT_RDWR);
     pthread_mutex_unlock(&s_x.slock);
+}
+
+int xfer_submit_paths(const char *const *paths, int n) {
+    if (!hop_update_work_enter()) return 0;
+    int result = xfer_submit_paths_impl(paths, n);
+    hop_update_work_leave();
+    return result;
+}
+
+int xfer_submit_image(const uint8_t *bgra, int w, int h, int stride) {
+    if (!hop_update_work_enter()) return 0;
+    int result = xfer_submit_image_impl(bgra, w, h, stride);
+    hop_update_work_leave();
+    return result;
 }

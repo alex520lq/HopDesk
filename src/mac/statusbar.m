@@ -5,11 +5,17 @@
 #import <Cocoa/Cocoa.h>
 #include "mac_app.h"
 #include "xfer.h"
+#include "update_manifest.h"
+#include "../core/update_state.h"
+#include <CommonCrypto/CommonDigest.h>
+#include <stdio.h>
+#include <strings.h>
+#include <unistd.h>
 
 /* ---- 退出动作的 target ----
  * 必须显式声明 NSMenuItemValidation：10.14 之后 NSMenu 只对声明了该协议的
  * target 调用 validateMenuItem:，否则"取消当前传输"永远是亮的。 */
-@interface HopController : NSObject <NSMenuItemValidation>
+@interface HopController : NSObject <NSMenuItemValidation, NSWindowDelegate>
 - (void)doQuit:(id)sender;
 - (void)doWake:(id)sender;
 - (void)doInputWin:(id)sender;
@@ -17,9 +23,15 @@
 - (void)doTransfers:(id)sender;
 - (void)doRetryFile:(id)sender;
 - (void)doToggleFolder:(id)sender;
+- (void)doCheckUpdates:(id)sender;
+- (void)windowWillClose:(NSNotification *)notification;
 @end
 static void retry_selected_mac_file(void);
 static void toggle_selected_mac_folder(void);
+static BOOL s_updateBusy;
+static void check_for_updates(void);
+static NSWindow *s_transferWindow;
+static NSTimer *s_transferTimer;
 @implementation HopController
 - (void)doQuit:(id)sender {
     (void)sender;
@@ -43,18 +55,24 @@ static void toggle_selected_mac_folder(void);
 - (void)doTransfers:(id)sender { (void)sender; statusbar_show_transfers(); }
 - (void)doRetryFile:(id)sender { (void)sender; retry_selected_mac_file(); }
 - (void)doToggleFolder:(id)sender { (void)sender; toggle_selected_mac_folder(); }
+- (void)doCheckUpdates:(id)sender { (void)sender; check_for_updates(); }
 /* 菜单打开时自动校验：没有传输在进行就把"取消"变灰。
  * NSMenu 默认 autoenablesItems，走的就是这个入口。 */
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
     if ([item action] == @selector(doCancelXfer:)) return xfer_busy() != 0;
+    if ([item action] == @selector(doCheckUpdates:)) return !s_updateBusy;
     return YES;
+}
+- (void)windowWillClose:(NSNotification *)notification {
+    if (notification.object != s_transferWindow) return;
+    [s_transferTimer invalidate];
+    s_transferTimer = nil;
 }
 @end
 
 static NSStatusItem *s_item;
 static NSMenuItem   *s_state;
 static HopController *s_ctrl;
-static NSWindow *s_transferWindow;
 static NSTextField *s_transferTitle, *s_transferDetail, *s_transferCounts;
 static NSProgressIndicator *s_transferProgress;
 static NSTextView *s_transferHistory, *s_transferFiles;
@@ -135,6 +153,224 @@ static void set_appearance(int connected, int sharing) {
                   : @"等待连接…";
 }
 
+
+static void update_alert(NSString *title, NSString *message, NSAlertStyle style) {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = title ?: @"HopDesk 更新";
+    alert.informativeText = message ?: @"";
+    alert.alertStyle = style;
+    [alert addButtonWithTitle:@"好"];
+    [alert runModal];
+}
+
+static BOOL update_file_sha256(NSString *path, const char *expected) {
+    FILE *file = fopen(path.fileSystemRepresentation, "rb");
+    CC_SHA256_CTX ctx;
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    unsigned char buffer[64 * 1024];
+    char hex[CC_SHA256_DIGEST_LENGTH * 2 + 1];
+    size_t n;
+    if (!file) return NO;
+    CC_SHA256_Init(&ctx);
+    while ((n = fread(buffer, 1, sizeof(buffer), file)) > 0)
+        CC_SHA256_Update(&ctx, buffer, (CC_LONG)n);
+    BOOL readOK = !ferror(file);
+    fclose(file);
+    if (!readOK) return NO;
+    CC_SHA256_Final(digest, &ctx);
+    for (NSUInteger i = 0; i < CC_SHA256_DIGEST_LENGTH; ++i)
+        snprintf(hex + i * 2, 3, "%02x", digest[i]);
+    hex[sizeof(hex) - 1] = '\0';
+    return strcasecmp(hex, expected) == 0;
+}
+
+static void start_update_download(hop_update_manifest manifest) {
+    NSURL *url = [NSURL URLWithString:[NSString stringWithUTF8String:manifest.macos_url]];
+    if (!url) {
+        s_updateBusy = NO;
+        update_alert(@"更新失败", @"更新下载地址无效。", NSAlertStyleCritical);
+        return;
+    }
+
+    NSURLSessionDownloadTask *download = [[NSURLSession sharedSession]
+        downloadTaskWithURL:url completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+        NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
+        if (error || !location || !http || http.statusCode != 200) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                s_updateBusy = NO;
+                update_alert(@"下载失败", error.localizedDescription ?: @"GitHub 没有返回有效的安装包。", NSAlertStyleCritical);
+            });
+            return;
+        }
+
+        NSError *fileError = nil;
+        NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:location.path error:&fileError];
+        unsigned long long size = [attrs[NSFileSize] unsignedLongLongValue];
+        if (fileError || size == 0 || size > 512ull * 1024ull * 1024ull) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                s_updateBusy = NO;
+                update_alert(@"下载失败", @"安装包大小无效或超过 512 MB，已拒绝安装。", NSAlertStyleCritical);
+            });
+            return;
+        }
+
+        NSString *archive = [NSTemporaryDirectory() stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"HopDesk-update-%@.zip", [[NSUUID UUID] UUIDString]]];
+        if (![[NSFileManager defaultManager] moveItemAtURL:location
+            toURL:[NSURL fileURLWithPath:archive] error:&fileError]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                s_updateBusy = NO;
+                update_alert(@"下载失败", fileError.localizedDescription ?: @"无法保存安装包。", NSAlertStyleCritical);
+            });
+            return;
+        }
+        if (!update_file_sha256(archive, manifest.macos_sha256)) {
+            [[NSFileManager defaultManager] removeItemAtPath:archive error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                s_updateBusy = NO;
+                update_alert(@"安全校验失败", @"安装包 SHA-256 与更新清单不一致。旧版本未被修改。", NSAlertStyleCritical);
+            });
+            return;
+        }
+
+        NSString *helper = [[NSBundle mainBundle] pathForResource:@"update-macos" ofType:@"command"];
+        NSString *helperCopy = [NSTemporaryDirectory() stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"HopDesk-updater-%@.command", [[NSUUID UUID] UUIDString]]];
+        NSString *appPath = [[NSBundle mainBundle] bundlePath];
+        if (!helper || ![[NSFileManager defaultManager] copyItemAtPath:helper toPath:helperCopy error:&fileError]) {
+            [[NSFileManager defaultManager] removeItemAtPath:archive error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                s_updateBusy = NO;
+                update_alert(@"更新失败", @"当前安装缺少更新辅助程序，请先安装包含自动更新功能的版本。", NSAlertStyleCritical);
+            });
+            return;
+        }
+
+        if (!hop_update_install_begin(xfer_busy)) {
+            [[NSFileManager defaultManager] removeItemAtPath:archive error:nil];
+            [[NSFileManager defaultManager] removeItemAtPath:helperCopy error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                s_updateBusy = NO;
+                update_alert(@"暂不能安装", @"传输已开始或仍在扫描，请等待完成后重试。", NSAlertStyleWarning);
+            });
+            return;
+        }
+        NSString *nonce = [[[NSUUID UUID] UUIDString] stringByReplacingOccurrencesOfString:@"-" withString:@""];
+        nonce = [nonce lowercaseString];
+        NSString *transaction = [NSTemporaryDirectory() stringByAppendingPathComponent:
+            [@"HopDesk-update-" stringByAppendingString:nonce]];
+        if (![[NSFileManager defaultManager] createDirectoryAtPath:transaction withIntermediateDirectories:NO
+            attributes:@{NSFilePosixPermissions:@0700} error:&fileError]) {
+            hop_update_install_end();
+            [[NSFileManager defaultManager] removeItemAtPath:archive error:nil];
+            [[NSFileManager defaultManager] removeItemAtPath:helperCopy error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                s_updateBusy = NO;
+                update_alert(@"更新失败", @"无法创建更新事务。", NSAlertStyleCritical);
+            });
+            return;
+        }
+        NSTask *installer = [[NSTask alloc] init];
+        installer.executableURL = [NSURL fileURLWithPath:@"/bin/bash"];
+        installer.arguments = @[helperCopy, archive, appPath,
+                                [NSString stringWithFormat:@"%d", getpid()], transaction, nonce,
+                                [NSString stringWithUTF8String:manifest.version]];
+        NSError *launchError = nil;
+        BOOL launched = [installer launchAndReturnError:&launchError];
+        BOOL prepared = NO;
+        NSString *preparedFile = [transaction stringByAppendingPathComponent:@"prepared"];
+        if (launched) {
+            for (int i=0;i<240 && installer.running;i++) {
+                NSString *ack = [NSString stringWithContentsOfFile:preparedFile encoding:NSUTF8StringEncoding error:nil];
+                if ([[ack stringByTrimmingCharactersInSet:[NSCharacterSet newlineCharacterSet]] isEqualToString:nonce]) {
+                    prepared = YES; break;
+                }
+                [NSThread sleepForTimeInterval:0.25];
+            }
+        }
+        [[NSFileManager defaultManager] removeItemAtPath:helperCopy error:nil];
+        if (!prepared) {
+            if (installer.running) [installer terminate];
+            if (!launched) [[NSFileManager defaultManager] removeItemAtPath:transaction error:nil];
+            hop_update_install_end();
+            // The old process is alive: the helper cannot have replaced it.
+            [[NSFileManager defaultManager] removeItemAtPath:archive error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                s_updateBusy = NO;
+                update_alert(@"更新失败", launchError.localizedDescription ?: @"安装准备失败，当前版本继续运行。", NSAlertStyleCritical);
+            });
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            net_request_stop();
+            [NSApp terminate:nil];
+        });
+    }];
+    [download resume];
+}
+
+static void check_for_updates(void) {
+    if (s_updateBusy) return;
+    if (xfer_busy()) {
+        update_alert(@"暂不能更新", @"当前仍有文件传输任务。请等待传输结束后再更新，避免中断文件传输。",
+                     NSAlertStyleWarning);
+        return;
+    }
+    s_updateBusy = YES;
+    NSURL *url = [NSURL URLWithString:@HOP_UPDATE_MANIFEST_URL];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url
+        cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:20.0];
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession]
+        dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
+        hop_update_manifest manifest;
+        BOOL parsed = !error && data && data.length > 0 &&
+            data.length <= HOP_UPDATE_MANIFEST_MAX &&
+            http && http.statusCode == 200 &&
+            hop_update_manifest_parse((const char *)data.bytes, data.length, &manifest);
+        if (!parsed) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                s_updateBusy = NO;
+                update_alert(@"检查更新失败",
+                    error.localizedDescription ?: @"无法读取有效的更新清单。请检查网络，或稍后重试。",
+                    NSAlertStyleWarning);
+            });
+            return;
+        }
+
+        int valid = 0;
+        int comparison = hop_version_compare(HOP_VERSION, manifest.version, &valid);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!valid) {
+                s_updateBusy = NO;
+                update_alert(@"无法更新", @"当前构建版本不是正式版本，无法执行自动更新。", NSAlertStyleWarning);
+                return;
+            }
+            if (comparison >= 0) {
+                s_updateBusy = NO;
+                update_alert(@"HopDesk 已是最新版本",
+                    [NSString stringWithFormat:@"当前版本：v%s", HOP_VERSION], NSAlertStyleInformational);
+                return;
+            }
+
+            NSAlert *alert = [[NSAlert alloc] init];
+            alert.messageText = [NSString stringWithFormat:@"发现 HopDesk 新版本 v%s", manifest.version];
+            alert.informativeText = [NSString stringWithFormat:
+                @"当前版本：v%s\n\n确认后将自动下载、校验并替换应用，然后重新启动 HopDesk。",
+                HOP_VERSION];
+            alert.alertStyle = NSAlertStyleInformational;
+            [alert addButtonWithTitle:@"下载并安装"];
+            [alert addButtonWithTitle:@"稍后"];
+            if ([alert runModal] == NSAlertFirstButtonReturn) {
+                start_update_download(manifest);
+            } else {
+                s_updateBusy = NO;
+            }
+        });
+    }];
+    [task resume];
+}
+
 void statusbar_init(void) {
     @autoreleasepool {
         NSApplication *app = [NSApplication sharedApplication];
@@ -177,6 +413,14 @@ void statusbar_init(void) {
         transfers.target = s_ctrl;
         [menu addItem:transfers];
 
+        [menu addItem:[NSMenuItem separatorItem]];
+
+
+        NSMenuItem *update = [[NSMenuItem alloc] initWithTitle:@"检查更新…"
+                                                        action:@selector(doCheckUpdates:)
+                                                 keyEquivalent:@""];
+        update.target = s_ctrl;
+        [menu addItem:update];
         [menu addItem:[NSMenuItem separatorItem]];
 
         NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:@"退出 HopDesk"
@@ -295,6 +539,9 @@ void statusbar_show_transfers(void) {
             s_transferWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,620,620)
                 styleMask:(NSWindowStyleMaskTitled|NSWindowStyleMaskClosable)
                 backing:NSBackingStoreBuffered defer:NO];
+            /* Keep the reusable window alive after the user closes it. */
+            s_transferWindow.releasedWhenClosed = NO;
+            s_transferWindow.delegate = s_ctrl;
             s_transferWindow.title = @"HopDesk · 传输管理器";
             NSView *v = s_transferWindow.contentView;
             s_transferTitle = transfer_label(@"暂无传输任务", NSMakeRect(20,580,580,22), 15);
@@ -323,7 +570,9 @@ void statusbar_show_transfers(void) {
             cancel.target=s_ctrl; cancel.action=@selector(doCancelXfer:);
             [v addSubview:s_transferTitle]; [v addSubview:s_transferDetail];
             [v addSubview:s_transferCounts]; [v addSubview:s_transferProgress]; [v addSubview:fileScroll]; [v addSubview:historyScroll]; [v addSubview:toggleFolder]; [v addSubview:s_retryButton]; [v addSubview:cancel];
-            [NSTimer scheduledTimerWithTimeInterval:0.4 repeats:YES block:^(NSTimer *timer) {
+        }
+        if (!s_transferTimer) {
+            s_transferTimer = [NSTimer scheduledTimerWithTimeInterval:0.4 repeats:YES block:^(NSTimer *timer) {
                 (void)timer; transfer_window_refresh();
             }];
         }
@@ -336,7 +585,7 @@ void statusbar_show_transfers(void) {
 void app_run(void) {
     int guard = hop_watchdog_begin("macOS main run loop", 30000);
     NSTimer *timer = [NSTimer timerWithTimeInterval:1 repeats:YES block:^(NSTimer *t) {
-        (void)t; hop_watchdog_ping(guard);
+        (void)t; hop_update_report_ready(HOP_VERSION); hop_watchdog_ping(guard);
     }];
     [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
     [NSApp run];

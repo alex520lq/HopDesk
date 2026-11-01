@@ -25,7 +25,13 @@ $src = @($core.FullName) + @($win.FullName)
 $inc = Join-Path $root 'src/core'
 $iconInc = Join-Path $root 'assets/appicon'
 $out = Join-Path $build 'hopdesk.exe'
-$libs = 'ws2_32', 'dxva2', 'gdi32', 'shell32', 'user32', 'comctl32'
+$version = $env:HOPDESK_VERSION
+if (-not $version) { $version = '0.5.0' }
+if ($version -notmatch '^[0-9]+[.][0-9]+[.][0-9]+$') { throw "Invalid HOPDESK_VERSION: $version" }
+$versionHeader = Join-Path $build 'hop_version.h'
+$headerContent = '#define HOP_VERSION "' + $version + '"'
+Set-Content -LiteralPath $versionHeader -Value $headerContent -Encoding ascii
+$libs = 'ws2_32', 'dxva2', 'gdi32', 'shell32', 'user32', 'comctl32', 'winhttp', 'bcrypt'
 $iconPng = Join-Path $root 'assets/appicon/hopdesk.png'
 $iconIco = Join-Path $root 'assets/appicon/hopdesk.ico'
 $resource = Join-Path $root 'assets/appicon/hopdesk.rc'
@@ -78,7 +84,7 @@ switch ($Compiler) {
         if (-not $clang) { throw '未找到 clang；安装 llvm-mingw（winget install MartinStorsjo.LLVM-MinGW.UCRT）或改用 -Compiler gcc。' }
 
         $libArgs = $libs | ForEach-Object { '-l' + $_ }
-        & $clang --target=x86_64-w64-mingw32 -O2 -Wall -Wextra @clangFlags -I $inc -I $iconInc -o $out $src $res @libArgs
+        & $clang --target=x86_64-w64-mingw32 -O2 -Wall -Wextra @clangFlags -include $versionHeader -I $inc -I $iconInc -o $out $src $res @libArgs
         if ($LASTEXITCODE -ne 0) { throw "clang 编译失败（退出码 $LASTEXITCODE）" }
     }
     'gcc' {
@@ -90,14 +96,14 @@ switch ($Compiler) {
         if (-not $gcc) { throw '未找到 gcc；可运行 w64devkit，或用 -Compiler clang。' }
 
         $libArgs = $libs | ForEach-Object { '-l' + $_ }
-        & $gcc -O2 -Wall -Wextra -municode -mwindows -I $inc -I $iconInc -o $out $src $res @libArgs
+        & $gcc -O2 -Wall -Wextra -municode -mwindows -include $versionHeader -I $inc -I $iconInc -o $out $src $res @libArgs
         if ($LASTEXITCODE -ne 0) { throw "gcc 编译失败（退出码 $LASTEXITCODE）" }
     }
     'msvc' {
         $cl = (Get-Command cl.exe -ErrorAction SilentlyContinue).Source
         if (-not $cl) { throw '未找到 cl.exe；请在 x64 Native Tools for VS 终端运行。' }
         $libArgs = $libs | ForEach-Object { $_ + '.lib' }
-        & cl /nologo /O2 /MT /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I $inc /I $iconInc /Fe:$out /Fo"$build\\" $src $res @libArgs /link /SUBSYSTEM:WINDOWS
+        & cl /nologo /O2 /MT /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /FI$versionHeader /I $inc /I $iconInc /Fe:$out /Fo"$build\\" $src $res @libArgs /link /SUBSYSTEM:WINDOWS
         if ($LASTEXITCODE -ne 0) { throw "cl 编译失败（退出码 $LASTEXITCODE）" }
     }
 }
@@ -110,8 +116,9 @@ if (Test-Path -LiteralPath $out) {
 # Keep optional user-session supervision scripts beside the packaged executable.
 # The existing CI package step archives this directory; no CI permissions change.
 $package = Join-Path $build 'windows-package'
+if (Test-Path -LiteralPath $package) { Remove-Item -LiteralPath $package -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $package | Out-Null
 Copy-Item -LiteralPath $out -Destination (Join-Path $package 'HopDesk.exe') -Force
-foreach ($name in @('install-autostart-windows.ps1', 'supervise-windows.ps1')) {
+foreach ($name in @('install-autostart-windows.ps1', 'supervise-windows.ps1', 'update-windows.ps1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $package -Force
 }

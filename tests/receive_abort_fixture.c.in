@@ -116,7 +116,7 @@ static void assert_terminal(uint32_t batch,uint8_t reason,int before){
     assert(!s_rx.active && !s_rx.batch && s_rx.dead_batch==batch && s_rx.dead_reason==reason);
     assert(!s_rx.cur_path && !s_rx.img && !s_rx.tops && !s_rx.ntop && !s_rx.img_cap && !s_rx.img_expected);
     assert(!s_rx.cur_is_image && !s_rx.cur_id && !s_rx.cur_size && !s_rx.dir[0]);
-    assert(!xfer_busy() && !s_receive_status.status.active && closed);
+    assert(xfer_busy() && !s_receive_status.status.active && closed); /* outgoing state still owns admission */
     assert(saved==before+1 && s_history[0].batch==batch);
     assert(s_history[0].phase==(reason==HOP_ABORT_CANCEL?HOP_XFER_CANCELLED:HOP_XFER_FAILED));
     assert(s_send_status.status.active); /* receiving ABORT cannot end outgoing state */
@@ -164,6 +164,7 @@ int main(void){
     peer_abort(201,HOP_ABORT_CRC);assert_terminal(201,HOP_ABORT_CRC,before);assert(notified==notices);
     peer_abort(201,HOP_ABORT_CRC);assert(saved==before+1);
     assert(applied==0);
+    s_send_status.status.active=0;assert(!xfer_busy()); /* sender retry window is no longer active */
     puts("PASS: production receive ABORT lifecycle, early bounds errors, busy reset, tombstones and once-only history");
     return 0;
 }

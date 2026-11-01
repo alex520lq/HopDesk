@@ -186,7 +186,7 @@ done:
 }
 
 static int launch_installer(HWND owner, const char *url, const char *sha256) {
-    wchar_t temp[MAX_PATH], archive[MAX_PATH], exe[MAX_PATH], helper[MAX_PATH];
+    wchar_t temp[MAX_PATH], archive[MAX_PATH], exe[MAX_PATH], helper[MAX_PATH], helper_run[MAX_PATH];
     wchar_t command[8192], target_dir[MAX_PATH];
     DWORD n;
     STARTUPINFOW si;
@@ -220,11 +220,27 @@ static int launch_installer(HWND owner, const char *url, const char *sha256) {
         return 0;
     }
 
+    /* Run a temporary copy: the helper can then replace the installed script
+     * together with the executable without trying to overwrite itself. */
+    if (swprintf(helper_run, ARRAYSIZE(helper_run), L"%lsHopDesk-update-%lu.ps1",
+                 temp, GetCurrentProcessId()) < 0) {
+        DeleteFileW(archive);
+        return 0;
+    }
+    DeleteFileW(helper_run);
+    if (!CopyFileW(helper, helper_run, TRUE)) {
+        DeleteFileW(archive);
+        MessageBoxW(owner, L"无法准备临时更新辅助程序。旧版本未被修改。",
+                    L"HopDesk 更新", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        return 0;
+    }
+
     if (swprintf(command, ARRAYSIZE(command),
         L"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass "
         L"-File \"%ls\" -Archive \"%ls\" -TargetDir \"%ls\" -ProcessId %lu",
-        helper, archive, target_dir, GetCurrentProcessId()) < 0) {
+        helper_run, archive, target_dir, GetCurrentProcessId()) < 0) {
         DeleteFileW(archive);
+        DeleteFileW(helper_run);
         return 0;
     }
     memset(&si, 0, sizeof(si)); si.cb = sizeof(si);
@@ -232,6 +248,7 @@ static int launch_installer(HWND owner, const char *url, const char *sha256) {
     if (!CreateProcessW(NULL, command, NULL, NULL, FALSE, CREATE_NO_WINDOW,
                         NULL, target_dir, &si, &pi)) {
         DeleteFileW(archive);
+        DeleteFileW(helper_run);
         MessageBoxW(owner, L"无法启动更新辅助程序。旧版本未被修改。",
                     L"HopDesk 更新", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
         return 0;

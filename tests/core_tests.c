@@ -163,6 +163,21 @@ static void test_config_defaults_and_loading(void) {
     CHECK(c.xfer_chunk_kb == 512);
     CHECK(c.disp_win_input == 0x0F);
     CHECK(c.switch_delay_ms == 175);
+
+    /* UI persistence writes a complete config atomically and remains readable. */
+    snprintf(c.device_name, sizeof(c.device_name), "%s", "HopDesk-Test");
+    snprintf(c.mac_input_cmd, sizeof(c.mac_input_cmd), "%s", "m1ddc display 1 set input");
+    c.switch_cooldown_ms = 425;
+    c.edge_margin_px = 48;
+    CHECK(hop_config_save_atomic(&c, path) == 1);
+    hop_config_defaults(&c);
+    CHECK(hop_config_load(&c, path) == 1);
+    CHECK(strcmp(c.device_name, "HopDesk-Test") == 0);
+    CHECK(c.port == 25001 && c.data_port == 25002);
+    CHECK(strcmp(c.token, "test-secret") == 0);
+    CHECK(c.switch_delay_ms == 175 && c.switch_cooldown_ms == 425);
+    CHECK(c.edge_margin_px == 48 && c.disp_win_input == 0x0F);
+    CHECK(c.xfer_chunk_kb == 512);
     remove(path);
 }
 

@@ -17,9 +17,10 @@
  * ===================================================================== */
 #include "app.h"
 
-#define KBD_HELD_MAX 16
+#define KBD_HELD_MAX 256
 
 static HHOOK    s_hook;
+static DWORD s_hook_tick;
 static uint16_t s_held[KBD_HELD_MAX];
 static int      s_nheld;
 
@@ -60,6 +61,7 @@ static LRESULT CALLBACK kbd_proc(int code, WPARAM wp, LPARAM lp) {
     int down;
 
     if (code != HC_ACTION) return CallNextHookEx(s_hook, code, wp, lp);
+    s_hook_tick = GetTickCount();
     if (g_app.state != HOP_LINK_SHARING) return CallNextHookEx(s_hook, code, wp, lp);
 
     k = (KBDLLHOOKSTRUCT *)lp;
@@ -86,4 +88,13 @@ void kbd_init(win_app *app) {
 void kbd_shutdown(void) {
     kbd_release_all();
     if (s_hook) { UnhookWindowsHookEx(s_hook); s_hook = NULL; }
+}
+
+DWORD kbd_hook_tick(void) { return s_hook_tick; }
+void kbd_reinstall(void) {
+    kbd_release_all();
+    if (s_hook) UnhookWindowsHookEx(s_hook);
+    s_hook = SetWindowsHookExW(WH_KEYBOARD_LL, kbd_proc, g_app.inst, 0);
+    s_hook_tick = GetTickCount();
+    if (!s_hook) hop_log(HOP_LOG_ERROR, "capture: keyboard hook reinstall failed: %lu", GetLastError());
 }

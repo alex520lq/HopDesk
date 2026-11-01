@@ -25,7 +25,7 @@ typedef struct {
 typedef BOOL (WINAPI *fn_getnum)(HMONITOR, LPDWORD);
 typedef BOOL (WINAPI *fn_getphys)(HMONITOR, DWORD, PHYS_MON *);
 typedef BOOL (WINAPI *fn_destroy)(DWORD, PHYS_MON *);
-typedef BOOL (WINAPI *fn_setvcp)(HANDLE, BYTE, DWORD, DWORD);
+typedef BOOL (WINAPI *fn_setvcp)(HANDLE, BYTE, DWORD);
 typedef BOOL (WINAPI *fn_getvcp)(HANDLE, BYTE, LPDWORD, LPDWORD, LPDWORD);
 
 #define VCP_INPUT_SOURCE 0x60
@@ -76,7 +76,7 @@ static DWORD open_primary(PHYS_MON **out) {
     return n;
 }
 
-int disp_set_input(uint16_t vcp) {
+static int disp_set_input_sync(uint16_t vcp) {
     PHYS_MON *pm = NULL;
     DWORD n = open_primary(&pm);
     DWORD i;
@@ -87,7 +87,7 @@ int disp_set_input(uint16_t vcp) {
         return 0;
     }
     for (i = 0; i < n; ++i) {
-        if (p_setvcp(pm[i].hPhysicalMonitor, VCP_INPUT_SOURCE, (DWORD)vcp, 0))
+        if (p_setvcp(pm[i].hPhysicalMonitor, VCP_INPUT_SOURCE, (DWORD)vcp))
             ok = 1;
         else
             hop_log(HOP_LOG_WARN, "DDC: SetVCPFeature failed on monitor %lu (err %lu)",
@@ -117,4 +117,36 @@ int disp_get_input(uint16_t *out) {
     p_destroy(n, pm);
     free(pm);
     return ok;
+}
+
+/* Only one DDC worker. A blocked monitor must never stall low-level hooks.
+ * Coalesce pending requests to the most recent desired input. */
+static SRWLOCK s_work_lock = SRWLOCK_INIT;
+static int s_working, s_pending;
+static uint16_t s_desired;
+static DWORD WINAPI display_worker(LPVOID arg) {
+    (void)arg;
+    for (;;) {
+        AcquireSRWLockExclusive(&s_work_lock);
+        if (!s_pending) {
+            s_working = 0;
+            ReleaseSRWLockExclusive(&s_work_lock);
+            return 0;
+        }
+        uint16_t vcp = s_desired; s_pending = 0;
+        ReleaseSRWLockExclusive(&s_work_lock);
+        disp_set_input_sync(vcp);
+    }
+}
+int disp_set_input(uint16_t vcp) {
+    AcquireSRWLockExclusive(&s_work_lock);
+    s_desired = vcp; s_pending = 1;
+    if (!s_working) {
+        s_working = 1;
+        HANDLE t = CreateThread(NULL, 0, display_worker, NULL, 0, NULL);
+        if (!t) { s_working = s_pending = 0; ReleaseSRWLockExclusive(&s_work_lock); return 0; }
+        CloseHandle(t);
+    }
+    ReleaseSRWLockExclusive(&s_work_lock);
+    return 1; /* accepted, not proof that the monitor switched */
 }

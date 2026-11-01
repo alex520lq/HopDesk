@@ -135,8 +135,12 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             clip_on_worker_message((UINT)wp, (HGLOBAL)lp);
             return 0;
         case WM_APP_TRAY:
-            if (LOWORD(lp) == WM_LBUTTONUP || LOWORD(lp) == WM_RBUTTONUP)
+            if (LOWORD(lp) == WM_LBUTTONUP || LOWORD(lp) == NIN_SELECT ||
+                LOWORD(lp) == NIN_KEYSELECT) {
+                ui_show_main(&g_app);
+            } else if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) {
                 ui_show_menu(&g_app);
+            }
             return 0;
         case WM_CLIPBOARDUPDATE:
             clip_on_update();
@@ -162,6 +166,8 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         case WM_COMMAND:
             switch (LOWORD(wp)) {
+                case 1090: ui_show_main(&g_app); return 0;
+                case 1091: DestroyWindow(h); return 0;
                 case 1001: capture_force_toggle(); return 0;
                 case 1002: DestroyWindow(h); return 0;
                 case 1003: disp_switch_to_mac(); return 0;

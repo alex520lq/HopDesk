@@ -80,6 +80,8 @@ int main(int argc, char **argv) {
     (void)mkdir(support, 0700);
     snprintf(config, sizeof(config), "%s/hopdesk.conf", support);
     snprintf(log, sizeof(log), "%s/hopdesk.log", support);
+    snprintf(g_mac.config_path, sizeof(g_mac.config_path), "%s", config);
+    snprintf(g_mac.log_path, sizeof(g_mac.log_path), "%s", log);
 
     hop_log_open(log);
     const char *loaded_from=config;

@@ -54,6 +54,11 @@ void statusbar_init(void);
 void statusbar_update(int connected, int sharing);
 void statusbar_show_transfers(void);
 void statusbar_show_main(void);
+void statusbar_check_updates(void);
+void main_ui_show_page(int page);
+void main_ui_set_status(int connected, int sharing);
+void main_ui_refresh(void);
+void main_ui_shutdown(void);
 void app_run(void);                 /* 启动 NSApplication 主循环 */
 
 #endif

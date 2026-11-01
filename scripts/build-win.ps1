@@ -116,6 +116,7 @@ if (Test-Path -LiteralPath $out) {
 # Keep optional user-session supervision scripts beside the packaged executable.
 # The existing CI package step archives this directory; no CI permissions change.
 $package = Join-Path $build 'windows-package'
+if (Test-Path -LiteralPath $package) { Remove-Item -LiteralPath $package -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $package | Out-Null
 Copy-Item -LiteralPath $out -Destination (Join-Path $package 'HopDesk.exe') -Force
 foreach ($name in @('install-autostart-windows.ps1', 'supervise-windows.ps1', 'update-windows.ps1')) {

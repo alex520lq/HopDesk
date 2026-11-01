@@ -1,4 +1,4 @@
-name: Auto-merge passing HopDesk PRs
+name: Merge explicitly approved HopDesk PRs
 
 on:
   workflow_run:
@@ -6,38 +6,60 @@ on:
       - Build HopDesk
     types:
       - completed
+  pull_request:
+    types:
+      - labeled
 
 permissions:
+  actions: read
   contents: write
   pull-requests: write
 
 jobs:
   merge:
-    name: Merge successful build
+    name: Merge explicitly approved build
     if: >-
-      ${{ github.event.workflow_run.conclusion == 'success' &&
+      ${{ (github.event_name == 'workflow_run' &&
+          github.event.workflow_run.conclusion == 'success' &&
           github.event.workflow_run.event == 'pull_request' &&
           github.event.workflow_run.pull_requests[0].number != 0 &&
-          github.event.workflow_run.head_repository.full_name == github.repository }}
+          github.event.workflow_run.head_repository.full_name == github.repository) ||
+          (github.event_name == 'pull_request' &&
+          github.event.label.name == 'merge-approved' &&
+          github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
 
     steps:
-      - name: Merge PR after successful build
+      - name: Merge only an explicitly approved PR with the exact successful build
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
-          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
+          PR_NUMBER: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.pull_requests[0].number || github.event.pull_request.number }}
+          EXPECTED_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
 
-          # Do not merge drafts, closed PRs, or a PR whose head moved after this build.
-          pr_state="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json state,isDraft,headRefOid)"
+          pr_state="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json state,isDraft,headRefOid,baseRefName,labels)"
           state="$(jq -r '.state' <<< "$pr_state")"
           is_draft="$(jq -r '.isDraft' <<< "$pr_state")"
           head_sha="$(jq -r '.headRefOid' <<< "$pr_state")"
+          base="$(jq -r '.baseRefName' <<< "$pr_state")"
+          approved="$(jq -r '[.labels[].name] | index("merge-approved") != null' <<< "$pr_state")"
 
-          if [[ "$state" != "OPEN" || "$is_draft" == "true" || "$head_sha" != "$EXPECTED_SHA" ]]; then
-            echo "Skip merge: PR is not open/ready or its head SHA changed."
+          if [[ "$state" != "OPEN" || "$is_draft" == "true" || "$base" != "main" ||
+                "$head_sha" != "$EXPECTED_SHA" || "$approved" != "true" ]]; then
+            echo "Skip merge: PR needs an explicit merge-approved label, must be ready, target main, and retain the tested head SHA."
+            exit 0
+          fi
+
+          runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/runs?per_page=100")"
+          run_id="$(jq -r --arg sha "$EXPECTED_SHA"             '[.workflow_runs[] | select(.event == "pull_request" and .head_sha == $sha)][0].id // empty' <<< "$runs")"
+          if [[ -z "$run_id" ]]; then
+            echo "Skip merge: no Build HopDesk run exists for the exact PR head SHA."
+            exit 0
+          fi
+          run_state="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.status + ":" + (.conclusion // "")')"
+          if [[ "$run_state" != "completed:success" ]]; then
+            echo "Skip merge: exact-head build is not successful ($run_state)."
             exit 0
           fi
 

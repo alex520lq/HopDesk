@@ -6,9 +6,9 @@ $out = Join-Path $build 'hopdesk-ha-control-tests.exe'
 $inc = Join-Path $root 'src/core'
 $sources = @('tests/ha_control_tests.c','src/win/net_server.c','src/win/xfer.c','src/core/crc32.c','src/core/xfer_validate.c','src/core/protocol.c','src/core/clock.c','src/core/log.c','src/core/session.c','src/core/watchdog.c') | ForEach-Object { Join-Path $root $_ }
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
-    & cl.exe /nologo /std:c11 /O2 /W4 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I $inc /Fe:$out @sources ws2_32.lib user32.lib
+    & cl.exe /nologo /std:c11 /O2 /W4 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I $inc /Fe:$out @sources ws2_32.lib user32.lib shell32.lib
 } else {
-    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $out @sources -lws2_32 -luser32
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $out @sources -lws2_32 -luser32 -lshell32
 }
 if ($LASTEXITCODE -ne 0) { throw "HA test compilation failed ($LASTEXITCODE)" }
 & $out

@@ -22,3 +22,19 @@ if ($LASTEXITCODE -ne 0) { throw "Core test compilation failed ($LASTEXITCODE)" 
 if ($LASTEXITCODE -ne 0) { throw "Core tests failed ($LASTEXITCODE)" }
 & python (Join-Path $root 'scripts/test-regressions.py')
 if ($LASTEXITCODE -ne 0) { throw "Targeted regression tests failed ($LASTEXITCODE)" }
+$resilience = Join-Path $build 'hopdesk-resilience-tests.exe'
+$resilienceSources = @(
+    (Join-Path $root 'tests/resilience_tests.c'),
+    (Join-Path $root 'src/core/protocol.c'),
+    (Join-Path $root 'src/core/clock.c'),
+    (Join-Path $root 'src/core/log.c')
+)
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /O2 /W4 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I $inc /Fe:$resilience @resilienceSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $resilience @resilienceSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Resilience test compilation failed ($LASTEXITCODE)" }
+& $resilience (Join-Path $build 'resilience-test.log')
+if ($LASTEXITCODE -ne 0) { throw "Resilience tests failed ($LASTEXITCODE)" }
+& (Join-Path $PSScriptRoot 'test-ha.ps1')

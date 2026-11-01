@@ -13,3 +13,7 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
   "$ROOT/src/core/xfer_validate.c"
 "$BUILD/hopdesk-core-tests"
 python3 "$ROOT/scripts/test-regressions.py"
+clang -std=c11 -Wall -Wextra -Werror -pthread -I "$ROOT/src/core" \
+  -o "$BUILD/hopdesk-resilience-tests" "$ROOT/tests/resilience_tests.c" \
+  "$ROOT/src/core/protocol.c" "$ROOT/src/core/clock.c" "$ROOT/src/core/log.c"
+"$BUILD/hopdesk-resilience-tests" "$BUILD/resilience-test.log"

@@ -47,7 +47,7 @@ typedef void *HGLOBAL;typedef unsigned UINT;typedef int HWND;typedef unsigned DW
 #define hop_log(...) ((void)0)
 static struct {HWND hwnd;} g_app={1};
 static int s_suppress;static DWORD s_suppress_until;
-static HGLOBAL s_pending_global;static UINT s_pending_format;static DWORD s_pending_sequence;
+static HGLOBAL s_pending_global;static UINT s_pending_format;static DWORD s_pending_sequence,s_remote_sequence;
 static int can_open,fail_set,freed;static HGLOBAL clipboard;static DWORD sequence=1;
 static int open_retry(HWND h){(void)h;return can_open;}
 static int EmptyClipboard(void){clipboard=NULL;sequence++;return 1;}
@@ -251,5 +251,11 @@ int main(void){
         assert 'if (!s_rx.active || s_rx.batch != batch) return;' in cases('HOP_MSG_IMAGE_BEGIN','HOP_MSG_FILE_CHUNK')
         if platform=='win':fixture='#define FIXTURE_WINDOWS 1\n'+fixture
         run('abort_'+platform,fixture,['src/core/protocol.c','src/core/crc32.c','src/core/xfer_validate.c'])
+
+    inject=(ROOT/'src/mac/inject.c').read_text(encoding='utf-8')
+    fixture=(ROOT/'tests/inject_release_fixture.c.in').read_text(encoding='utf-8')
+    names=['recompute_flags','mod_index','post','inject_release_all','inject_reset','inject_key','inject_button']
+    fixture=fixture.replace('@FUNCTIONS@','\n'.join(extract(inject,n) for n in names))
+    run('inject_release',fixture,['src/core/keymap.c'])
 
     print('All targeted regressions passed.',flush=True)

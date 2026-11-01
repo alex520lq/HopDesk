@@ -247,6 +247,13 @@ static void set_connected(int on) {
     statusbar_update(on, 0);
 }
 
+void net_request_reconnect(void) {
+    pthread_mutex_lock(&s_lock);
+    if (s_sock >= 0) shutdown(s_sock, SHUT_RDWR);
+    pthread_mutex_unlock(&s_lock);
+    hop_log(HOP_LOG_INFO, "net: reconnect requested from UI");
+}
+
 void net_request_stop(void) {
     s_stop = 1;
     pthread_mutex_lock(&s_lock);

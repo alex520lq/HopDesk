@@ -59,7 +59,10 @@ static int s_visible_indices[HOP_XFER_FILE_LIMIT];
 static int s_visible_count;
 static uint32_t s_file_batch;
 static int s_file_direction;
-\nstatic void refresh_transfers(void);\nstatic void refresh_logs(void);\n
+
+static void refresh_transfers(void);
+static void refresh_logs(void);
+
 static const wchar_t *const kPageNames[UI_PAGE_COUNT] = {
     L"概览", L"连接", L"设置", L"传输", L"日志", L"更新"
 };

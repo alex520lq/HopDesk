@@ -698,7 +698,8 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 /* ---------------- 连接 ---------------- */
 
 static int do_connect(void) {
-    const char *host = g_mac.cfg.peer_host[0] ? g_mac.cfg.peer_host : "192.168.31.8";
+    const char *host = g_mac.cfg.peer_host;
+    if(!host[0])return -1;
     uint16_t port = g_mac.cfg.data_port ? g_mac.cfg.data_port : HOP_DATA_PORT;
 
     return net_connect_timeout(host, port, HOP_CONNECT_TIMEOUT_MS);
@@ -744,6 +745,18 @@ static void rx_cancel_local(void) {
     hop_log(HOP_LOG_INFO, "xfer: batch %u cancelled locally", batch);
 }
 
+static int s_data_listener=-1;
+static int accept_data(void){
+    if(s_data_listener<0){
+        s_data_listener=socket(AF_INET,SOCK_STREAM,0);if(s_data_listener<0)return -1;
+        int yes=1;setsockopt(s_data_listener,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(yes));
+        struct sockaddr_in a;memset(&a,0,sizeof(a));a.sin_family=AF_INET;a.sin_port=htons(g_mac.cfg.data_port);a.sin_addr.s_addr=htonl(INADDR_ANY);
+        if(bind(s_data_listener,(struct sockaddr*)&a,sizeof(a))||listen(s_data_listener,8)){close(s_data_listener);s_data_listener=-1;return -1;}
+    }
+    while(!s_x.stop){fd_set rd;FD_ZERO(&rd);FD_SET(s_data_listener,&rd);struct timeval tv={0,200000};
+        int n=select(s_data_listener+1,&rd,NULL,NULL,&tv);if(n>0)return accept(s_data_listener,NULL,NULL);if(n<0&&errno!=EINTR)return -1;}
+    return -1;
+}
 static void *conn_thread(void *arg) {
     (void)arg;
     hop_decoder *dec = hop_decoder_new(NULL, on_data_frame);
@@ -753,7 +766,7 @@ static void *conn_thread(void *arg) {
     while (!s_x.stop) {
         hop_session_id session;
         if (!hop_session_current(&session)) { usleep(200000); continue; }
-        int s = do_connect();
+        int s = g_mac.cfg.role==HOP_ROLE_SERVER?accept_data():do_connect();
         if (s < 0) {
             /* 退避要能被 stop 打断 —— 否则退出时要等满 10 秒 */
             for (int i = 0; i < backoff * 10 && !s_x.stop; ++i)
@@ -850,6 +863,7 @@ static void *conn_thread(void *arg) {
         if (!s_x.stop) hop_log(HOP_LOG_WARN, "xfer: data channel closed");
     }
 
+    if(s_data_listener>=0){close(s_data_listener);s_data_listener=-1;}
     hop_decoder_free(dec);
     return NULL;
 }

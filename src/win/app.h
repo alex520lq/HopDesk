@@ -37,6 +37,7 @@ typedef struct {
 } win_app;
 
 extern win_app g_app;
+void local_addresses(char *out,size_t cap);
 
 /* mouse_capture.c */
 void capture_init(win_app *app);
@@ -52,6 +53,9 @@ void kbd_shutdown(void);
 DWORD kbd_hook_tick(void);
 void kbd_reinstall(void);
 void kbd_release_all(void);        /* 交还键鼠时松开对端仍按着的键 */
+
+void win_inject_message(uint8_t type,const uint8_t *p,uint32_t len);
+void win_inject_reset(void);
 
 /* clipboard.c */
 void clip_init(HWND hwnd);

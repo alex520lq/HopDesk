@@ -182,7 +182,7 @@ static void refresh_connection(void) {
     swprintf(b, 512, L"控制端口：%u    数据端口：%u",
              (unsigned)g_app.cfg.port, (unsigned)g_app.cfg.data_port);
     set_text(s_connection_ports, b);
-    swprintf(b, 512, L"HopDesk  v%s    ·    %ls", HOP_VERSION, link_state());
+    swprintf(b, 512, L"HopDesk  v%hs    ·    %ls", HOP_VERSION, link_state());
     set_text(s_footer, b);
 }
 static void refresh_logs(void) {
@@ -209,8 +209,7 @@ static void refresh_logs(void) {
     if (!ok) { free(bytes); set_text(s_log_edit, L"读取日志失败。"); return; }
     bytes[got] = 0;
     if (pos.QuadPart > 0) {
-        char *nl = memchr(bytes, '
-', got);
+        char *nl = memchr(bytes, '\n', got);
         if (nl) { size_t skip = (size_t)(nl - bytes) + 1; memmove(bytes, bytes + skip, got - skip + 1); got -= (DWORD)skip; }
     }
     int needed = MultiByteToWideChar(CP_UTF8, 0, bytes, (int)got, NULL, 0);

@@ -15,6 +15,7 @@ typedef struct {
 } mac_app;
 
 extern mac_app g_mac;
+void local_addresses(char *out,size_t cap);
 
 /* net_client.c */
 void net_loop_run(void);                 /* 连接 + 重连 + 接收（后台线程） */
@@ -27,6 +28,10 @@ void net_set_keepalive(int s);
 int net_connect_timeout(const char *host, uint16_t port, unsigned timeout_ms);
 
 /* inject.c */
+void mac_capture_init(void);
+void mac_capture_connected(int connected); /* main queue */
+void mac_capture_return(void); /* main queue */
+void mac_capture_peer_geometry(uint32_t w,uint32_t h);
 void inject_init(void);
 void inject_set_peer_geometry(uint32_t w, uint32_t h);
 void inject_enter(int y);          /* 服务端移交：在边缘对应 y 进入 */

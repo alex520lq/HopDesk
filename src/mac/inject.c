@@ -88,8 +88,8 @@ static double enter_x(void) {
 
 void inject_init(void) {
     CGDirectDisplayID d = CGMainDisplayID();
-    s_w = CGDisplayPixelsWide(d);
-    s_h = CGDisplayPixelsHigh(d);
+    CGRect bounds=CGDisplayBounds(d);
+    s_w=bounds.size.width;s_h=bounds.size.height;
     g_mac.screen_w = s_w;
     g_mac.screen_h = s_h;
     s_inited = 1;
@@ -183,6 +183,9 @@ void inject_enter(int y) {
     s_over = 0;
     s_input.mouse_x = enter_x();
     s_input.mouse_y = y;
+    if(g_mac.cfg.client_edge>=HOP_EDGE_TOP){s_input.mouse_x=y;s_input.mouse_y=g_mac.cfg.client_edge==HOP_EDGE_TOP?margin():s_h-1-margin();}
+    if (s_input.mouse_x < 0) s_input.mouse_x = 0;
+    if (s_input.mouse_x > s_w - 1) s_input.mouse_x = s_w - 1;
     if (s_input.mouse_y < 0) s_input.mouse_y = 0;
     if (s_input.mouse_y > s_h - 1) s_input.mouse_y = s_h - 1;
     s_input.sharing = 1;
@@ -221,24 +224,10 @@ void inject_move(int dx, int dy) {
      * 这是 Deskflow switchDelay 的等价物 —— 那边用"停留时长"，
      * 这边用"越界距离"，因为本端坐标由我们自己维护，距离是确定量，
      * 不需要引入定时器。两者效果一致：贴边不会误触发，必须真的推出去。 */
-    if (g_mac.cfg.client_edge == HOP_EDGE_LEFT) {
-        if (nx < 0) {
-            s_over += -nx;
-            nx = 0;
-            if (s_over >= m) { leave_edge(); return; }
-        } else {
-            s_over = 0;
-        }
-    } else {
-        if (nx > s_w - 1) {
-            s_over += nx - (s_w - 1);
-            nx = s_w - 1;
-            if (s_over >= m) { leave_edge(); return; }
-        } else {
-            s_over = 0;
-        }
-    }
-
+    int edge=g_mac.cfg.client_edge;
+    double beyond=edge==0?-nx:edge==1?nx-s_w+1:edge==2?-ny:ny-s_h+1;
+    if(beyond>0){s_over+=beyond;if(s_over>=m){leave_edge();return;}}else s_over=0;
+    if(nx<0)nx=0;if(nx>s_w-1)nx=s_w-1;
     s_input.mouse_x = nx;
     s_input.mouse_y = ny;
     if (s_input.mouse_y < 0) s_input.mouse_y = 0;

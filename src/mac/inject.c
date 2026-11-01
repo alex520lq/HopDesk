@@ -50,6 +50,7 @@ static int mod_index(int bit) {
 }
 
 static void post(CGEventRef e) {
+    if (!e) return;
     CGEventSetFlags(e, s_flags);
     CGEventPost(kCGHIDEventTap, e);
     CFRelease(e);
@@ -105,6 +106,7 @@ void inject_init(void) {
 }
 
 /* 把仍按着的修饰键全部松开：断线时不能让 Mac 卡住 Cmd */
+static uint8_t s_held_keys[65536 / 8];
 void inject_release_all(void) {
     static const uint16_t pair[4][2] = {
         { 0x38, 0x3C },   /* shift L/R   */
@@ -113,6 +115,23 @@ void inject_release_all(void) {
         { 0x37, 0x36 }    /* command L/R */
     };
     int i, j;
+    for (unsigned kc = 0; kc < 65536u; ++kc) {
+        if (!(s_held_keys[kc / 8] & (1u << (kc % 8)))) continue;
+        s_held_keys[kc / 8] &= (uint8_t)~(1u << (kc % 8));
+        if (hop_mac_key_is_mod((uint16_t)kc)) continue;
+        CGEventRef e = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)kc, 0);
+        post(e);
+    }
+    for (i = 0; i < 3; ++i) {
+        if (!g_mac.btn_held[i]) continue;
+        CGPoint pt = CGPointMake(g_mac.mouse_x, g_mac.mouse_y);
+        CGMouseButton button = i == HOP_BTN_RIGHT ? kCGMouseButtonRight :
+                               i == HOP_BTN_MIDDLE ? kCGMouseButtonCenter : kCGMouseButtonLeft;
+        CGEventType type = i == HOP_BTN_RIGHT ? kCGEventRightMouseUp :
+                           i == HOP_BTN_MIDDLE ? kCGEventOtherMouseUp : kCGEventLeftMouseUp;
+        post(CGEventCreateMouseEvent(NULL, type, pt, button));
+        g_mac.btn_held[i] = 0;
+    }
 
     for (i = 0; i < 4; ++i) {
         if (!s_modn[i]) continue;
@@ -173,6 +192,7 @@ void inject_enter(int y) {
 
 static void leave_edge(void) {
     s_over = 0;
+    inject_release_all();
     g_mac.sharing = 0;
     net_send(HOP_MSG_EDGE_LEAVE,
              (uint8_t[]){ (uint8_t)g_mac.cfg.client_edge }, 1);
@@ -228,7 +248,8 @@ void inject_button(int button, int down) {
     CGEventType t;
     CGEventRef e;
 
-    if (!g_mac.sharing) inject_enter((int)(s_h / 2));
+    if (button < 0 || button >= 3) return;
+    if (!g_mac.sharing && down) inject_enter((int)(s_h / 2));
     pt = CGPointMake(g_mac.mouse_x, g_mac.mouse_y);
 
     b = button == HOP_BTN_RIGHT  ? kCGMouseButtonRight
@@ -264,10 +285,13 @@ void inject_key(uint16_t kc, int down) {
 
     if (!s_inited) inject_init();
     bit = hop_mac_key_is_mod(kc);
+    int was_held = (s_held_keys[kc / 8] & (1u << (kc % 8))) != 0;
+    if (down) s_held_keys[kc / 8] |= (uint8_t)(1u << (kc % 8));
+    else s_held_keys[kc / 8] &= (uint8_t)~(1u << (kc % 8));
 
     /* 大写锁定是"切换"语义，只在按下时翻转 AlphaShift */
     if (bit == HOP_MOD_CAPS) {
-        if (!down) return;
+        if (!down || was_held) return;
         s_caps = !s_caps;
         recompute_flags();
         e = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)kc, 1);
@@ -279,8 +303,8 @@ void inject_key(uint16_t kc, int down) {
     if (bit) {
         i = mod_index(bit);
         if (i >= 0) {
-            if (down) { if (s_modn[i] < 255) s_modn[i]++; }
-            else      { if (s_modn[i]) s_modn[i]--; }
+            if (down && !was_held) { if (s_modn[i] < 255) s_modn[i]++; }
+            else if (!down && was_held) { if (s_modn[i]) s_modn[i]--; }
             recompute_flags();
         }
         e = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)kc, down ? 1 : 0);

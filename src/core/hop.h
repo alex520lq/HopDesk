@@ -210,7 +210,10 @@ int      hop_mac_key_is_mod(uint16_t mac_key);  /* 返回 HOP_MOD_* 位，非修
 /* ---- 日志 ---- */
 typedef enum { HOP_LOG_INFO, HOP_LOG_WARN, HOP_LOG_ERROR } hop_log_level;
 void hop_log_set(int enable);
-void hop_log_open(const char *path);   /* NULL = 输出到 stderr */
+/* NULL = 输出到 stderr。路径为 UTF-8。文件超过 HOP_LOG_ROTATE_BYTES 时
+ * 轮转为 <path>.1（只留一份旧日志），常驻进程的日志不会无限增长。线程安全。 */
+#define HOP_LOG_ROTATE_BYTES (5L * 1024L * 1024L)
+void hop_log_open(const char *path);
 void hop_log(hop_log_level lvl, const char *fmt, ...);
 
 /* ---- 帧编解码 ---- */
@@ -226,9 +229,72 @@ typedef struct hop_decoder hop_decoder;
 typedef void (*hop_on_message)(void *user, uint8_t type,
                                const uint8_t *payload, uint32_t plen);
 hop_decoder *hop_decoder_new(void *user, hop_on_message cb);
-void         hop_decoder_feed(hop_decoder *d, const uint8_t *buf, uint32_t n);
+/* 返回 1 = 正常；0 = 流已损坏（帧长超限 / 内存不足），解码器进入粘滞失败态，
+ * 之后的 feed 一律返回 0、不再回调，直到 reset。
+ *
+ * 为什么不"丢掉这一帧继续解"：TCP 是字节流，长度字段一旦不可信，
+ * 下一帧的起点就无从知道 —— 把垃圾当新帧头继续解只会制造更多错帧
+ * （例如把文件数据当成 KEY_DOWN 注入）。唯一正确的恢复是断开连接、
+ * 让两端在新连接上从帧边界重新开始。调用方看到 0 必须关闭连接。 */
+int          hop_decoder_feed(hop_decoder *d, const uint8_t *buf, uint32_t n);
+int          hop_decoder_failed(const hop_decoder *d);
 void         hop_decoder_reset(hop_decoder *d);
 void         hop_decoder_free(hop_decoder *d);
+
+/* ---- 控制通道会话：握手、心跳、发送队列准入（平台无关，可单元测试） ----
+ *
+ * 连接的生死由应用层判定，不靠 TCP keepalive：keepalive 要 ~90 秒才报死，
+ * 期间键鼠全部落进黑洞。两端各自每 HOP_HEARTBEAT_INTERVAL_MS 发一次 PING，
+ * 收到任何帧都算对端活着；HOP_HEARTBEAT_TIMEOUT_MS 内一帧都没收到就断开重连。
+ * 旧版本对端只会回 PONG、不主动发 PING —— 这里任一端主动发即可保证双向都有流量，
+ * 所以新旧混跑时检测仍然成立。 */
+#define HOP_HANDSHAKE_TIMEOUT_MS   5000   /* 连上后多久必须完成 HELLO / HELLO_ACK */
+#define HOP_HEARTBEAT_INTERVAL_MS  2000
+#define HOP_HEARTBEAT_TIMEOUT_MS   6000
+#define HOP_CONNECT_TIMEOUT_MS     3000   /* 客户端 connect 上限 */
+#define HOP_CTRL_SEND_TIMEOUT_MS   3000   /* 控制通道单次 send 上限，超时即断开 */
+
+/* 发送队列：鼠标移动/滚轮/心跳可以丢或合并；按键、松键、按钮、剪贴板、
+ * 显示控制一个都不能丢 —— 丢一个 KEY_UP 就是对端卡键。
+ * 软上限之后只接纳关键帧；硬上限 / 字节上限说明对端已经收不动了，
+ * 继续攒只会让"松开"晚到几十秒，正确做法是断开、让对端 reset 输入状态。 */
+#define HOP_CTRL_QUEUE_SOFT   2048
+#define HOP_CTRL_QUEUE_HARD   4096
+#define HOP_CTRL_QUEUE_BYTES  (16u * 1024u * 1024u)
+typedef enum { HOP_Q_ADMIT = 0, HOP_Q_DROP = 1, HOP_Q_OVERFLOW = 2 } hop_queue_verdict;
+int hop_msg_droppable(uint8_t type);
+hop_queue_verdict hop_ctrl_queue_admit(uint8_t type, int count, size_t queued_bytes,
+                                       uint32_t len);
+
+/* HELLO: {tlen, token, nlen, name, w(4), h(4)}；指针指向 payload 内部 */
+typedef struct {
+    const uint8_t *token;
+    uint8_t        token_len;
+    const uint8_t *name;
+    uint8_t        name_len;
+    uint32_t       width, height;
+} hop_hello_msg;
+int hop_hello_decode(const uint8_t *p, uint32_t len, hop_hello_msg *out);
+/* expected 为空串 = 不校验（局域网自用，与旧行为一致）；否则长度与内容都必须相等。
+ * 比较耗时不随第一个不同字节的位置变化。 */
+int hop_token_matches(const char *expected, const uint8_t *got, size_t got_len);
+/* HELLO_ACK: {ok, nlen, name, w(4), h(4)} */
+int hop_hello_ack_decode(const uint8_t *p, uint32_t len, int *ok,
+                         uint32_t *width, uint32_t *height);
+
+/* 心跳判定。now/last 用同一个单调时钟（毫秒），回绕安全。 */
+static inline int hop_heartbeat_due(uint64_t now, uint64_t last_sent) {
+    return now - last_sent >= (uint64_t)HOP_HEARTBEAT_INTERVAL_MS;
+}
+static inline int hop_peer_silent(uint64_t now, uint64_t last_rx) {
+    return now - last_rx > (uint64_t)HOP_HEARTBEAT_TIMEOUT_MS;
+}
+static inline int hop_handshake_expired(uint64_t now, uint64_t started) {
+    return now - started > (uint64_t)HOP_HANDSHAKE_TIMEOUT_MS;
+}
+
+/* 单调时钟（毫秒）。clock.c，平台代码用；不受系统改时间影响。 */
+uint64_t hop_monotonic_ms(void);
 
 /* ---- 小工具 ---- */
 void hop_put_be16(uint8_t *p, uint16_t v);

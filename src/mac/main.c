@@ -54,7 +54,7 @@ int main(int argc, char **argv) {
 
     if (!acquire_single_instance()) {
         fprintf(stderr, "hopdesk: 已经有一个实例在运行，本进程退出。\n");
-        return 1;
+        return 0; /* a duplicate launch is not a crash to restart */
     }
 
     memset(&g_mac, 0, sizeof(g_mac));
@@ -116,10 +116,10 @@ int main(int argc, char **argv) {
             (unsigned)strlen(g_mac.cfg.token));
 
     inject_init();
-    net_loop_run();
     xfer_init(&g_mac.cfg);
     statusbar_init();
     clipboard_init();
+    net_loop_run();
     app_run();
     return 0;
 }

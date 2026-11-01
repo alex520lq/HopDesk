@@ -26,6 +26,7 @@ void net_request_stop(void);
 /* 打开 TCP keepalive：空闲连接变黑洞时让内核在一分多钟内判定死亡，
  * 否则阻塞的 read 永远不返回，通道就此僵死。控制/数据通道都要调。 */
 void net_set_keepalive(int s);
+int net_connect_timeout(const char *host, uint16_t port, unsigned timeout_ms);
 
 /* inject.c */
 void inject_init(void);

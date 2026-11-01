@@ -57,6 +57,7 @@ struct hop_decoder {
     uint8_t      *body;
     uint32_t      body_len;    /* 期望长度 */
     uint32_t      body_have;
+    int           failed;      /* 粘滞失败：流已损坏，只能 reset / 断开 */
 };
 
 hop_decoder *hop_decoder_new(void *user, hop_on_message cb) {
@@ -68,6 +69,7 @@ hop_decoder *hop_decoder_new(void *user, hop_on_message cb) {
 }
 
 void hop_decoder_reset(hop_decoder *d) {
+    d->failed = 0;
     d->hdr_have = 0;
     d->body_have = 0;
     d->body_len = 0;
@@ -88,8 +90,21 @@ static void emit(hop_decoder *d) {
     if (d->body) { free(d->body); d->body = NULL; }
 }
 
-void hop_decoder_feed(hop_decoder *d, const uint8_t *buf, uint32_t n) {
+int hop_decoder_failed(const hop_decoder *d) {
+    return !d || d->failed;
+}
+
+static int fail(hop_decoder *d) {
+    hop_decoder_reset(d);
+    d->failed = 1;
+    return 0;
+}
+
+int hop_decoder_feed(hop_decoder *d, const uint8_t *buf, uint32_t n) {
     uint32_t i = 0;
+
+    if (!d) return 0;
+    if (d->failed) return 0;
 
     /* 按段拷贝，不是逐字节。
      * 原来的实现对每个字节跑一遍状态机 —— 1 MB 分块就是 100 万次循环，
@@ -107,18 +122,17 @@ void hop_decoder_feed(hop_decoder *d, const uint8_t *buf, uint32_t n) {
 
             d->body_len = hop_get_be32(d->hdr + 1);
             d->body_have = 0;
-            if (d->body_len > HOP_MAX_PAYLOAD) {
-                /* 异常帧：丢弃，重新同步 */
-                hop_decoder_reset(d);
-                continue;
-            }
+            /* 长度不可信 = 帧边界丢失。不能"跳过这一帧"：下一帧从哪开始
+             * 已经无从知道，继续解只会把载荷字节当成帧头。 */
+            if (d->body_len > HOP_MAX_PAYLOAD) return fail(d);
             if (d->body_len == 0) {
                 d->body = NULL;
                 emit(d);
+                if (d->failed) return 0;
                 continue;
             }
             d->body = (uint8_t *)malloc(d->body_len);
-            if (!d->body) { hop_decoder_reset(d); return; }
+            if (!d->body) return fail(d);
         } else {
             uint32_t take = d->body_len - d->body_have;
             if (take > n - i) take = n - i;
@@ -126,7 +140,79 @@ void hop_decoder_feed(hop_decoder *d, const uint8_t *buf, uint32_t n) {
             d->body_have += take;
             i += take;
 
-            if (d->body_have >= d->body_len) emit(d);
+            if (d->body_have >= d->body_len) {
+                emit(d);
+                if (d->failed) return 0;
+            }
         }
     }
+    return 1;
+}
+
+/* ---- 控制通道会话辅助 ---- */
+
+int hop_msg_droppable(uint8_t type) {
+    switch (type) {
+        case HOP_MSG_MOUSE_MOVE:   /* 相对位移晚到不如不到：队列已积压时光标本来就跟不上 */
+        case HOP_MSG_MOUSE_WHEEL:
+        case HOP_MSG_PING:         /* 队列里有别的帧，对端照样能判活 */
+        case HOP_MSG_PONG:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+hop_queue_verdict hop_ctrl_queue_admit(uint8_t type, int count, size_t queued_bytes,
+                                       uint32_t len) {
+    int droppable = hop_msg_droppable(type);
+    if (queued_bytes > HOP_CTRL_QUEUE_BYTES ||
+        (size_t)len > HOP_CTRL_QUEUE_BYTES - queued_bytes)
+        return droppable ? HOP_Q_DROP : HOP_Q_OVERFLOW;
+    if (droppable) return count >= HOP_CTRL_QUEUE_SOFT ? HOP_Q_DROP : HOP_Q_ADMIT;
+    if (count >= HOP_CTRL_QUEUE_HARD) return HOP_Q_OVERFLOW;
+    return HOP_Q_ADMIT;
+}
+
+int hop_hello_decode(const uint8_t *p, uint32_t len, hop_hello_msg *out) {
+    uint32_t off = 0;
+    if (!p || !out || len < 1) return 0;
+    out->token_len = p[off++];
+    if ((uint32_t)out->token_len + 1u > len - off) return 0;   /* token + nlen */
+    out->token = p + off;
+    off += out->token_len;
+    out->name_len = p[off++];
+    if ((uint32_t)out->name_len + 8u != len - off) return 0;
+    out->name = p + off;
+    off += out->name_len;
+    out->width = hop_get_be32(p + off);
+    out->height = hop_get_be32(p + off + 4);
+    return 1;
+}
+
+int hop_token_matches(const char *expected, const uint8_t *got, size_t got_len) {
+    size_t want, i;
+    unsigned diff;
+    if (!expected) return 0;
+    want = strlen(expected);
+    if (want == 0) return 1;
+    if (!got) return 0;
+    diff = (unsigned)(want ^ got_len);
+    for (i = 0; i < want; ++i) {
+        uint8_t g = i < got_len ? got[i] : 0;
+        diff |= (unsigned)((uint8_t)expected[i] ^ g);
+    }
+    return diff == 0;
+}
+
+int hop_hello_ack_decode(const uint8_t *p, uint32_t len, int *ok,
+                         uint32_t *width, uint32_t *height) {
+    uint32_t off;
+    if (!p || len < 2) return 0;
+    off = 2u + p[1];
+    if (off + 8u != len) return 0;
+    if (ok) *ok = p[0] != 0;
+    if (width) *width = hop_get_be32(p + off);
+    if (height) *height = hop_get_be32(p + off + 4);
+    return 1;
 }

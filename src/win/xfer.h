@@ -20,6 +20,8 @@
 
 /* 起监听 + 发送线程。失败返回 0。 */
 int  xfer_init(HWND hwnd, const hop_config *cfg);
+void xfer_kick(void);
+int  xfer_listening(void);
 void xfer_shutdown(void);
 
 /* 数据通道是否已连接 */

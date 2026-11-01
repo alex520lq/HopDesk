@@ -240,6 +240,8 @@ static struct {
     hop_config       cfg;
     SOCKET           listen_s;
     SOCKET           client;
+    volatile LONG    listening;
+    unsigned long    epoch;
     int              peer_ready;    /* 数据通道版本与 token 握手通过 */
     CRITICAL_SECTION lock;      /* 保护 client + 作业队列 + 取消标记 */
     HANDLE           stop;
@@ -424,6 +426,16 @@ static void walk_into(elist *l, const wchar_t *full, const char *rel) {
  * socket 写。一次 send_all 内部可能分多次 send，两线程交错就会把
  * 帧字节搅在一起 —— 锁的粒度必须是"整帧"，不是"单次 send"。 */
 static CRITICAL_SECTION s_txlock;
+#ifdef _MSC_VER
+static __declspec(thread) unsigned long s_send_epoch;
+#else
+static __thread unsigned long s_send_epoch;
+#endif
+static int send_session_current(SOCKET sock) {
+    EnterCriticalSection(&s_x.lock);
+    int ok = s_x.client == sock && (!s_send_epoch || s_x.epoch == s_send_epoch);
+    LeaveCriticalSection(&s_x.lock); return ok;
+}
 
 static int send_all(SOCKET c, const char *p, int len) {
     while (len > 0) {
@@ -450,7 +462,7 @@ static int send_small(SOCKET c, uint8_t type, const uint8_t *p, uint32_t len) {
     uint8_t hdr[HOP_HEADER_SIZE];
     hop_encode_header(hdr, type, len);
     EnterCriticalSection(&s_txlock);
-    int ok = send_all(c, (const char *)hdr, HOP_HEADER_SIZE);
+    int ok = send_session_current(c) && send_all(c, (const char *)hdr, HOP_HEADER_SIZE);
     if (ok && len) ok = send_all(c, (const char *)p, (int)len);
     LeaveCriticalSection(&s_txlock);
     return ok;
@@ -471,7 +483,7 @@ static int send_chunk(SOCKET c, uint8_t *tx, uint32_t batch, uint32_t id, uint64
     hop_put_be32(tx + 21, crc);
     if (data != tx + CHUNK_HDR) memcpy(tx + CHUNK_HDR, data, len);
     EnterCriticalSection(&s_txlock);
-    int ok = send_all(c, (const char *)tx, (int)(CHUNK_HDR + len));
+    int ok = send_session_current(c) && send_all(c, (const char *)tx, (int)(CHUNK_HDR + len));
     LeaveCriticalSection(&s_txlock);
     if(ok) status_chunk(HOP_XFER_DIR_SEND,batch,id,off,len);
     return ok;
@@ -821,7 +833,8 @@ static DWORD WINAPI send_thread(LPVOID arg) {
 
         for (;;) {
             EnterCriticalSection(&s_x.lock);
-            SOCKET c = s_x.client;
+            SOCKET c = s_x.peer_ready ? s_x.client : INVALID_SOCKET;
+            s_send_epoch = s_x.epoch;
             xfer_job *j = NULL, *expired = NULL;
             uint64_t now = now_ms();
 
@@ -935,29 +948,7 @@ int xfer_init(HWND hwnd, const hop_config *cfg) {
     s_x.stop = CreateEventW(NULL, TRUE, FALSE, NULL);
     s_x.q_evt = CreateEventW(NULL, FALSE, FALSE, NULL);
 
-    s_x.listen_s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (s_x.listen_s == INVALID_SOCKET) goto fail;
-
-    /* 同 net_server：用 SO_EXCLUSIVEADDRUSE 独占端口，不让别的进程
-     * （包括另一个实例、或者调试用的对端模拟器）把连接悄悄抢走。 */
-    BOOL yes = TRUE;
-    if (setsockopt(s_x.listen_s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
-                   (char *)&yes, sizeof(yes)) != 0) {
-        hop_log(HOP_LOG_WARN, "xfer: SO_EXCLUSIVEADDRUSE failed (%d)",
-                WSAGetLastError());
-    }
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(cfg->data_port);
-    if (bind(s_x.listen_s, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-        hop_log(HOP_LOG_ERROR, "xfer: bind %u failed (%d)",
-                (unsigned)cfg->data_port, WSAGetLastError());
-        goto fail;
-    }
-    if (listen(s_x.listen_s, 2) != 0) goto fail;
+    if (!s_x.stop || !s_x.q_evt) goto fail;
 
     /* 写盘线程要先起来，接收路径一进来就会往队列里塞 */
     if (!wq_start()) goto fail;
@@ -971,6 +962,9 @@ int xfer_init(HWND hwnd, const hop_config *cfg) {
     return 1;
 
 fail:
+    if (s_x.stop) SetEvent(s_x.stop);
+    if (s_x.th_listen) { WaitForSingleObject(s_x.th_listen, INFINITE); CloseHandle(s_x.th_listen); s_x.th_listen = NULL; }
+    if (s_x.th_send) { WaitForSingleObject(s_x.th_send, INFINITE); CloseHandle(s_x.th_send); s_x.th_send = NULL; }
     if (s_x.listen_s != INVALID_SOCKET) closesocket(s_x.listen_s);
     wq_stop();
     if (s_x.stop) CloseHandle(s_x.stop);
@@ -985,15 +979,14 @@ fail:
 void xfer_shutdown(void) {
     SetEvent(s_x.stop);
     SetEvent(s_ack.ev);          /* 踢醒可能正卡在等 ACK 的发送线程 */
-    if (s_x.listen_s != INVALID_SOCKET) closesocket(s_x.listen_s);
+    /* listener/connection thread owns closesocket; shutdown only wakes I/O. */
 
     EnterCriticalSection(&s_x.lock);
     if (s_x.client != INVALID_SOCKET) {
         /* shutdown 让对端 recv 立刻返回，send 也会立刻失败 ——
          * 这样两个线程都能迅速退出，不会卡在阻塞调用里 */
         shutdown(s_x.client, SD_BOTH);
-        closesocket(s_x.client);
-        s_x.client = INVALID_SOCKET;
+
     }
     xfer_job *j = s_x.q_head;
     while (j) {
@@ -1149,3 +1142,10 @@ int xfer_submit_image(const uint8_t *bgra, int w, int h, int stride) {
     if (!submit(j)) { job_free(j); return 0; }
     return 1;
 }
+
+void xfer_kick(void) {
+    EnterCriticalSection(&s_x.lock);
+    if (s_x.client != INVALID_SOCKET) shutdown(s_x.client, SD_BOTH);
+    LeaveCriticalSection(&s_x.lock);
+}
+int xfer_listening(void) { return InterlockedCompareExchange(&s_x.listening, 0, 0) != 0; }

@@ -6,7 +6,6 @@
 #include "xfer.h"
 #include "update.h"
 #include "main_ui.h"
-#include "main_ui.h"
 #include "../core/xfer_status.h"
 
 #include <commctrl.h>

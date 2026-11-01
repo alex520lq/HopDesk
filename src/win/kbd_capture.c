@@ -68,6 +68,7 @@ static LRESULT CALLBACK kbd_proc(int code, WPARAM wp, LPARAM lp) {
     if (k->flags & LLKHF_INJECTED) return CallNextHookEx(s_hook, code, wp, lp);
 
     down = (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN);
+    if(down && k->vkCode==VK_ESCAPE && (GetAsyncKeyState(VK_CONTROL)&0x8000) && (GetAsyncKeyState(VK_MENU)&0x8000)){capture_set_sharing(0);return 1;}
     kc = hop_vk_to_mac((int)k->vkCode);
     if (kc != HOP_KEY_NONE) {
         send_key(kc, down);

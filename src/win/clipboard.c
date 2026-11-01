@@ -151,7 +151,7 @@ void clip_shutdown(HWND hwnd) {
 static int send_text(const char *utf8, uint32_t len) {
     uint8_t *p = (uint8_t *)malloc(4 + len);
     if (!p) return 0;
-    hop_put_be32(p, HOP_DEV_SERVER);
+    hop_put_be32(p, (g_app.cfg.role==HOP_ROLE_SERVER?HOP_DEV_SERVER:HOP_DEV_CLIENT));
     memcpy(p + 4, utf8, len);
     int ok = net_server_send(g_app.net, HOP_MSG_CLIP_TEXT, p, 4 + len);
     if (ok) hop_log(HOP_LOG_INFO, "clip: text out %u bytes", len);
@@ -393,7 +393,7 @@ void clip_apply_remote(const uint8_t *p, uint32_t len) {
     HGLOBAL h;
 
     if (len < 5) return;
-    if (!hop_clip_should_apply_remote(hop_get_be32(p), HOP_DEV_SERVER)) return; /* 自己发的，回环 */
+    if (!hop_clip_should_apply_remote(hop_get_be32(p), (g_app.cfg.role==HOP_ROLE_SERVER?HOP_DEV_SERVER:HOP_DEV_CLIENT))) return; /* 自己发的，回环 */
 
     u = (char *)malloc((size_t)(len - 3));           /* 文本 + NUL */
     if (!u) return;

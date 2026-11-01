@@ -85,7 +85,9 @@ static void *writer_thread(void *arg) {
         s_wq.busy = 1;
         pthread_mutex_unlock(&s_wq.lock);
 
+        int disk_guard = hop_watchdog_begin("disk writer task", HOP_IO_DEADLINE_MS);
         wq_task_run(&t);
+        hop_watchdog_end(disk_guard);
 
         pthread_mutex_lock(&s_wq.lock);
         s_wq.busy = 0;
@@ -99,11 +101,13 @@ static void *writer_thread(void *arg) {
 
 /* 入队。队列满时阻塞 —— 这就是背压的着力点。 */
 static int wq_push(const rx_task *t) {
+    int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
     pthread_mutex_lock(&s_wq.lock);
     while (s_wq.count >= RX_Q_SLOTS && !s_wq.stop)
         pthread_cond_wait(&s_wq.cv_space, &s_wq.lock);
     if (s_wq.stop) {
         pthread_mutex_unlock(&s_wq.lock);
+        hop_watchdog_end(queue_guard);
         return 0;
     }
     s_wq.ring[s_wq.tail] = *t;
@@ -111,15 +115,18 @@ static int wq_push(const rx_task *t) {
     s_wq.count++;
     pthread_cond_signal(&s_wq.cv_work);
     pthread_mutex_unlock(&s_wq.lock);
+    hop_watchdog_end(queue_guard);
     return 1;
 }
 
 /* 等队列排空且写线程空闲。关文件、比对文件 CRC 之前必须调用。 */
 static void wq_drain(void) {
+    int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
     pthread_mutex_lock(&s_wq.lock);
     while ((s_wq.count > 0 || s_wq.busy) && !s_wq.stop)
         pthread_cond_wait(&s_wq.cv_space, &s_wq.lock);
     pthread_mutex_unlock(&s_wq.lock);
+    hop_watchdog_end(queue_guard);
 }
 
 static int wq_start(void) {
@@ -222,6 +229,19 @@ static int rm_entry(const char *path, const struct stat *sb, int flag, struct FT
     return 0;
 }
 
+/* Receiver-owned lifecycle boundary. Only a data reconnect in the SAME control
+ * session may retain ACKs/tombstones; a new control session starts cleanly. */
+static hop_session_id s_rx_session;
+static void rx_bind_session(const hop_session_id *session) {
+    if (!hop_session_id_equal(&s_rx_session, session)) {
+        rx_reset(); s_rx.dead_batch=0; s_rx.dead_reason=0;
+        pthread_mutex_lock(&s_status_lock);
+        memset(&s_receive_status,0,sizeof(s_receive_status));
+        pthread_mutex_unlock(&s_status_lock);
+    } else rx_close_file();
+    s_rx_session=*session;
+}
+
 /* 递归删掉本批临时目录。
  * 只在接收批次被 ABORT 时调用；普通部分完成仍保留已送达的文件，
  * 成功批次的文件就是产物本身，都不能删。 */
@@ -292,7 +312,8 @@ static void rx_begin_batch(uint32_t batch) {
     s_rx.batch = batch;
     status_begin(batch,HOP_XFER_DIR_RECEIVE,0,0,"Incoming files",HOP_XFER_RECEIVING);
 
-    snprintf(s_rx.dir, sizeof(s_rx.dir), "%s/HopDesk/%u", temp_root(), batch);
+    char session_hex[33]; hop_session_hex(&s_x.session, session_hex);
+    snprintf(s_rx.dir, sizeof(s_rx.dir), "%s/HopDesk/%s/%u", temp_root(), session_hex, batch);
     if (mkdir_p(s_rx.dir) != 0) {
         rx_terminate(batch,HOP_ABORT_DISK,1);
         return;
@@ -348,7 +369,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
     if (type == HOP_MSG_XFER_HELLO) {
         size_t want = strlen(g_mac.cfg.token);
-        int valid = hop_xfer_hello_valid(p, len, g_mac.cfg.token);
+        int valid = hop_xfer_hello_bound(p, len, g_mac.cfg.token, &s_x.session) && hop_session_matches(&s_x.session);
         if (!valid) {
             hop_log(HOP_LOG_ERROR,
                     "xfer: peer handshake rejected (protocol/token mismatch)");
@@ -683,6 +704,32 @@ static int do_connect(void) {
     return net_connect_timeout(host, port, HOP_CONNECT_TIMEOUT_MS);
 }
 
+/* Transport gate: typed handlers only see frames bound to this control session.
+ * Old batch CHUNK/END are ignored, never applied to the next active file. */
+static void on_data_frame_checked(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
+    if (type == HOP_MSG_XFER_HELLO) { on_data_msg(user, type, p, len); return; }
+    pthread_mutex_lock(&s_x.slock);
+    hop_session_id session = s_x.session;
+    pthread_mutex_unlock(&s_x.slock);
+    uint32_t batch, body_len; const uint8_t *body;
+    if (!hop_session_matches(&session) ||
+        !hop_data_unwrap(type, p, len, &session, &batch, &body, &body_len)) {
+        pthread_mutex_lock(&s_x.slock);
+        if (s_x.sock != -1) shutdown(s_x.sock, SHUT_RDWR);
+        pthread_mutex_unlock(&s_x.slock);
+        return;
+    }
+    if ((type == HOP_MSG_FILE_CHUNK || type == HOP_MSG_FILE_END) &&
+        (!s_rx.active || batch != s_rx.batch)) return;
+    on_data_msg(user, type, body, body_len);
+}
+
+static void on_data_frame(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
+    int guard = hop_watchdog_begin("data receive frame", 60000);
+    on_data_frame_checked(user,type,p,len);
+    hop_watchdog_end(guard);
+}
+
 /* 用户在本端取消接收：通知对端、删掉半成品、立墓碑。
  * 由 conn 线程执行 —— s_rx 只归它所有，别的线程直接碰就是竞态。 */
 static void rx_cancel_local(void) {
@@ -694,11 +741,13 @@ static void rx_cancel_local(void) {
 
 static void *conn_thread(void *arg) {
     (void)arg;
-    hop_decoder *dec = hop_decoder_new(NULL, on_data_msg);
+    hop_decoder *dec = hop_decoder_new(NULL, on_data_frame);
     if (!dec) return NULL;
 
     int backoff = 1;
     while (!s_x.stop) {
+        hop_session_id session;
+        if (!hop_session_current(&session)) { usleep(200000); continue; }
         int s = do_connect();
         if (s < 0) {
             /* 退避要能被 stop 打断 —— 否则退出时要等满 10 秒 */
@@ -738,6 +787,7 @@ static void *conn_thread(void *arg) {
 
         pthread_mutex_lock(&s_x.slock);
         s_x.sock = s;
+        s_x.session = session;
         ++s_x.epoch;
         s_x.peer_ready = 0;
         pthread_mutex_unlock(&s_x.slock);
@@ -747,21 +797,18 @@ static void *conn_thread(void *arg) {
         pthread_mutex_unlock(&s_x.qlock);
 
         hop_decoder_reset(dec);
-        rx_close_file(); /* keep the batch and ACKed paths across reconnect */
+        rx_bind_session(&session);
 
-        uint8_t hello[2 + HOP_TOKEN_MAX];
-        size_t token_len = strlen(g_mac.cfg.token);
-        hello[0] = HOP_XFER_PROTO_VER;
-        hello[1] = (uint8_t)token_len;
-        if (token_len) memcpy(hello + 2, g_mac.cfg.token, token_len);
-        if (!send_small(s, HOP_MSG_XFER_HELLO, hello, (uint32_t)(2 + token_len))) {
+        uint8_t hello[2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES];
+        uint32_t hello_len = hop_xfer_hello_encode(hello, g_mac.cfg.token, &session);
+        if (!hello_len || !send_small(s, HOP_MSG_XFER_HELLO, hello, hello_len, 0)) {
             shutdown(s, SHUT_RDWR);
         }
         hop_log(HOP_LOG_INFO, "xfer: data channel connected; waiting for peer authentication");
 
         uint64_t started = hop_monotonic_ms();
         char buf[65536];
-        while (!s_x.stop) {
+        while (!s_x.stop && hop_session_matches(&session)) {
             pthread_mutex_lock(&s_x.slock);
             int authenticated = s_x.peer_ready;
             pthread_mutex_unlock(&s_x.slock);

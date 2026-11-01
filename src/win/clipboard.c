@@ -277,7 +277,9 @@ static DWORD WINAPI image_worker(LPVOID arg) {
     if (opened) {
         if (GetClipboardSequenceNumber() == sequence) {
             if (IsClipboardFormatAvailable(CF_HDROP)) format = CF_HDROP;
+            int guard = hop_watchdog_begin("clipboard delayed rendering", HOP_IO_DEADLINE_MS);
             HANDLE src = GetClipboardData(format);
+            hop_watchdog_end(guard);
             SIZE_T bytes = src ? GlobalSize(src) : 0;
             if (bytes >= (format == CF_DIB ? sizeof(BITMAPINFOHEADER) : sizeof(HOP_DROPFILES)) &&
                 bytes <= CLIP_IMG_MAX_BYTES) {

@@ -5,6 +5,7 @@
 #include "app.h"
 #include "xfer.h"
 #include "update.h"
+#include "main_ui.h"
 #include "../core/xfer_status.h"
 
 #include <commctrl.h>
@@ -57,7 +58,7 @@ static int s_visible_indices[HOP_XFER_FILE_LIMIT];
 static int s_visible_count;
 static uint32_t s_file_batch;
 static int s_file_direction;
-
+\nstatic void refresh_transfers(void);\nstatic void refresh_logs(void);\n
 static const wchar_t *const kPageNames[UI_PAGE_COUNT] = {
     L"概览", L"连接", L"设置", L"传输", L"日志", L"更新"
 };
@@ -532,7 +533,7 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 case UI_ID_TOGGLE: SendMessageW(g_app.hwnd,WM_COMMAND,1001,0); return 0;
                 case UI_ID_SWITCH_MAC: SendMessageW(g_app.hwnd,WM_COMMAND,1003,0); return 0;
                 case UI_ID_SWITCH_WIN: SendMessageW(g_app.hwnd,WM_COMMAND,1004,0); return 0;
-                case UI_ID_WAKE: SendMessageW(g_app.hwnd,WM_COMMAND,1003,0); return 0;
+                case UI_ID_WAKE: SendMessageW(g_app.hwnd,WM_COMMAND,1009,0); return 0;
                 case UI_ID_SLEEP: SendMessageW(g_app.hwnd,WM_COMMAND,1005,0); return 0;
             }
             break;

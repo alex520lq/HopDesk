@@ -33,7 +33,7 @@ static void *s_retry_paths[HOP_XFER_FILE_LIMIT];
 static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];static int s_history_count;
 static int saved,closed,closes,discarded,applied,fail_directory,fail_alloc,fail_send;
 static int notified;static uint8_t last_reason;
-static void history_save(void){assert(closed);saved++;}
+static void history_save(void);
 static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n){
     (void)fd;if(fail_send)assert(!closed);assert(type==HOP_MSG_XFER_ABORT && n==5);last_reason=p[4];notified++;return !fail_send;
 }
@@ -42,6 +42,7 @@ static struct {int err;} s_wq;
 static void wq_drain(void){}
 static int wq_push(rx_task*t){if(t->kind==RX_CLOSE){closed=1;closes++;}else free(t->data);return 1;}
 @RX_STATE@
+static void history_save(void){assert(closed && !s_rx.img && !s_rx.cur_path && !s_rx.tops && !s_rx.active);saved++;}
 #ifdef FIXTURE_WINDOWS
 #define XFER_RX_ROOT L"HopDesk"
 #define ERROR_ALREADY_EXISTS 183

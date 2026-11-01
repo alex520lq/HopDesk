@@ -315,12 +315,12 @@ static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
     if (!s_rx.active || s_rx.batch != batch) return;
     rx_close_file();
     rx_discard_dir();
-    status_end(HOP_XFER_DIR_RECEIVE,batch,
-               reason==HOP_ABORT_CANCEL?HOP_XFER_CANCELLED:HOP_XFER_FAILED,
-               reason==HOP_ABORT_CANCEL?"Receive cancelled":"Receive aborted");
     s_rx.dead_batch = batch;
     s_rx.dead_reason = reason;
     rx_clear_state();
+    status_end(HOP_XFER_DIR_RECEIVE,batch,
+               reason==HOP_ABORT_CANCEL?HOP_XFER_CANCELLED:HOP_XFER_FAILED,
+               reason==HOP_ABORT_CANCEL?"Receive cancelled":"Receive aborted");
 }
 
 static void rx_begin_batch(uint32_t batch) {

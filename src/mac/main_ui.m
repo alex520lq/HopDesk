@@ -91,7 +91,7 @@ static NSView *ui_card(NSView *parent, NSRect frame) {
     v.layer.cornerRadius=12.0;
     v.layer.borderWidth=1.0;
     v.layer.borderColor=[NSColor separatorColor].CGColor;
-    [parent addSubview:v positioned:NSWindowBelow relativeTo:nil];
+    [parent addSubview:v];
     return v;
 }
 static NSView *ui_page(NSView *root) {
@@ -517,7 +517,6 @@ void statusbar_show_main(void) {
         main_ui_refresh();
     });
 }
-void statusbar_show_transfers(void) { main_ui_show_page(3); }
 void main_ui_show_page(int page) {
     dispatch_async(dispatch_get_main_queue(), ^{
         create_main_window();

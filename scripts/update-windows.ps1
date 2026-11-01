@@ -63,7 +63,7 @@ try {
                 $allowed -notcontains $entry.Name) {
                 throw "更新包包含不允许的路径或文件：$($entry.FullName)"
             }
-            if (($entry.ExternalAttributes -band 0xF000) -eq 0xA000) {
+            if ((($entry.ExternalAttributes -shr 16) -band 0xF000) -eq 0xA000) {
                 throw "更新包包含符号链接：$($entry.FullName)"
             }
             $total += $entry.Length

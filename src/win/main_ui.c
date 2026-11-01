@@ -176,10 +176,10 @@ static void refresh_connection(void) {
     set_text(s_connection_role, L"本机角色：Windows 服务端");
     set_text(s_connection_status, link_state());
     if (g_app.peer_w > 0 && g_app.peer_h > 0)
-        swprintf(b, 512, L"Mac 屏幕：%d × %d", g_app.peer_w, g_app.peer_h);
-    else wcscpy(b, L"Mac 屏幕：尚未取得设备信息");
+        swprintf(b, 512, L"对端设备：Mac  ·  屏幕 %d × %d", g_app.peer_w, g_app.peer_h);
+    else wcscpy(b, L"对端设备：Mac  ·  尚未取得设备信息");
     set_text(s_connection_peer, b);
-    swprintf(b, 512, L"监听端口：%u（控制） / %u（数据）",
+    swprintf(b, 512, L"控制端口：%u    数据端口：%u",
              (unsigned)g_app.cfg.port, (unsigned)g_app.cfg.data_port);
     set_text(s_connection_ports, b);
     swprintf(b, 512, L"HopDesk  v%s    ·    %ls", HOP_VERSION, link_state());
@@ -285,7 +285,7 @@ static void save_settings(void) {
         MessageBoxW(s_main, L"配置保存失败。原有配置文件保持不变，请检查目录权限和磁盘空间。", L"HopDesk 设置", MB_OK | MB_ICONERROR); return;
     }
     g_app.cfg = next;
-    set_text(s_cfg_note, L"设置已保存。端口、认证和连接参数将在重启 HopDesk 后完整生效。");
+    set_text(s_cfg_note, L"设置已保存。连接、认证和显示器参数将在重启 HopDesk 后完整生效。");
     hop_log(HOP_LOG_INFO, "ui: configuration saved; restart required for network settings");
     refresh_connection();
 }
@@ -389,7 +389,7 @@ static void create_settings_page(HWND p) {
     label(p,L"传输分块（KB）",448,258,170,20); s_cfg[CFG_CHUNK]=edit(p,L"",635,254,165,26,0,0);
     label(p,L"Mac 切源命令",448,294,170,20); s_cfg[CFG_MAC_INPUT]=edit(p,L"",448,318,352,26,0,0);
     label(p,L"Mac 睡眠命令",448,354,170,20); s_cfg[CFG_MAC_SLEEP]=edit(p,L"",448,378,352,26,0,0);
-    label(p,L"输入源支持十六进制，例如 0x0F。Mac 命令仅由 Mac 客户端执行。",448,416,350,34);
+    label(p,L"输入源支持十六进制（例如 0x0F）。保存后，连接和认证参数将在重启后完整生效。",448,416,350,34);
     label(p,L"Windows 为服务端，此处的服务端地址由 Mac 客户端填写。",38,288,370,28);
     EnableWindow(s_cfg[CFG_HOST],FALSE);
     button(p,L"保存设置",448,500,130,34,UI_ID_SAVE);
@@ -401,7 +401,7 @@ static void create_pages(HWND h) {
 
     HWND p=s_pages[0];
     group(p,L"设备状态",20,18,800,145);
-    s_overview_status=label(p,L"等待 Mac 连接",42,52,740,34); set_font(s_overview_status,s_font_title);
+    s_overview_status=label(p,L"等待连接",42,52,740,34); set_font(s_overview_status,s_font_title);
     s_overview_peer=label(p,L"Windows 服务端",42,94,740,24);
     s_overview_channels=label(p,L"控制通道：等待连接    数据通道：等待连接",42,124,740,24);
     group(p,L"常用操作",20,185,800,145);
@@ -418,10 +418,10 @@ static void create_pages(HWND h) {
     group(p,L"连接状态",20,18,800,235);
     s_connection_role=label(p,L"本机角色：Windows 服务端",42,58,720,24);
     s_connection_status=label(p,L"服务状态：等待连接",42,98,720,24);
-    s_connection_peer=label(p,L"Mac 屏幕：尚未取得设备信息",42,138,720,24);
+    s_connection_peer=label(p,L"对端设备：尚未取得设备信息",42,138,720,24);
     s_connection_ports=label(p,L"监听端口：24817（控制） / 24818（数据）",42,178,720,24);
     button(p,L"重新连接",42,210,130,34,UI_ID_RECONNECT);
-    label(p,L"Windows 端持续监听；Mac 端自动重连。点击重新连接会断开当前会话并等待对端重新握手。",42,280,760,40);
+    label(p,L"HopDesk 会自动重连。点击“重新连接”会关闭当前控制连接，并立即尝试重新建立连接。",42,280,760,40);
 
     p=s_pages[2]; create_settings_page(p);
 

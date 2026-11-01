@@ -63,8 +63,8 @@ static hop_xfer_file_status *s_transferFileSnapshot;
 static int s_collapsedFolders[HOP_XFER_FILE_LIMIT];
 static int s_visibleFileIndices[HOP_XFER_FILE_LIMIT];
 static int s_visibleFileCount;
-static uint32_t s_collapsedBatch;
-static uint32_t s_historyBatch;
+static uint32_t s_collapsedBatch, s_fileBatch;
+static int s_collapsedDirection, s_fileDirection, s_notifiedDirection;
 static uint32_t s_notifiedBatch;
 static int s_notifiedPhase;
 
@@ -75,8 +75,8 @@ static void retry_selected_mac_file(void) {
     NSUInteger line = 0;
     NSUInteger limit = MIN(selected.location, content.length);
     for (NSUInteger i = 0; i < limit; ++i) if ([content characterAtIndex:i] == '\n') line++;
-    if (line < (NSUInteger)s_visibleFileCount)
-        (void)xfer_retry_file(s_visibleFileIndices[line]);
+    if (s_fileDirection == HOP_XFER_DIR_SEND && line < (NSUInteger)s_visibleFileCount)
+        (void)xfer_retry_file(s_fileBatch,s_visibleFileIndices[line]);
 }
 static void toggle_selected_mac_folder(void) {
     if (!s_transferFiles) return;
@@ -94,9 +94,9 @@ static void transfer_notify_if_terminal(const hop_xfer_status *st) {
     if (!st || st->active || st->batch == 0) return;
     if (st->phase != HOP_XFER_COMPLETED && st->phase != HOP_XFER_PARTIAL &&
         st->phase != HOP_XFER_FAILED && st->phase != HOP_XFER_CANCELLED) return;
-    if (s_notifiedBatch == st->batch && s_notifiedPhase == st->phase) return;
+    if (s_notifiedBatch == st->batch && s_notifiedPhase == st->phase && s_notifiedDirection == st->direction) return;
     s_notifiedBatch = st->batch;
-    s_notifiedPhase = st->phase;
+    s_notifiedPhase = st->phase; s_notifiedDirection=st->direction;
     NSString *title = st->phase == HOP_XFER_COMPLETED ? @"传输完成" :
                       st->phase == HOP_XFER_PARTIAL ? @"传输部分失败" :
                       st->phase == HOP_XFER_CANCELLED ? @"传输已取消" : @"传输失败";
@@ -213,12 +213,13 @@ static void transfer_window_refresh(void) {
     if (!s_transferWindow) return;
     hop_xfer_status st; memset(&st, 0, sizeof(st)); xfer_get_status(&st);
     transfer_notify_if_terminal(&st);
-    if (s_collapsedBatch != st.batch) {
+    if (s_collapsedBatch != st.batch || s_collapsedDirection != st.direction) {
         memset(s_collapsedFolders, 0, sizeof(s_collapsedFolders));
-        s_collapsedBatch = st.batch;
+        s_collapsedBatch = st.batch; s_collapsedDirection = st.direction;
     }
     if (!s_transferFileSnapshot) s_transferFileSnapshot = calloc(HOP_XFER_FILE_LIMIT, sizeof(*s_transferFileSnapshot));
-    int fileCount = s_transferFileSnapshot ? xfer_get_files(s_transferFileSnapshot, HOP_XFER_FILE_LIMIT) : 0;
+    int fileCount = s_transferFileSnapshot ? xfer_get_files(st.direction, st.batch, s_transferFileSnapshot, HOP_XFER_FILE_LIMIT) : 0;
+    s_fileBatch=st.batch; s_fileDirection=st.direction;
     if (s_transferFiles) {
         NSMutableString *fileRows = [NSMutableString string];
         s_visibleFileCount = 0;
@@ -236,7 +237,8 @@ static void transfer_window_refresh(void) {
             NSString *indent = [@"" stringByPaddingToLength:MIN(depth * 2, 24) withString:@" " startingAtIndex:0];
             NSString *state = s_transferFileSnapshot[i].phase == HOP_XFER_FILE_COMPLETED ? @"完成" :
                               s_transferFileSnapshot[i].phase == HOP_XFER_FILE_FAILED ? @"失败" :
-                              s_transferFileSnapshot[i].phase == HOP_XFER_FILE_SENDING ? @"传输中" :
+                              s_transferFileSnapshot[i].phase == HOP_XFER_FILE_SENDING ? @"发送中" :
+                              s_transferFileSnapshot[i].phase == HOP_XFER_FILE_RECEIVING ? @"接收中" :
                               s_transferFileSnapshot[i].phase == HOP_XFER_FILE_VERIFYING ? @"校验中" : @"排队中";
             NSString *kind = s_transferFileSnapshot[i].is_directory ? (s_collapsedFolders[i] ? @"▸ 📁" : @"▾ 📁") : @"📄";
             [fileRows appendFormat:@"%@%@ %@  %llu/%llu B  %@\n", indent, kind, path,
@@ -247,8 +249,7 @@ static void transfer_window_refresh(void) {
     }
     hop_xfer_history_entry history[HOP_XFER_HISTORY_LIMIT];
     int historyCount = xfer_get_history(history, HOP_XFER_HISTORY_LIMIT);
-    if (s_transferHistory && historyCount > 0 && s_historyBatch != history[0].batch) {
-        s_historyBatch = history[0].batch;
+    if (s_transferHistory && historyCount > 0) {
         NSMutableString *rows = [NSMutableString string];
         for (int i = 0; i < historyCount; ++i) {
             NSString *name = history[i].name[0] ? [NSString stringWithUTF8String:history[i].name] : @"文件任务";

@@ -105,6 +105,16 @@ static void disp_switch_to_win(void) {
     capture_set_sharing(0);
 }
 
+static void disp_wake_mac(void) {
+    uint8_t p[4];
+    if (!net_server_has_client(g_app.net)) {
+        hop_log(HOP_LOG_WARN, "no client, cannot wake display");
+        return;
+    }
+    hop_put_be32(p, (uint32_t)g_app.cfg.disp_wake_sec);
+    net_server_send(g_app.net, HOP_MSG_DISP_WAKE, p, 4);
+}
+
 static void disp_sleep_mac(void) {
     net_server_send(g_app.net, HOP_MSG_DISP_SLEEP, NULL, 0);
     capture_set_sharing(0);
@@ -160,6 +170,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 case 1006: xfer_cancel(); return 0;
                 case 1007: ui_show_transfers(&g_app); return 0;
                 case 1008: update_check_async(g_app.hwnd); return 0;
+                case 1009: disp_wake_mac(); return 0;
             }
             break;
         case WM_DESTROY:

@@ -16,6 +16,7 @@
 #define IDM_DISP_SLEEP 1005
 #define IDM_XFER_CANCEL 1006
 #define IDM_XFER_MANAGER 1007
+#define IDM_CHECK_UPDATES 1008
 #define ID_XFER_TIMER 20
 #define IDC_XFER_TITLE 2101
 #define IDC_XFER_DETAIL 2102
@@ -261,6 +262,9 @@ static void show_menu(win_app *app) {
     AppendMenuW(m, MF_STRING, IDM_XFER_MANAGER, L"传输管理器…");
     AppendMenuW(m, (xfer_busy() ? 0 : MF_GRAYED) | MF_STRING,
                 IDM_XFER_CANCEL, L"取消当前传输");
+
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING, IDM_CHECK_UPDATES, L"检查更新…");
 
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
 

@@ -51,6 +51,7 @@ static int acquire_single_instance(void) {
 
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
+    int startup_guard = hop_watchdog_begin("macOS startup", 30000);
 
     if (!acquire_single_instance()) {
         fprintf(stderr, "hopdesk: 已经有一个实例在运行，本进程退出。\n");
@@ -58,7 +59,6 @@ int main(int argc, char **argv) {
     }
 
     memset(&g_mac, 0, sizeof(g_mac));
-    g_mac.sock = -1;
 
     hop_config_defaults(&g_mac.cfg);
     snprintf(g_mac.cfg.device_name, HOP_NAME_MAX, "%s", "Alex67deMac");
@@ -120,6 +120,7 @@ int main(int argc, char **argv) {
     statusbar_init();
     clipboard_init();
     net_loop_run();
+    hop_watchdog_end(startup_guard);
     app_run();
     return 0;
 }

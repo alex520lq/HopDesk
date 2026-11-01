@@ -24,6 +24,8 @@ mac_app g_mac;
 
 static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t s_dispatch_lock = PTHREAD_MUTEX_INITIALIZER;
+static int s_sock = -1; /* exclusively under s_lock */
+static hop_session_id s_control_session; /* control reader owns; registry publishes snapshots */
 static _Atomic int     s_stop;
 static int             s_authed, s_rejected;
 static uint64_t        s_last_rx;
@@ -36,12 +38,14 @@ static void dispatch_message(void *user, uint8_t type, const uint8_t *p, uint32_
     if (!s_authed) {
         int ok;
         uint32_t w, h;
+        hop_session_id session;
         if (type != HOP_MSG_HELLO_ACK ||
-            !hop_hello_ack_decode(p, len, &ok, &w, &h) || !ok) {
+            !hop_hello_ack_decode(p, len, &ok, &w, &h, &session) || !ok) {
             s_rejected = 1;
             return;
         }
-        g_mac.peer_w = (double)w; g_mac.peer_h = (double)h;
+        inject_set_peer_geometry(w, h);
+        s_control_session = session; hop_session_publish(&session);
         s_authed = 1; s_last_rx = hop_monotonic_ms();
         set_connected(1);
         return;
@@ -104,9 +108,11 @@ static void dispatch_message(void *user, uint8_t type, const uint8_t *p, uint32_
 }
 
 static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
+    int guard = hop_watchdog_begin("control receive frame", HOP_IO_DEADLINE_MS);
     pthread_mutex_lock(&s_dispatch_lock);
     if (!s_stop) dispatch_message(user, type, p, len);
     pthread_mutex_unlock(&s_dispatch_lock);
+    hop_watchdog_end(guard);
 }
 
 static int socket_send_all(int fd, const void *buf, size_t len) {
@@ -126,18 +132,20 @@ static int socket_send_all(int fd, const void *buf, size_t len) {
 }
 
 int net_send(uint8_t type, const void *payload, uint32_t len) {
+    int guard = hop_watchdog_begin("control frame send", 10000);
     uint8_t hdr[HOP_HEADER_SIZE];
     hop_encode_header(hdr, type, len);
 
     pthread_mutex_lock(&s_lock);
-    int s = g_mac.sock;
+    int s = s_sock;
     int ok = 0;
-    if (s >= 0 && (g_mac.connected || type == HOP_MSG_HELLO)) {
+    if (s >= 0 && (hop_session_current(NULL) || type == HOP_MSG_HELLO)) {
         ok = 1;
         ok = socket_send_all(s, hdr, HOP_HEADER_SIZE);
         if (ok && len) ok = socket_send_all(s, payload, len);
     }
     pthread_mutex_unlock(&s_lock);
+    hop_watchdog_end(guard);
     return ok;
 }
 
@@ -152,6 +160,7 @@ static void send_hello(void) {
     buf[n++] = nl; memcpy(buf + n, nm, nl); n += nl;
     hop_put_be32(buf + n, (uint32_t)g_mac.screen_w); n += 4;
     hop_put_be32(buf + n, (uint32_t)g_mac.screen_h); n += 4;
+    buf[n++] = HOP_CTRL_PROTO_VER;
     net_send(HOP_MSG_HELLO, buf, n);
 }
 
@@ -162,7 +171,10 @@ int net_connect_timeout(const char *host, uint16_t port, unsigned timeout_ms) {
     hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
     char portstr[16];
     snprintf(portstr, sizeof(portstr), "%u", (unsigned)port);
-    if (getaddrinfo(host, portstr, &hints, &res)) return -1;
+    int guard = hop_watchdog_begin("DNS resolution", 5000);
+    int resolved = getaddrinfo(host, portstr, &hints, &res);
+    hop_watchdog_end(guard);
+    if (resolved) return -1;
     int fd = -1;
     uint64_t deadline = hop_monotonic_ms() + timeout_ms;
     for (struct addrinfo *r = res; r; r = r->ai_next) {
@@ -225,14 +237,8 @@ void net_set_keepalive(int s) {
 }
 
 static void set_connected(int on) {
-    pthread_mutex_lock(&s_lock);
-    g_mac.connected = on;
-    pthread_mutex_unlock(&s_lock);
-    if (on) {
-        g_mac.sharing = 0;
-
-    } else {
-        g_mac.sharing = 0;
+    if (!on) {
+        hop_session_clear(&s_control_session);
         pthread_mutex_lock(&s_dispatch_lock);
         inject_reset();
         pthread_mutex_unlock(&s_dispatch_lock);
@@ -244,8 +250,10 @@ static void set_connected(int on) {
 void net_request_stop(void) {
     s_stop = 1;
     pthread_mutex_lock(&s_lock);
-    if (g_mac.sock >= 0) shutdown(g_mac.sock, SHUT_RDWR);
+    if (s_sock >= 0) shutdown(s_sock, SHUT_RDWR);
     pthread_mutex_unlock(&s_lock);
+    hop_session_id current;
+    if (hop_session_current(&current)) hop_session_clear(&current);
     /* The menu can terminate the process before the reader gets scheduled. */
     pthread_mutex_lock(&s_dispatch_lock);
     inject_reset();
@@ -263,7 +271,7 @@ static void *net_thread(void *arg) {
             continue;
         }
         pthread_mutex_lock(&s_lock);
-        g_mac.sock = s;
+        s_sock = s;
         pthread_mutex_unlock(&s_lock);
         backoff = 1;
 
@@ -291,7 +299,7 @@ static void *net_thread(void *arg) {
         }
 
         pthread_mutex_lock(&s_lock);
-        g_mac.sock = -1;
+        s_sock = -1;
         close(s);
         pthread_mutex_unlock(&s_lock);
         set_connected(0);

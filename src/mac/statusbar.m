@@ -253,6 +253,7 @@ static void start_update_download(hop_update_manifest manifest) {
             return;
         }
         dispatch_async(dispatch_get_main_queue(), ^{
+            net_request_stop();
             [NSApp terminate:nil];
         });
     }];

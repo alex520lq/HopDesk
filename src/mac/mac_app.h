@@ -9,7 +9,9 @@
 typedef struct {
     hop_config cfg; /* immutable after main startup; all threads read-only */
     /* Geometry initialized before threads; later refresh/read only in input/control dispatch. */
-    double     screen_w, screen_h;   /* 本端 CoreGraphics 坐标空间（逻辑点） */\n    char       config_path[1024];    /* canonical Application Support config */\n    char       log_path[1024];       /* active log path */
+    double     screen_w, screen_h;   /* 本端 CoreGraphics 坐标空间（逻辑点） */
+    char       config_path[1024];    /* canonical Application Support config */
+    char       log_path[1024];       /* active log path */
 } mac_app;
 
 extern mac_app g_mac;
@@ -17,7 +19,8 @@ extern mac_app g_mac;
 /* net_client.c */
 void net_loop_run(void);                 /* 连接 + 重连 + 接收（后台线程） */
 int  net_send(uint8_t type, const void *p, uint32_t len);
-void net_request_stop(void);\nvoid net_request_reconnect(void); /* close current socket; background loop reconnects */
+void net_request_stop(void);
+void net_request_reconnect(void); /* close current socket; background loop reconnects */
 /* 打开 TCP keepalive：空闲连接变黑洞时让内核在一分多钟内判定死亡，
  * 否则阻塞的 read 永远不返回，通道就此僵死。控制/数据通道都要调。 */
 void net_set_keepalive(int s);
@@ -49,7 +52,8 @@ void disp_set_input(uint16_t vcp);
 /* statusbar.m */
 void statusbar_init(void);
 void statusbar_update(int connected, int sharing);
-void statusbar_show_transfers(void);\nvoid statusbar_show_main(void);
+void statusbar_show_transfers(void);
+void statusbar_show_main(void);
 void app_run(void);                 /* 启动 NSApplication 主循环 */
 
 #endif

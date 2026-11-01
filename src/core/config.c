@@ -8,6 +8,9 @@
 #include <string.h>
 #include <ctype.h>
 #include <errno.h>
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
 #include <stdint.h>
 #if defined(_WIN32)
 #include <windows.h>
@@ -132,7 +135,7 @@ static int config_utf8_path(const char *src, wchar_t *dst, int cap) {
 int hop_config_save_atomic(const hop_config *c, const char *path) {
     if (!c || !path || !path[0] || strlen(path) > 900) return 0;
     char temp[1024];
-    if (snprintf(temp, sizeof(temp), "%s.tmp", path) <= 0 || strlen(temp) >= sizeof(temp)) return 0;
+    int temp_len = snprintf(temp, sizeof(temp), "%s.tmp", path);\n    if (temp_len <= 0 || (size_t)temp_len >= sizeof(temp)) return 0;
 #if defined(_WIN32)
     wchar_t wtemp[1024], wpath[1024];
     if (!config_utf8_path(temp, wtemp, 1024) || !config_utf8_path(path, wpath, 1024)) return 0;

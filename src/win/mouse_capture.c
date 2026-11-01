@@ -45,15 +45,18 @@ static int edge_boundary(int *edge_x, int *is_left) {
         checked = now; cached = 1;
     }
 
-    *is_left = (g_app.cfg.server_edge == HOP_EDGE_LEFT);
+    *is_left = (g_app.cfg.server_edge == HOP_EDGE_LEFT || g_app.cfg.server_edge==HOP_EDGE_TOP);
+    int vertical=g_app.cfg.server_edge>=HOP_EDGE_TOP;
     if (*is_left)
-        *edge_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        *edge_x = GetSystemMetrics(vertical?SM_YVIRTUALSCREEN:SM_XVIRTUALSCREEN);
     else
-        *edge_x = GetSystemMetrics(SM_XVIRTUALSCREEN) +
-                  GetSystemMetrics(SM_CXVIRTUALSCREEN) - 1;
+        *edge_x = GetSystemMetrics(vertical?SM_YVIRTUALSCREEN:SM_XVIRTUALSCREEN) +
+                  GetSystemMetrics(vertical?SM_CYVIRTUALSCREEN:SM_CXVIRTUALSCREEN) - 1;
 
     return !c.has_left;          /* 双屏：左屏在 Windows，不启用自动移交 */
 }
+
+static int axis(POINT p){return g_app.cfg.server_edge>=HOP_EDGE_TOP?p.y:p.x;}
 
 static int on_edge(int x, int edge_x, int is_left) {
     return is_left ? (x <= edge_x) : (x >= edge_x);
@@ -83,7 +86,8 @@ static void enter_sharing(POINT trigger) {
     s_sharing = 1;
     s_anchor = trigger;
     /* 钳制点内移到边缘内侧，留出继续推的空间 */
-    s_anchor.x = is_left ? edge_x + margin : edge_x - margin;
+    if(g_app.cfg.server_edge>=HOP_EDGE_TOP)s_anchor.y=is_left?edge_x+margin:edge_x-margin;
+    else s_anchor.x = is_left ? edge_x + margin : edge_x - margin;
     s_last = s_anchor;
     s_have_last = 1;
     g_app.state = HOP_LINK_SHARING;
@@ -93,9 +97,10 @@ static void enter_sharing(POINT trigger) {
     s_cooldown_until = GetTickCount() + (DWORD)g_app.cfg.switch_cooldown_ms;
 
     /* 把 Windows y 按屏幕高度比例换算成 Mac 坐标，让鼠标在对应高度进入 */
-    int mac_y = trigger.y;
-    if (g_app.peer_h > 0 && g_app.cfg.screen_h > 0)
-        mac_y = (int)((long)trigger.y * g_app.peer_h / g_app.cfg.screen_h);
+    int mac_y = g_app.cfg.server_edge>=HOP_EDGE_TOP?trigger.x:trigger.y;
+    int vertical=g_app.cfg.server_edge>=HOP_EDGE_TOP;
+    int remote=vertical?g_app.peer_w:g_app.peer_h,local=vertical?g_app.cfg.screen_w:g_app.cfg.screen_h;
+    if(remote>0&&local>0)mac_y=(int)((long)mac_y*remote/local);
     send_enter(mac_y);
 
     ui_refresh(&g_app);
@@ -115,7 +120,7 @@ static void enter_local(void) {
      * 方向必须跟着 server_edge 走：右边缘时要往回退，不是往前推。 */
     edge_boundary(&edge_x, &is_left);
     p = s_anchor;
-    p.x += is_left ? 2 : -2;
+    if(g_app.cfg.server_edge>=HOP_EDGE_TOP)p.y+=is_left?2:-2;else p.x += is_left ? 2 : -2;
     SetCursorPos(p.x, p.y);
     s_have_last = 0;
     /* 收回后同样进入冷却：不然"推出去又被弹回来"会变成连续往返 */
@@ -125,6 +130,7 @@ static void enter_local(void) {
 }
 
 void capture_set_sharing(int sharing) {
+    if(g_app.cfg.role!=HOP_ROLE_SERVER)return;
     if (sharing && !s_sharing) {
         POINT pt;
         GetCursorPos(&pt);
@@ -135,6 +141,7 @@ void capture_set_sharing(int sharing) {
 }
 
 void capture_force_toggle(void) {
+    if(g_app.cfg.role!=HOP_ROLE_SERVER)return;
     if (!net_server_has_client(g_app.net)) {
         hop_log(HOP_LOG_WARN, "no client, cannot toggle");
         return;
@@ -223,10 +230,10 @@ static LRESULT CALLBACK mouse_proc_hook(int code, WPARAM wp, LPARAM lp) {
             net_server_has_client(g_app.net) &&
             !in_cooldown()) {
 
-            int dx = s_have_last ? (pt.x - s_last.x) : 0;
+            int dx = s_have_last ? (axis(pt) - axis(s_last)) : 0;
             int toward = is_left ? (dx < 0) : (dx > 0);
 
-            int at_edge = on_edge(pt.x, edge_x, is_left);
+            int at_edge = on_edge(axis(pt), edge_x, is_left);
 
             if (at_edge && toward) {
                 if (delay <= 0) {
@@ -270,7 +277,7 @@ void capture_on_edge_timer(void) {
     if (in_cooldown()) return;
 
     GetCursorPos(&pt);
-    if (!on_edge(pt.x, edge_x, is_left)) return;
+    if (!on_edge(axis(pt), edge_x, is_left)) return;
 
     enter_sharing(pt);
 }

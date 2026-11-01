@@ -181,6 +181,29 @@ static void test_config_defaults_and_loading(void) {
     remove(path);
 }
 
+static void test_dual_roles(void) {
+    const char *path="hopdesk-role-test.conf";
+    hop_config c,loaded;
+    for(int role=HOP_ROLE_SERVER;role<=HOP_ROLE_CLIENT;++role){
+        hop_config_defaults(&c);c.role=(hop_role)role;
+        snprintf(c.peer_host,sizeof(c.peer_host),"127.0.0.1");
+        CHECK(hop_config_save_atomic(&c,path));
+        hop_config_defaults(&loaded);CHECK(hop_config_load(&loaded,path));
+        CHECK(loaded.role==c.role);CHECK(!strcmp(loaded.peer_host,c.peer_host));
+    }
+    FILE *f=fopen(path,"w");CHECK(f!=NULL);
+    if(f){fputs("role=invalid\nport=9999\n",f);fclose(f);
+        loaded=c;CHECK(!hop_config_load(&loaded,path));CHECK(loaded.port==c.port);}
+    remove(path);
+    CHECK(hop_mac_to_vk(0x00)=='A');
+    CHECK(hop_mac_to_vk(0x37)==0xA2); /* Cmd -> Windows Ctrl */
+    CHECK(hop_mac_to_vk(0x3B)==0x5B); /* Control -> Windows key */
+    CHECK(hop_mac_to_vk(0xFFFF)==HOP_KEY_NONE);
+    const unsigned keys[]={'A','Z','1',0x70,0x25,0xA0,0xA1,0xA2,0xA3,0x5B,0x5C};
+    for(unsigned n=0;n<sizeof(keys)/sizeof(keys[0]);++n)
+        CHECK(hop_mac_to_vk(hop_vk_to_mac((uint16_t)keys[n]))==keys[n]);
+}
+
 static void test_keymap(void) {
     CHECK(hop_vk_to_mac('A') == 0x00);
     CHECK(hop_vk_to_mac('B') == 0x0B);
@@ -500,6 +523,7 @@ int main(void) {
     test_decoder_rejects_oversized_frame();
     test_crc32();
     test_config_defaults_and_loading();
+    test_dual_roles();
     test_keymap();
     test_keymap_ranges();
     test_decoder_reset_mid_frame();

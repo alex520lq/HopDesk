@@ -27,7 +27,10 @@ $iconInc = Join-Path $root 'assets/appicon'
 $out = Join-Path $build 'hopdesk.exe'
 $version = $env:HOPDESK_VERSION
 if (-not $version) { $version = '0.5.0' }
-if ($version -notmatch '^\d+\.\d+\.\d+$libs = 'ws2_32', 'dxva2', 'gdi32', 'shell32', 'user32', 'comctl32', 'winhttp', 'bcrypt'
+if ($version -notmatch '^[0-9]+[.][0-9]+[.][0-9]+$') { throw "Invalid HOPDESK_VERSION: $version" }
+$versionHeader = Join-Path $build 'hop_version.h'
+$headerContent = '#define HOP_VERSION "' + $version + '"'
+Set-Content -LiteralPath $versionHeader -Value $headerContent -Encoding ascii
 $iconPng = Join-Path $root 'assets/appicon/hopdesk.png'
 $iconIco = Join-Path $root 'assets/appicon/hopdesk.ico'
 $resource = Join-Path $root 'assets/appicon/hopdesk.rc'

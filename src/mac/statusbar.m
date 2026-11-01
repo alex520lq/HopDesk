@@ -8,6 +8,7 @@
 #include "update_manifest.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <stdio.h>
+#include <strings.h>
 #include <unistd.h>
 
 /* ---- 退出动作的 target ----
@@ -186,7 +187,7 @@ static void start_update_download(hop_update_manifest manifest) {
     NSURLSessionDownloadTask *download = [[NSURLSession sharedSession]
         downloadTaskWithURL:url completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
         NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
-        if (error || !location || (http && http.statusCode != 200)) {
+        if (error || !location || !http || http.statusCode != 200) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 s_updateBusy = NO;
                 update_alert(@"下载失败", error.localizedDescription ?: @"GitHub 没有返回有效的安装包。", NSAlertStyleCritical);
@@ -270,7 +271,7 @@ static void check_for_updates(void) {
         hop_update_manifest manifest;
         BOOL parsed = !error && data && data.length > 0 &&
             data.length <= HOP_UPDATE_MANIFEST_MAX &&
-            (!http || http.statusCode == 200) &&
+            http && http.statusCode == 200 &&
             hop_update_manifest_parse((const char *)data.bytes, data.length, &manifest);
         if (!parsed) {
             dispatch_async(dispatch_get_main_queue(), ^{

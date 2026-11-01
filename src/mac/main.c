@@ -4,6 +4,8 @@
  * ===================================================================== */
 #include "mac_app.h"
 #include "xfer.h"
+#include "../core/config_migrate.h"
+#include <mach-o/dyld.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -79,6 +81,8 @@ int main(int argc, char **argv) {
     snprintf(config, sizeof(config), "%s/hopdesk.conf", support);
     snprintf(log, sizeof(log), "%s/hopdesk.log", support);
 
+    hop_log_open(log);
+    const char *loaded_from=config;
     int config_loaded = hop_config_load(&g_mac.cfg, config);
     if (!config_loaded) {
         uint32_t exe_len = (uint32_t)sizeof(legacy);
@@ -90,31 +94,23 @@ int main(int argc, char **argv) {
                 if (used + sizeof("/hopdesk.conf") < sizeof(legacy))
                     strcat(legacy, "/hopdesk.conf");
                 else legacy[0] = '\0';
-            }
-        }
+            } else legacy[0] = '\0';
+        } else legacy[0] = '\0';
         if (legacy[0]) config_loaded = hop_config_load(&g_mac.cfg, legacy);
         if (!config_loaded) {
             config_loaded = hop_config_load(&g_mac.cfg, "hopdesk.conf");
             if (config_loaded) snprintf(legacy, sizeof(legacy), "%s", "hopdesk.conf");
         }
         if (config_loaded && legacy[0]) {
-            FILE *src = fopen(legacy, "rb");
-            if (src) {
-                FILE *dst = fopen(config, "wb");
-                if (dst) {
-                    char copy[4096]; size_t n;
-                    while ((n = fread(copy, 1, sizeof(copy), src)) > 0)
-                        if (fwrite(copy, 1, n, dst) != n) break;
-                    fclose(dst);
-                }
-                fclose(src);
-            }
+            loaded_from=legacy;
+            if(!hop_config_copy_atomic(legacy,config))
+                hop_log(HOP_LOG_WARN,"config: migration %s -> %s failed: %s; keeping legacy source",
+                        legacy,config,strerror(errno));
         }
     }
-    hop_log_open(log);
     hop_log(HOP_LOG_INFO, "HopDesk %s starting", HOP_VERSION);
     hop_log(HOP_LOG_INFO, "config: %s (%s), host=%s port=%u data_port=%u token_len=%u",
-            config, config_loaded ? "loaded" : "defaults",
+            loaded_from, config_loaded ? "loaded" : "defaults",
             g_mac.cfg.peer_host[0] ? g_mac.cfg.peer_host : "192.168.31.8",
             (unsigned)g_mac.cfg.port, (unsigned)g_mac.cfg.data_port,
             (unsigned)strlen(g_mac.cfg.token));

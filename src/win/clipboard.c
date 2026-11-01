@@ -48,6 +48,12 @@ static DWORD s_suppress_until;
 static int open_retry(HWND hwnd); /* used by pending remote-clipboard writer */
 static HGLOBAL s_pending_global;
 static UINT s_pending_format;
+static DWORD s_pending_sequence;
+
+static void discard_pending(void) {
+    if(s_pending_global)GlobalFree(s_pending_global);
+    s_pending_global=NULL;
+}
 
 static void schedule_clip_retry(void) {
     if (g_app.hwnd) SetTimer(g_app.hwnd, IDT_CLIP_RETRY, 120, NULL);
@@ -55,18 +61,25 @@ static void schedule_clip_retry(void) {
 
 static int apply_global(UINT format, HGLOBAL h) {
     if (!h) return 0;
+    DWORD expected=GetClipboardSequenceNumber();
+    discard_pending(); /* new remote payload supersedes every older request */
     if (open_retry(g_app.hwnd)) {
+        if(GetClipboardSequenceNumber()!=expected) {
+            CloseClipboard(); GlobalFree(h); return 0;
+        }
         if (EmptyClipboard() && SetClipboardData(format, h)) {
             s_suppress = 1;
             s_suppress_until = GetTickCount() + CLIP_SUPPRESS_MS;
             CloseClipboard();
             return 1;
         }
+        expected=GetClipboardSequenceNumber();
         CloseClipboard();
     }
     if (s_pending_global) GlobalFree(s_pending_global);
     s_pending_global = h;
     s_pending_format = format;
+    s_pending_sequence = expected;
     schedule_clip_retry();
     hop_log(HOP_LOG_WARN, "clip: clipboard busy; queued remote format %u for retry", format);
     return 0;
@@ -75,6 +88,10 @@ static int apply_global(UINT format, HGLOBAL h) {
 void clip_retry_pending(void) {
     if (s_pending_global) {
         if (open_retry(g_app.hwnd)) {
+            if(GetClipboardSequenceNumber()!=s_pending_sequence) {
+                discard_pending(); CloseClipboard();
+                KillTimer(g_app.hwnd,IDT_CLIP_RETRY); return;
+            }
             if (EmptyClipboard() && SetClipboardData(s_pending_format, s_pending_global)) {
                 s_pending_global = NULL; /* ownership transferred to Windows */
                 s_suppress = 1;
@@ -82,6 +99,7 @@ void clip_retry_pending(void) {
                 hop_log(HOP_LOG_INFO, "clip: pending remote clipboard applied");
                 CloseClipboard();
             } else {
+                s_pending_sequence=GetClipboardSequenceNumber();
                 CloseClipboard();
                 schedule_clip_retry();
                 return;

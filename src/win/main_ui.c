@@ -158,7 +158,7 @@ static const wchar_t *link_state(void) {
     if (!net_server_listening(g_app.net) || !xfer_listening()) return L"端口不可用，正在重试";
     if (g_app.state == HOP_LINK_SHARING) return L"键鼠正在 Mac";
     if (g_app.state == HOP_LINK_LOCAL) return L"已连接";
-    return L"等待 Mac 连接";
+    return L"等待连接";
 }
 static void refresh_connection(void) {
     wchar_t b[512];
@@ -495,7 +495,7 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             layout_main(h); return 0;
         case WM_GETMINMAXINFO:{
             MINMAXINFO *m=(MINMAXINFO *)lp;
-            m->ptMinTrackSize.x=1040; m->ptMinTrackSize.y=700;
+            m->ptMinTrackSize.x=1120; m->ptMinTrackSize.y=760;
             return 0;
         }
         case WM_TIMER:

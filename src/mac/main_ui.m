@@ -115,7 +115,7 @@ static unsigned long parse_cfg_number(NSString *value, unsigned long fallback) {
     const char *s=value.UTF8String;
     if (!s || !s[0]) return fallback;
     char *end=NULL;
-    unsigned long n=strtoul(s,&end,0);
+    unsigned long n=strtoul(s,&end,(s[0]=='0'&&(s[1]=='x'||s[1]=='X'))?16:10);
     return end==s || *end ? fallback : n;
 }
 static void populate_settings(void) {
@@ -125,8 +125,8 @@ static void populate_settings(void) {
     set_cfg_text(CFG_PORT,[NSString stringWithFormat:@"%u",(unsigned)c->port]);
     set_cfg_text(CFG_DATA_PORT,[NSString stringWithFormat:@"%u",(unsigned)c->data_port]);
     set_cfg_text(CFG_TOKEN,utf8(c->token));
-    [s_edgePopups[0] selectItemAtIndex:c->server_edge==HOP_EDGE_RIGHT?1:0];
-    [s_edgePopups[1] selectItemAtIndex:c->client_edge==HOP_EDGE_RIGHT?1:0];
+    [s_edgePopups[0] selectItemAtIndex:(c->server_edge>=HOP_EDGE_LEFT&&c->server_edge<=HOP_EDGE_BOTTOM)?c->server_edge:HOP_EDGE_LEFT];
+    [s_edgePopups[1] selectItemAtIndex:(c->client_edge>=HOP_EDGE_LEFT&&c->client_edge<=HOP_EDGE_BOTTOM)?c->client_edge:HOP_EDGE_RIGHT];
     set_cfg_text(CFG_SWITCH_DELAY,[NSString stringWithFormat:@"%d",c->switch_delay_ms]);
     set_cfg_text(CFG_COOLDOWN,[NSString stringWithFormat:@"%d",c->switch_cooldown_ms]);
     set_cfg_text(CFG_MARGIN,[NSString stringWithFormat:@"%d",c->edge_margin_px]);
@@ -312,7 +312,7 @@ static void build_settings_page(NSView *p) {
     for(int i=0;i<2;++i){
         ui_label(left,labels[5+i],NSMakeRect(18,y[5+i]+8,112,22),12,NO);
         NSPopUpButton *pop=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(136,y[5+i],242,30) pullsDown:NO];
-        [pop addItemsWithTitles:@[@"左边缘",@"右边缘"]];
+        [pop addItemsWithTitles:@[@"左边缘",@"右边缘",@"上边缘",@"下边缘"]];
         [left addSubview:pop]; s_edgePopups[i]=pop;
     }
     ui_label(right,@"交互与显示器",NSMakeRect(18,424,360,24),15,YES);

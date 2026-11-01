@@ -15,7 +15,8 @@
 /* ---- 退出动作的 target ----
  * 必须显式声明 NSMenuItemValidation：10.14 之后 NSMenu 只对声明了该协议的
  * target 调用 validateMenuItem:，否则"取消当前传输"永远是亮的。 */
-@interface HopController : NSObject <NSMenuItemValidation, NSWindowDelegate>
+@interface HopController : NSObject
+- (void)doOpen:(id)sender;
 - (void)doQuit:(id)sender;
 - (void)doWake:(id)sender;
 - (void)doInputWin:(id)sender;
@@ -24,7 +25,6 @@
 - (void)doRetryFile:(id)sender;
 - (void)doToggleFolder:(id)sender;
 - (void)doCheckUpdates:(id)sender;
-- (void)windowWillClose:(NSNotification *)notification;
 @end
 static void retry_selected_mac_file(void);
 static void toggle_selected_mac_folder(void);
@@ -33,8 +33,10 @@ static void check_for_updates(void);
 static NSWindow *s_transferWindow;
 static NSTimer *s_transferTimer;
 @implementation HopController
+- (void)doOpen:(id)sender { (void)sender; statusbar_show_main(); }
 - (void)doQuit:(id)sender {
     (void)sender;
+    main_ui_shutdown();
     net_request_stop();
     [NSApp terminate:nil];
 }
@@ -62,11 +64,6 @@ static NSTimer *s_transferTimer;
     if ([item action] == @selector(doCancelXfer:)) return xfer_busy() != 0;
     if ([item action] == @selector(doCheckUpdates:)) return !s_updateBusy;
     return YES;
-}
-- (void)windowWillClose:(NSNotification *)notification {
-    if (notification.object != s_transferWindow) return;
-    [s_transferTimer invalidate];
-    s_transferTimer = nil;
 }
 @end
 
@@ -148,9 +145,6 @@ static void set_appearance(int connected, int sharing) {
     }
     s_item.button.image = base;
 
-    s_state.title = sharing ? @"键鼠在 Mac"
-                  : connected ? @"已连接（Windows 主控）"
-                  : @"等待连接…";
 }
 
 
@@ -382,48 +376,13 @@ void statusbar_init(void) {
                   statusItemWithLength:NSVariableStatusItemLength];
 
         NSMenu *menu = [[NSMenu alloc] init];
-        s_state = [[NSMenuItem alloc] initWithTitle:@"等待连接…"
-                                             action:nil keyEquivalent:@""];
-        [s_state setEnabled:NO];
-        [menu addItem:s_state];
-        [menu addItem:[NSMenuItem separatorItem]];
-
-        NSMenuItem *wake = [[NSMenuItem alloc] initWithTitle:@"唤醒显示"
-                                                      action:@selector(doWake:)
+        NSMenuItem *open = [[NSMenuItem alloc] initWithTitle:@"打开"
+                                                      action:@selector(doOpen:)
                                                keyEquivalent:@""];
-        wake.target = s_ctrl;
-        [menu addItem:wake];
-
-        NSMenuItem *inwin = [[NSMenuItem alloc] initWithTitle:@"显示器输入 → Windows"
-                                                       action:@selector(doInputWin:)
-                                                keyEquivalent:@""];
-        inwin.target = s_ctrl;
-        [menu addItem:inwin];
-
+        open.target = s_ctrl;
+        [menu addItem:open];
         [menu addItem:[NSMenuItem separatorItem]];
-
-        NSMenuItem *cancel = [[NSMenuItem alloc] initWithTitle:@"取消当前传输"
-                                                        action:@selector(doCancelXfer:)
-                                                 keyEquivalent:@""];
-        cancel.target = s_ctrl;
-        [menu addItem:cancel];
-        NSMenuItem *transfers = [[NSMenuItem alloc] initWithTitle:@"传输管理器…"
-                                                           action:@selector(doTransfers:)
-                                                    keyEquivalent:@""];
-        transfers.target = s_ctrl;
-        [menu addItem:transfers];
-
-        [menu addItem:[NSMenuItem separatorItem]];
-
-
-        NSMenuItem *update = [[NSMenuItem alloc] initWithTitle:@"检查更新…"
-                                                        action:@selector(doCheckUpdates:)
-                                                 keyEquivalent:@""];
-        update.target = s_ctrl;
-        [menu addItem:update];
-        [menu addItem:[NSMenuItem separatorItem]];
-
-        NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:@"退出 HopDesk"
+        NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:@"退出"
                                                       action:@selector(doQuit:)
                                                keyEquivalent:@"q"];
         quit.target = s_ctrl;
@@ -443,6 +402,7 @@ void statusbar_init(void) {
 void statusbar_update(int connected, int sharing) {
     dispatch_async(dispatch_get_main_queue(), ^{
         set_appearance(connected, sharing);
+        main_ui_set_status(connected, sharing);
     });
 }
 
@@ -533,7 +493,13 @@ static void transfer_window_refresh(void) {
     s_retryButton.enabled = (st.direction == HOP_XFER_DIR_SEND);
 }
 
-void statusbar_show_transfers(void) {
+void statusbar_show_transfers(void) { main_ui_show_page(3); }
+
+/* The main window owns all user-facing controls; the status item only opens it. */
+void statusbar_check_updates(void) { check_for_updates(); }
+
+#if 0
+void statusbar_show_transfers_legacy(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!s_transferWindow) {
             s_transferWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,620,620)
@@ -581,6 +547,7 @@ void statusbar_show_transfers(void) {
         [s_transferWindow makeKeyAndOrderFront:nil];
     });
 }
+#endif
 
 void app_run(void) {
     int guard = hop_watchdog_begin("macOS main run loop", 30000);

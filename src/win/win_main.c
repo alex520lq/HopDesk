@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <shellapi.h>
 
 win_app g_app;
 static int s_ui_guard;
@@ -105,6 +106,16 @@ static void disp_switch_to_win(void) {
     capture_set_sharing(0);
 }
 
+static void disp_wake_mac(void) {
+    uint8_t p[4];
+    if (!net_server_has_client(g_app.net)) {
+        hop_log(HOP_LOG_WARN, "no client, cannot wake display");
+        return;
+    }
+    hop_put_be32(p, (uint32_t)g_app.cfg.disp_wake_sec);
+    net_server_send(g_app.net, HOP_MSG_DISP_WAKE, p, 4);
+}
+
 static void disp_sleep_mac(void) {
     net_server_send(g_app.net, HOP_MSG_DISP_SLEEP, NULL, 0);
     capture_set_sharing(0);
@@ -125,8 +136,12 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             clip_on_worker_message((UINT)wp, (HGLOBAL)lp);
             return 0;
         case WM_APP_TRAY:
-            if (LOWORD(lp) == WM_LBUTTONUP || LOWORD(lp) == WM_RBUTTONUP)
+            if (LOWORD(lp) == WM_LBUTTONUP || LOWORD(lp) == NIN_SELECT ||
+                LOWORD(lp) == NIN_KEYSELECT) {
+                ui_show_main(&g_app);
+            } else if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) {
                 ui_show_menu(&g_app);
+            }
             return 0;
         case WM_CLIPBOARDUPDATE:
             clip_on_update();
@@ -152,6 +167,8 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         case WM_COMMAND:
             switch (LOWORD(wp)) {
+                case 1090: ui_show_main(&g_app); return 0;
+                case 1091: DestroyWindow(h); return 0;
                 case 1001: capture_force_toggle(); return 0;
                 case 1002: DestroyWindow(h); return 0;
                 case 1003: disp_switch_to_mac(); return 0;
@@ -160,6 +177,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 case 1006: xfer_cancel(); return 0;
                 case 1007: ui_show_transfers(&g_app); return 0;
                 case 1008: update_check_async(g_app.hwnd); return 0;
+                case 1009: disp_wake_mac(); return 0;
             }
             break;
         case WM_DESTROY:
@@ -207,12 +225,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     beside(conf_path, MAX_PATH, L"hopdesk.conf");
     char conf_utf8[MAX_PATH * 3];
     WideCharToMultiByte(CP_UTF8, 0, conf_path, -1, conf_utf8, sizeof(conf_utf8), NULL, NULL);
+    snprintf(g_app.config_path, sizeof(g_app.config_path), "%s", conf_utf8);
     hop_config_load(&g_app.cfg, conf_utf8);
 
     wchar_t log_path[MAX_PATH];
     beside(log_path, MAX_PATH, L"hopdesk.log");
     char log_utf8[MAX_PATH * 3];
     WideCharToMultiByte(CP_UTF8, 0, log_path, -1, log_utf8, sizeof(log_utf8), NULL, NULL);
+    snprintf(g_app.log_path, sizeof(g_app.log_path), "%s", log_utf8);
     hop_log_open(log_utf8);
 
     hop_log(HOP_LOG_INFO, "HopDesk %s starting", HOP_VERSION);

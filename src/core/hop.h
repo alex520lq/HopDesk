@@ -205,6 +205,7 @@ typedef struct {
 
 void hop_config_defaults(hop_config *c);
 int  hop_config_load(hop_config *c, const char *path);  /* 不存在返回 0 */
+int  hop_config_save_atomic(const hop_config *c, const char *path); /* 同目录临时文件 + 原子替换 */
 
 /* ---- Windows VK -> macOS 虚拟键码（平台无关的表，阶段 2） ---- */
 #define HOP_KEY_NONE 0xFFFFu

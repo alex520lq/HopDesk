@@ -31,7 +31,7 @@ HopDesk 采用 **单主干 + 单活动修复分支** 的迭代方式，避免多
 | 图片 | 通过数据通道传输像素数据 |
 | 显示器控制 | Windows DDC/CI 输入源控制；macOS 唤醒、切换输入源和显示睡眠 |
 | 连接管理 | TCP 连接、心跳与客户端重连 |
-| 原生界面 | Windows 系统托盘菜单；macOS 菜单栏状态项 |
+| 原生界面 | Windows Win32 主窗口；macOS Cocoa 主窗口；两端统一六页导航和交互 |
 
 ### 当前边界
 
@@ -67,7 +67,7 @@ HopDesk/
 
 **Windows**
 
-- Win32 托盘与消息窗口
+- Win32 托盘入口 + 原生主窗口（概览、连接、设置、传输、日志、更新）
 - `WH_MOUSE_LL` / `WH_KEYBOARD_LL` 输入捕获
 - `AddClipboardFormatListener` 剪贴板监听
 - Winsock TCP 服务端
@@ -78,7 +78,7 @@ HopDesk/
 - CoreGraphics `CGEvent` 键鼠事件注入
 - POSIX socket TCP 客户端
 - `NSPasteboard` 剪贴板读写
-- `NSStatusItem` 菜单栏界面
+- `NSStatusItem` 菜单栏入口 + Cocoa 原生主窗口（与 Windows 保持相同页面结构和文案）
 - IOKit 显示唤醒，以及外部命令切换显示器输入源
 
 ## 通信设计
@@ -149,7 +149,7 @@ build/hopdesk
 
 ## 自动更新
 
-Windows 托盘和 macOS 菜单栏均提供“检查更新…”。用户确认后，客户端会从公开 GitHub Release 更新源下载对应平台安装包，校验 SHA-256，再由独立辅助程序替换旧版本并重新启动；HopDesk 配置与日志不会被覆盖。
+Windows 托盘和 macOS 菜单栏只保留“打开”“退出”；连接、设置、传输管理、日志和更新都在统一主窗口中操作。主窗口“更新”页面提供检查更新入口。用户确认后，客户端会从公开 GitHub Release 更新源下载对应平台安装包，校验 SHA-256，再由独立辅助程序替换旧版本并重新启动；HopDesk 配置与日志不会被覆盖。
 
 源码仓库保持私有，更新包和清单发布到独立公开仓库。首次配置、发布 tag、更新安全边界和签名要求见 [自动更新与 Release 发布](docs/UPDATES.md)。在创建公开的 Release 仓库并配置 Actions secret 之前，更新服务不会实际可用。
 
@@ -241,7 +241,7 @@ xfer_chunk_kb=256
   控制会话变化时重置确认游标、整批重发，不能沿用旧接收端的确认状态。
   退避 0.5–8 s，最多 5 次，总预算 30 s。超预算才放弃 —— 否则对端再也不回来时
   作业会永久挂在队列里。
-- **可取消**。托盘 / 菜单栏「取消当前传输」双向生效：发送侧每块之后检查一次
+- **可取消**。主窗口“传输”页面中的「取消传输」双向生效：发送侧每块之后检查一次
   （响应延迟上限一个分块），接收侧删掉半成品并立墓碑，对端再发同批次直接回 `ABORT`。
 - **有界写盘队列（8 槽）做背压**。磁盘跟不上时接收线程阻塞，TCP 窗口随之收缩，
   发送端自动减速 —— 内存上界是"队列深度 × 块大小"，不随传输总量增长。
@@ -300,7 +300,7 @@ DNS 5 秒、整帧发送 10 秒、常规文件/DDC/剪贴板操作 15 秒、写�
 
 - [架构设计与通信协议](docs/architecture.md)
 - [Windows 端说明](src/win/README.md)
-- [macOS 端说明](src/mac/README.md)
+- [macOS 端说明](src/mac/README.md)\n- [主窗口 UI 结构与跨平台交互](docs/MAIN_UI.md)
 
 ## 许可证
 

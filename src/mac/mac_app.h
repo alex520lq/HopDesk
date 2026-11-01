@@ -9,7 +9,7 @@
 typedef struct {
     hop_config cfg; /* immutable after main startup; all threads read-only */
     /* Geometry initialized before threads; later refresh/read only in input/control dispatch. */
-    double     screen_w, screen_h;   /* 本端 CoreGraphics 坐标空间（逻辑点） */
+    double     screen_w, screen_h;   /* 本端 CoreGraphics 坐标空间（逻辑点） */\n    char       config_path[1024];    /* canonical Application Support config */\n    char       log_path[1024];       /* active log path */
 } mac_app;
 
 extern mac_app g_mac;
@@ -49,7 +49,7 @@ void disp_set_input(uint16_t vcp);
 /* statusbar.m */
 void statusbar_init(void);
 void statusbar_update(int connected, int sharing);
-void statusbar_show_transfers(void);
+void statusbar_show_transfers(void);\nvoid statusbar_show_main(void);
 void app_run(void);                 /* 启动 NSApplication 主循环 */
 
 #endif

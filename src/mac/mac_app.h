@@ -17,7 +17,7 @@ extern mac_app g_mac;
 /* net_client.c */
 void net_loop_run(void);                 /* 连接 + 重连 + 接收（后台线程） */
 int  net_send(uint8_t type, const void *p, uint32_t len);
-void net_request_stop(void);
+void net_request_stop(void);\nvoid net_request_reconnect(void); /* close current socket; background loop reconnects */
 /* 打开 TCP keepalive：空闲连接变黑洞时让内核在一分多钟内判定死亡，
  * 否则阻塞的 read 永远不返回，通道就此僵死。控制/数据通道都要调。 */
 void net_set_keepalive(int s);

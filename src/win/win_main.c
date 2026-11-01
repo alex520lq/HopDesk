@@ -158,6 +158,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 case 1004: disp_switch_to_win(); return 0;
                 case 1005: disp_sleep_mac(); return 0;
                 case 1006: xfer_cancel(); return 0;
+                case 1007: ui_show_transfers(&g_app); return 0;
                 case 1008: update_check_async(g_app.hwnd); return 0;
             }
             break;

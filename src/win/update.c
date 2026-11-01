@@ -264,14 +264,22 @@ static DWORD WINAPI update_worker(void *arg) {
         goto done;
     }
     if (cmp >= 0) {
-        swprintf(version, ARRAYSIZE(version), L"%S", HOP_VERSION);
+        if (!utf8_wide(HOP_VERSION, version, ARRAYSIZE(version))) {
+            MessageBoxW(owner, L"当前构建版本信息无效。", L"HopDesk 更新",
+                        MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+            goto done;
+        }
         swprintf(message, ARRAYSIZE(message), L"当前已经是最新版本（v%ls）。", version);
         MessageBoxW(owner, message, L"HopDesk 更新", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
         goto done;
     }
 
-    swprintf(version, ARRAYSIZE(version), L"%S", manifest.version);
-    swprintf(current, ARRAYSIZE(current), L"%S", HOP_VERSION);
+    if (!utf8_wide(manifest.version, version, ARRAYSIZE(version)) ||
+        !utf8_wide(HOP_VERSION, current, ARRAYSIZE(current))) {
+        MessageBoxW(owner, L"版本信息无效，已取消更新。", L"HopDesk 更新",
+                    MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+        goto done;
+    }
     swprintf(message, ARRAYSIZE(message),
         L"发现新版本 v%ls（当前 v%ls）。\n\n是否下载并自动安装？",
         version, current);

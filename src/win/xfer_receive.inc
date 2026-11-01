@@ -171,6 +171,7 @@ typedef struct {
     uint32_t  dead_batch;    /* 已作废的批次（本地取消 / 对端中止）。
                               * 它之后的帧一律忽略，且不再为它建目录 ——
                               * 否则取消之后对端再发一帧就把目录又建回来了。 */
+    uint8_t dead_reason;   /* Preserve the original failure when rejecting a late BEGIN. */
     wchar_t   dir[MAX_PATH];
     uint32_t  cur_id;
     wchar_t  *cur_path;
@@ -216,6 +217,10 @@ static void rx_clear_state(void) {
     s_rx.active = 0;
     s_rx.batch = 0;
     s_rx.fcrc = 0;
+    s_rx.cur_id = 0;
+    s_rx.cur_size = 0;
+    s_rx.cur_is_image = s_rx.cur_is_dir = 0;
+    s_rx.img_w = s_rx.img_h = s_rx.img_stride = 0;
     s_rx.cur_fail = -1;
     s_rx.dir[0] = L'\0';
 }
@@ -228,7 +233,7 @@ static void rx_reset(void) {
 }
 
 /* 递归删掉本批临时目录。
- * 只在"用户取消 / 对端中止"时调用：失败批次要保留已送达的文件，
+ * 只在接收批次被 ABORT 时调用；普通部分完成仍保留已送达的文件，
  * 成功批次的文件就是产物本身，都不能删。 */
 static void rx_discard_dir(void) {
     if (!s_rx.dir[0]) return;
@@ -301,7 +306,31 @@ static wchar_t *rx_path_for(const char *rel) {
     return o;
 }
 
+/* Receiver-thread only. Wire notification has no status side effects. Close the
+ * writer before freeing paths/buffers or deleting staging files. Terminal state
+ * is idempotent; repeated/stale ABORTs cannot end an unrelated active batch. */
+static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
+    if (!batch) return;
+    if (notify_peer) { send_abort_msg(s_x.client,batch,reason); }
+    if (!s_rx.active || s_rx.batch != batch) return;
+    rx_close_file();
+    rx_discard_dir();
+    status_end(HOP_XFER_DIR_RECEIVE,batch,
+               reason==HOP_ABORT_CANCEL?HOP_XFER_CANCELLED:HOP_XFER_FAILED,
+               reason==HOP_ABORT_CANCEL?"Receive cancelled":"Receive aborted");
+    s_rx.dead_batch = batch;
+    s_rx.dead_reason = reason;
+    rx_clear_state();
+}
+
 static void rx_begin_batch(uint32_t batch) {
+    /* 作废过的批次又来了（对端还没收到取消）：回一个 ABORT 让它立刻放手，
+     * 千万别为它重建目录 —— 用户已经说过不要了。 */
+    if (batch == s_rx.dead_batch) {
+        rx_terminate(batch,s_rx.dead_reason,1);
+        return;
+    }
+    if (s_rx.active && s_rx.batch == batch) return;   /* 重发同一个批次：接着用 */
     /* 清掉上一批遗留的"接收侧取消"请求。
      *
      * 用户可能在"没有接收在途"的时候点取消（比如只在发文件），
@@ -310,20 +339,16 @@ static void rx_begin_batch(uint32_t batch) {
      * 把刚建立的新批次误判成"用户要取消"。批次一换，旧请求就该作废。 */
     InterlockedExchange(&s_x.cancel_rx, 0);
 
-    /* 作废过的批次又来了（对端还没收到取消）：回一个 ABORT 让它立刻放手，
-     * 千万别为它重建目录 —— 用户已经说过不要了。 */
-    if (batch == s_rx.dead_batch) {
-        send_abort_msg(s_x.client, batch, HOP_ABORT_CANCEL);
-        return;
-    }
-    if (s_rx.active && s_rx.batch == batch) return;   /* 重发同一个批次：接着用 */
     rx_reset();
-    s_rx.dead_batch = 0;                              /* 换批次了，墓碑清掉 */
+    /* Keep the last tombstone: a late old BEGIN must not replace a newer task. */
+    s_rx.active = 1;
+    s_rx.batch = batch;
+    status_begin(batch,HOP_XFER_DIR_RECEIVE,0,0,"Incoming files",HOP_XFER_RECEIVING);
 
     wchar_t tmp[MAX_PATH];
     DWORD n = GetTempPathW(MAX_PATH, tmp);
     if (n == 0 || n >= MAX_PATH) {
-        send_abort_msg(s_x.client, batch, HOP_ABORT_DISK);
+        rx_terminate(batch,HOP_ABORT_DISK,1);
         return;
     }
 
@@ -333,7 +358,7 @@ static void rx_begin_batch(uint32_t batch) {
      * 用 %s 传 L"HopDesk" 只会读到第一个字符 'H'。这里不碰格式化，直接拼。 */
     wchar_t sub[32];
     wchar_t num[16];
-    if (swprintf(num, 16, L"%u", batch) <= 0) return;
+    if (swprintf(num, 16, L"%u", batch) <= 0) { rx_terminate(batch,HOP_ABORT_DISK,1); return; }
     wcscpy(sub, XFER_RX_ROOT);
     wcscat(sub, L"\\");
     wcscat(sub, num);
@@ -341,19 +366,19 @@ static void rx_begin_batch(uint32_t batch) {
     size_t sub_len = wcslen(sub);
     if ((size_t)n + sub_len + 1 > MAX_PATH) {
         hop_log(HOP_LOG_WARN, "xfer: temp path too long, batch %u dropped", batch);
-        send_abort_msg(s_x.client, batch, HOP_ABORT_DISK);
+        rx_terminate(batch,HOP_ABORT_DISK,1);
         return;
     }
 
     wcscpy(s_rx.dir, tmp);
     wcscat(s_rx.dir, sub);
 
-    s_rx.active = 1;
-    s_rx.batch = batch;
-    status_begin(batch,HOP_XFER_DIR_RECEIVE,0,0,"Incoming files",HOP_XFER_RECEIVING);
 
     ensure_dirs(s_rx.dir);
-    CreateDirectoryW(s_rx.dir, NULL);
+    if (!CreateDirectoryW(s_rx.dir, NULL) && GetLastError()!=ERROR_ALREADY_EXISTS) {
+        rx_terminate(batch,HOP_ABORT_DISK,1);
+        return;
+    }
 
     /* GetTempPathW 可能返回 8.3 短路径（ADMINI~1），剪贴板里给用户看的
      * 路径要换成完整形式 */
@@ -449,6 +474,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             hop_xfer_file_begin_msg msg;
             if (!hop_xfer_decode_file_begin(p, len, &msg)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed FILE_BEGIN rejected");
+                if (s_rx.active) rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
                 EnterCriticalSection(&s_x.lock);
                 SOCKET active = s_x.client;
                 LeaveCriticalSection(&s_x.lock);
@@ -463,7 +489,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             const uint8_t *rel = msg.relpath;
 
             rx_begin_batch(batch);
-            if (!s_rx.active) return;
+            if (!s_rx.active || s_rx.batch != batch) return;
 
             /* 先把"当前条目"登记好，哪怕它是坏的：FILE_END 要靠 cur_id 回 ACK，
              * 漏回一次，发送端就要白等 10 秒超时再重试。 */
@@ -531,11 +557,12 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             hop_xfer_image_begin_msg msg;
             if (!hop_xfer_decode_image_begin(p, len, &msg)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed IMAGE_BEGIN rejected");
+                if (s_rx.active) rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
             uint32_t batch = msg.batch;
             rx_begin_batch(batch);
-            if (!s_rx.active) return;
+            if (!s_rx.active || s_rx.batch != batch) return;
 
             int w = (int)msg.width;
             int h = (int)msg.height;
@@ -546,10 +573,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             if (!hop_xfer_image_valid(w, h, stride)) {
                 hop_log(HOP_LOG_ERROR,
                         "xfer: image %dx%d stride %d rejected (over cap)", w, h, stride);
-                uint8_t ab[5];
-                hop_put_be32(ab, s_rx.batch);
-                ab[4] = HOP_ABORT_TOO_LARGE;
-                send_small(s_x.client, HOP_MSG_XFER_ABORT, ab, 5);
+                rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
 
@@ -565,7 +589,8 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
         }
 
         case HOP_MSG_FILE_CHUNK: {
-            if (len < 20) return;
+            if (!s_rx.active) return; /* late data after termination */
+            if (len < 20) { rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1); return; }
             uint64_t off = hop_get_be64(p + 4);
             uint32_t n   = hop_get_be32(p + 12);
             uint32_t crc = hop_get_be32(p + 16);
@@ -573,11 +598,12 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                     s_rx.cur_is_image ? s_rx.img_expected :
                         (s_rx.cur_fail >= 0 ? UINT64_MAX : s_rx.cur_size),
                     s_rx.cur_is_image)) {
-                hop_log(HOP_LOG_WARN, "xfer: malformed or out-of-range chunk; closing data channel");
-                EnterCriticalSection(&s_x.lock);
-                SOCKET active = s_x.client;
-                LeaveCriticalSection(&s_x.lock);
-                if (active != INVALID_SOCKET) shutdown(active, SD_BOTH);
+                hop_log(HOP_LOG_WARN, "xfer: malformed or out-of-range chunk; aborting receive");
+                rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
+                return;
+            }
+            if (hop_get_be32(p) != s_rx.cur_id) {
+                rx_terminate(s_rx.batch,HOP_ABORT_CRC,1);
                 return;
             }
             const uint8_t *data = p + 20;
@@ -592,9 +618,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                         "xfer: CHUNK CRC MISMATCH off=%llu len=%u (expect %08x)",
                         (unsigned long long)off, n, crc);
                 if (s_rx.cur_is_image) {
-                    uint8_t ab[5]; hop_put_be32(ab, s_rx.batch); ab[4] = HOP_ABORT_CRC;
-                    send_small(s_x.client, HOP_MSG_XFER_ABORT, ab, 5);
-                    s_rx.img_len = 0;
+                    rx_terminate(s_rx.batch,HOP_ABORT_CRC,1);
                 } else {
                     s_rx.cur_fail = HOP_FILE_ACK_CRC;
                 }
@@ -605,9 +629,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 size_t need = (size_t)off + n;
                 if (off != s_rx.img_len || need > s_rx.img_expected) {
                     hop_log(HOP_LOG_ERROR, "xfer: image chunk gap/overlap or length overflow");
-                    uint8_t ab[5]; hop_put_be32(ab, s_rx.batch); ab[4] = HOP_ABORT_TOO_LARGE;
-                    send_small(s_x.client, HOP_MSG_XFER_ABORT, ab, 5);
-                    s_rx.img_len = 0;
+                    rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
                     return;
                 }
                 if (need > s_rx.img_cap) {
@@ -615,7 +637,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                     while (nc < need) nc *= 2;
                     if (nc > HOP_IMG_MAX_BYTES) nc = (size_t)HOP_IMG_MAX_BYTES;
                     uint8_t *nv = (uint8_t *)realloc(s_rx.img, nc);
-                    if (!nv) return;
+                    if (!nv) { rx_terminate(s_rx.batch,HOP_ABORT_DISK,1); return; }
                     s_rx.img = nv;
                     s_rx.img_cap = nc;
                 }
@@ -655,6 +677,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             hop_xfer_file_end_msg end_msg;
             if (!hop_xfer_decode_file_end(p, len, &end_msg)) return;
             uint32_t id = end_msg.id;
+            if (!s_rx.active || id != s_rx.cur_id) return;
             uint32_t want = end_msg.file_crc;
             uint8_t status = end_msg.status;
 
@@ -723,13 +746,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
             /* 对端不要这一批了：关文件、删掉已落盘的半成品、立墓碑。
              * 墓碑必须立 —— 否则对端再发一帧 FILE_BEGIN 就把目录又建回来了。 */
-            if (s_rx.active && s_rx.batch == batch) {
-                rx_close_file();
-                rx_discard_dir();
-                status_end(HOP_XFER_DIR_RECEIVE,batch,reason==HOP_ABORT_CANCEL?HOP_XFER_CANCELLED:HOP_XFER_FAILED,"Peer aborted receive");
-                s_rx.dead_batch = batch;
-                rx_clear_state();
-            }
+            rx_terminate(batch,reason,0);
             break;
         }
 
@@ -757,12 +774,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 static void rx_cancel_local(void) {
     if (!s_rx.active) return;
     uint32_t batch = s_rx.batch;
-    send_abort_msg(s_x.client, batch, HOP_ABORT_CANCEL);
-    rx_close_file();
-    rx_discard_dir();
-    status_end(HOP_XFER_DIR_RECEIVE,batch,HOP_XFER_CANCELLED,"Receive cancelled");
-    s_rx.dead_batch = batch;
-    rx_clear_state();
+    rx_terminate(batch,HOP_ABORT_CANCEL,1);
     hop_log(HOP_LOG_INFO, "xfer: batch %u cancelled locally", batch);
 }
 

@@ -95,7 +95,7 @@ typedef struct {int kind;} rx_task;
 static int s_status_lock,applied;static uint8_t wire[20];
 static hop_xfer_tracking s_receive_status;
 static struct {int active,cur_is_image,ntop;uint32_t batch;char *dir;uint8_t *img;size_t img_len,img_expected;int img_w,img_h,img_stride;void **tops;} s_rx;
-static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n){(void)fd;(void)type;assert(n==20);memcpy(wire,p,n);return 1;}
+static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t batch){(void)batch;(void)fd;(void)type;assert(n==20);memcpy(wire,p,n);return 1;}
 static void wq_push(rx_task*t){(void)t;}
 static void wq_drain(void){}
 static void rx_reset(void){s_rx.active=0;}
@@ -257,5 +257,13 @@ int main(void){
     names=['recompute_flags','mod_index','post','inject_release_all','inject_reset','inject_key','inject_button']
     fixture=fixture.replace('@FUNCTIONS@','\n'.join(extract(inject,n) for n in names))
     run('inject_release',fixture,['src/core/keymap.c'])
+
+    for platform in ['win','mac']:
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        receiver=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        fixture=(ROOT/'tests/session_transport_fixture.c.in').read_text(encoding='utf-8')
+        functions='\n'.join([extract(sender,'job_bind_session'),extract(sender,'send_small'),extract(sender,'send_chunk'),extract(receiver,'rx_bind_session'),extract(receiver,'on_data_frame_checked'),extract(receiver,'on_data_frame')])
+        fixture=fixture.replace('@FUNCTIONS@',functions)
+        run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c'],threads=True)
 
     print('All targeted regressions passed.',flush=True)

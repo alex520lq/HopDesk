@@ -27,7 +27,9 @@ $resilienceSources = @(
     (Join-Path $root 'tests/resilience_tests.c'),
     (Join-Path $root 'src/core/protocol.c'),
     (Join-Path $root 'src/core/clock.c'),
-    (Join-Path $root 'src/core/log.c')
+    (Join-Path $root 'src/core/log.c'),
+    (Join-Path $root 'src/core/session.c'),
+    (Join-Path $root 'src/core/watchdog.c')
 )
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
     & cl.exe /nologo /std:c11 /O2 /W4 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I $inc /Fe:$resilience @resilienceSources
@@ -38,3 +40,10 @@ if ($LASTEXITCODE -ne 0) { throw "Resilience test compilation failed ($LASTEXITC
 & $resilience (Join-Path $build 'resilience-test.log')
 if ($LASTEXITCODE -ne 0) { throw "Resilience tests failed ($LASTEXITCODE)" }
 & (Join-Path $PSScriptRoot 'test-ha.ps1')
+
+& $resilience --watchdog-progress
+if ($LASTEXITCODE -ne 0) { throw "Progressing watchdog operation unexpectedly failed" }
+& $resilience --watchdog-hang
+if ($LASTEXITCODE -ne 70) { throw "Watchdog did not fail-stop a stalled operation" }
+
+$global:LASTEXITCODE = 0 # Expected watchdog exit 70 is a successful test.

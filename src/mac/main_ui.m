@@ -16,11 +16,16 @@ enum {
     CFG_NAME, CFG_HOST, CFG_PORT, CFG_DATA_PORT, CFG_TOKEN,
     CFG_SERVER_EDGE, CFG_CLIENT_EDGE, CFG_SWITCH_DELAY, CFG_COOLDOWN,
     CFG_MARGIN, CFG_DISP_WIN, CFG_DISP_MAC, CFG_WAKE, CFG_CHUNK,
-    CFG_MAC_INPUT, CFG_MAC_SLEEP, CFG_COUNT
+    CFG_MAC_INPUT, CFG_MAC_SLEEP, CFG_ROLE, CFG_COUNT
 };
 
 static NSWindow *s_mainWindow;
 static NSView *s_pages[6];
+static NSScrollView *s_hosts[6];static int s_hostCount;
+static NSPopUpButton *s_rolePopup;
+static hop_config s_draft;
+static NSString *s_addresses;
+static BOOL s_saveBusy,s_logBusy;
 static NSButton *s_nav[6];
 static NSTextField *s_pageTitle, *s_headerStatus, *s_footer;
 static NSTextField *s_overviewStatus, *s_overviewPeer, *s_overviewChannels, *s_overviewSharing;
@@ -48,6 +53,7 @@ static NSString *const kPageNames[6] = {@"概览",@"连接",@"设置",@"传输",
 @interface HopDeskMainController : NSObject <NSWindowDelegate>
 - (void)selectPage:(id)sender;
 - (void)saveSettings:(id)sender;
+- (void)roleChanged:(id)sender;
 - (void)resetSettings:(id)sender;
 - (void)reconnect:(id)sender;
 - (void)switchMac:(id)sender;
@@ -96,11 +102,12 @@ static NSView *ui_card(NSView *parent, NSRect frame) {
     return v;
 }
 static NSView *ui_page(NSView *root) {
-    NSView *v=[[NSView alloc] initWithFrame:NSMakeRect(230,28,880,680)];
-    v.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
-    v.hidden=YES;
-    [root addSubview:v];
-    return v;
+    NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(230,28,880,680)];
+    scroll.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
+    scroll.hasVerticalScroller=YES;scroll.autohidesScrollers=YES;scroll.drawsBackground=NO;
+    NSView *document=[[NSView alloc] initWithFrame:NSMakeRect(0,0,880,680)];
+    document.autoresizingMask=NSViewWidthSizable;scroll.documentView=document;
+    scroll.hidden=YES;s_hosts[s_hostCount++]=scroll;[root addSubview:scroll];return document;
 }
 static NSString *utf8(const char *s) {
     if (!s || !s[0]) return @"";
@@ -114,13 +121,16 @@ static void set_cfg_text(int idx, NSString *value) {
 }
 static unsigned long parse_cfg_number(NSString *value, unsigned long fallback) {
     const char *s=value.UTF8String;
-    if (!s || !s[0]) return fallback;
+    (void)fallback;
+    if (!s || !s[0]) return 0xFFFFFFFFUL;
     char *end=NULL;
     unsigned long n=strtoul(s,&end,(s[0]=='0'&&(s[1]=='x'||s[1]=='X'))?16:10);
-    return end==s || *end ? fallback : n;
+    return end==s || *end || s[0]=='-' ? 0xFFFFFFFFUL : n;
 }
 static void populate_settings(void) {
-    hop_config *c=&g_mac.cfg;
+    hop_config *c=&s_draft;
+    [s_rolePopup selectItemAtIndex:c->role==HOP_ROLE_CLIENT?1:0];
+    s_cfg[CFG_HOST].enabled=c->role==HOP_ROLE_CLIENT;
     set_cfg_text(CFG_NAME,utf8(c->device_name));
     set_cfg_text(CFG_HOST,utf8(c->peer_host));
     set_cfg_text(CFG_PORT,[NSString stringWithFormat:@"%u",(unsigned)c->port]);
@@ -139,13 +149,15 @@ static void populate_settings(void) {
     set_cfg_text(CFG_MAC_SLEEP,utf8(c->mac_sleep_cmd));
 }
 static void save_settings(void) {
-    hop_config next=g_mac.cfg;
+    hop_config next=s_draft;
+    if(s_saveBusy)return;
+    next.role=s_rolePopup.indexOfSelectedItem==1?HOP_ROLE_CLIENT:HOP_ROLE_SERVER;
     const char *name=s_cfg[CFG_NAME].stringValue.UTF8String ?: "";
     const char *host=s_cfg[CFG_HOST].stringValue.UTF8String ?: "";
     const char *token=s_cfg[CFG_TOKEN].stringValue.UTF8String ?: "";
     const char *input=s_cfg[CFG_MAC_INPUT].stringValue.UTF8String ?: "";
     const char *sleep=s_cfg[CFG_MAC_SLEEP].stringValue.UTF8String ?: "";
-    if (!name[0] || strlen(name)>=sizeof(next.device_name) || strlen(host)>=sizeof(next.peer_host) ||
+    if (!name[0] || (next.role==HOP_ROLE_CLIENT&&!host[0]) || strlen(name)>=sizeof(next.device_name) || strlen(host)>=sizeof(next.peer_host) ||
         strlen(token)>=sizeof(next.token) || strlen(input)>=sizeof(next.mac_input_cmd) ||
         strlen(sleep)>=sizeof(next.mac_sleep_cmd)) {
         NSAlert *a=[[NSAlert alloc] init]; a.messageText=@"设置无效";
@@ -180,19 +192,21 @@ static void save_settings(void) {
     next.xfer_chunk_kb=(int)chunk;
     snprintf(next.mac_input_cmd,sizeof(next.mac_input_cmd),"%s",input);
     snprintf(next.mac_sleep_cmd,sizeof(next.mac_sleep_cmd),"%s",sleep);
-    if (!hop_config_save_atomic(&next,g_mac.config_path)) {
-        NSAlert *a=[[NSAlert alloc] init]; a.messageText=@"保存失败";
-        a.informativeText=@"配置保存失败。原有配置文件保持不变，请检查目录权限和磁盘空间。";
-        a.alertStyle=NSAlertStyleCritical; [a runModal]; return;
-    }
-    g_mac.cfg=next;
-    s_cfgNote.stringValue=@"设置已保存。连接、认证和显示器参数将在重启 HopDesk 后完整生效。";
-    hop_log(HOP_LOG_INFO,"ui: configuration saved; restart required for network settings");
-    main_ui_refresh();
+    s_saveBusy=YES;
+    s_cfgNote.stringValue=@"正在保存…";
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
+        int ok=hop_config_save_atomic(&next,g_mac.config_path);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            s_saveBusy=NO;
+            if(ok){s_draft=next;s_cfgNote.stringValue=@"设置已保存；重启 HopDesk 后生效。";}
+            else s_cfgNote.stringValue=@"保存失败；原配置未改变，请检查权限和磁盘空间。";
+        });
+    });
 }
 static void reset_settings(void) {
-    hop_config_defaults(&g_mac.cfg);
-    snprintf(g_mac.cfg.device_name,sizeof(g_mac.cfg.device_name),"%s","Mac");
+    if(s_saveBusy)return;
+    hop_config_defaults(&s_draft);
+    snprintf(s_draft.device_name,sizeof(s_draft.device_name),"%s","Mac");
     populate_settings();
     s_cfgNote.stringValue=@"已恢复默认值；点击“保存设置”写入配置文件。";
 }
@@ -212,7 +226,7 @@ static void refresh_transfer_page(void) {
     s_xferDetail.stringValue=[NSString stringWithFormat:@"%@  ·  %@  ·  %@",direction,phase,utf8(st.detail)];
     s_xferCounts.stringValue=[NSString stringWithFormat:@"文件 %u / %u    排队 %u    数据 %@ / %@",
         st.files_done,st.files_total,st.queued_count,byte_count(st.bytes_done),byte_count(st.bytes_total)];
-    s_xferProgress.doubleValue=st.bytes_total?MIN(100.0,100.0*(double)st.bytes_done/(double)st.bytes_total):(st.active?0:100);
+    s_xferProgress.doubleValue=st.bytes_total?MIN(100.0,100.0*(double)st.bytes_done/(double)st.bytes_total):(st.phase==HOP_XFER_COMPLETED?100:0);
     s_retryButton.enabled=st.direction==HOP_XFER_DIR_SEND;
     if (!s_fileSnapshot) s_fileSnapshot=calloc(HOP_XFER_FILE_LIMIT,sizeof(*s_fileSnapshot));
     int count=s_fileSnapshot?xfer_get_files(st.direction,st.batch,s_fileSnapshot,HOP_XFER_FILE_LIMIT):0;
@@ -260,29 +274,44 @@ static void refresh_transfer_page(void) {
 }
 static void refresh_logs(void) {
     if (!s_logView) return;
-    NSError *error=nil;
+    if(s_logBusy)return;
+    s_logBusy=YES;
     NSString *path=utf8(g_mac.log_path);
-    NSString *log=[NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:&error];
-    if (!log) log=error.localizedDescription ?: @"暂无日志记录。";
-    if (log.length>220000) log=[log substringFromIndex:log.length-220000];
-    s_logView.string=log;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
+        @autoreleasepool {
+            NSString *text=@"暂无日志记录。";
+            @try {
+                NSFileHandle *file=[NSFileHandle fileHandleForReadingAtPath:path];
+                if(file){unsigned long long size=[file seekToEndOfFile];
+                    [file seekToFileOffset:size>262144?size-262144:0];
+                    NSData *data=[file readDataToEndOfFile];[file closeFile];
+                    /* A tail may begin in the middle of a UTF-8 sequence. */
+                    if(size>262144){const unsigned char *p=data.bytes;NSUInteger i=0;
+                        while(i<data.length&&p[i]!='\n')++i;
+                        if(i<data.length)data=[data subdataWithRange:NSMakeRange(i+1,data.length-i-1)];}
+                    text=[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"日志编码无法识别。";
+                }
+            } @catch(NSException *exception){text=exception.reason ?: @"读取日志失败。";}
+            dispatch_async(dispatch_get_main_queue(), ^{s_logBusy=NO;s_logView.string=text;});
+        }
+    });
 }
 static NSString *link_status(void) {
-    if (!s_connected) return @"等待连接";
-    return s_sharing?@"键鼠正在 Mac":@"已连接";
+    if (!s_connected) return g_mac.cfg.role==HOP_ROLE_SERVER?@"等待客户端连接":g_mac.cfg.peer_host[0]?@"正在连接服务器":@"请先填写服务器 IP";
+    return s_sharing?(g_mac.cfg.role==HOP_ROLE_SERVER?@"键鼠已移交客户端":@"正在接收服务器键鼠"):@"已连接";
 }
 static void refresh_connection_labels(void) {
     NSString *status=link_status();
     s_headerStatus.stringValue=status;
     s_overviewStatus.stringValue=status;
-    s_overviewPeer.stringValue=[NSString stringWithFormat:@"macOS 客户端  ·  服务端 %@  ·  控制端口 %u  ·  数据端口 %u",
-        utf8(g_mac.cfg.peer_host), (unsigned)g_mac.cfg.port,(unsigned)g_mac.cfg.data_port];
+    s_overviewPeer.stringValue=[NSString stringWithFormat:@"%@  ·  %@  ·  控制端口 %u  ·  数据端口 %u",
+        g_mac.cfg.role==HOP_ROLE_SERVER?@"服务器 · 提供键鼠":@"客户端 · 接收键鼠",g_mac.cfg.role==HOP_ROLE_SERVER?s_addresses:utf8(g_mac.cfg.peer_host), (unsigned)g_mac.cfg.port,(unsigned)g_mac.cfg.data_port];
     s_overviewChannels.stringValue=[NSString stringWithFormat:@"控制通道：%@    数据通道：%@",
         s_connected?@"已连接":@"等待连接",xfer_connected()?@"已连接":@"等待连接"];
-    s_overviewSharing.stringValue=s_sharing?@"键鼠共享：当前由 Mac 接收输入":@"键鼠共享：等待鼠标边缘切换";
-    s_connectionRole.stringValue=@"本机角色：macOS 客户端";
+    s_overviewSharing.stringValue=s_sharing?(g_mac.cfg.role==HOP_ROLE_SERVER?@"键鼠共享：已移交客户端":@"键鼠共享：正在接收服务器输入"):@"键鼠共享：等待鼠标边缘切换";
+    s_connectionRole.stringValue=g_mac.cfg.role==HOP_ROLE_SERVER?@"本机角色：服务器 · 提供键鼠":@"本机角色：客户端 · 接收键鼠";
     s_connectionStatus.stringValue=status;
-    s_connectionPeer.stringValue=[NSString stringWithFormat:@"对端设备：Windows  ·  服务端 %@",utf8(g_mac.cfg.peer_host)];
+    s_connectionPeer.stringValue=g_mac.cfg.role==HOP_ROLE_SERVER?[NSString stringWithFormat:@"本机 IP：%@",s_addresses]:[NSString stringWithFormat:@"服务器 IP：%@",utf8(g_mac.cfg.peer_host)];
     s_connectionPorts.stringValue=[NSString stringWithFormat:@"控制端口：%u    数据端口：%u",
         (unsigned)g_mac.cfg.port,(unsigned)g_mac.cfg.data_port];
     s_footer.stringValue=[NSString stringWithFormat:@"HopDesk  v%s    ·    %@",HOP_VERSION,status];
@@ -291,10 +320,13 @@ static void show_page(int page) {
     if(page<0||page>=6)page=0;
     s_page=page;
     for(int i=0;i<6;++i){
-        s_pages[i].hidden=i!=page;
+        s_hosts[i].hidden=i!=page;
+        s_nav[i].layer.backgroundColor=(i==page?[NSColor colorWithSRGBRed:.90 green:.95 blue:.99 alpha:1]:[NSColor clearColor]).CGColor;
+        s_nav[i].contentTintColor=i==page?[NSColor systemBlueColor]:[NSColor labelColor];
         s_nav[i].state=i==page?NSControlStateValueOn:NSControlStateValueOff;
     }
     s_pageTitle.stringValue=kPageNames[page];
+    NSClipView *clip=s_hosts[page].contentView;[clip scrollToPoint:NSMakePoint(0,MAX(0,s_pages[page].frame.size.height-clip.bounds.size.height))];[s_hosts[page] reflectScrolledClipView:clip];
     if(page==3)refresh_transfer_page();
     if(page==4)refresh_logs();
 }
@@ -318,12 +350,18 @@ static void build_settings_page(NSView *p) {
         [pop addItemsWithTitles:@[@"左边缘",@"右边缘",@"上边缘",@"下边缘"]];
         [left addSubview:pop]; s_edgePopups[i]=pop;
     }
+    ui_label(left,@"本机角色",NSMakeRect(18,68,112,22),12,NO);
+    s_rolePopup=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(136,60,242,30) pullsDown:NO];
+    [s_rolePopup addItemsWithTitles:@[@"服务器 · 提供键鼠",@"客户端 · 接收键鼠"]];
+    s_rolePopup.target=s_uiController;s_rolePopup.action=@selector(roleChanged:);[left addSubview:s_rolePopup];
+    ui_label(left,@"角色与连接参数保存后重启生效。",NSMakeRect(18,22,360,22),11,NO);
     ui_label(right,@"交互与显示器",NSMakeRect(18,424,360,24),15,YES);
     const int ids[]={CFG_SWITCH_DELAY,CFG_COOLDOWN,CFG_MARGIN,CFG_DISP_WIN,CFG_DISP_MAC,CFG_WAKE,CFG_CHUNK};
     NSString *names[]={@"边缘触发延迟（ms）",@"切换冷却（ms）",@"边缘内缩（px）",@"Windows 输入源",@"Mac 输入源",@"唤醒时长（秒）",@"传输分块（KB）"};
+    const CGFloat ry[]={380,340,300,260,220,180,140};
     for(int i=0;i<7;++i){
-        ui_label(right,names[i],NSMakeRect(18,y[i]+8,170,22),12,NO);
-        s_cfg[ids[i]]=ui_field(right,@"",NSMakeRect(190,y[i],190,30),NO);
+        ui_label(right,names[i],NSMakeRect(18,ry[i]+8,170,22),12,NO);
+        s_cfg[ids[i]]=ui_field(right,@"",NSMakeRect(190,ry[i],190,30),NO);
     }
     ui_label(right,@"Mac 切源命令",NSMakeRect(18,96,160,20),12,NO);
     s_cfg[CFG_MAC_INPUT]=ui_field(right,@"",NSMakeRect(18,64,360,28),NO);
@@ -416,7 +454,7 @@ static void build_pages(NSView *root) {
     ui_button(card,@"检查更新",NSMakeRect(22,12,130,34),s_uiController,@selector(checkUpdates:));
     ui_label(p,@"如果更新源尚未发布 latest.txt，检查会明确提示读取失败，不会将其误报为“已是最新版本”。",
         NSMakeRect(22,360,820,42),11,NO);
-    for(int i=0;i<6;++i)s_pages[i].hidden=i!=0;
+    for(int i=0;i<6;++i)s_hosts[i].hidden=i!=0;
     populate_settings();
 }
 
@@ -426,6 +464,7 @@ static void build_pages(NSView *root) {
     if ([sender isKindOfClass:[NSButton class]] && page==0 && [sender title].length==0) page=0;
     show_page((int)page);
 }
+- (void)roleChanged:(id)sender {(void)sender;s_cfg[CFG_HOST].enabled=s_rolePopup.indexOfSelectedItem==1;}
 - (void)saveSettings:(id)sender {(void)sender;save_settings();}
 - (void)resetSettings:(id)sender {(void)sender;reset_settings();}
 - (void)reconnect:(id)sender {(void)sender;net_request_reconnect();}
@@ -476,13 +515,14 @@ static void build_pages(NSView *root) {
 
 static void create_main_window(void) {
     if(s_mainWindow)return;
+    s_draft=g_mac.cfg;char addresses[512];local_addresses(addresses,sizeof(addresses));s_addresses=utf8(addresses);
     NSRect frame=NSMakeRect(0,0,1140,800);
     s_mainWindow=[[NSWindow alloc] initWithContentRect:frame
         styleMask:(NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable)
         backing:NSBackingStoreBuffered defer:NO];
     s_mainWindow.releasedWhenClosed=NO;
     s_mainWindow.title=@"HopDesk";
-    s_mainWindow.minSize=NSMakeSize(1140,760);
+    s_mainWindow.minSize=NSMakeSize(1140,620);
     s_uiController=[[HopDeskMainController alloc] init];
     s_mainWindow.delegate=(id<NSWindowDelegate>)s_uiController;
     NSView *root=s_mainWindow.contentView;
@@ -493,17 +533,23 @@ static void create_main_window(void) {
     sidebar.autoresizingMask=NSViewHeightSizable;
     [root addSubview:sidebar];
     NSTextField *brand=ui_label(sidebar,@"HopDesk",NSMakeRect(24,740,160,32),22,YES);
-    ui_label(sidebar,@"跨设备协作",NSMakeRect(26,714,150,20),11,NO);
+    brand.autoresizingMask=NSViewMinYMargin;
+    ui_label(sidebar,@"跨设备协作",NSMakeRect(26,714,150,20),11,NO).autoresizingMask=NSViewMinYMargin;
     for(int i=0;i<6;++i){
         NSButton *b=[NSButton buttonWithTitle:kPageNames[i] target:s_uiController action:@selector(selectPage:)];
-        b.frame=NSMakeRect(18,620-i*52,174,38);b.bezelStyle=NSBezelStyleTexturedRounded;
+        b.frame=NSMakeRect(18,620-i*52,174,38);b.bordered=NO;b.wantsLayer=YES;b.layer.cornerRadius=8;b.autoresizingMask=NSViewMinYMargin;
+        [b setButtonType:NSButtonTypePushOnPushOff];
         b.tag=i;b.alignment=NSTextAlignmentLeft;b.font=[NSFont systemFontOfSize:13];
         [sidebar addSubview:b];s_nav[i]=b;
     }
     s_pageTitle=ui_label(root,@"概览",NSMakeRect(246,736,360,34),23,YES);
+    s_pageTitle.autoresizingMask=NSViewMinYMargin;
     s_headerStatus=ui_label(root,@"等待连接",NSMakeRect(850,742,250,22),12,YES);
+    s_headerStatus.autoresizingMask=NSViewMinYMargin|NSViewMinXMargin;
     s_footer=ui_label(root,@"HopDesk",NSMakeRect(236,6,860,18),10,NO);
     build_pages(root);
+    NSRect visible=NSScreen.mainScreen.visibleFrame;
+    if(s_mainWindow.frame.size.height>visible.size.height){NSRect adjusted=s_mainWindow.frame;adjusted.size.height=visible.size.height;adjusted.origin.y=visible.origin.y;[s_mainWindow setFrame:adjusted display:NO];}
     show_page(0);
 }
 

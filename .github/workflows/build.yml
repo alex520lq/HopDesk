@@ -99,6 +99,21 @@ jobs:
         shell: pwsh
         run: ./scripts/test-network.ps1
 
+      - name: Validate Windows updater script syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'scripts/update-windows.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            throw 'Windows updater PowerShell syntax validation failed.'
+          }
+
       - name: Package Windows
         shell: pwsh
         run: |
@@ -153,6 +168,7 @@ jobs:
 
       - name: Verify macOS app and shared branding
         run: |
+          bash -n scripts/update-macos.command
           test -d build/HopDesk.app
           test -x build/HopDesk.app/Contents/MacOS/HopDesk
           plutil -lint build/HopDesk.app/Contents/Info.plist

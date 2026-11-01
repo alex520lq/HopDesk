@@ -725,7 +725,7 @@ static void on_data_frame_checked(void *user, uint8_t type, const uint8_t *p, ui
 }
 
 static void on_data_frame(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
-    if (!hop_update_work_enter()) {
+    if (!hop_update_receive_enter()) {
         xfer_kick();
         return;
     }

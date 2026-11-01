@@ -248,7 +248,7 @@ xfer_chunk_kb=256
   当前用户登录后由计划任务启动 supervisor，异常退出后按 2–30 秒退避重启；
   托盘正常退出（退出码 0）不重启，直到下次登录。卸载用 `-Uninstall`。
 - macOS：先运行 `install-macos.command` 安装 App，再运行安装包中的
-  `install-launchagent.command`；默认启动 `/Applications/HopDesk.app`，也可传自定义 App 路径。
+  `install-launchagent.command`；默认启动 `~/Applications/HopDesk.app`（与现有安装器一致），也可传自定义 App 路径。
   创建当前用户的 `com.hopdesk.agent` LaunchAgent，异常退出由 launchd 重启，正常退出不重启。
   卸载用 `sh install-launchagent.command --uninstall`。
 

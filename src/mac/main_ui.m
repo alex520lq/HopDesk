@@ -453,8 +453,7 @@ static void build_pages(NSView *root) {
     if(!s_fileSnapshot||!s_xferFiles)return;
     NSString *text=s_xferFiles.string ?: @"";
     NSUInteger line=0,limit=MIN(s_xferFiles.selectedRange.location,text.length);
-    for(NSUInteger i=0;i<limit;++i)if([text characterAtIndex:i]=='
-')line++;
+    for(NSUInteger i=0;i<limit;++i)if([text characterAtIndex:i]=='\n')line++;
     if(line<(NSUInteger)s_visibleFileCount){
         int index=s_visibleFileIndices[line];
         if(s_fileSnapshot[index].is_directory)s_collapsedFolders[index]=!s_collapsedFolders[index];

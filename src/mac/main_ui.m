@@ -426,7 +426,13 @@ static void build_pages(NSView *root) {
 - (void)saveSettings:(id)sender {(void)sender;save_settings();}
 - (void)resetSettings:(id)sender {(void)sender;reset_settings();}
 - (void)reconnect:(id)sender {(void)sender;net_request_reconnect();}
-- (void)switchMac:(id)sender {(void)sender;disp_wake(g_mac.cfg.disp_wake_sec);disp_set_input(g_mac.cfg.disp_mac_input);}
+- (void)switchMac:(id)sender {
+    (void)sender;
+    disp_wake(g_mac.cfg.disp_wake_sec);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.2*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+        disp_set_input(g_mac.cfg.disp_mac_input);
+    });
+}
 - (void)switchWin:(id)sender {(void)sender;disp_set_input(g_mac.cfg.disp_win_input);}
 - (void)wakeDisplay:(id)sender {(void)sender;disp_wake(g_mac.cfg.disp_wake_sec);}
 - (void)sleepDisplay:(id)sender {(void)sender;disp_sleep();}
@@ -495,7 +501,6 @@ static void create_main_window(void) {
     s_headerStatus=ui_label(root,@"等待连接",NSMakeRect(850,742,250,22),12,YES);
     s_footer=ui_label(root,@"HopDesk",NSMakeRect(236,6,860,18),10,NO);
     build_pages(root);
-    [root addSubview:brand];
     show_page(0);
 }
 

@@ -84,7 +84,7 @@ with tempfile.TemporaryDirectory(prefix='hopdesk-updates-') as tmp:
             wrapper=sender[sender.rindex('int '+name+'('):]
             assert wrapper.index('hop_update_work_enter')<wrapper.index(name+'_impl(')<wrapper.index('hop_update_work_leave')
         body=receiver[receiver.index('static void on_data_frame(void'):]
-        assert body.index('hop_update_work_enter')<body.index('on_data_frame_checked(user')<body.index('hop_update_work_leave')
+        assert body.index('hop_update_receive_enter')<body.index('on_data_frame_checked(user')<body.index('hop_update_work_leave')
     workflow=(ROOT/'.github/workflows/build.yml').read_text(encoding='utf-8')
     assert workflow.index('Guard existing version assets before publication') < workflow.index('name: Publish GitHub Release assets')
     assert 'update_manifest_policy.py release-assets/latest.txt release-repo/latest.txt' in workflow

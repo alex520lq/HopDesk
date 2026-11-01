@@ -5,6 +5,9 @@
 #if defined(_WIN32)
 #include <windows.h>
 static SRWLOCK s_lock = SRWLOCK_INIT;
+static CONDITION_VARIABLE s_changed = CONDITION_VARIABLE_INIT;
+#define WAIT() SleepConditionVariableSRW(&s_changed,&s_lock,INFINITE,0)
+#define WAKE() WakeAllConditionVariable(&s_changed)
 #define LOCK() AcquireSRWLockExclusive(&s_lock)
 #define UNLOCK() ReleaseSRWLockExclusive(&s_lock)
 #else
@@ -12,13 +15,25 @@ static SRWLOCK s_lock = SRWLOCK_INIT;
 #include <unistd.h>
 #include <fcntl.h>
 static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t s_changed = PTHREAD_COND_INITIALIZER;
+#define WAIT() pthread_cond_wait(&s_changed,&s_lock)
+#define WAKE() pthread_cond_broadcast(&s_changed)
 #define LOCK() pthread_mutex_lock(&s_lock)
 #define UNLOCK() pthread_mutex_unlock(&s_lock)
 #endif
 static unsigned s_work;
-static int s_installing;
+static int s_installing; /* 0=open, 1=busy probe, 2=committed maintenance */
 int hop_update_work_enter(void) {
     LOCK();
+    int ok = !s_installing;
+    if (ok) ++s_work;
+    UNLOCK(); return ok;
+}
+int hop_update_receive_enter(void) {
+    LOCK();
+    /* A failed busy probe must not disconnect an existing active transfer.
+     * Wait for its bounded queue/status inspection to commit or reopen. */
+    while (s_installing == 1) WAIT();
     int ok = !s_installing;
     if (ok) ++s_work;
     UNLOCK(); return ok;
@@ -31,13 +46,16 @@ int hop_update_install_begin(int (*busy)(void)) {
     int ok = !s_installing && !s_work;
     if (ok) s_installing = 1;
     UNLOCK();
-    if (ok && (!busy || busy())) {
-        hop_update_install_end(); return 0;
-    }
-    return ok;
+    if (!ok) return 0;
+    int is_busy = !busy || busy();
+    LOCK();
+    s_installing = is_busy ? 0 : 2;
+    WAKE();
+    UNLOCK();
+    return !is_busy;
 }
 void hop_update_install_end(void) {
-    LOCK(); s_installing = 0; UNLOCK();
+    LOCK(); s_installing = 0; WAKE(); UNLOCK();
 }
 static int nonce_valid(const char *s) {
     if (!s || strlen(s) != 32) return 0;

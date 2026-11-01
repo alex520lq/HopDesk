@@ -209,7 +209,8 @@ static void refresh_logs(void) {
     if (!ok) { free(bytes); set_text(s_log_edit, L"读取日志失败。"); return; }
     bytes[got] = 0;
     if (pos.QuadPart > 0) {
-        char *nl = memchr(bytes, '\n', got);
+        char *nl = memchr(bytes, '
+', got);
         if (nl) { size_t skip = (size_t)(nl - bytes) + 1; memmove(bytes, bytes + skip, got - skip + 1); got -= (DWORD)skip; }
     }
     int needed = MultiByteToWideChar(CP_UTF8, 0, bytes, (int)got, NULL, 0);
@@ -317,14 +318,17 @@ static void refresh_transfers(void) {
              (unsigned long long)(st.bytes_total / 1048576ULL));
     set_text(s_xfer_counts, row);
     int pct = st.bytes_total ? (int)(100ULL * st.bytes_done / st.bytes_total) : (st.active ? 0 : 100);
-    SendMessageW(s_xfer_progress, PBM_SETPOS, pct > 100 ? 100 : pct, 0);\n    if (s_xfer_retry_button) EnableWindow(s_xfer_retry_button, st.direction == HOP_XFER_DIR_SEND);
+    SendMessageW(s_xfer_progress, PBM_SETPOS, pct > 100 ? 100 : pct, 0);
+    if (s_xfer_retry_button) EnableWindow(s_xfer_retry_button, st.direction == HOP_XFER_DIR_SEND);
 
     if (!s_file_snapshot) s_file_snapshot = (hop_xfer_file_status *)calloc(HOP_XFER_FILE_LIMIT, sizeof(*s_file_snapshot));
     int n = s_file_snapshot ? xfer_get_files(st.direction, st.batch, s_file_snapshot, HOP_XFER_FILE_LIMIT) : 0;
     if (s_file_batch != st.batch || s_file_direction != st.direction) {
         memset(s_collapsed, 0, sizeof(s_collapsed)); s_file_batch = st.batch; s_file_direction = st.direction;
     }
-    int oldSelected = (int)SendMessageW(s_xfer_files, LB_GETCURSEL, 0, 0);\n    int oldSelectedIndex = oldSelected == LB_ERR ? -1 : (int)SendMessageW(s_xfer_files, LB_GETITEMDATA, (WPARAM)oldSelected, 0);\n    SendMessageW(s_xfer_files, LB_RESETCONTENT, 0, 0);
+    int oldSelected = (int)SendMessageW(s_xfer_files, LB_GETCURSEL, 0, 0);
+    int oldSelectedIndex = oldSelected == LB_ERR ? -1 : (int)SendMessageW(s_xfer_files, LB_GETITEMDATA, (WPARAM)oldSelected, 0);
+    SendMessageW(s_xfer_files, LB_RESETCONTENT, 0, 0);
     s_visible_count = 0;
     for (int i=0; i<n; ++i) {
         int hidden = 0;

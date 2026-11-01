@@ -43,7 +43,7 @@ FRAMEWORKS="-framework Cocoa -framework ApplicationServices -framework CoreGraph
 # shellcheck disable=SC2086
 clang -O2 -Wall -Wextra -fobjc-arc -include "$VERSION_HEADER" -I "$INC" -o "$MACOS/HopDesk" $CORE $MAC_C $MAC_M $FRAMEWORKS
 
-cat > "$CONTENTS/Info.plist" <<'PLIST'
+cat > "$CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>

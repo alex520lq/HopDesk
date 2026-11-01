@@ -39,6 +39,21 @@ if kill -0 "$APP_PID" 2>/dev/null; then
   fail "HopDesk 未能在 60 秒内退出，已取消替换。"
 fi
 
+# Reject unexpected archive paths before extraction; the package is expected to
+# contain only the app bundle, its two installer helpers, and ditto resource-fork data.
+if ! unzip -Z1 "$ARCHIVE" >/dev/null 2>&1; then
+  fail "更新包不是有效的 ZIP 文件。"
+fi
+while IFS= read -r entry; do
+  case "$entry" in
+    HopDesk.app/*|install-macos.command|install-launchagent.command|__MACOSX/*) ;;
+    *) fail "更新包包含不允许的文件路径。" ;;
+  esac
+  case "/$entry/" in
+    *"/../"*|*"/./"*) fail "更新包包含不安全的相对路径。" ;;
+  esac
+done < <(unzip -Z1 "$ARCHIVE")
+
 ditto -x -k "$ARCHIVE" "$STAGE" || fail "无法解压更新包。"
 NEW_APP="$STAGE/HopDesk.app"
 if [[ ! -d "$NEW_APP" || ! -x "$NEW_APP/Contents/MacOS/HopDesk" ]]; then

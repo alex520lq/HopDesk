@@ -20,3 +20,5 @@ if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
 if ($LASTEXITCODE -ne 0) { throw "Core test compilation failed ($LASTEXITCODE)" }
 & $out
 if ($LASTEXITCODE -ne 0) { throw "Core tests failed ($LASTEXITCODE)" }
+& python (Join-Path $root 'scripts/test-regressions.py')
+if ($LASTEXITCODE -ne 0) { throw "Targeted regression tests failed ($LASTEXITCODE)" }

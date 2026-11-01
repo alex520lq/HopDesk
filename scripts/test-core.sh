@@ -12,3 +12,4 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
   "$ROOT/src/core/keymap.c" \
   "$ROOT/src/core/xfer_validate.c"
 "$BUILD/hopdesk-core-tests"
+python3 "$ROOT/scripts/test-regressions.py"

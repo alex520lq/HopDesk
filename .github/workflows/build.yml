@@ -213,6 +213,10 @@ jobs:
       group: hopdesk-release-publish
       cancel-in-progress: false
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
       - name: Download Windows package
         uses: actions/download-artifact@v4
         with:
@@ -256,6 +260,30 @@ jobs:
             exit 1
           fi
 
+      - name: Guard existing version assets before publication
+        env:
+          GH_TOKEN: ${{ secrets.HOPDESK_RELEASE_TOKEN }}
+        shell: bash
+        run: |
+          python3 -c 'import sys; sys.path.insert(0,"scripts"); from update_manifest_policy import parse; from pathlib import Path; parse(Path("release-assets/latest.txt").read_text(encoding="utf-8"))'
+          # A published tag is immutable. A partial/malformed release fails closed;
+          # never overwrite assets before discovering a same-version hash change.
+          status="$(curl --silent --show-error -o existing-release.json -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/alex520lq/HopDesk-Releases/releases/tags/$GITHUB_REF_NAME")"
+          case "$status" in
+            404) ;;
+            200)
+              curl --fail --location --silent --show-error \
+                "https://github.com/alex520lq/HopDesk-Releases/releases/download/$GITHUB_REF_NAME/latest.txt" \
+                -o published-version.txt
+              python3 -c 'import sys; sys.path.insert(0,"scripts"); from update_manifest_policy import parse; from pathlib import Path; assert parse(Path("release-assets/latest.txt").read_text(encoding="utf-8")) == parse(Path("published-version.txt").read_text(encoding="utf-8")), "Published tag assets are immutable; use a new version"'
+              ;;
+            *) echo "::error::Cannot verify existing release (HTTP $status)."; exit 1 ;;
+          esac
+          git clone --depth 1 --branch main "https://x-access-token:$GH_TOKEN@github.com/alex520lq/HopDesk-Releases.git" release-repo
+          python3 scripts/update_manifest_policy.py release-assets/latest.txt release-repo/latest.txt
+
       - name: Publish GitHub Release assets
         uses: softprops/action-gh-release@v2
         with:
@@ -275,9 +303,8 @@ jobs:
           RELEASE_TOKEN: ${{ secrets.HOPDESK_RELEASE_TOKEN }}
         shell: bash
         run: |
-          RELEASE_REPO="alex520lq/HopDesk-Releases"
-          git clone --depth 1 --branch main "https://x-access-token:$RELEASE_TOKEN@github.com/$RELEASE_REPO.git" release-repo
-          cp release-assets/latest.txt release-repo/latest.txt
+          # Preflight already prepared a validated, monotonic local pointer.
+          # Publish it only after both platform assets were uploaded successfully.
           cd release-repo
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

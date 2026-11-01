@@ -26,3 +26,5 @@ for mode,expected in [("--watchdog-progress",0),("--watchdog-hang",70)]:
     assert result.returncode==expected,(mode,result.returncode)
 print("PASS: watchdog tolerates progress and exits 70 on an injected hang")
 PYTEST
+
+python3 "$ROOT/scripts/test-updates.py"

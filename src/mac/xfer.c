@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdatomic.h>
 
 #define XFER_MAX_ENTRIES 8192
 
@@ -75,11 +76,12 @@ typedef struct {
 
 static struct {
     int              sock;
+    unsigned long    epoch;
     int              peer_ready;     /* 数据通道版本与 token 握手通过 */
     pthread_mutex_t  slock;          /* 保护 sock */
     pthread_mutex_t  qlock;          /* 保护作业队列 */
     pthread_cond_t   qcond;
-    int              stop;
+    _Atomic int      stop;
     xf_job          *q_head, *q_tail;
     uint32_t         batch_seq;
     uint32_t         chunk;
@@ -100,6 +102,12 @@ static struct {
  * socket 写。一次 send_all 内部可能分多次 write，两线程交错就会把
  * 帧字节搅在一起 —— 锁的粒度必须是"整帧"，不是"单次 write"。 */
 static pthread_mutex_t s_txlock = PTHREAD_MUTEX_INITIALIZER;
+static _Thread_local unsigned long s_send_epoch;
+static int send_session_current(int fd) {
+    pthread_mutex_lock(&s_x.slock);
+    int ok = s_x.sock == fd && (!s_send_epoch || s_x.epoch == s_send_epoch);
+    pthread_mutex_unlock(&s_x.slock); return ok;
+}
 static pthread_mutex_t s_status_lock = PTHREAD_MUTEX_INITIALIZER;
 static hop_xfer_tracking s_send_status, s_receive_status;
 static uint64_t s_status_revision;
@@ -314,7 +322,7 @@ static int send_small(int fd, uint8_t type, const uint8_t *p, uint32_t len) {
     uint8_t hdr[HOP_HEADER_SIZE];
     hop_encode_header(hdr, type, len);
     pthread_mutex_lock(&s_txlock);
-    int ok = send_all(fd, hdr, HOP_HEADER_SIZE);
+    int ok = send_session_current(fd) && send_all(fd, hdr, HOP_HEADER_SIZE);
     if (ok && len) ok = send_all(fd, p, len);
     pthread_mutex_unlock(&s_txlock);
     return ok;
@@ -461,7 +469,7 @@ static int send_chunk(int fd, uint8_t *tx, uint32_t batch, uint32_t id, uint64_t
     hop_put_be32(tx + 21, crc);
     if (data != tx + CHUNK_HDR) memcpy(tx + CHUNK_HDR, data, len);
     pthread_mutex_lock(&s_txlock);
-    int ok = send_all(fd, tx, CHUNK_HDR + len);
+    int ok = send_session_current(fd) && send_all(fd, tx, CHUNK_HDR + len);
     pthread_mutex_unlock(&s_txlock);
     if(ok) status_chunk(HOP_XFER_DIR_SEND,batch,id,off,len);
     return ok;
@@ -881,7 +889,8 @@ static void *send_thread(void *arg) {
         status_start_job(j);
 
         pthread_mutex_lock(&s_x.slock);
-        fd = s_x.sock;
+        fd = s_x.peer_ready ? s_x.sock : -1;
+        s_send_epoch = s_x.epoch;
         pthread_mutex_unlock(&s_x.slock);
 
         int r = (fd >= 0) ? run_job(fd, tx, j) : JOB_NET_DOWN;
@@ -970,7 +979,7 @@ void xfer_shutdown(void) {
     s_x.stop = 1;
 
     pthread_mutex_lock(&s_x.slock);
-    if (s_x.sock >= 0) { shutdown(s_x.sock, SHUT_RDWR); close(s_x.sock); s_x.sock = -1; }
+    if (s_x.sock >= 0) shutdown(s_x.sock, SHUT_RDWR);
     pthread_mutex_unlock(&s_x.slock);
 
     pthread_mutex_lock(&s_x.qlock);
@@ -1103,4 +1112,10 @@ int xfer_submit_image(const uint8_t *bgra, int w, int h, int stride) {
             w, h, (double)total / 1048576.0);
 
     return submit(j);
+}
+
+void xfer_kick(void) {
+    pthread_mutex_lock(&s_x.slock);
+    if (s_x.sock >= 0) shutdown(s_x.sock, SHUT_RDWR);
+    pthread_mutex_unlock(&s_x.slock);
 }

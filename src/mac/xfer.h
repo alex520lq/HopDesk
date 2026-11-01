@@ -14,6 +14,7 @@
 #include "../core/xfer_status.h"
 
 void xfer_init(const hop_config *cfg);
+void xfer_kick(void);
 void xfer_shutdown(void);
 
 int  xfer_connected(void);

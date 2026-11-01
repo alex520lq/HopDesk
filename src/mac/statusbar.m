@@ -402,6 +402,7 @@ void statusbar_init(void) {
 void statusbar_update(int connected, int sharing) {
     dispatch_async(dispatch_get_main_queue(), ^{
         set_appearance(connected, sharing);
+        mac_capture_connected(connected);
         main_ui_set_status(connected, sharing);
     });
 }

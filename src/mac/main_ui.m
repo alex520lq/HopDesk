@@ -3,9 +3,10 @@
  * Cocoa implementation of the shared six-page application UI.
  * ===================================================================== */
 #import <Cocoa/Cocoa.h>
+#import <QuartzCore/QuartzCore.h>
+#import <dispatch/dispatch.h>
 #include "mac_app.h"
 #include "xfer.h"
-#include "main_ui.h"
 #include "../core/xfer_status.h"
 #include <stdio.h>
 #include <stdlib.h>

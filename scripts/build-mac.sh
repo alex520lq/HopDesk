@@ -2,6 +2,7 @@
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/build"
+mkdir -p "$BUILD"
 APP="$BUILD/HopDesk.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"

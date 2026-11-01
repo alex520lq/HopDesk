@@ -1,0 +1,166 @@
+/* Generated with verbatim production receive cases/functions by test-regressions.py.
+ * OS/network/filesystem doubles isolate lifecycle, not real desktop integration. */
+#include "hop.h"
+#include "xfer_tracking.h"
+#include <assert.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+#include <wchar.h>
+#define hop_log(...) ((void)0)
+#define MAX_PATH 260
+#define RX_CLOSE 1
+#define RX_WRITE 2
+#define AcquireSRWLockExclusive(p) ((void)(p))
+#define ReleaseSRWLockExclusive(p) ((void)(p))
+#define EnterCriticalSection(p) ((void)(p))
+#define LeaveCriticalSection(p) ((void)(p))
+#define pthread_mutex_lock(p) ((void)(p))
+#define pthread_mutex_unlock(p) ((void)(p))
+#define pthread_cond_broadcast(p) ((void)(p))
+#define InterlockedExchange(p,v) (*(p)=(v))
+#define __sync_lock_test_and_set(p,v) (*(p)=(v))
+#define SetEvent(p) ((void)(p))
+typedef unsigned long DWORD;
+typedef int SOCKET;
+static struct {int lock,slock,qlock,client,sock,cancel_rx;uint32_t cur_batch,abort_batch;void*q_head;} s_x;
+static struct {int lock,cond,ev;} s_ack;
+static int s_status_lock;
+static uint64_t s_status_revision;
+static hop_xfer_tracking s_send_status,s_receive_status;
+static void *s_retry_paths[HOP_XFER_FILE_LIMIT];
+static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];static int s_history_count;
+static int saved,closed,closes,discarded,applied,fail_directory,fail_alloc,fail_send;
+static int notified;static uint8_t last_reason;
+static void history_save(void){assert(closed);saved++;}
+static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n){
+    (void)fd;if(fail_send)assert(!closed);assert(type==HOP_MSG_XFER_ABORT && n==5);last_reason=p[4];notified++;return !fail_send;
+}
+typedef struct {int kind;uint64_t off;uint32_t len;uint8_t*data;} rx_task;
+static struct {int err;} s_wq;
+static void wq_drain(void){}
+static int wq_push(rx_task*t){if(t->kind==RX_CLOSE){closed=1;closes++;}else free(t->data);return 1;}
+@RX_STATE@
+#ifdef FIXTURE_WINDOWS
+#define XFER_RX_ROOT L"HopDesk"
+#define ERROR_ALREADY_EXISTS 183
+static DWORD GetTempPathW(DWORD n,wchar_t*p){(void)n;wcscpy(p,L"tmp\\");return 4;}
+static void ensure_dirs(wchar_t*p){(void)p;}
+static int CreateDirectoryW(const wchar_t*p,void*q){(void)p;(void)q;return !fail_directory;}
+static DWORD GetLastError(void){return 5;}
+static DWORD GetLongPathNameW(const wchar_t*p,wchar_t*q,DWORD n){(void)p;(void)q;(void)n;return 0;}
+#else
+static const char*temp_root(void){return "/tmp";}
+static int mkdir_p(const char*p){(void)p;return fail_directory?-1:0;}
+#endif
+@WIRE_SEND@
+@STATUS_FUNCTIONS@
+@CLOSE_FILE@
+static void checked_free(void*p){if(p)assert(closed);free(p);}
+#define free checked_free
+@CLEAR_STATE@
+#undef free
+@RESET_STATE@
+static void rx_discard_dir(void){assert(closed);discarded++;s_rx.dir[0]=0;}
+@TERMINATE@
+@BEGIN_BATCH@
+static void status_image(uint32_t batch,int d,uint64_t size){
+    hop_xfer_tracking *t=status_for(d);hop_xfer_tracking_file(t,batch,1,"Image",size,0,HOP_XFER_FILE_RECEIVING);
+}
+static void status_chunk(int d,uint32_t b,uint32_t id,uint64_t off,uint32_t n){hop_xfer_tracking_chunk(status_for(d),b,id,off,n);}
+static void status_file_phase(int d,uint32_t b,int i,int p,uint32_t a){hop_xfer_tracking_phase(status_for(d),b,i,p,a);}
+static void apply_image(const uint8_t*p,int w,int h,int stride){(void)p;(void)w;(void)h;(void)stride;applied++;}
+static void apply_paths(const void*p,int n){(void)p;(void)n;applied++;}
+#define clip_apply_remote_image apply_image
+#define clipboard_apply_image apply_image
+#define clip_apply_remote_paths apply_paths
+#define clipboard_apply_paths apply_paths
+static void send_ack(int fd,uint32_t b,uint32_t id,int ack){(void)fd;(void)b;(void)id;(void)ack;assert(!"late FILE_END produced ACK");}
+#ifdef FIXTURE_WINDOWS
+static int rx_add_top(const wchar_t*p){(void)p;return 1;}
+#else
+static int rx_add_top(const char*p){(void)p;return 1;}
+#endif
+@FINISH_BATCH@
+@CANCEL_LOCAL@
+@BUSY@
+static void*try_realloc(void*p,size_t n){return fail_alloc?NULL:realloc(p,n);}
+#define realloc try_realloc
+static void dispatch(uint8_t type,const uint8_t*p,uint32_t len){switch(type){
+@RECEIVE_CASES@
+default:break;
+}}
+#undef realloc
+static void image_begin(uint32_t batch,uint32_t width){
+    uint8_t p[20];hop_put_be32(p,batch);hop_put_be32(p+4,1);hop_put_be32(p+8,width);
+    hop_put_be32(p+12,2);hop_put_be32(p+16,4);dispatch(HOP_MSG_IMAGE_BEGIN,p,sizeof(p));
+}
+static void chunk(uint32_t id,uint64_t off,int bad_crc){
+    uint8_t p[24]={0};hop_put_be32(p,id);hop_put_be64(p+4,off);hop_put_be32(p+12,4);
+    hop_put_be32(p+16,hop_crc32(0,p+20,4)^(bad_crc?1u:0u));dispatch(HOP_MSG_FILE_CHUNK,p,sizeof(p));
+}
+static void peer_abort(uint32_t batch,uint8_t reason){uint8_t p[5];hop_put_be32(p,batch);p[4]=reason;dispatch(HOP_MSG_XFER_ABORT,p,5);}
+static void late_done(uint32_t batch){uint8_t p[20]={0};hop_put_be32(p,batch);hop_put_be32(p+4,1);hop_put_be32(p+8,1);dispatch(HOP_MSG_XFER_DONE,p,20);}
+static void late_end(void){uint8_t p[9]={0};hop_put_be32(p,1);dispatch(HOP_MSG_FILE_END,p,9);}
+static void seed_resources(void){
+    s_rx.cur_path=malloc(8*sizeof(*s_rx.cur_path));assert(s_rx.cur_path);s_rx.cur_path[0]=0;
+    s_rx.tops=malloc(sizeof(*s_rx.tops));assert(s_rx.tops);
+    s_rx.tops[0]=malloc(8*sizeof(**s_rx.tops));assert(s_rx.tops[0]);s_rx.tops[0][0]=0;s_rx.ntop=1;
+    closed=0;
+}
+static void assert_terminal(uint32_t batch,uint8_t reason,int before){
+    assert(!s_rx.active && !s_rx.batch && s_rx.dead_batch==batch && s_rx.dead_reason==reason);
+    assert(!s_rx.cur_path && !s_rx.img && !s_rx.tops && !s_rx.ntop && !s_rx.img_cap && !s_rx.img_expected);
+    assert(!s_rx.cur_is_image && !s_rx.cur_id && !s_rx.cur_size && !s_rx.dir[0]);
+    assert(!xfer_busy() && !s_receive_status.status.active && closed);
+    assert(saved==before+1 && s_history[0].batch==batch);
+    assert(s_history[0].phase==(reason==HOP_ABORT_CANCEL?HOP_XFER_CANCELLED:HOP_XFER_FAILED));
+    assert(s_send_status.status.active); /* receiving ABORT cannot end outgoing state */
+}
+int main(void){
+    hop_xfer_tracking_begin(&s_send_status,999,HOP_XFER_DIR_SEND,1,0,"out",HOP_XFER_SENDING);
+    for(int scenario=0;scenario<9;scenario++){
+        uint32_t batch=100u+(uint32_t)scenario*2u;int before=saved;
+        image_begin(batch,1);assert(xfer_busy());seed_resources();
+        int old_closes=closes,old_discarded=discarded;
+        /* Allocate an actual partial image before CRC, overlap and bounds failures. */
+        if(scenario==1 || scenario==3 || scenario==4)chunk(1,0,0);
+        uint8_t reason=HOP_ABORT_TOO_LARGE;fail_send=1; /* failed wire send must still clean up */
+        switch(scenario){
+            case 0:image_begin(batch,0);break;
+            case 1:reason=HOP_ABORT_CRC;chunk(1,4,1);break;
+            case 2:chunk(1,4,0);break; /* gap */
+            case 3:chunk(1,0,0);break; /* overlap */
+            case 4:chunk(1,8,0);break; /* rejected by early bounds validator */
+            case 5:dispatch(HOP_MSG_FILE_CHUNK,NULL,0);break;
+            case 6:reason=HOP_ABORT_CRC;chunk(2,0,0);break;
+            case 7:reason=HOP_ABORT_DISK;fail_alloc=1;chunk(1,0,0);fail_alloc=0;break;
+            case 8:dispatch(HOP_MSG_IMAGE_BEGIN,NULL,0);break;
+        }
+        fail_send=0;assert_terminal(batch,reason,before);
+        assert(closes==old_closes+1 && discarded==old_discarded+1 && last_reason==reason);
+        int notices=notified;
+        image_begin(batch,1);assert(notified==notices+1 && last_reason==reason);
+        chunk(1,0,0);late_end();late_done(batch);peer_abort(batch,reason);rx_cancel_local();
+        assert_terminal(batch,reason,before);assert(closes==old_closes+1);
+        image_begin(batch+1,1);seed_resources();
+        s_x.cancel_rx=1;
+        image_begin(batch,1); /* tombstone survives a newer active receive */
+        assert(s_x.cancel_rx==1); /* stale BEGIN must not consume the newer cancellation */
+        assert(s_rx.active && s_rx.batch==batch+1 && s_rx.cur_path && saved==before+1);
+        peer_abort(batch,reason);late_done(batch);assert(s_rx.active && s_rx.batch==batch+1);
+        rx_cancel_local();assert_terminal(batch+1,HOP_ABORT_CANCEL,before+1);
+        peer_abort(batch+1,HOP_ABORT_CANCEL);rx_cancel_local();assert(saved==before+2);
+    }
+    /* Setup errors now start and terminate a tracked batch, including its tombstone. */
+    int before=saved;fail_directory=1;image_begin(200,1);fail_directory=0;
+    assert_terminal(200,HOP_ABORT_DISK,before);
+    /* Peer-triggered cleanup must not echo another ABORT or duplicate history. */
+    before=saved;image_begin(201,1);seed_resources();int notices=notified;
+    peer_abort(201,HOP_ABORT_CRC);assert_terminal(201,HOP_ABORT_CRC,before);assert(notified==notices);
+    peer_abort(201,HOP_ABORT_CRC);assert(saved==before+1);
+    assert(applied==0);
+    puts("PASS: production receive ABORT lifecycle, early bounds errors, busy reset, tombstones and once-only history");
+    return 0;
+}

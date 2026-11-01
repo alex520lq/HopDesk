@@ -10,6 +10,7 @@
 #include <string.h>
 
 win_app g_app;
+static int s_ui_guard;
 
 /* 声明为 PerMonitorV2 DPI aware：统一使用物理像素，避免坐标虚拟化混乱。
  * 必须在创建任何窗口 / 取坐标之前调用。 */
@@ -129,7 +130,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             clip_on_update();
             return 0;
         case WM_TIMER:
-            if (wp == IDT_HOOK) { capture_check_hooks(); ui_refresh(&g_app); return 0; }
+            if (wp == IDT_HOOK) { hop_watchdog_ping(s_ui_guard); capture_check_hooks(); ui_refresh(&g_app); return 0; }
             if (wp == IDT_XFER_NOTIFY) { ui_transfer_poll(); return 0; }
             if (wp == IDT_CLIP_RETRY) {
                 clip_retry_pending();
@@ -189,6 +190,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
         return 0;
     }
 
+    int startup_guard = hop_watchdog_begin("Windows startup", 30000);
     g_app.inst = inst;
     g_app.state = HOP_LINK_DOWN;
 
@@ -233,6 +235,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     clip_init(g_app.hwnd);
     capture_init(&g_app);
     kbd_init(&g_app);
+    hop_watchdog_end(startup_guard);
+    s_ui_guard = hop_watchdog_begin("Windows message loop", 30000);
     SetTimer(g_app.hwnd, IDT_HOOK, 3000, NULL);
 
     MSG m;
@@ -241,6 +245,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
         DispatchMessageW(&m);
     }
 
+    hop_watchdog_end(s_ui_guard);
     KillTimer(g_app.hwnd, IDT_HOOK);
     kbd_shutdown();
     capture_shutdown();

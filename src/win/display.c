@@ -135,7 +135,9 @@ static DWORD WINAPI display_worker(LPVOID arg) {
         }
         uint16_t vcp = s_desired; s_pending = 0;
         ReleaseSRWLockExclusive(&s_work_lock);
+        int guard = hop_watchdog_begin("DDC operation", HOP_IO_DEADLINE_MS);
         disp_set_input_sync(vcp);
+        hop_watchdog_end(guard);
     }
 }
 int disp_set_input(uint16_t vcp) {

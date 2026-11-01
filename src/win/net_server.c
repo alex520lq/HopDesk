@@ -21,6 +21,7 @@ typedef struct connection {
     SOCKET sock;
     HANDLE thread;
     hop_decoder *decoder;
+    hop_session_id session;
     unsigned long epoch;
     int authed, rejected;
     uint64_t started, last_rx;
@@ -95,6 +96,7 @@ static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
             !hop_token_matches(s->cfg.token, hello.token, hello.token_len)) {
             c->rejected = 1; shutdown(c->sock, SD_BOTH); return;
         }
+        if (!hop_session_generate(&c->session)) { c->rejected = 1; shutdown(c->sock, SD_BOTH); return; }
         EnterCriticalSection(&s->lock);
         if (WaitForSingleObject(s->stop, 0) == WAIT_OBJECT_0) {
             c->rejected = 1;
@@ -103,15 +105,18 @@ static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
             if (replaced) shutdown(s->client, SD_BOTH);
             queue_clear(s);
             s->client = c->sock; c->epoch = ++s->epoch; c->authed = 1;
+            hop_session_publish(&c->session);
             c->last_rx = s->last_ping = hop_monotonic_ms();
-            uint8_t ack[2 + HOP_NAME_MAX + 8];
+            uint8_t ack[2 + HOP_NAME_MAX + 9 + HOP_SESSION_BYTES];
             const char *name = s->cfg.device_name[0] ? s->cfg.device_name : "HopDesk";
             size_t nl = strlen(name);
             ack[0] = 1; ack[1] = (uint8_t)nl;
             memcpy(ack + 2, name, nl);
             hop_put_be32(ack + 2 + nl, (uint32_t)s->cfg.screen_w);
             hop_put_be32(ack + 6 + nl, (uint32_t)s->cfg.screen_h);
-            queue_push(s, HOP_MSG_HELLO_ACK, ack, (uint32_t)nl + 10);
+            ack[nl + 10] = HOP_CTRL_PROTO_VER;
+            memcpy(ack + nl + 11, c->session.bytes, HOP_SESSION_BYTES);
+            queue_push(s, HOP_MSG_HELLO_ACK, ack, (uint32_t)nl + 11 + HOP_SESSION_BYTES);
             PostMessageW(s->hwnd, WM_APP_LINK, replaced ? 2 : 1, (LPARAM)c->epoch);
             if (!post_message(c, type, p, len)) c->rejected = 1;
             hop_log(HOP_LOG_INFO, "net: authenticated control session %lu%s",
@@ -151,10 +156,14 @@ static DWORD WINAPI reader_thread(LPVOID arg) {
             if (e == WSAETIMEDOUT || e == WSAEWOULDBLOCK || e == WSAEINTR) continue;
             break;
         }
-        if (!hop_decoder_feed(c->decoder, (uint8_t *)buf, (uint32_t)n)) break;
+        int guard = hop_watchdog_begin("control receive frame", HOP_IO_DEADLINE_MS);
+        int decoded = hop_decoder_feed(c->decoder, (uint8_t *)buf, (uint32_t)n);
+        hop_watchdog_end(guard);
+        if (!decoded) break;
     }
     EnterCriticalSection(&s->lock);
     if (c->authed && s->client == c->sock && s->epoch == c->epoch) {
+        hop_session_clear(&c->session);
         s->client = INVALID_SOCKET; queue_clear(s);
         PostMessageW(s->hwnd, WM_APP_LINK, 0, (LPARAM)c->epoch);
     }
@@ -198,10 +207,12 @@ static DWORD WINAPI sender_thread(LPVOID arg) {
         }
         LeaveCriticalSection(&s->lock);
         if (it) {
+            int guard = hop_watchdog_begin("control frame send", 10000);
             uint8_t hdr[HOP_HEADER_SIZE];
             hop_encode_header(hdr, it->type, it->len);
             int ok = sock != INVALID_SOCKET && send_all(sock, hdr, sizeof(hdr)) &&
                      send_all(sock, it->data, it->len);
+            hop_watchdog_end(guard);
             free(it);
             if (!ok) {
                 EnterCriticalSection(&s->lock);

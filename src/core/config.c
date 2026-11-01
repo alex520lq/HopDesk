@@ -120,7 +120,7 @@ static void config_safe_value(const char *src, char *dst, size_t cap) {
     if (!cap) return;
     while (src && *src && n + 1 < cap) {
         unsigned char ch = (unsigned char)*src++;
-        if (ch == '\\r' || ch == '\\n' || ch == 0) continue;
+        if (ch == '\r' || ch == '\n' || ch == 0) continue;
         dst[n++] = (char)ch;
     }
     dst[n] = '\\0';
@@ -135,7 +135,8 @@ static int config_utf8_path(const char *src, wchar_t *dst, int cap) {
 int hop_config_save_atomic(const hop_config *c, const char *path) {
     if (!c || !path || !path[0] || strlen(path) > 900) return 0;
     char temp[1024];
-    int temp_len = snprintf(temp, sizeof(temp), "%s.tmp", path);\n    if (temp_len <= 0 || (size_t)temp_len >= sizeof(temp)) return 0;
+    int temp_len = snprintf(temp, sizeof(temp), "%s.tmp", path);
+    if (temp_len <= 0 || (size_t)temp_len >= sizeof(temp)) return 0;
 #if defined(_WIN32)
     wchar_t wtemp[1024], wpath[1024];
     if (!config_utf8_path(temp, wtemp, 1024) || !config_utf8_path(path, wpath, 1024)) return 0;
@@ -155,23 +156,23 @@ int hop_config_save_atomic(const hop_config *c, const char *path) {
 
     int ok = 1;
 #define CFG_WRITE(...) do { if (fprintf(f, __VA_ARGS__) < 0) ok = 0; } while (0)
-    CFG_WRITE("# HopDesk configuration — edited by the native UI\\n");
-    CFG_WRITE("name=%s\\n", name);
-    CFG_WRITE("host=%s\\n", host);
-    CFG_WRITE("port=%u\\n", (unsigned)c->port);
-    CFG_WRITE("data_port=%u\\n", (unsigned)c->data_port);
-    CFG_WRITE("token=%s\\n", token);
-    CFG_WRITE("server_edge=%d\\n", c->server_edge);
-    CFG_WRITE("client_edge=%d\\n", c->client_edge);
-    CFG_WRITE("switch_delay_ms=%d\\n", c->switch_delay_ms);
-    CFG_WRITE("switch_cooldown_ms=%d\\n", c->switch_cooldown_ms);
-    CFG_WRITE("edge_margin_px=%d\\n", c->edge_margin_px);
-    CFG_WRITE("disp_win_input=0x%04X\\n", (unsigned)c->disp_win_input);
-    CFG_WRITE("disp_mac_input=0x%04X\\n", (unsigned)c->disp_mac_input);
-    CFG_WRITE("disp_wake_sec=%d\\n", c->disp_wake_sec);
-    CFG_WRITE("mac_input_cmd=%s\\n", input_cmd);
-    CFG_WRITE("mac_sleep_cmd=%s\\n", sleep_cmd);
-    CFG_WRITE("xfer_chunk_kb=%d\\n", c->xfer_chunk_kb);
+    CFG_WRITE("# HopDesk configuration — edited by the native UI\n");
+    CFG_WRITE("name=%s\n", name);
+    CFG_WRITE("host=%s\n", host);
+    CFG_WRITE("port=%u\n", (unsigned)c->port);
+    CFG_WRITE("data_port=%u\n", (unsigned)c->data_port);
+    CFG_WRITE("token=%s\n", token);
+    CFG_WRITE("server_edge=%d\n", c->server_edge);
+    CFG_WRITE("client_edge=%d\n", c->client_edge);
+    CFG_WRITE("switch_delay_ms=%d\n", c->switch_delay_ms);
+    CFG_WRITE("switch_cooldown_ms=%d\n", c->switch_cooldown_ms);
+    CFG_WRITE("edge_margin_px=%d\n", c->edge_margin_px);
+    CFG_WRITE("disp_win_input=0x%04X\n", (unsigned)c->disp_win_input);
+    CFG_WRITE("disp_mac_input=0x%04X\n", (unsigned)c->disp_mac_input);
+    CFG_WRITE("disp_wake_sec=%d\n", c->disp_wake_sec);
+    CFG_WRITE("mac_input_cmd=%s\n", input_cmd);
+    CFG_WRITE("mac_sleep_cmd=%s\n", sleep_cmd);
+    CFG_WRITE("xfer_chunk_kb=%d\n", c->xfer_chunk_kb);
 #undef CFG_WRITE
     if (fflush(f) != 0) ok = 0;
     if (ok) {

@@ -1,4 +1,5 @@
 #include "hop.h"
+#include "update_state.h"
 #include <assert.h>
 #include <string.h>
 #include <stdio.h>
@@ -28,8 +29,10 @@ static int send_session_current(int fd){return fd==7 && hop_session_matches(&s_x
 static int send_all(int fd,const void *p,size_t n){assert(fd==7);assert(captured_len+n<=sizeof(captured));memcpy(captured+captured_len,p,n);captured_len+=n;return 1;}
 static void status_chunk(int d,uint32_t batch,uint32_t id,uint64_t off,uint32_t len){(void)d;(void)batch;(void)id;(void)off;(void)len;}
 static int shutdown(int fd,int how){(void)fd;(void)how;closed++;return 0;}
+static void xfer_kick(void){closed++;}
 static void on_data_msg(void *user,uint8_t type,const uint8_t *p,uint32_t len){(void)user;(void)type;(void)p;(void)len;delivered++;}
 #define CHUNK_HDR (25u + HOP_DATA_PREFIX)
+static int not_busy(void){return 0;}
 @FUNCTIONS@
 int main(void){
  s_x.session.bytes[0]=1;s_x.client=s_x.sock=7;hop_session_publish(&s_x.session);
@@ -64,5 +67,10 @@ int main(void){
  captured[5]^=2;hop_session_clear(&s_x.session);
  on_data_frame(NULL,HOP_MSG_FILE_CHUNK,captured+5,(uint32_t)captured_len-5);assert(closed==2);
  captured_len=0;assert(!send_small(7,HOP_MSG_FILE_END,end,9,42) && !captured_len);
+ assert(hop_update_install_begin(not_busy));
+ int old_delivered=delivered,old_closed=closed;
+ on_data_frame(NULL,HOP_MSG_FILE_BEGIN,end,9);
+ assert(delivered==old_delivered && closed==old_closed+1);
+ hop_update_install_end();
  puts("PASS: production v6 sender/receiver rejects foreign sessions and late batch CHUNK/END");return 0;
 }

@@ -170,6 +170,9 @@ jobs:
       - name: Run TCP loopback tests
         run: sh scripts/test-network.sh
 
+      - name: Run macOS control and listener loopback tests
+        run: python3 scripts/test-mac-connection.py
+
       - name: Verify macOS app and shared branding
         run: |
           bash -n scripts/update-macos.command

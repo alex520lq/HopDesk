@@ -37,10 +37,17 @@ void win_inject_reset(void){
     for(int b=0;b<3;++b)if(buttons[b])button(b,0);
     sharing=0;over=0;
 }
-static void enter(int along){
-    double w=GetSystemMetrics(SM_CXSCREEN),h=GetSystemMetrics(SM_CYSCREEN),m=g_app.cfg.edge_margin_px;
+static double edge_margin(double w,double h){
+    int edge=g_app.cfg.client_edge,vertical=edge>=HOP_EDGE_TOP;
+    double extent=vertical?h:w;
+    double scale=vertical?(g_app.peer_h>0?h/g_app.peer_h:1.0):(g_app.peer_w>0?w/g_app.peer_w:1.0);
+    double m=g_app.cfg.edge_margin_px*scale;
     if(m<1)m=1;
-    if(m>w/2)m=w/2;
+    if(m>extent/2)m=extent/2;
+    return m;
+}
+static void enter(int along){
+    double w=GetSystemMetrics(SM_CXSCREEN),h=GetSystemMetrics(SM_CYSCREEN),m=edge_margin(w,h);
     int edge=g_app.cfg.client_edge;
     if(edge<2){px=edge==HOP_EDGE_LEFT?m:w-1-m;py=along;}
     else{px=along;py=edge==HOP_EDGE_TOP?m:h-1-m;}
@@ -61,8 +68,7 @@ void win_inject_message(uint8_t type,const uint8_t *p,uint32_t len){
         py+=(int16_t)hop_get_be16(p+2)*(g_app.peer_h>0?h/g_app.peer_h:1);
         int edge=g_app.cfg.client_edge;double beyond=edge==0?-px:edge==1?px-w+1:edge==2?-py:py-h+1;
         over=beyond>0?over+beyond:0;
-        double margin=g_app.cfg.edge_margin_px;
-        if(margin<1)margin=1;
+        double margin=edge_margin(w,h);
         if(over>=margin){win_inject_reset();g_app.state=HOP_LINK_LOCAL;net_server_send(g_app.net,HOP_MSG_EDGE_LEAVE,(uint8_t[]){(uint8_t)edge},1);ui_refresh(&g_app);return;}
         if(px<0)px=0;
         if(px>w-1)px=w-1;

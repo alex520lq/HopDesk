@@ -74,9 +74,12 @@ static double scale_y(void) {
 /* 死区宽度：配置项以 Windows 物理像素为单位，换算到本端坐标空间。
  * 至少 1 个单位，且不超过半屏 —— 否则会变成"永远出不去"。 */
 static double margin(void) {
-    double m = (double)g_mac.cfg.edge_margin_px * scale_x();
+    int vertical = g_mac.cfg.client_edge >= HOP_EDGE_TOP;
+    double extent = vertical ? s_h : s_w;
+    double scale = vertical ? scale_y() : scale_x();
+    double m = (double)g_mac.cfg.edge_margin_px * scale;
     if (m < 1.0) m = 1.0;
-    if (m > s_w / 2) m = s_w / 2;
+    if (m > extent / 2) m = extent / 2;
     return m;
 }
 

@@ -26,10 +26,12 @@ static int at_edge(CGPoint p){
     int e=g_mac.cfg.server_edge;return e==0?p.x<=0:e==1?p.x>=g_mac.screen_w-1:e==2?p.y<=0:p.y>=g_mac.screen_h-1;
 }
 static void enter(CGPoint p){
+    int e=g_mac.cfg.server_edge;
+    double extent=e<2?g_mac.screen_w:g_mac.screen_h;
     double m=g_mac.cfg.edge_margin_px;
     if(m<1)m=1;
-    if(m>g_mac.screen_w/2)m=g_mac.screen_w/2;
-    anchor=p;int e=g_mac.cfg.server_edge;
+    if(m>extent/2)m=extent/2;
+    anchor=p;
     if(e<2)anchor.x=e==0?m:g_mac.screen_w-1-m;else anchor.y=e==2?m:g_mac.screen_h-1-m;
     double along=e<2?p.y:p.x,local=e<2?g_mac.screen_h:g_mac.screen_w,remote=e<2?peer_h:peer_w;
     if(remote>0&&local>0)along=along*remote/local;

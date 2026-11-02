@@ -53,7 +53,7 @@ static int edge_boundary(int *edge_x, int *is_left) {
         *edge_x = GetSystemMetrics(vertical?SM_YVIRTUALSCREEN:SM_XVIRTUALSCREEN) +
                   GetSystemMetrics(vertical?SM_CYVIRTUALSCREEN:SM_CXVIRTUALSCREEN) - 1;
 
-    return !c.has_left;          /* 双屏：左屏在 Windows，不启用自动移交 */
+    return vertical || !c.has_left; /* 左侧有实体屏时仅禁用水平左/右移交 */
 }
 
 static int axis(POINT p){return g_app.cfg.server_edge>=HOP_EDGE_TOP?p.y:p.x;}
@@ -81,7 +81,11 @@ static void enter_sharing(POINT trigger) {
     int margin = g_app.cfg.edge_margin_px;
 
     edge_boundary(&edge_x, &is_left);        /* 出参总是被写入 */
+    int vertical=g_app.cfg.server_edge>=HOP_EDGE_TOP;
+    int extent=GetSystemMetrics(vertical?SM_CYVIRTUALSCREEN:SM_CXVIRTUALSCREEN);
+    if(extent<=0)extent=GetSystemMetrics(vertical?SM_CYSCREEN:SM_CXSCREEN);
     if (margin < 0) margin = 0;
+    if (margin > extent/2) margin = extent/2;
 
     s_sharing = 1;
     s_anchor = trigger;

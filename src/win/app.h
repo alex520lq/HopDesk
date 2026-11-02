@@ -53,6 +53,8 @@ void kbd_shutdown(void);
 DWORD kbd_hook_tick(void);
 void kbd_reinstall(void);
 void kbd_release_all(void);        /* 交还键鼠时松开对端仍按着的键 */
+void kbd_begin_sharing(void);       /* 移交时把已按住的键从本机转交给对端 */
+void kbd_end_sharing(void);         /* 收回时恢复仍物理按住的本机按键 */
 
 void win_inject_message(uint8_t type,const uint8_t *p,uint32_t len);
 void win_inject_reset(void);

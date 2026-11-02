@@ -10,6 +10,29 @@ static uint64_t edge_since,cooldown;
 static CGPoint anchor;
 static int have_last;
 static unsigned char held[128],buttons[3];
+#define HOP_CAPTURE_EVENT_TAG INT64_C(0x484F504445534B)
+static CGEventFlags physical_flags(void){return CGEventSourceFlagsState(kCGEventSourceStateHIDSystemState);}
+static CGMouseButton cg_button(int b){return b==0?kCGMouseButtonLeft:b==1?kCGMouseButtonCenter:kCGMouseButtonRight;}
+static CGEventType cg_button_type(int b,int down){
+    if(b==0)return down?kCGEventLeftMouseDown:kCGEventLeftMouseUp;
+    if(b==1)return down?kCGEventOtherMouseDown:kCGEventOtherMouseUp;
+    return down?kCGEventRightMouseDown:kCGEventRightMouseUp;
+}
+static void post_local_key(unsigned k,int down,CGEventFlags flags){
+    CGEventRef e=CGEventCreateKeyboardEvent(NULL,(CGKeyCode)k,down?true:false);
+    if(!e)return;
+    if(hop_mac_key_is_mod((uint16_t)k))CGEventSetType(e,kCGEventFlagsChanged);
+    CGEventSetFlags(e,flags);
+    CGEventSetIntegerValueField(e,kCGEventSourceUserData,HOP_CAPTURE_EVENT_TAG);
+    CGEventPost(kCGHIDEventTap,e);CFRelease(e);
+}
+static void post_local_button(int b,int down,CGPoint point,CGEventFlags flags){
+    CGEventRef e=CGEventCreateMouseEvent(NULL,cg_button_type(b,down),point,cg_button(b));
+    if(!e)return;
+    CGEventSetFlags(e,flags);
+    CGEventSetIntegerValueField(e,kCGEventSourceUserData,HOP_CAPTURE_EVENT_TAG);
+    CGEventPost(kCGHIDEventTap,e);CFRelease(e);
+}
 static void send_key(unsigned k,int down){uint8_t p[2];hop_put_be16(p,(uint16_t)k);net_send(down?HOP_MSG_KEY_DOWN:HOP_MSG_KEY_UP,p,2);}
 static void send_button(int b,int down){uint8_t p[2]={(uint8_t)b,(uint8_t)down};net_send(HOP_MSG_MOUSE_BUTTON,p,2);buttons[b]=(unsigned char)down;}
 void mac_capture_peer_geometry(uint32_t w,uint32_t h){peer_w=w;peer_h=h;}
@@ -18,7 +41,16 @@ void mac_capture_return(void){
     for(unsigned k=0;k<128;++k)if(held[k]){send_key(k,0);held[k]=0;}
     for(int b=0;b<3;++b)if(buttons[b])send_button(b,0);
     sharing=0;edge_since=0;cooldown=hop_monotonic_ms()+g_mac.cfg.switch_cooldown_ms;
-    CGWarpMouseCursorPosition(anchor);statusbar_update(connected,0);
+    CGWarpMouseCursorPosition(anchor);
+    unsigned char physical_keys[128]={0},physical_buttons[3]={0};
+    for(unsigned k=0;k<128;++k)if(k!=0x39)physical_keys[k]=CGEventSourceKeyState(kCGEventSourceStateHIDSystemState,(CGKeyCode)k);
+    physical_buttons[0]=CGEventSourceButtonState(kCGEventSourceStateHIDSystemState,kCGMouseButtonLeft);
+    physical_buttons[1]=CGEventSourceButtonState(kCGEventSourceStateHIDSystemState,kCGMouseButtonCenter);
+    physical_buttons[2]=CGEventSourceButtonState(kCGEventSourceStateHIDSystemState,kCGMouseButtonRight);
+    CGEventFlags flags=physical_flags();
+    for(unsigned k=0;k<128;++k)if(physical_keys[k])post_local_key(k,1,flags);
+    for(int b=0;b<3;++b)if(physical_buttons[b])post_local_button(b,1,anchor,flags);
+    statusbar_update(connected,0);
 }
 void mac_capture_connected(int on){connected=on;
     if(!on)mac_capture_return();}
@@ -39,16 +71,27 @@ static void enter(CGPoint p){
     if(along>65535)along=65535;
     uint8_t data[2];hop_put_be16(data,(uint16_t)along);
     if(!net_send(HOP_MSG_MOUSE_ENTER,data,2))return;
+    unsigned char physical_keys[128]={0},physical_buttons[3]={0};
+    for(unsigned k=0;k<128;++k)if(k!=0x39)physical_keys[k]=CGEventSourceKeyState(kCGEventSourceStateHIDSystemState,(CGKeyCode)k);
+    physical_buttons[0]=CGEventSourceButtonState(kCGEventSourceStateHIDSystemState,kCGMouseButtonLeft);
+    physical_buttons[1]=CGEventSourceButtonState(kCGEventSourceStateHIDSystemState,kCGMouseButtonCenter);
+    physical_buttons[2]=CGEventSourceButtonState(kCGEventSourceStateHIDSystemState,kCGMouseButtonRight);
     sharing=1;edge_since=0;memset(held,0,sizeof(held));memset(buttons,0,sizeof(buttons));
     CGWarpMouseCursorPosition(anchor);statusbar_update(1,1);
-    /* Carry modifiers already held across an edge transition. */
-    const unsigned mods[]={0x36,0x37,0x38,0x3A,0x3B,0x3C,0x3D,0x3E};
-    for(unsigned i=0;i<sizeof(mods)/sizeof(mods[0]);++i)if(CGEventSourceKeyState(kCGEventSourceStateHIDSystemState,(CGKeyCode)mods[i])){held[mods[i]]=1;send_key(mods[i],1);}
+    /* Move every physically held key/button to the peer, then release the
+     * corresponding local OS state. Tagged synthetic events bypass this tap. */
+    for(unsigned k=0;k<128;++k)if(physical_keys[k]){
+        held[k]=1;send_key(k,1);post_local_key(k,0,0);
+    }
+    for(int b=0;b<3;++b)if(physical_buttons[b]){
+        buttons[b]=1;send_button(b,1);post_local_button(b,0,anchor,0);
+    }
 }
 static CGEventRef capture_event(CGEventTapProxy proxy,CGEventType type,CGEventRef event,void *ctx){
     (void)proxy;(void)ctx;
     if(type==kCGEventTapDisabledByTimeout||type==kCGEventTapDisabledByUserInput){mac_capture_return();
     if(tap)CGEventTapEnable(tap,true);return event;}
+    if(CGEventGetIntegerValueField(event,kCGEventSourceUserData)==HOP_CAPTURE_EVENT_TAG)return event;
     if(!connected)return event;
     CGPoint p=CGEventGetLocation(event);
     if(!sharing){

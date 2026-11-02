@@ -14,8 +14,18 @@
 
 static HHOOK   s_hook;
 static DWORD s_hook_tick, s_last_reinstall;
-static int s_buttons[3];
+static int s_buttons[3];             /* remote buttons currently held */
+static BYTE s_physical_buttons[3];   /* physical buttons, including while sharing */
+#define HOP_LOCAL_MOUSE_TAG ((ULONG_PTR)0x484F5044u)
 static void send_button(int btn, int down);
+static void inject_local_button(int btn,int down) {
+    static const DWORD dn[]={MOUSEEVENTF_LEFTDOWN,MOUSEEVENTF_MIDDLEDOWN,MOUSEEVENTF_RIGHTDOWN};
+    static const DWORD up[]={MOUSEEVENTF_LEFTUP,MOUSEEVENTF_MIDDLEUP,MOUSEEVENTF_RIGHTUP};
+    if(btn<0||btn>2)return;
+    INPUT in;memset(&in,0,sizeof(in));in.type=INPUT_MOUSE;
+    in.mi.dwFlags=down?dn[btn]:up[btn];in.mi.dwExtraInfo=HOP_LOCAL_MOUSE_TAG;
+    (void)SendInput(1,&in,sizeof(in));
+}
 static int     s_sharing;
 static POINT   s_anchor;      /* SHARING 时鼠标锁定点 */
 static POINT   s_last;
@@ -95,6 +105,11 @@ static void enter_sharing(POINT trigger) {
     s_last = s_anchor;
     s_have_last = 1;
     g_app.state = HOP_LINK_SHARING;
+    kbd_begin_sharing();
+    for(int i=0;i<3;++i)if(s_physical_buttons[i]){
+        send_button(i,1);
+        inject_local_button(i,0);
+    }
     SetCursorPos(s_anchor.x, s_anchor.y);
 
     /* 移交后短时间内不再判定边缘，避免在接缝处来回弹 */
@@ -114,11 +129,12 @@ static void enter_local(void) {
     int edge_x, is_left;
     POINT p;
 
-    /* 先把仍按着的键在对端松开，再放开本机输入 —— 顺序不能反 */
-    kbd_release_all();
+    /* 先结束对端输入，再把仍物理按住的键鼠恢复到本机。 */
     for (int i = 0; i < 3; ++i) if (s_buttons[i]) send_button(i, 0);
     s_sharing = 0;
     g_app.state = HOP_LINK_LOCAL;
+    kbd_end_sharing();
+    for(int i=0;i<3;++i)if(s_physical_buttons[i])inject_local_button(i,1);
 
     /* 把鼠标放回边缘内侧，避免立刻又触发移交。
      * 方向必须跟着 server_edge 走：右边缘时要往回退，不是往前推。 */
@@ -182,6 +198,17 @@ static LRESULT CALLBACK mouse_proc_hook(int code, WPARAM wp, LPARAM lp) {
     s_hook_tick = GetTickCount();
     MSLLHOOKSTRUCT *m = (MSLLHOOKSTRUCT *)lp;
     POINT pt = m->pt;
+    if((m->flags&LLMHF_INJECTED) && m->dwExtraInfo==HOP_LOCAL_MOUSE_TAG)goto pass;
+    if(!(m->flags&LLMHF_INJECTED)){
+        switch(wp){
+            case WM_LBUTTONDOWN:s_physical_buttons[HOP_BTN_LEFT]=1;break;
+            case WM_LBUTTONUP:s_physical_buttons[HOP_BTN_LEFT]=0;break;
+            case WM_MBUTTONDOWN:s_physical_buttons[HOP_BTN_MIDDLE]=1;break;
+            case WM_MBUTTONUP:s_physical_buttons[HOP_BTN_MIDDLE]=0;break;
+            case WM_RBUTTONDOWN:s_physical_buttons[HOP_BTN_RIGHT]=1;break;
+            case WM_RBUTTONUP:s_physical_buttons[HOP_BTN_RIGHT]=0;break;
+        }
+    }
 
     if (s_sharing) {
         switch (wp) {
@@ -293,6 +320,9 @@ void capture_init(win_app *app) {
     s_have_last = 0;
     s_edge_pending = 0;
     s_cooldown_until = 0;
+    s_physical_buttons[HOP_BTN_LEFT]=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0;
+    s_physical_buttons[HOP_BTN_MIDDLE]=(GetAsyncKeyState(VK_MBUTTON)&0x8000)!=0;
+    s_physical_buttons[HOP_BTN_RIGHT]=(GetAsyncKeyState(VK_RBUTTON)&0x8000)!=0;
     s_hook = SetWindowsHookExW(WH_MOUSE_LL, mouse_proc_hook,
                                g_app.inst, 0);
     if (s_hook) hop_log(HOP_LOG_INFO, "mouse hook installed");
@@ -300,6 +330,7 @@ void capture_init(win_app *app) {
 }
 
 void capture_shutdown(void) {
+    if(s_sharing)enter_local();
     if (s_edge_pending) {
         s_edge_pending = 0;
         KillTimer(g_app.hwnd, IDT_EDGE);

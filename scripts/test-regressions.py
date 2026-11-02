@@ -35,6 +35,51 @@ with tempfile.TemporaryDirectory(prefix='hopdesk-regression-') as directory:
     run('tracking_config',(ROOT/'tests/regression_tests.c').read_text(encoding='utf-8'),['src/core/config.c'])
     assert not list(work.glob('*.tmp.*')), 'failed migration leaked temporary files'
 
+    # Cards are painted by the page, never sibling HWNDs obscuring its controls.
+    ui=(ROOT/'src/win/main_ui.c').read_text(encoding='utf-8')
+    group_fn=extract(ui,'group')
+    page_fn=extract(ui,'page_proc')
+    page_create_fn=extract(ui,'page_create')
+    assert 'HopDeskCard' not in ui and 'CreateWindow' not in group_fn
+    assert 'WS_CLIPCHILDREN' in page_create_fn and 'paint_cards(h,dc,GetScrollPos(h,SB_VERT))' in page_fn
+    ui_preamble=r'''
+#include <assert.h>
+#include <stddef.h>
+#include <wchar.h>
+#include <stdio.h>
+typedef int HWND;typedef int HDC;typedef int HPEN;typedef int HGDIOBJ;
+typedef struct {int left,top,right,bottom;} RECT;
+typedef struct {HWND page;const wchar_t *title;int x,y,w,h;} ui_card;
+static ui_card s_cards[32];static int s_card_count;static int s_font=3,scale=1;
+static int dip(int n){return n*scale;}
+#define PS_SOLID 0
+#define NULL_BRUSH 0
+#define TRANSPARENT 1
+#define DT_SINGLELINE 1
+#define DT_LEFT 0
+#define RGB(r,g,b) 0
+static int boxes,titles,last_top,last_left,last_right,last_bottom,text_top;
+static HPEN CreatePen(int style,int width,int color){(void)style;(void)width;(void)color;return 1;}
+static HGDIOBJ SelectObject(HDC dc,HGDIOBJ o){(void)dc;return o;}
+static HGDIOBJ GetStockObject(int n){return n;}
+static int SetBkMode(HDC dc,int mode){(void)dc;return mode;}
+static int SetTextColor(HDC dc,int color){(void)dc;return color;}
+static int RoundRect(HDC dc,int l,int t,int r,int b,int x,int y){(void)dc;(void)x;(void)y;boxes++;last_left=l;last_top=t;last_right=r;last_bottom=b;return 1;}
+static int DrawTextW(HDC dc,const wchar_t *s,int n,RECT *r,int flags){(void)dc;(void)n;(void)flags;assert(s && *s);titles++;text_top=r->top;return 1;}
+static int DeleteObject(HGDIOBJ o){(void)o;return 1;}
+'''
+    ui_main=r'''
+int main(void){
+    group(1,L"first",20,18,800,145);group(2,L"other page",10,20,30,40);
+    paint_cards(1,0,30);assert(boxes==1 && titles==1);
+    assert(last_left==20 && last_top==-12 && last_right==819 && last_bottom==132 && text_top==-2);
+    boxes=titles=0;scale=2;paint_cards(2,0,10);assert(boxes==1 && titles==1);
+    assert(last_left==20 && last_top==30 && last_right==79 && last_bottom==109 && text_top==50);
+    puts("PASS: Windows page card painting and scroll offsets (API doubles)");return 0;
+}
+'''
+    run('win_ui_cards',ui_preamble+group_fn+'\n'+extract(ui,'paint_cards')+ui_main)
+
     clip=(ROOT/'src/win/clipboard.c').read_text(encoding='utf-8')
     clip_preamble=r'''
 #include <stdint.h>

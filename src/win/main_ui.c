@@ -62,6 +62,10 @@ static wchar_t s_addresses[512];
 #define UI_LOG_RESULT (WM_APP+62)
 typedef struct {HWND hwnd;int x,y,w,h,font;} ui_node;
 static ui_node s_nodes[160];static int s_node_count;
+/* Cards are page decoration, not sibling windows: child windows must remain
+ * visible and clickable above their backgrounds, regardless of Z order. */
+typedef struct {HWND page;const wchar_t *title;int x,y,w,h;} ui_card;
+static ui_card s_cards[32];static int s_card_count;
 static int dip(int v){return MulDiv(v,(int)s_dpi,96);}
 static void layout_main(HWND h);
 static void layout_nodes(void);
@@ -98,8 +102,9 @@ static HWND edit(HWND p, const wchar_t *text, int x, int y, int w, int h, int id
     return child(p, L"EDIT", text, WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP |
                  (password ? ES_PASSWORD : 0), x, y, w, h, id);
 }
-static HWND group(HWND p, const wchar_t *text, int x, int y, int w, int h) {
-    return child(p, L"HopDeskCard", text, 0, x, y, w, h, 0);
+static void group(HWND p, const wchar_t *text, int x, int y, int w, int h) {
+    if (s_card_count < (int)(sizeof(s_cards) / sizeof(s_cards[0])))
+        s_cards[s_card_count++] = (ui_card){p,text,x,y,w,h};
 }
 static HWND page_create(HWND parent, int index) {
     wchar_t cls[32];
@@ -108,6 +113,21 @@ static HWND page_create(HWND parent, int index) {
     return CreateWindowExW(WS_EX_CONTROLPARENT, cls, L"",
         WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VSCROLL, dip(228), dip(88), dip(860), dip(620),
         parent, NULL, g_app.inst, NULL);
+}
+static void paint_cards(HWND page,HDC dc,int scroll) {
+    HPEN pen=CreatePen(PS_SOLID,1,RGB(223,228,235));
+    HGDIOBJ old_pen=SelectObject(dc,pen);
+    HGDIOBJ old_brush=SelectObject(dc,GetStockObject(NULL_BRUSH));
+    HGDIOBJ old_font=SelectObject(dc,s_font);
+    SetBkMode(dc,TRANSPARENT);SetTextColor(dc,RGB(88,99,116));
+    for(int i=0;i<s_card_count;++i){
+        ui_card *c=&s_cards[i];if(c->page!=page)continue;
+        int left=dip(c->x),top=dip(c->y)-scroll,right=dip(c->x+c->w),bottom=dip(c->y+c->h)-scroll;
+        RoundRect(dc,left,top,right-1,bottom-1,dip(10),dip(10));
+        RECT text={left+dip(16),top+dip(10),right-dip(16),top+dip(32)};
+        DrawTextW(dc,c->title,-1,&text,DT_SINGLELINE|DT_LEFT);
+    }
+    SelectObject(dc,old_font);SelectObject(dc,old_brush);SelectObject(dc,old_pen);DeleteObject(pen);
 }
 static LRESULT CALLBACK page_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if(m==WM_COMMAND){SendMessageW(GetParent(h),m,w,l);return 0;}
@@ -120,14 +140,11 @@ static LRESULT CALLBACK page_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         si.fMask=SIF_POS;si.nPos=pos;SetScrollInfo(h,SB_VERT,&si,TRUE);layout_nodes();InvalidateRect(h,NULL,TRUE);return 0;
     }
     if(m==WM_ERASEBKGND){RECT r;GetClientRect(h,&r);FillRect((HDC)w,&r,s_canvas);return 1;}
-    return DefWindowProcW(h,m,w,l);
-}
-static LRESULT CALLBACK card_proc(HWND h,UINT m,WPARAM w,LPARAM l){
-    if(m==WM_ERASEBKGND)return 1;
-    if(m==WM_PAINT){PAINTSTRUCT ps;HDC dc=BeginPaint(h,&ps);RECT r;GetClientRect(h,&r);
-        FillRect(dc,&r,s_canvas);HPEN pen=CreatePen(PS_SOLID,1,RGB(223,228,235));HGDIOBJ old=SelectObject(dc,pen),brush=SelectObject(dc,GetStockObject(NULL_BRUSH));
-        RoundRect(dc,r.left,r.top,r.right-1,r.bottom-1,dip(10),dip(10));SelectObject(dc,old);SelectObject(dc,brush);DeleteObject(pen);
-        wchar_t title[96];GetWindowTextW(h,title,96);RECT text={dip(16),dip(10),r.right-dip(16),dip(32)};SetBkMode(dc,TRANSPARENT);SetTextColor(dc,RGB(88,99,116));SelectObject(dc,s_font);DrawTextW(dc,title,-1,&text,DT_SINGLELINE|DT_LEFT);EndPaint(h,&ps);return 0;}
+    if(m==WM_PAINT){
+        PAINTSTRUCT ps;HDC dc=BeginPaint(h,&ps);
+        paint_cards(h,dc,GetScrollPos(h,SB_VERT));
+        EndPaint(h,&ps);return 0;
+    }
     return DefWindowProcW(h,m,w,l);
 }
 static void set_text(HWND h, const wchar_t *s) {
@@ -640,10 +657,10 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 
 void main_ui_show_page(int page) {
     if(!s_main){
+        s_node_count=0;s_card_count=0;
         s_draft=g_app.cfg;s_canvas=CreateSolidBrush(RGB(255,255,255));s_sidebar=CreateSolidBrush(RGB(247,249,252));
         HDC dc=GetDC(NULL);s_dpi=(UINT)GetDeviceCaps(dc,LOGPIXELSX);ReleaseDC(NULL,dc);
         char addresses[512];local_addresses(addresses,sizeof(addresses));utf8_to_wide(addresses,s_addresses,512);
-        WNDCLASSW card;memset(&card,0,sizeof(card));card.lpfnWndProc=card_proc;card.hInstance=g_app.inst;card.lpszClassName=L"HopDeskCard";card.hCursor=LoadCursorW(NULL,IDC_ARROW);RegisterClassW(&card);
         WNDCLASSW wc; memset(&wc,0,sizeof(wc));
         wc.lpfnWndProc=main_wnd_proc; wc.hInstance=g_app.inst;
         wc.hCursor=LoadCursorW(NULL,IDC_ARROW); wc.hbrBackground=GetSysColorBrush(COLOR_WINDOW);

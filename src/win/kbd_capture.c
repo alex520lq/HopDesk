@@ -26,6 +26,10 @@ static int      s_nheld;
 /* Physical state is tracked even while events are swallowed. This lets a
  * key held across an edge handoff be released locally and restored on return. */
 static BYTE s_physical_down[256];
+static int is_mouse_vk(unsigned vk) {
+    return vk==VK_LBUTTON||vk==VK_RBUTTON||vk==VK_MBUTTON||
+           vk==VK_XBUTTON1||vk==VK_XBUTTON2;
+}
 
 static void send_key(uint16_t kc, int down) {
     uint8_t p[2];
@@ -73,7 +77,7 @@ void kbd_release_all(void) {
  * snapshot maintained below. */
 void kbd_begin_sharing(void) {
     for(unsigned vk=1;vk<256;++vk) {
-        if(!s_physical_down[vk])continue;
+        if(is_mouse_vk(vk)||!s_physical_down[vk])continue;
         uint16_t kc=hop_vk_to_mac((int)vk);
         if(kc!=HOP_KEY_NONE){send_key(kc,1);held_add(kc);}
         inject_local_key((WORD)vk,0);
@@ -84,7 +88,7 @@ void kbd_begin_sharing(void) {
 void kbd_end_sharing(void) {
     kbd_release_all();
     for(unsigned vk=1;vk<256;++vk)
-        if(s_physical_down[vk])inject_local_key((WORD)vk,1);
+        if(!is_mouse_vk(vk)&&s_physical_down[vk])inject_local_key((WORD)vk,1);
 }
 
 static LRESULT CALLBACK kbd_proc(int code, WPARAM wp, LPARAM lp) {
@@ -113,7 +117,9 @@ static LRESULT CALLBACK kbd_proc(int code, WPARAM wp, LPARAM lp) {
 void kbd_init(win_app *app) {
     (void)app;
     s_nheld = 0;
-    for(unsigned vk=0;vk<256;++vk)s_physical_down[vk]=(GetAsyncKeyState((int)vk)&0x8000)!=0;
+    memset(s_physical_down,0,sizeof(s_physical_down));
+    for(unsigned vk=1;vk<256;++vk)
+        if(!is_mouse_vk(vk))s_physical_down[vk]=(GetAsyncKeyState((int)vk)&0x8000)!=0;
     s_hook = SetWindowsHookExW(WH_KEYBOARD_LL, kbd_proc, g_app.inst, 0);
     if (s_hook) hop_log(HOP_LOG_INFO, "keyboard hook installed");
     else        hop_log(HOP_LOG_ERROR, "keyboard hook failed: %lu", GetLastError());

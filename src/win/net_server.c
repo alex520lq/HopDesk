@@ -94,6 +94,7 @@ static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
     if (!c->authed && s->cfg.role==HOP_ROLE_CLIENT) {
         int ok;uint32_t w,h;hop_session_id session;
         if(type!=HOP_MSG_HELLO_ACK || !hop_hello_ack_decode(p,len,&ok,&w,&h,&session)||!ok){
+            hop_log(HOP_LOG_WARN,"net: control handshake rejected: invalid ACK or incompatible protocol");
             c->rejected=1;shutdown(c->sock,SD_BOTH);return;
         }
         EnterCriticalSection(&s->lock);
@@ -106,8 +107,12 @@ static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
     }
     if (!c->authed) {
         hop_hello_msg hello;
-        if (type != HOP_MSG_HELLO || !hop_hello_decode(p, len, &hello) ||
-            !hop_token_matches(s->cfg.token, hello.token, hello.token_len)) {
+        if (type != HOP_MSG_HELLO || !hop_hello_decode(p, len, &hello)) {
+            hop_log(HOP_LOG_WARN,"net: control handshake rejected: invalid HELLO or incompatible protocol");
+            c->rejected = 1; shutdown(c->sock, SD_BOTH); return;
+        }
+        if (!hop_token_matches(s->cfg.token, hello.token, hello.token_len)) {
+            hop_log(HOP_LOG_WARN,"net: control handshake rejected: token mismatch");
             c->rejected = 1; shutdown(c->sock, SD_BOTH); return;
         }
         if (!hop_session_generate(&c->session)) { c->rejected = 1; shutdown(c->sock, SD_BOTH); return; }
@@ -161,8 +166,10 @@ static DWORD WINAPI reader_thread(LPVOID arg) {
     c->decoder = hop_decoder_new(c, on_message);
     while (c->decoder && !c->rejected && WaitForSingleObject(s->stop, 0) != WAIT_OBJECT_0) {
         uint64_t now = hop_monotonic_ms();
-        if ((!c->authed && hop_handshake_expired(now, c->started)) ||
-            (c->authed && hop_peer_silent(now, c->last_rx))) break;
+        if (!c->authed && hop_handshake_expired(now, c->started)) {
+            hop_log(HOP_LOG_WARN,"net: control handshake timed out");break;
+        }
+        if (c->authed && hop_peer_silent(now, c->last_rx)) break;
         int n = recv(c->sock, buf, sizeof(buf), 0);
         if (n == 0) break;
         if (n < 0) {
@@ -340,7 +347,11 @@ static DWORD WINAPI client_thread(LPVOID arg){
     net_server *s=(net_server*)arg;unsigned delay=500;
     while(WaitForSingleObject(s->stop,0)!=WAIT_OBJECT_0){
         SOCKET sock=net_connect_timeout_win(s->cfg.peer_host,s->cfg.port,s->stop);
-        if(sock==INVALID_SOCKET){WaitForSingleObject(s->stop,delay);delay=delay<8000?delay*2:8000;continue;}
+        if(sock==INVALID_SOCKET){
+            if(s->cfg.peer_host[0])hop_log(HOP_LOG_WARN,"net: TCP control connection failed: host=%s port=%u; check address, network and firewall",s->cfg.peer_host,(unsigned)s->cfg.port);
+            WaitForSingleObject(s->stop,delay);delay=delay<8000?delay*2:8000;continue;
+        }
+        hop_log(HOP_LOG_INFO,"net: control TCP connected; awaiting handshake");
         connection *c=&s->peers[0];memset(c,0,sizeof(*c));c->server=s;c->sock=sock;c->started=hop_monotonic_ms();
         DWORD rcv=500,snd=HOP_CTRL_SEND_TIMEOUT_MS;
         setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,(char*)&rcv,sizeof(rcv));

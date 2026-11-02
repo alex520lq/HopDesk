@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+void hop_log(hop_log_level level,const char *fmt,...){(void)level;(void)fmt;}
 static struct {hop_config cfg;double screen_w,screen_h;} g_mac;
 static int s_authed,s_rejected,connected,injected,returned,clip_applied;
 static uint64_t s_last_rx;

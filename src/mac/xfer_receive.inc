@@ -746,15 +746,27 @@ static void rx_cancel_local(void) {
 }
 
 static int s_data_listener=-1;
-static int accept_data(void){
+static int accept_data(const hop_session_id *expected){
     if(s_data_listener<0){
         s_data_listener=socket(AF_INET,SOCK_STREAM,0);if(s_data_listener<0)return -1;
         int yes=1;setsockopt(s_data_listener,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(yes));
         struct sockaddr_in a;memset(&a,0,sizeof(a));a.sin_family=AF_INET;a.sin_port=htons(g_mac.cfg.data_port);a.sin_addr.s_addr=htonl(INADDR_ANY);
-        if(bind(s_data_listener,(struct sockaddr*)&a,sizeof(a))||listen(s_data_listener,8)){close(s_data_listener);s_data_listener=-1;return -1;}
+        if(bind(s_data_listener,(struct sockaddr*)&a,sizeof(a))||listen(s_data_listener,8)){
+            hop_log(HOP_LOG_WARN,"xfer: data port %u unavailable (errno=%d)",(unsigned)g_mac.cfg.data_port,errno);
+            close(s_data_listener);s_data_listener=-1;return -1;
+        }
+        hop_log(HOP_LOG_INFO,"xfer: listening on data port %u",(unsigned)g_mac.cfg.data_port);
     }
-    while(!s_x.stop){fd_set rd;FD_ZERO(&rd);FD_SET(s_data_listener,&rd);struct timeval tv={0,200000};
-        int n=select(s_data_listener+1,&rd,NULL,NULL,&tv);if(n>0)return accept(s_data_listener,NULL,NULL);if(n<0&&errno!=EINTR)return -1;}
+    while(!s_x.stop && hop_session_matches(expected)){
+        fd_set rd;FD_ZERO(&rd);FD_SET(s_data_listener,&rd);struct timeval tv={0,200000};
+        int n=select(s_data_listener+1,&rd,NULL,NULL,&tv);
+        if(n>0){
+            int peer=accept(s_data_listener,NULL,NULL);
+            if(peer>=0){int yes=1;if(setsockopt(peer,SOL_SOCKET,SO_NOSIGPIPE,&yes,sizeof(yes))){close(peer);return -1;}}
+            return peer;
+        }
+        if(n<0&&errno!=EINTR){close(s_data_listener);s_data_listener=-1;return -1;}
+    }
     return -1;
 }
 static void *conn_thread(void *arg) {
@@ -766,14 +778,19 @@ static void *conn_thread(void *arg) {
     while (!s_x.stop) {
         hop_session_id session;
         if (!hop_session_current(&session)) { usleep(200000); continue; }
-        int s = g_mac.cfg.role==HOP_ROLE_SERVER?accept_data():do_connect();
+        int s = g_mac.cfg.role==HOP_ROLE_SERVER?accept_data(&session):do_connect();
         if (s < 0) {
+            if (!hop_session_matches(&session)) continue;
+            if (g_mac.cfg.role==HOP_ROLE_CLIENT && g_mac.cfg.peer_host[0])
+                hop_log(HOP_LOG_WARN,"xfer: TCP data connection failed: host=%s port=%u; check data port and firewall",
+                        g_mac.cfg.peer_host,(unsigned)g_mac.cfg.data_port);
             /* 退避要能被 stop 打断 —— 否则退出时要等满 10 秒 */
             for (int i = 0; i < backoff * 10 && !s_x.stop; ++i)
                 usleep(100 * 1000);
             backoff = backoff < 10 ? backoff * 2 : 10;
             continue;
         }
+        if (!hop_session_matches(&session)) { close(s); continue; }
         backoff = 1;
 
         int bufsz = 4 * 1024 * 1024;

@@ -39,9 +39,14 @@ static void dispatch_message(void *user, uint8_t type, const uint8_t *p, uint32_
     if (s_rejected) return;
     if (!s_authed && g_mac.cfg.role==HOP_ROLE_SERVER) {
         hop_hello_msg hello;
-        if(type!=HOP_MSG_HELLO || !hop_hello_decode(p,len,&hello) ||
-           !hop_token_matches(g_mac.cfg.token,hello.token,hello.token_len) || !hop_session_generate(&s_control_session)){
-            s_rejected=1;return;
+        if(type!=HOP_MSG_HELLO || !hop_hello_decode(p,len,&hello)){
+            hop_log(HOP_LOG_WARN,"net: control handshake rejected: invalid HELLO or incompatible protocol");s_rejected=1;return;
+        }
+        if(!hop_token_matches(g_mac.cfg.token,hello.token,hello.token_len)){
+            hop_log(HOP_LOG_WARN,"net: control handshake rejected: token mismatch");s_rejected=1;return;
+        }
+        if(!hop_session_generate(&s_control_session)){
+            hop_log(HOP_LOG_ERROR,"net: unable to create control session");s_rejected=1;return;
         }
         hop_session_publish(&s_control_session);s_authed=1;s_last_rx=hop_monotonic_ms();
         uint32_t pw=hello.width,ph=hello.height;
@@ -58,6 +63,7 @@ static void dispatch_message(void *user, uint8_t type, const uint8_t *p, uint32_
         hop_session_id session;
         if (type != HOP_MSG_HELLO_ACK ||
             !hop_hello_ack_decode(p, len, &ok, &w, &h, &session) || !ok) {
+            hop_log(HOP_LOG_WARN,"net: control handshake rejected: invalid ACK or incompatible protocol");
             s_rejected = 1;
             return;
         }
@@ -259,10 +265,21 @@ static int accept_control(void){
         s_listener=socket(AF_INET,SOCK_STREAM,0);if(s_listener<0)return -1;
         int yes=1;setsockopt(s_listener,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(yes));
         struct sockaddr_in a;memset(&a,0,sizeof(a));a.sin_family=AF_INET;a.sin_port=htons(g_mac.cfg.port);a.sin_addr.s_addr=htonl(INADDR_ANY);
-        if(bind(s_listener,(struct sockaddr*)&a,sizeof(a))||listen(s_listener,8)){close(s_listener);s_listener=-1;return -1;}
+        if(bind(s_listener,(struct sockaddr*)&a,sizeof(a))||listen(s_listener,8)){
+            hop_log(HOP_LOG_WARN,"net: control port %u unavailable (errno=%d)",(unsigned)g_mac.cfg.port,errno);
+            close(s_listener);s_listener=-1;return -1;
+        }
+        hop_log(HOP_LOG_INFO,"net: listening on control port %u",(unsigned)g_mac.cfg.port);
     }
     while(!s_stop){fd_set rd;FD_ZERO(&rd);FD_SET(s_listener,&rd);struct timeval tv={0,200000};
-        int n=select(s_listener+1,&rd,NULL,NULL,&tv);if(n>0)return accept(s_listener,NULL,NULL);if(n<0&&errno!=EINTR)return -1;}
+        int n=select(s_listener+1,&rd,NULL,NULL,&tv);
+        if(n>0){
+            int peer=accept(s_listener,NULL,NULL);
+            if(peer>=0){int yes=1;if(setsockopt(peer,SOL_SOCKET,SO_NOSIGPIPE,&yes,sizeof(yes))){close(peer);return -1;}}
+            return peer;
+        }
+        if(n<0&&errno!=EINTR){close(s_listener);s_listener=-1;return -1;}
+    }
     return -1;
 }
 static int do_connect(void) {
@@ -329,6 +346,9 @@ static void *net_thread(void *arg) {
     while (!s_stop) {
         int s = g_mac.cfg.role==HOP_ROLE_SERVER?accept_control():do_connect();
         if (s < 0) {
+            if(g_mac.cfg.role==HOP_ROLE_CLIENT && g_mac.cfg.peer_host[0])
+                hop_log(HOP_LOG_WARN,"net: TCP control connection failed: host=%s port=%u; check address, network and firewall",
+                        g_mac.cfg.peer_host,(unsigned)g_mac.cfg.port);
             for(int i=0;i<backoff*10&&!s_stop;++i)usleep(100000);
             backoff = backoff < 10 ? backoff * 2 : 10;
             continue;
@@ -338,6 +358,7 @@ static void *net_thread(void *arg) {
         ++s_generation;
         pthread_mutex_unlock(&s_lock);
         backoff = 1;
+        hop_log(HOP_LOG_INFO,"net: control TCP connected; awaiting handshake");
 
         net_set_keepalive(s);
         struct timeval rcv = {0, 500000}, snd = {HOP_CTRL_SEND_TIMEOUT_MS / 1000, 0};
@@ -353,8 +374,10 @@ static void *net_thread(void *arg) {
         char buf[2048];
         while (!s_stop && !s_rejected && !s_drop_requested) {
             uint64_t now = hop_monotonic_ms();
-            if ((!s_authed && hop_handshake_expired(now, started)) ||
-                (s_authed && hop_peer_silent(now, s_last_rx))) break;
+            if (!s_authed && hop_handshake_expired(now, started)) {
+                hop_log(HOP_LOG_WARN,"net: control handshake timed out");break;
+            }
+            if (s_authed && hop_peer_silent(now, s_last_rx)) break;
             if (s_authed && hop_heartbeat_due(now, last_ping)) {
                 if (!net_send(HOP_MSG_PING, NULL, 0)) break;
                 last_ping = now;

@@ -53,7 +53,7 @@ static void test_handshake(void) {
     assert(!hop_token_matches("abd", h.token, h.token_len));
     assert(!hop_token_matches("abcd", h.token, h.token_len));
     assert(!hop_token_matches("ab", h.token, h.token_len));
-    assert(hop_token_matches("", NULL, 0));
+    assert(!hop_token_matches("", NULL, 0));
     assert(!hop_token_matches(NULL, h.token, h.token_len));
     uint8_t extra[sizeof(p) + 1]; memcpy(extra, p, sizeof(p)); extra[sizeof(p)] = 0;
     assert(!hop_hello_decode(extra, sizeof(extra), &h));

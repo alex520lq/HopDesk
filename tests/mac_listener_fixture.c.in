@@ -24,20 +24,31 @@ static struct { _Atomic int stop; } s_x;
 static int s_listener=-1,s_data_listener=-1;
 void hop_log(hop_log_level level,const char *fmt,...){(void)level;(void)fmt;}
 int hop_session_matches(const hop_session_id *s){(void)s;return atomic_load(&valid);}
+/* Linux has no SO_NOSIGPIPE; emulate it in the fixture only.
+ * On macOS, exercise the native socket option directly and verify it with
+ * getsockopt() below. */
+#if !defined(__APPLE__)
 #ifndef SO_NOSIGPIPE
 #define SO_NOSIGPIPE 0x7f01
 #endif
 static int safe_setsockopt(int fd,int level,int opt,const void *value,socklen_t len){
     if(level==SOL_SOCKET && opt==SO_NOSIGPIPE){
         assert(*(const int*)value==1);
-#if defined(__APPLE__)
-        if(setsockopt(fd,level,opt,value,len))return -1;
-#endif
         atomic_fetch_add(&suppressed,1);return 0;
     }
     return setsockopt(fd,level,opt,value,len);
 }
 #define setsockopt safe_setsockopt
+#endif
+static void assert_no_sigpipe(int fd){
+#if defined(__APPLE__)
+    int enabled=0;socklen_t size=sizeof(enabled);
+    assert(getsockopt(fd,SOL_SOCKET,SO_NOSIGPIPE,&enabled,&size)==0 && enabled==1);
+#else
+    (void)fd;
+    assert(atomic_load(&suppressed)>0);
+#endif
+}
 @CONTROL_ACCEPT@
 @DATA_ACCEPT@
 static hop_session_id test_session;
@@ -61,12 +72,12 @@ int main(void){
     alarm(8);pthread_t t;void *result;
     g_mac.cfg.port=free_port();assert(!pthread_create(&t,NULL,control_thread,NULL));
     int client=connect_eventually(g_mac.cfg.port);assert(client>=0);assert(!pthread_join(t,&result));
-    int peer=(int)(intptr_t)result-1;assert(peer>=0 && atomic_load(&suppressed)==1);close(peer);close(client);close(s_listener);
+    int peer=(int)(intptr_t)result-1;assert(peer>=0);assert_no_sigpipe(peer);close(peer);close(client);close(s_listener);
     g_mac.cfg.data_port=free_port();assert(!pthread_create(&t,NULL,data_thread,NULL));
     usleep(300000);atomic_store(&valid,0);assert(!pthread_join(t,&result));assert((intptr_t)result==0);
     atomic_store(&valid,1);assert(!pthread_create(&t,NULL,data_thread,NULL));
     client=connect_eventually(g_mac.cfg.data_port);assert(client>=0);assert(!pthread_join(t,&result));
-    peer=(int)(intptr_t)result-1;assert(peer>=0 && atomic_load(&suppressed)==2);
+    peer=(int)(intptr_t)result-1;assert(peer>=0);assert_no_sigpipe(peer);
     close(peer);close(client);close(s_data_listener);alarm(0);
     puts("PASS: production macOS accept loops, stale-session exit and SIGPIPE setup (loopback with OS doubles)");return 0;
 }

@@ -157,11 +157,11 @@ static void save_settings(void) {
     const char *token=s_cfg[CFG_TOKEN].stringValue.UTF8String ?: "";
     const char *input=s_cfg[CFG_MAC_INPUT].stringValue.UTF8String ?: "";
     const char *sleep=s_cfg[CFG_MAC_SLEEP].stringValue.UTF8String ?: "";
-    if (!name[0] || (next.role==HOP_ROLE_CLIENT&&!host[0]) || strlen(name)>=sizeof(next.device_name) || strlen(host)>=sizeof(next.peer_host) ||
+    if (!name[0] || !token[0] || (next.role==HOP_ROLE_CLIENT&&!host[0]) || strlen(name)>=sizeof(next.device_name) || strlen(host)>=sizeof(next.peer_host) ||
         strlen(token)>=sizeof(next.token) || strlen(input)>=sizeof(next.mac_input_cmd) ||
         strlen(sleep)>=sizeof(next.mac_sleep_cmd)) {
         NSAlert *a=[[NSAlert alloc] init]; a.messageText=@"设置无效";
-        a.informativeText=@"设备名称不能为空；地址、Token 和命令长度也必须在允许范围内。";
+        a.informativeText=@"设备名称和共享 Token 不能为空；客户端地址、Token 和命令长度也必须在允许范围内。两端必须设置相同 Token。";
         [a runModal]; return;
     }
     snprintf(next.device_name,sizeof(next.device_name),"%s",name);

@@ -311,8 +311,8 @@ static void save_settings(void) {
         MessageBoxW(s_main, L"设备名称不能为空，且长度不能超过 31 个字节。", L"HopDesk 设置", MB_OK | MB_ICONWARNING); return;
     }
     memcpy(next.device_name,utf8,strlen(utf8)+1);
-    if (!wide_to_utf8(s_cfg[CFG_TOKEN], utf8, sizeof(utf8)) || strlen(utf8) >= sizeof(next.token)) {
-        MessageBoxW(s_main, L"Token 长度不能超过 128 个字节。", L"HopDesk 设置", MB_OK | MB_ICONWARNING); return;
+    if (!wide_to_utf8(s_cfg[CFG_TOKEN], utf8, sizeof(utf8)) || !utf8[0] || strlen(utf8) >= sizeof(next.token)) {
+        MessageBoxW(s_main, L"共享 Token 不能为空，且不能超过 128 个字节；两端必须设置相同 Token。", L"HopDesk 设置", MB_OK | MB_ICONWARNING); return;
     }
     memcpy(next.token,utf8,strlen(utf8)+1);
     unsigned long port = parse_number(s_cfg[CFG_PORT], 0), data_port = parse_number(s_cfg[CFG_DATA_PORT], 0);

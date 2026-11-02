@@ -86,6 +86,12 @@ static void dispatch_message(void *user, uint8_t type, const uint8_t *p, uint32_
         case HOP_MSG_PING:
             net_send(HOP_MSG_PONG, NULL, 0);
             break;
+        case HOP_MSG_EDGE_LEAVE:
+            if (g_mac.cfg.role == HOP_ROLE_CLIENT && len == 0) {
+                inject_reset();
+                statusbar_update(1, 0);
+            }
+            break;
         case HOP_MSG_MOUSE_ENTER:
             if (len >= 2) inject_enter((int)hop_get_be16(p));
             break;

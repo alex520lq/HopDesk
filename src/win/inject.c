@@ -60,6 +60,9 @@ static void enter(int along){
 void win_inject_message(uint8_t type,const uint8_t *p,uint32_t len){
     if(g_app.cfg.role!=HOP_ROLE_CLIENT)return;
     switch(type){
+    case HOP_MSG_EDGE_LEAVE:
+        if(len==0){win_inject_reset();g_app.state=HOP_LINK_LOCAL;ui_refresh(&g_app);}
+        break;
     case HOP_MSG_MOUSE_ENTER:if(len>=2)enter(hop_get_be16(p));break;
     case HOP_MSG_MOUSE_MOVE:if(len>=4){
         if(!sharing)return;

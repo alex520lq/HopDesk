@@ -193,10 +193,9 @@ int hop_hello_decode(const uint8_t *p, uint32_t len, hop_hello_msg *out) {
 int hop_token_matches(const char *expected, const uint8_t *got, size_t got_len) {
     size_t want, i;
     unsigned diff;
-    if (!expected) return 0;
+    if (!expected || !got) return 0;
     want = strlen(expected);
-    if (want == 0) return 1;
-    if (!got) return 0;
+    if (want == 0 || got_len == 0) return 0;
     diff = (unsigned)(want ^ got_len);
     for (i = 0; i < want; ++i) {
         uint8_t g = i < got_len ? got[i] : 0;
@@ -256,8 +255,9 @@ int hop_data_unwrap(uint8_t type, const uint8_t *p, uint32_t len,
     return 1;
 }
 uint32_t hop_xfer_hello_encode(uint8_t *out, const char *token, const hop_session_id *id) {
+    if (!out || !token) return 0;
     size_t n = strlen(token);
-    if (n >= HOP_TOKEN_MAX || !hop_session_id_valid(id)) return 0;
+    if (n == 0 || n >= HOP_TOKEN_MAX || !hop_session_id_valid(id)) return 0;
     out[0] = HOP_XFER_PROTO_VER; out[1] = (uint8_t)n;
     memcpy(out + 2, token, n); memcpy(out + 2 + n, id->bytes, HOP_SESSION_BYTES);
     return (uint32_t)n + 2 + HOP_SESSION_BYTES;

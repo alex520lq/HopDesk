@@ -37,7 +37,7 @@ void hop_config_defaults(hop_config *c) {
     c->switch_delay_ms    = 250;
     c->switch_cooldown_ms = 300;
     c->edge_margin_px     = 40;    /* 进入内移 / 退出越界阈值 */
-    /* 空 token = 不校验（局域网自用） */
+    /* Empty means not configured; authentication rejects it. */
     c->token[0]        = '\0';
     c->peer_host[0]    = '\0';
     c->device_name[0]  = '\0';

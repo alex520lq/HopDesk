@@ -18,6 +18,9 @@
 #include <sys/select.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#ifndef INADDR_LOOPBACK
+#define INADDR_LOOPBACK 0x7f000001UL
+#endif
 #ifndef SO_NOSIGPIPE
 #define SO_NOSIGPIPE SO_KEEPALIVE
 #endif

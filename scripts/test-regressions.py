@@ -80,6 +80,137 @@ int main(void){
 '''
     run('win_ui_cards',ui_preamble+group_fn+'\n'+extract(ui,'paint_cards')+ui_main)
 
+    # Mac edge entry must keep tracking drag events before sharing starts.
+    capture=(ROOT/'src/mac/capture.c').read_text(encoding='utf-8')
+    edge_helper=extract(capture,'is_edge_motion_event')
+    assert 'if(is_edge_motion_event(type))' in extract(capture,'capture_event')
+    edge_preamble=r'''
+#include <assert.h>
+#include <stdio.h>
+typedef int CGEventType;
+enum {kCGEventMouseMoved=1,kCGEventLeftMouseDragged=2,kCGEventRightMouseDragged=3,
+      kCGEventOtherMouseDragged=4,kCGEventLeftMouseDown=5};
+'''
+    edge_main=r'''
+int main(void){
+    assert(is_edge_motion_event(kCGEventMouseMoved));
+    assert(is_edge_motion_event(kCGEventLeftMouseDragged));
+    assert(is_edge_motion_event(kCGEventRightMouseDragged));
+    assert(is_edge_motion_event(kCGEventOtherMouseDragged));
+    assert(!is_edge_motion_event(kCGEventLeftMouseDown));
+    puts("PASS: macOS edge entry includes held-button drag events");return 0;
+}
+'''
+    run('mac_edge_motion',edge_preamble+edge_helper+edge_main)
+
+    # Windows server queues ENTER before transferring held keys/buttons, and
+    # leaves local input untouched if ENTER could not be queued.
+    mouse=(ROOT/'src/win/mouse_capture.c').read_text(encoding='utf-8')
+    handoff_preamble=r'''
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <assert.h>
+typedef uint8_t BYTE;typedef uint32_t DWORD;typedef struct {int x,y;} POINT;
+typedef struct {int server_edge,edge_margin_px,switch_cooldown_ms,screen_w,screen_h;} cfg_t;
+typedef struct {cfg_t cfg;int peer_w,peer_h,state;void *net;} app_t;
+static app_t g_app;
+enum {HOP_EDGE_LEFT=0,HOP_EDGE_RIGHT=1,HOP_EDGE_TOP=2,HOP_EDGE_BOTTOM=3,
+      HOP_LINK_LOCAL=1,HOP_LINK_SHARING=2,HOP_BTN_LEFT=0,
+      HOP_MSG_MOUSE_BUTTON=11,HOP_MSG_MOUSE_ENTER=14,HOP_MSG_KEY_DOWN=20};
+enum {SM_CYVIRTUALSCREEN=1,SM_CXVIRTUALSCREEN=2,SM_CYSCREEN=3,SM_CXSCREEN=4};
+static int s_sharing,s_have_last,s_physical_buttons[3],s_buttons[3],event_count,fail_enter,local_releases;
+static POINT s_anchor,s_last;static DWORD s_cooldown_until;static uint8_t events[16];
+static int net_server_send(void *net,uint8_t type,const void *p,uint32_t len){
+    (void)net;(void)p;(void)len;events[event_count++]=type;
+    return !(fail_enter&&type==HOP_MSG_MOUSE_ENTER);
+}
+static void hop_put_be16(uint8_t *p,uint16_t v){p[0]=(uint8_t)(v>>8);p[1]=(uint8_t)v;}
+static int edge_boundary(int *edge_x,int *is_left){*edge_x=0;*is_left=1;return 1;}
+static int GetSystemMetrics(int what){return (what==SM_CYVIRTUALSCREEN||what==SM_CYSCREEN)?1080:1920;}
+static DWORD GetTickCount(void){return 100;}
+static void kbd_begin_sharing(void){uint8_t p[2]={0};net_server_send(g_app.net,HOP_MSG_KEY_DOWN,p,2);}
+static void inject_local_button(int b,int down){(void)b;if(!down)local_releases++;}
+static int SetCursorPos(int x,int y){(void)x;(void)y;return 1;}
+static void ui_refresh(app_t *app){(void)app;}
+#define hop_log(...) ((void)0)
+'''
+    handoff_main=r'''
+int main(void){
+    POINT trigger={0,540};
+    memset(&g_app,0,sizeof(g_app));g_app.cfg.server_edge=HOP_EDGE_LEFT;
+    g_app.cfg.edge_margin_px=40;g_app.cfg.switch_cooldown_ms=300;
+    g_app.cfg.screen_w=1920;g_app.cfg.screen_h=1080;g_app.peer_w=1440;g_app.peer_h=900;
+    g_app.state=HOP_LINK_LOCAL;s_physical_buttons[HOP_BTN_LEFT]=1;
+    enter_sharing(trigger);
+    assert(event_count==3 && events[0]==HOP_MSG_MOUSE_ENTER &&
+           events[1]==HOP_MSG_KEY_DOWN && events[2]==HOP_MSG_MOUSE_BUTTON);
+    assert(s_sharing && g_app.state==HOP_LINK_SHARING && local_releases==1);
+
+    memset(&g_app,0,sizeof(g_app));g_app.cfg.server_edge=HOP_EDGE_LEFT;
+    g_app.cfg.edge_margin_px=40;g_app.cfg.screen_w=1920;g_app.cfg.screen_h=1080;
+    g_app.peer_w=1440;g_app.peer_h=900;g_app.state=HOP_LINK_LOCAL;
+    memset(s_physical_buttons,0,sizeof(s_physical_buttons));s_physical_buttons[0]=1;
+    s_sharing=0;s_have_last=0;event_count=0;local_releases=0;fail_enter=1;
+    enter_sharing(trigger);
+    assert(event_count==1 && events[0]==HOP_MSG_MOUSE_ENTER);
+    assert(!s_sharing && g_app.state==HOP_LINK_LOCAL && local_releases==0);
+    puts("PASS: Windows ENTER ordering and failed-handoff rollback");return 0;
+}
+'''
+    run('win_handoff_order',handoff_preamble+extract(mouse,'send_enter')+'\n'+
+        extract(mouse,'send_button')+'\n'+extract(mouse,'enter_sharing')+handoff_main)
+
+    # Both platform clients clear remote key/button state on server return.
+    win_inject=(ROOT/'src/win/inject.c').read_text(encoding='utf-8')
+    win_leave_preamble=r'''
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <assert.h>
+typedef uint8_t BYTE;typedef uint16_t WORD;typedef uint32_t DWORD;typedef int32_t LONG;
+typedef struct {int role,client_edge,edge_margin_px;} cfg_t;
+typedef struct {cfg_t cfg;int peer_w,peer_h,state;void *net;} app_t;
+static app_t g_app;static BYTE held[256],buttons[3];static double px,py,over;static int sharing;
+static int released_keys,released_buttons,refreshes;
+enum {HOP_ROLE_CLIENT=1,HOP_EDGE_TOP=2,HOP_LINK_LOCAL=1,HOP_LINK_SHARING=2,
+ HOP_KEY_NONE=0xffff,HOP_MSG_EDGE_LEAVE=13,HOP_MSG_MOUSE_ENTER=14,HOP_MSG_MOUSE_MOVE=10,
+ HOP_MSG_MOUSE_BUTTON=11,HOP_MSG_MOUSE_WHEEL=12,HOP_MSG_KEY_DOWN=20,HOP_MSG_KEY_UP=21,
+ SM_CXSCREEN=1,SM_CYSCREEN=2,MOUSEEVENTF_HWHEEL=4,MOUSEEVENTF_WHEEL=8};
+static void key(WORD vk,int down){held[vk]=(BYTE)down;if(!down)released_keys++;}
+static void button(int b,int down){buttons[b]=(BYTE)down;if(!down)released_buttons++;}
+static void mouse(DWORD flags,LONG dx,LONG dy,DWORD data){(void)flags;(void)dx;(void)dy;(void)data;}
+static void enter(int along){(void)along;sharing=1;}
+static double edge_margin(double w,double h){(void)w;(void)h;return 40;}
+static int GetSystemMetrics(int what){return what==SM_CYSCREEN?1080:1920;}
+static int SetCursorPos(int x,int y){(void)x;(void)y;return 1;}
+static uint16_t hop_get_be16(const uint8_t *p){return (uint16_t)(((uint16_t)p[0]<<8)|p[1]);}
+static WORD hop_mac_to_vk(uint16_t keycode){(void)keycode;return 65;}
+static int net_server_send(void *net,uint8_t type,const void *p,uint32_t len){(void)net;(void)type;(void)p;(void)len;return 1;}
+static void ui_refresh(app_t *app){(void)app;refreshes++;}
+'''
+    win_leave_main=r'''
+int main(void){
+    g_app.cfg.role=HOP_ROLE_CLIENT;g_app.state=HOP_LINK_SHARING;
+    sharing=1;held[65]=1;buttons[0]=1;
+    win_inject_message(HOP_MSG_EDGE_LEAVE,NULL,0);
+    assert(!sharing && !held[65] && !buttons[0]);
+    assert(g_app.state==HOP_LINK_LOCAL && released_keys==1 && released_buttons==1 && refreshes==1);
+    puts("PASS: Windows client releases stuck input on server return");return 0;
+}
+'''
+    run('win_client_server_return',win_leave_preamble+
+        extract(win_inject,'win_inject_reset')+'\n'+extract(win_inject,'win_inject_message')+win_leave_main)
+
+    # Server return must follow all remote release frames.
+    mac_return=extract(capture,'mac_capture_return')
+    assert mac_return.index('send_key(k, 0)') < mac_return.index('net_send(HOP_MSG_EDGE_LEAVE, NULL, 0)')
+    assert mac_return.index('send_button(b, 0)') < mac_return.index('net_send(HOP_MSG_EDGE_LEAVE, NULL, 0)')
+    win_return=extract(mouse,'enter_local')
+    assert win_return.index('kbd_end_sharing()') < win_return.index('net_server_send(g_app.net, HOP_MSG_EDGE_LEAVE, NULL, 0)')
+    assert win_return.index('send_button(i, 0)') < win_return.index('net_server_send(g_app.net, HOP_MSG_EDGE_LEAVE, NULL, 0)')
+
+
     clip=(ROOT/'src/win/clipboard.c').read_text(encoding='utf-8')
     clip_preamble=r'''
 #include <stdint.h>

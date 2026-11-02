@@ -80,46 +80,49 @@ static int in_cooldown(void) {
 }
 
 /* ---- 进入 / 退出共享 ---- */
-static void send_enter(int y) {
+static int send_enter(int y) {
     uint8_t p[2];
     hop_put_be16(p, (uint16_t)(int16_t)y);
-    net_server_send(g_app.net, HOP_MSG_MOUSE_ENTER, p, 2);
+    return net_server_send(g_app.net, HOP_MSG_MOUSE_ENTER, p, 2);
 }
 
 static void enter_sharing(POINT trigger) {
     int edge_x, is_left;
     int margin = g_app.cfg.edge_margin_px;
 
-    edge_boundary(&edge_x, &is_left);        /* 出参总是被写入 */
-    int vertical=g_app.cfg.server_edge>=HOP_EDGE_TOP;
-    int extent=GetSystemMetrics(vertical?SM_CYVIRTUALSCREEN:SM_CXVIRTUALSCREEN);
-    if(extent<=0)extent=GetSystemMetrics(vertical?SM_CYSCREEN:SM_CXSCREEN);
+    edge_boundary(&edge_x, &is_left);
+    int vertical = g_app.cfg.server_edge >= HOP_EDGE_TOP;
+    int extent = GetSystemMetrics(vertical ? SM_CYVIRTUALSCREEN : SM_CXVIRTUALSCREEN);
+    if (extent <= 0) extent = GetSystemMetrics(vertical ? SM_CYSCREEN : SM_CXSCREEN);
     if (margin < 0) margin = 0;
-    if (margin > extent/2) margin = extent/2;
+    if (margin > extent / 2) margin = extent / 2;
 
-    s_sharing = 1;
-    s_anchor = trigger;
-    /* 钳制点内移到边缘内侧，留出继续推的空间 */
-    if(g_app.cfg.server_edge>=HOP_EDGE_TOP)s_anchor.y=is_left?edge_x+margin:edge_x-margin;
-    else s_anchor.x = is_left ? edge_x + margin : edge_x - margin;
+    POINT anchor = trigger;
+    if (vertical) anchor.y = is_left ? edge_x + margin : edge_x - margin;
+    else anchor.x = is_left ? edge_x + margin : edge_x - margin;
+
+    /* Queue ENTER first: the client drops key/button input until it receives it. */
+    int mac_y = vertical ? trigger.x : trigger.y;
+    int remote = vertical ? g_app.peer_w : g_app.peer_h;
+    int local = vertical ? g_app.cfg.screen_w : g_app.cfg.screen_h;
+    if (remote > 0 && local > 0) mac_y = (int)((long)mac_y * remote / local);
+    if (!send_enter(mac_y)) {
+        hop_log(HOP_LOG_WARN, "mouse: unable to queue MOUSE_ENTER; keeping input local");
+        return;
+    }
+
+    s_anchor = anchor;
     s_last = s_anchor;
     s_have_last = 1;
+    s_sharing = 1;
     g_app.state = HOP_LINK_SHARING;
     kbd_begin_sharing();
-    for(int i=0;i<3;++i)if(s_physical_buttons[i]){
-        send_button(i,1);
-        inject_local_button(i,0);
+    for (int i = 0; i < 3; ++i) if (s_physical_buttons[i]) {
+        send_button(i, 1);
+        inject_local_button(i, 0);
     }
     SetCursorPos(s_anchor.x, s_anchor.y);
-
-    /* 移交后短时间内不再判定边缘，避免在接缝处来回弹 */
     s_cooldown_until = GetTickCount() + (DWORD)g_app.cfg.switch_cooldown_ms;
-
-    /* 把 Windows y 按屏幕高度比例换算成 Mac 坐标，让鼠标在对应高度进入 */
-    int mac_y = vertical?trigger.x:trigger.y;
-    int remote=vertical?g_app.peer_w:g_app.peer_h,local=vertical?g_app.cfg.screen_w:g_app.cfg.screen_h;
-    if(remote>0&&local>0)mac_y=(int)((long)mac_y*remote/local);
-    send_enter(mac_y);
 
     ui_refresh(&g_app);
     hop_log(HOP_LOG_INFO, "mouse -> Mac (y=%d)", mac_y);
@@ -128,21 +131,21 @@ static void enter_local(void) {
     int edge_x, is_left;
     POINT p;
 
-    /* 先结束对端输入，再把仍物理按住的键鼠恢复到本机。 */
+    /* Release the peer first, then restore still-physical input locally. */
     for (int i = 0; i < 3; ++i) if (s_buttons[i]) send_button(i, 0);
     s_sharing = 0;
     g_app.state = HOP_LINK_LOCAL;
     kbd_end_sharing();
-    for(int i=0;i<3;++i)if(s_physical_buttons[i])inject_local_button(i,1);
+    /* Empty EDGE_LEAVE ends client-side sharing, after all key/button releases. */
+    net_server_send(g_app.net, HOP_MSG_EDGE_LEAVE, NULL, 0);
+    for (int i = 0; i < 3; ++i) if (s_physical_buttons[i]) inject_local_button(i, 1);
 
-    /* 把鼠标放回边缘内侧，避免立刻又触发移交。
-     * 方向必须跟着 server_edge 走：右边缘时要往回退，不是往前推。 */
     edge_boundary(&edge_x, &is_left);
     p = s_anchor;
-    if(g_app.cfg.server_edge>=HOP_EDGE_TOP)p.y+=is_left?2:-2;else p.x += is_left ? 2 : -2;
+    if (g_app.cfg.server_edge >= HOP_EDGE_TOP) p.y += is_left ? 2 : -2;
+    else p.x += is_left ? 2 : -2;
     SetCursorPos(p.x, p.y);
     s_have_last = 0;
-    /* 收回后同样进入冷却：不然"推出去又被弹回来"会变成连续往返 */
     s_cooldown_until = GetTickCount() + (DWORD)g_app.cfg.switch_cooldown_ms;
     ui_refresh(&g_app);
     hop_log(HOP_LOG_INFO, "mouse -> local");

@@ -36,26 +36,38 @@ static void post_local_button(int b,int down,CGPoint point,CGEventFlags flags){
 static void send_key(unsigned k,int down){uint8_t p[2];hop_put_be16(p,(uint16_t)k);net_send(down?HOP_MSG_KEY_DOWN:HOP_MSG_KEY_UP,p,2);}
 static void send_button(int b,int down){uint8_t p[2]={(uint8_t)b,(uint8_t)down};net_send(HOP_MSG_MOUSE_BUTTON,p,2);buttons[b]=(unsigned char)down;}
 void mac_capture_peer_geometry(uint32_t w,uint32_t h){peer_w=w;peer_h=h;}
-void mac_capture_return(void){
-    if(!sharing)return;
-    for(unsigned k=0;k<128;++k)if(held[k]){send_key(k,0);held[k]=0;}
-    for(int b=0;b<3;++b)if(buttons[b])send_button(b,0);
-    sharing=0;edge_since=0;cooldown=hop_monotonic_ms()+g_mac.cfg.switch_cooldown_ms;
+void mac_capture_return(void) {
+    if (!sharing) return;
+    for (unsigned k = 0; k < 128; ++k) if (held[k]) { send_key(k, 0); held[k] = 0; }
+    for (int b = 0; b < 3; ++b) if (buttons[b]) send_button(b, 0);
+    /* Queue releases first; empty EDGE_LEAVE then clears client-side sharing. */
+    if (connected && g_mac.cfg.role == HOP_ROLE_SERVER)
+        net_send(HOP_MSG_EDGE_LEAVE, NULL, 0);
+    sharing = 0;
+    edge_since = 0;
+    cooldown = hop_monotonic_ms() + g_mac.cfg.switch_cooldown_ms;
     CGWarpMouseCursorPosition(anchor);
-    unsigned char physical_keys[128]={0},physical_buttons[3]={0};
-    for(unsigned k=0;k<128;++k)if(k!=0x39)physical_keys[k]=CGEventSourceKeyState(kCGEventSourceStateHIDSystemState,(CGKeyCode)k);
-    physical_buttons[0]=CGEventSourceButtonState(kCGEventSourceStateHIDSystemState,kCGMouseButtonLeft);
-    physical_buttons[1]=CGEventSourceButtonState(kCGEventSourceStateHIDSystemState,kCGMouseButtonCenter);
-    physical_buttons[2]=CGEventSourceButtonState(kCGEventSourceStateHIDSystemState,kCGMouseButtonRight);
-    CGEventFlags flags=physical_flags();
-    for(unsigned k=0;k<128;++k)if(physical_keys[k])post_local_key(k,1,flags);
-    for(int b=0;b<3;++b)if(physical_buttons[b])post_local_button(b,1,anchor,flags);
-    statusbar_update(connected,0);
+    unsigned char physical_keys[128] = {0}, physical_buttons[3] = {0};
+    for (unsigned k = 0; k < 128; ++k)
+        if (k != 0x39) physical_keys[k] = CGEventSourceKeyState(kCGEventSourceStateHIDSystemState, (CGKeyCode)k);
+    physical_buttons[0] = CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, kCGMouseButtonLeft);
+    physical_buttons[1] = CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, kCGMouseButtonCenter);
+    physical_buttons[2] = CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, kCGMouseButtonRight);
+    CGEventFlags flags = physical_flags();
+    for (unsigned k = 0; k < 128; ++k) if (physical_keys[k]) post_local_key(k, 1, flags);
+    for (int b = 0; b < 3; ++b) if (physical_buttons[b]) post_local_button(b, 1, anchor, flags);
+    statusbar_update(connected, 0);
 }
 void mac_capture_connected(int on){connected=on;
     if(!on)mac_capture_return();}
 static int at_edge(CGPoint p){
     int e=g_mac.cfg.server_edge;return e==0?p.x<=0:e==1?p.x>=g_mac.screen_w-1:e==2?p.y<=0:p.y>=g_mac.screen_h-1;
+}
+static int is_edge_motion_event(CGEventType type) {
+    return type == kCGEventMouseMoved ||
+           type == kCGEventLeftMouseDragged ||
+           type == kCGEventRightMouseDragged ||
+           type == kCGEventOtherMouseDragged;
 }
 static void enter(CGPoint p){
     int e=g_mac.cfg.server_edge;
@@ -95,7 +107,7 @@ static CGEventRef capture_event(CGEventTapProxy proxy,CGEventType type,CGEventRe
     if(!connected)return event;
     CGPoint p=CGEventGetLocation(event);
     if(!sharing){
-        if(type==kCGEventMouseMoved){
+        if(is_edge_motion_event(type)){
             if(at_edge(p)&&hop_monotonic_ms()>=cooldown){if(!edge_since)edge_since=hop_monotonic_ms();}
             else edge_since=0;
             have_last=1;

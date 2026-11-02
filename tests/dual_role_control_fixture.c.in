@@ -7,7 +7,7 @@
 #include <stdio.h>
 void hop_log(hop_log_level level,const char *fmt,...){(void)level;(void)fmt;}
 static struct {hop_config cfg;double screen_w,screen_h;} g_mac;
-static int s_authed,s_rejected,connected,injected,returned,clip_applied;
+static int s_authed,s_rejected,connected,injected,returned,clip_applied,inject_resets,status_sharing;
 static uint64_t s_last_rx;
 static hop_session_id s_control_session;
 static uint8_t sent_type,sent[256];static uint32_t sent_len;
@@ -21,6 +21,8 @@ static void inject_move(int x,int y){(void)x;(void)y;injected++;}
 static void inject_button(int b,int d){(void)b;(void)d;injected++;}
 static void inject_wheel(int x,int y){(void)x;(void)y;injected++;}
 static void inject_key(uint16_t k,int d){(void)k;(void)d;injected++;}
+static void inject_reset(void){inject_resets++;}
+static void statusbar_update(int on,int sharing){(void)on;status_sharing=sharing;}
 static void clipboard_apply(const char *s){assert(!strcmp(s,"hello"));clip_applied++;}
 static void disp_wake(int s){(void)s;}
 static void disp_set_input(uint16_t n){(void)n;}
@@ -30,7 +32,7 @@ static void reset(void){
     hop_session_id old;if(hop_session_current(&old))hop_session_clear(&old);
     memset(&g_mac,0,sizeof(g_mac));g_mac.cfg.role=HOP_ROLE_SERVER;
     strcpy(g_mac.cfg.token,"secret");strcpy(g_mac.cfg.device_name,"Mac-server");
-    g_mac.screen_w=1440;g_mac.screen_h=900;s_authed=s_rejected=connected=injected=returned=clip_applied=0;
+    g_mac.screen_w=1440;g_mac.screen_h=900;s_authed=s_rejected=connected=injected=returned=clip_applied=inject_resets=status_sharing=0;
     sent_type=0;sent_len=0;
 }
 int main(void){
@@ -51,5 +53,8 @@ int main(void){
     hop_put_be32(payload,HOP_DEV_CLIENT);memcpy(payload+4,"hello",5);
     dispatch_message(NULL,HOP_MSG_CLIP_TEXT,payload,9);assert(clip_applied==1);
     hop_put_be32(payload,HOP_DEV_SERVER);dispatch_message(NULL,HOP_MSG_CLIP_TEXT,payload,9);assert(clip_applied==1);
-    reset();puts("PASS: production macOS server authentication, geometry, role gating and clipboard origin");return 0;
+    reset();g_mac.cfg.role=HOP_ROLE_CLIENT;s_authed=1;status_sharing=1;
+    dispatch_message(NULL,HOP_MSG_EDGE_LEAVE,NULL,0);
+    assert(inject_resets==1 && status_sharing==0);
+    reset();puts("PASS: production macOS dispatch authentication, role gating, clipboard origin and server return");return 0;
 }

@@ -120,6 +120,16 @@ static void test_decoder_rejects_oversized_frame(void) {
     hop_decoder_free(d);
 }
 
+static void test_token_authentication(void) {
+    static const uint8_t good[] = "shared-secret";
+    static const uint8_t bad[] = "shared-secrex";
+    CHECK(hop_token_matches("shared-secret", good, sizeof(good) - 1));
+    CHECK(!hop_token_matches("shared-secret", bad, sizeof(bad) - 1));
+    CHECK(!hop_token_matches("", good, sizeof(good) - 1));
+    CHECK(!hop_token_matches("", (const uint8_t *)"", 0));
+    CHECK(!hop_token_matches("shared-secret", NULL, 0));
+}
+
 static void test_crc32(void) {
     static const char input[] = "123456789";
     uint32_t whole = hop_crc32(0, input, 9);
@@ -231,13 +241,17 @@ static void test_xfer_hello_validation(void) {
     CHECK(!hop_xfer_hello_valid(hello, n, "test"));
     CHECK(!hop_xfer_hello_valid(NULL, n, "test"));
     CHECK(!hop_xfer_hello_valid(hello, n, NULL));
+    uint32_t valid_n = n;
     n = hop_xfer_hello_encode(hello, "", &session);
-    CHECK(hop_xfer_hello_valid(hello, n, ""));
-    CHECK(!hop_xfer_hello_valid(hello, n, "x"));
+    CHECK(n == 0);
+    uint8_t empty_hello[2 + HOP_SESSION_BYTES] = {HOP_XFER_PROTO_VER, 0};
+    memcpy(empty_hello + 2, session.bytes, HOP_SESSION_BYTES);
+    CHECK(!hop_xfer_hello_valid(empty_hello, sizeof(empty_hello), ""));
+    CHECK(!hop_xfer_hello_valid(empty_hello, sizeof(empty_hello), "x"));
     CHECK(!hop_xfer_hello_valid(hello, 2, "")); /* v5 is not a session handshake */
     char too_long[HOP_TOKEN_MAX + 2];
     memset(too_long, 'x', sizeof(too_long)); too_long[sizeof(too_long)-1] = 0;
-    CHECK(!hop_xfer_hello_valid(hello, n, too_long));
+    CHECK(!hop_xfer_hello_valid(hello, valid_n, too_long));
 }
 
 static void test_xfer_relative_path_validation(void) {
@@ -522,6 +536,7 @@ int main(void) {
     test_decoder_fragmentation_and_coalescing();
     test_decoder_rejects_oversized_frame();
     test_crc32();
+    test_token_authentication();
     test_config_defaults_and_loading();
     test_dual_roles();
     test_keymap();

@@ -116,8 +116,7 @@ static void enter_sharing(POINT trigger) {
     s_cooldown_until = GetTickCount() + (DWORD)g_app.cfg.switch_cooldown_ms;
 
     /* 把 Windows y 按屏幕高度比例换算成 Mac 坐标，让鼠标在对应高度进入 */
-    int mac_y = g_app.cfg.server_edge>=HOP_EDGE_TOP?trigger.x:trigger.y;
-    int vertical=g_app.cfg.server_edge>=HOP_EDGE_TOP;
+    int mac_y = vertical?trigger.x:trigger.y;
     int remote=vertical?g_app.peer_w:g_app.peer_h,local=vertical?g_app.cfg.screen_w:g_app.cfg.screen_h;
     if(remote>0&&local>0)mac_y=(int)((long)mac_y*remote/local);
     send_enter(mac_y);

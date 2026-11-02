@@ -922,6 +922,7 @@ static DWORD WINAPI listen_thread(LPVOID arg) {
                 hop_session_id session;
                 bad = !hop_session_current(&session) ||
                       !hop_xfer_hello_bound(hello + HOP_HEADER_SIZE, need - HOP_HEADER_SIZE, s_x.cfg.token, &session);
+                if (bad) hop_log(HOP_LOG_WARN,"xfer: data handshake rejected: protocol, token or control session mismatch");
                 if (!bad) {
                     uint8_t reply[2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES];
                     uint32_t reply_len = hop_xfer_hello_encode(reply, s_x.cfg.token, &session);
@@ -977,7 +978,10 @@ static DWORD WINAPI data_client_thread(LPVOID unused){
         hop_session_id session;
         if(!hop_session_current(&session)){WaitForSingleObject(s_x.stop,200);continue;}
         SOCKET sock=net_connect_timeout_win(s_x.cfg.peer_host,s_x.cfg.data_port,s_x.stop);
-        if(sock==INVALID_SOCKET){WaitForSingleObject(s_x.stop,delay);delay=delay<8000?delay*2:8000;continue;}
+        if(sock==INVALID_SOCKET){
+            if(s_x.cfg.peer_host[0])hop_log(HOP_LOG_WARN,"xfer: TCP data connection failed: host=%s port=%u; check data port and firewall",s_x.cfg.peer_host,(unsigned)s_x.cfg.data_port);
+            WaitForSingleObject(s_x.stop,delay);delay=delay<8000?delay*2:8000;continue;
+        }
         DWORD snd=5000,rcv=200;net_set_keepalive(sock);
         setsockopt(sock,SOL_SOCKET,SO_SNDTIMEO,(char*)&snd,sizeof(snd));setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,(char*)&rcv,sizeof(rcv));
         rx_bind_session(&session);hop_decoder_reset(dec);

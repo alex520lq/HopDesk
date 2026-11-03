@@ -1,6 +1,10 @@
 /* Production macOS control loop with a simulated Windows server over TCP.
  * macOS UI, dispatch and SO_NOSIGPIPE are replaced; this is not native QA. */
 #define _DEFAULT_SOURCE 1
+#if defined(__APPLE__)
+/* Expose Darwin TCP keepalive options while the fixture is compiled in POSIX mode. */
+#define _DARWIN_C_SOURCE 1
+#endif
 #include "hop.h"
 #include <assert.h>
 #include <stdio.h>

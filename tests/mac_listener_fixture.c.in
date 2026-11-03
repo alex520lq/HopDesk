@@ -1,6 +1,10 @@
 /* Exercise extracted production accept loops with real loopback sockets.
  * SO_NOSIGPIPE is a checked test double on Linux; native on macOS. */
 #define _DEFAULT_SOURCE 1
+#if defined(__APPLE__)
+/* Expose Darwin socket extensions while the test is compiled in POSIX mode. */
+#define _DARWIN_C_SOURCE 1
+#endif
 #include "hop.h"
 #include <assert.h>
 #include <errno.h>

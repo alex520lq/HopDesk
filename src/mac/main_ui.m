@@ -4,6 +4,7 @@
  * ===================================================================== */
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
+#import <ApplicationServices/ApplicationServices.h>
 #import <dispatch/dispatch.h>
 #include "mac_app.h"
 #include "xfer.h"
@@ -47,6 +48,52 @@ static int s_visibleFileIndices[HOP_XFER_FILE_LIMIT];
 static int s_visibleFileCount;
 static uint32_t s_fileBatch;
 static int s_fileDirection;
+static BOOL s_accessibilityPermissionRequestStarted;
+
+/* CoreGraphics event posting can fail silently without Post Event permission.
+ * Request it once, then take the user directly to the Accessibility privacy pane.
+ * Cocoa and System Settings navigation are always performed on the main queue. */
+void mac_request_accessibility_permission(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (CGPreflightPostEventAccess()) {
+            hop_log(HOP_LOG_INFO, "permission: macOS event-posting access is already granted");
+            return;
+        }
+
+        if (s_accessibilityPermissionRequestStarted) return;
+        s_accessibilityPermissionRequestStarted = YES;
+
+        hop_log(HOP_LOG_WARN, "permission: requesting macOS event-posting access");
+        if (CGRequestPostEventAccess() || CGPreflightPostEventAccess()) {
+            hop_log(HOP_LOG_INFO, "permission: macOS event-posting access granted");
+            return;
+        }
+
+        NSURL *settingsURL = nil;
+        if (@available(macOS 13.0, *)) {
+            settingsURL = [NSURL URLWithString:
+                @"x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility"];
+        } else {
+            settingsURL = [NSURL URLWithString:
+                @"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"];
+        }
+
+        BOOL opened = settingsURL && [NSWorkspace.sharedWorkspace openURL:settingsURL];
+        if (!opened) {
+            NSURL *legacyURL = [NSURL URLWithString:
+                @"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"];
+            opened = legacyURL && [NSWorkspace.sharedWorkspace openURL:legacyURL];
+        }
+
+        if (opened) {
+            hop_log(HOP_LOG_WARN,
+                    "permission: opened System Settings > Privacy & Security > Accessibility; enable HopDesk, then relaunch it");
+        } else {
+            hop_log(HOP_LOG_ERROR,
+                    "permission: unable to open the Accessibility settings pane; open System Settings > Privacy & Security > Accessibility manually");
+        }
+    });
+}
 
 static NSString *const kPageNames[6] = {@"概览",@"连接",@"设置",@"传输",@"日志",@"更新"};
 

@@ -22,6 +22,7 @@ static struct {
 void inject_set_peer_geometry(uint32_t w, uint32_t h) { s_input.peer_w = w; s_input.peer_h = h; }
 static double s_w, s_h;
 static int    s_inited;
+static int    s_permission_guidance_requested;
 
 /* 越过出口边缘的累计量，回到屏内立即清零。
  * 必须累计而不是看单次位移：慢推时每次事件只有几个像素，
@@ -105,12 +106,16 @@ void inject_init(void) {
      *
      * CGPreflightPostEventAccess 只查询、不弹窗（10.15+），适合放在初始化里。
      * 真缺权限时必须把话说清楚，否则用户根本不知道该去勾哪个开关。 */
-    if (CGPreflightPostEventAccess())
-        hop_log(HOP_LOG_INFO, "inject: 辅助功能权限已授予");
-    else
+    if (CGPreflightPostEventAccess()) {
+        hop_log(HOP_LOG_INFO, "inject: 辅助功能 / 事件投递权限已授予");
+    } else {
         hop_log(HOP_LOG_ERROR,
-                "inject: 缺少「辅助功能」权限，键鼠注入会被系统静默丢弃 —— "
-                "到 系统设置 > 隐私与安全性 > 辅助功能 勾选 hopdesk 后重启本程序");
+                "inject: 缺少 macOS 辅助功能 / 事件投递权限，CGEventPost 会被系统静默丢弃");
+        if (!s_permission_guidance_requested) {
+            s_permission_guidance_requested = 1;
+            mac_request_accessibility_permission();
+        }
+    }
 }
 
 /* 把仍按着的修饰键全部松开：断线时不能让 Mac 卡住 Cmd */

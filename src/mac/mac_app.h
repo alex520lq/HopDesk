@@ -64,6 +64,7 @@ void main_ui_show_page(int page);
 void main_ui_set_status(int connected, int sharing);
 void main_ui_refresh(void);
 void main_ui_shutdown(void);
+void mac_request_accessibility_permission(void); /* main queue: request and open the Accessibility settings pane */
 void app_run(void);                 /* 启动 NSApplication 主循环 */
 
 #endif

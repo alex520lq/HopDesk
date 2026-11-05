@@ -4,6 +4,7 @@
  */
 #include "hop.h"
 #include "update_manifest.h"
+#include "xfer_budget.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -582,6 +583,45 @@ static void test_update_manifest_validation(void) {
     CHECK(!hop_update_manifest_parse(duplicate, sizeof(duplicate) - 1, &parsed));
 }
 
+
+static void test_xfer_global_budget(void) {
+    hop_xfer_budget_limits limits={2u,3u,1000u,600u,500u};
+    hop_xfer_budget_snapshot snap;
+    hop_xfer_budget_reservation a,b,c;
+    hop_xfer_budget_reservation_init(&a);
+    hop_xfer_budget_reservation_init(&b);
+    hop_xfer_budget_reservation_init(&c);
+    CHECK(hop_xfer_budget_set_limits_for_test(&limits));
+    CHECK(hop_xfer_budget_reserve_job(&a));
+    CHECK(hop_xfer_budget_reserve_entry(&a,400));
+    CHECK(hop_xfer_budget_reserve_entry(&a,300));
+    CHECK(!hop_xfer_budget_reserve_entry(&a,301));
+    CHECK(hop_xfer_budget_reserve_job(&b));
+    CHECK(!hop_xfer_budget_reserve_job(&c));
+    CHECK(hop_xfer_budget_reserve_entry(&b,1));
+    CHECK(!hop_xfer_budget_reserve_entry(&b,0));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==2&&snap.entries==3&&snap.pending_bytes==701);
+    CHECK(snap.jobs_high_water==2&&snap.entries_high_water==3);
+    hop_xfer_budget_release(&a);
+    hop_xfer_budget_release(&a);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==1&&snap.entries==1&&snap.pending_bytes==1);
+    hop_xfer_budget_release(&b);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0);
+    CHECK(hop_xfer_budget_reserve_job(&a));
+    CHECK(hop_xfer_budget_reserve_image(&a,500));
+    CHECK(!hop_xfer_budget_reserve_image(&a,501));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==1&&snap.entries==1&&snap.pending_bytes==500&&snap.image_bytes==500);
+    hop_xfer_budget_release(&a);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0&&snap.image_bytes==0);
+    hop_xfer_budget_limits defaults={16u,32768u,8ull*1024ull*1024ull*1024ull,256ull*1024ull*1024ull,256ull*1024ull*1024ull};
+    CHECK(hop_xfer_budget_set_limits_for_test(&defaults));
+}
+
 int main(void) {
     hop_crc32_init();
 
@@ -609,6 +649,7 @@ int main(void) {
     test_image_begin_decode();
     test_file_end_ack_abort_done_decoders();
     test_update_manifest_validation();
+    test_xfer_global_budget();
 
     if (g_failures) {
         fprintf(stderr, "HopDesk core tests: %d failure(s)\n", g_failures);

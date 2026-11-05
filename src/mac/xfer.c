@@ -13,6 +13,7 @@
 #include "xfer.h"
 #include "../core/update_state.h"
 #include "../core/xfer_tracking.h"
+#include "../core/xfer_budget.h"
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -54,6 +55,7 @@ typedef struct xf_job {
     hop_session_id session;
     uint32_t  batch;
     int       is_image;
+    hop_xfer_budget_reservation budget;
     int       n;
     xf_entry *e;
     uint8_t  *pixels;
@@ -73,6 +75,7 @@ typedef struct {
     xf_entry *v;
     int n, cap;
     int failed; /* incomplete/unsafe snapshots are never queued */
+    hop_xfer_budget_reservation budget;
 } elist;
 
 /* ---------------- 状态 ---------------- */
@@ -396,7 +399,8 @@ static int elist_push(elist *l, xf_entry *e) {
     if (!e || !e->name || !e->rel ||
         strlen(e->name) > HOP_NAME_LEN_MAX ||
         strlen(e->rel) > HOP_PATH_LEN_MAX ||
-        l->n >= XFER_MAX_ENTRIES) {
+        l->n >= XFER_MAX_ENTRIES ||
+        !hop_xfer_budget_reserve_entry(&l->budget, e->size)) {
         l->failed = 1;
         return 0;
     }
@@ -421,6 +425,7 @@ static void elist_free(elist *l) {
     l->v = NULL;
     l->n = l->cap = 0;
     l->failed = 0;
+    hop_xfer_budget_release(&l->budget);
 }
 
 /* 递归收集。lstat 而不是 stat：符号链接跳过，避免环和越界。 */
@@ -907,6 +912,7 @@ static void job_free(xf_job *j) {
     }
     free(j->e);
     free(j->pixels);
+    hop_xfer_budget_release(&j->budget);
     free(j);
 }
 
@@ -1167,6 +1173,10 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
 
     elist l;
     memset(&l, 0, sizeof(l));
+    if (!hop_xfer_budget_reserve_job(&l.budget)) {
+        hop_log(HOP_LOG_WARN, "xfer: global job budget exhausted");
+        return 0;
+    }
 
     for (int i = 0; i < n; ++i) {
         if (!paths[i] || !paths[i][0]) { l.failed = 1; break; }
@@ -1193,6 +1203,9 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
     }
     j->n = l.n;
     j->e = l.v;
+    j->budget = l.budget;
+    memset(&l.budget, 0, sizeof(l.budget));
+    l.v = NULL; l.n = l.cap = 0;
 
     uint64_t total = 0;
     for (int i = 0; i < l.n; ++i) total += l.v[i].size;
@@ -1205,19 +1218,26 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
 }
 
 static int xfer_submit_image_impl(const uint8_t *bgra, int w, int h, int stride) {
-    if (!bgra || w <= 0 || h <= 0 || stride < w * 4) return 0;
-    if (!xfer_connected()) {
-        hop_log(HOP_LOG_WARN, "xfer: data channel not connected, drop image");
-        return 0;
+    uint64_t min_stride,total64;
+    if (!bgra || w <= 0 || h <= 0 || stride <= 0) return 0;
+    min_stride=(uint64_t)(uint32_t)w*4u;
+    if ((uint64_t)(uint32_t)stride<min_stride ||
+        (uint64_t)(uint32_t)stride>UINT64_MAX/(uint64_t)(uint32_t)h) return 0;
+    total64=(uint64_t)(uint32_t)stride*(uint64_t)(uint32_t)h;
+    if(total64>(uint64_t)SIZE_MAX||!xfer_connected())return 0;
+    hop_xfer_budget_reservation budget;
+    hop_xfer_budget_reservation_init(&budget);
+    if(!hop_xfer_budget_reserve_job(&budget)||!hop_xfer_budget_reserve_image(&budget,total64)){
+        hop_xfer_budget_release(&budget);
+        hop_log(HOP_LOG_WARN,"xfer: global image memory budget exhausted");return 0;
     }
-
-    size_t total = (size_t)stride * (size_t)h;
-    uint8_t *copy = (uint8_t *)malloc(total);
-    if (!copy) return 0;
-    memcpy(copy, bgra, total);
-
-    xf_job *j = (xf_job *)calloc(1, sizeof(*j));
-    if (!j) { free(copy); return 0; }
+    size_t total=(size_t)total64;
+    uint8_t *copy=(uint8_t*)malloc(total);
+    if(!copy){hop_xfer_budget_release(&budget);return 0;}
+    memcpy(copy,bgra,total);
+    xf_job *j=(xf_job*)calloc(1,sizeof(*j));
+    if(!j){free(copy);hop_xfer_budget_release(&budget);return 0;}
+    j->budget=budget;memset(&budget,0,sizeof(budget));
 
     do { j->batch = __sync_add_and_fetch(&s_x.batch_seq, 1); } while (!j->batch);
     j->is_image = 1;

@@ -343,6 +343,8 @@ int main(void){
 #define pthread_mutex_unlock(p) ((void)(p))
 static int s_status_lock, saves;
 static uint64_t s_status_revision;
+static uint64_t s_test_monotonic_ms=1000;
+static uint64_t hop_monotonic_ms(void){return ++s_test_monotonic_ms;}
 static hop_xfer_tracking s_send_status,s_receive_status;
 static void *s_retry_paths[HOP_XFER_FILE_LIMIT];
 static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];static int s_history_count;

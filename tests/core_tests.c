@@ -859,6 +859,24 @@ static void test_xfer_task_image_buffer_transfer(void) {
     CHECK(hop_xfer_budget_set_limits_for_test(&defaults));
 }
 
+static void test_xfer_tracking_stage_timing(void) {
+    hop_xfer_tracking t;
+    memset(&t,0,sizeof(t));
+    hop_xfer_tracking_begin(&t,77,HOP_XFER_DIR_SEND,1,100,"timing",HOP_XFER_SENDING);
+    hop_xfer_tracking_add_time(&t,77,HOP_XFER_TIME_SCAN,1500000ull);
+    hop_xfer_tracking_add_time(&t,77,HOP_XFER_TIME_SCAN,2500000ull);
+    hop_xfer_tracking_add_time(&t,77,HOP_XFER_TIME_WRITE,7000000ull);
+    CHECK(t.stage_ns[HOP_XFER_TIME_SCAN]==4000000ull);
+    CHECK(t.stage_ns[HOP_XFER_TIME_WRITE]==7000000ull);
+    hop_xfer_tracking_add_time(&t,77,-1,999);
+    hop_xfer_tracking_add_time(&t,77,HOP_XFER_TIME_COUNT,999);
+    hop_xfer_tracking_add_time(&t,77,HOP_XFER_TIME_SCAN,UINT64_MAX);
+    CHECK(t.stage_ns[HOP_XFER_TIME_SCAN]==UINT64_MAX);
+    CHECK(hop_xfer_tracking_end(&t,77,HOP_XFER_COMPLETED,"done"));
+    hop_xfer_tracking_add_time(&t,77,HOP_XFER_TIME_SEND,1000);
+    CHECK(t.stage_ns[HOP_XFER_TIME_SEND]==0); /* terminal tasks cannot accrue time */
+}
+
 static void test_xfer_tracking_speed_and_eta(void) {
     static hop_xfer_tracking tracking;
     memset(&tracking,0,sizeof(tracking));
@@ -973,6 +991,7 @@ int main(void) {
     test_xfer_global_budget();
     test_xfer_ack_window();
     test_xfer_rate_limiter();
+    test_xfer_tracking_stage_timing();
     test_xfer_tracking_speed_and_eta();
     test_xfer_task_identity_and_lifecycle();
     test_xfer_task_image_buffer_transfer();

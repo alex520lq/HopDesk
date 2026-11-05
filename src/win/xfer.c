@@ -714,6 +714,13 @@ static int ack_mark_sent(uint32_t batch, uint32_t id) {
     return ok;
 }
 
+static int ack_set_deadline(uint32_t batch, uint32_t id, uint64_t deadline_ns) {
+    EnterCriticalSection(&s_ack.lock);
+    int ok = hop_xfer_ack_window_set_deadline(&s_ack.window,batch,id,deadline_ns);
+    LeaveCriticalSection(&s_ack.lock);
+    return ok;
+}
+
 static void ack_unregister(uint32_t batch, uint32_t id) {
     EnterCriticalSection(&s_ack.lock);
     hop_xfer_ack_window_unregister(&s_ack.window, batch, id);
@@ -758,16 +765,16 @@ static int ack_wait(uint32_t batch, uint32_t id, uint64_t deadline, uint64_t *rt
     if (rtt_us) *rtt_us = 0;
     for (;;) {
         EnterCriticalSection(&s_ack.lock);
-        int status = 0;
+        int status = 0, deadline_expired = 0;
         uint64_t rtt_ns = 0;
-        int hit = hop_xfer_ack_window_take(&s_ack.window, batch, id, &status, &rtt_ns);
+        int hit = hop_xfer_ack_window_take_ex(&s_ack.window,batch,id,&status,&rtt_ns,
+                                              &deadline_expired);
         LeaveCriticalSection(&s_ack.lock);
         if (hit) {
-            /* A slot may be filled while the sender is still completing the
-             * rest of this window. Enforce the per-file deadline using the
-             * measured monotonic RTT, not the later time ack_wait was entered. */
-            if (rtt_ns > (uint64_t)HOP_XFER_ACK_TIMEOUT_MS * 1000000ull)
-                return XFER_ACK_TIMEOUT;
+            /* ACK arrival may race with FILE_END send completion. The
+             * window stores the exact receive timestamp and the deadline is
+             * anchored immediately after FILE_END is fully written. */
+            if (deadline_expired) return XFER_ACK_TIMEOUT;
             if (rtt_us) *rtt_us = rtt_ns / 1000ull;
             return status;
         }
@@ -879,7 +886,14 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
         ack_unregister(batch,id); return XFER_SEND_DEAD;
     }
     (void)local_fail;
+    /* Arm before FILE_END to catch an immediate ACK; anchor expiry only after
+     * the complete frame has been written. */
+    uint64_t deadline_ns = rate_now_ns() +
+        (uint64_t)HOP_XFER_ACK_TIMEOUT_MS * 1000000ull;
     *ack_deadline_ms = now_ms() + HOP_XFER_ACK_TIMEOUT_MS;
+    if (!ack_set_deadline(batch,id,deadline_ns)) {
+        ack_unregister(batch,id); return XFER_LOCAL_IO;
+    }
     return XFER_ACK_PENDING;
 }
 

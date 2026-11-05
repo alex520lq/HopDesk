@@ -860,7 +860,7 @@ static void test_xfer_task_image_buffer_transfer(void) {
 }
 
 static void test_xfer_tracking_stage_timing(void) {
-    hop_xfer_tracking t;
+    static hop_xfer_tracking t;
     memset(&t,0,sizeof(t));
     hop_xfer_tracking_begin(&t,77,HOP_XFER_DIR_SEND,1,100,"timing",HOP_XFER_SENDING);
     hop_xfer_tracking_add_time(&t,77,HOP_XFER_TIME_SCAN,1500000ull);

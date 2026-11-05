@@ -57,6 +57,7 @@ void hop_config_defaults(hop_config *c) {
      * 而省下的 11% 吞吐在真实链路上不可见。详见 hop.h 的说明。 */
     c->data_port      = HOP_DATA_PORT;
     c->xfer_chunk_kb  = HOP_CHUNK_KB_DEFAULT;
+    c->xfer_rate_limit_mib = 128; /* provisional 1-GbE-friendly ceiling; tune on real links */
 }
 
 /* 支持 0x 前缀（DDC 值习惯写十六进制） */
@@ -96,6 +97,13 @@ static int set_kv(hop_config *c, const char *k, const char *v) {
     else if (!strcmp(k, "mac_sleep_cmd"))  snprintf(c->mac_sleep_cmd, sizeof(c->mac_sleep_cmd), "%s", v);
     else if (!strcmp(k, "data_port"))      c->data_port = (uint16_t)to_int(v);
     else if (!strcmp(k, "xfer_chunk_kb"))  c->xfer_chunk_kb = atoi(v);
+    else if (!strcmp(k, "xfer_rate_limit_mib")) {
+        char *end = NULL;
+        errno = 0;
+        long value = strtol(v, &end, 10);
+        if (errno || end == v || *end || value < 16 || value > 4096) return -1;
+        c->xfer_rate_limit_mib = (int)value;
+    }
     else return 0;
     return 1;
 }
@@ -195,6 +203,7 @@ int hop_config_save_atomic(const hop_config *c, const char *path) {
     CFG_WRITE("mac_input_cmd=%s\n", input_cmd);
     CFG_WRITE("mac_sleep_cmd=%s\n", sleep_cmd);
     CFG_WRITE("xfer_chunk_kb=%d\n", c->xfer_chunk_kb);
+    CFG_WRITE("xfer_rate_limit_mib=%d\n", c->xfer_rate_limit_mib);
 #undef CFG_WRITE
     if (fflush(f) != 0) ok = 0;
     if (ok) {

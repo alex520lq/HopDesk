@@ -246,7 +246,6 @@ static int open_retry(HWND h){(void)h;return can_open;}
 static int EmptyClipboard(void){clipboard=NULL;sequence++;return 1;}
 static HGLOBAL SetClipboardData(UINT f,HGLOBAL h){(void)f;if(fail_set)return NULL;clipboard=h;sequence++;return h;}
 static void CloseClipboard(void){}
-static DWORD GetTickCount(void){return 1;}
 static DWORD GetClipboardSequenceNumber(void){return sequence;}
 static void GlobalFree(HGLOBAL h){(void)h;freed++;}
 static void SetTimer(HWND h,int i,int t,void*p){(void)h;(void)i;(void)t;(void)p;}

@@ -407,10 +407,13 @@ static int send_dib(HANDLE h, DWORD sequence, hop_xfer_task *task) {
         return -1;
     }
 
-    size_t src_stride = (((size_t)w * (size_t)bpp + 31) / 32) * 4;
+    size_t src_bits = (size_t)w * (size_t)bpp;
+    if (src_bits > SIZE_MAX - 31u) { GlobalUnlock(h); return -1; }
+    size_t src_stride = ((src_bits + 31u) / 32u) * 4u;
     uint64_t offset = (uint64_t)bi->biSize + (uint64_t)bi->biClrUsed * 4;
     if (bi->biSize < sizeof(*bi) || offset > available ||
-        (uint64_t)src_stride * (unsigned)hgt > available - offset) {
+        !src_stride || src_stride > available - (size_t)offset ||
+        (size_t)hgt > (available - (size_t)offset) / src_stride) {
         GlobalUnlock(h); return -1;
     }
     if (!task || !hop_xfer_task_reserve_image_temp(task, (uint64_t)total)) {

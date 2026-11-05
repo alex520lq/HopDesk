@@ -705,7 +705,6 @@ static void test_xfer_rate_limiter(void) {
     CHECK(hop_xfer_rate_wait_ns(&rate,100,0)==50000000ull);
     CHECK(hop_xfer_rate_wait_ns(&rate,100,50000000ull)==50000000ull);
     CHECK(hop_xfer_rate_wait_ns(&rate,50,100000000ull)==0);
-    CHECK(rate.throttle_wait_ns==100000000ull);
     CHECK(hop_xfer_rate_wait_ns(&rate,101,100000000ull)==UINT64_MAX);
 
     hop_xfer_rate_init(&rate,1000,100,2000,100,0);

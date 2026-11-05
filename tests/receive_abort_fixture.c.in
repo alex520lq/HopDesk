@@ -66,6 +66,15 @@ static void checked_free(void*p){if(p)assert(closed);free(p);}
 #undef free
 @RESET_STATE@
 static void rx_discard_dir(void){assert(closed);discarded++;s_rx.dir[0]=0;}
+#ifdef FIXTURE_WINDOWS
+static void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n,int success){
+    (void)batch;(void)paths;(void)n;(void)success;
+}
+#else
+static void clipboard_complete_remote_paste(uint32_t batch,const char *const *paths,int n,int success){
+    (void)batch;(void)paths;(void)n;(void)success;
+}
+#endif
 @TERMINATE@
 @BEGIN_BATCH@
 static void status_image(uint32_t batch,int d,uint64_t size){

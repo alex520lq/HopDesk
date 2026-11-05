@@ -127,6 +127,12 @@ int hop_xfer_task_release_image_temp(hop_xfer_task *task, uint64_t bytes) {
            hop_xfer_budget_release_image_temp(&task->reservation, bytes);
 }
 
+int hop_xfer_task_transfer_image_temp(hop_xfer_task *from, hop_xfer_task *to, uint64_t bytes) {
+    return task_owns_reservation(from) && task_owns_reservation(to) &&
+           !hop_xfer_task_is_terminal(from) && !hop_xfer_task_is_terminal(to) &&
+           hop_xfer_budget_transfer_image_temp(&from->reservation, &to->reservation, bytes);
+}
+
 int hop_xfer_task_finish(hop_xfer_task *task, hop_xfer_task_state terminal_state) {
     if (!task_owns_reservation(task)) return 0;
     /* A receive task cannot become terminal while its writer still owns buffers. */

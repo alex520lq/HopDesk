@@ -140,7 +140,7 @@
 - 传输期间主线程/主队列无目录扫描、无大图像转换、无同步网络等待。
 - 普通桌面空闲时 CPU 不因剪贴板轮询/重试持续唤醒；复制文件但不粘贴时 CPU/磁盘扫描增量接近空闲基线。
 - 队列内存有硬上限；10000 小文件和多个连续任务不会无界增长。
-- 多个 `submit()` 并发执行时，jobs、entries、pending bytes、image bytes 四项全局计数任何时刻都不超过各自预算；边界值、超限值和整数溢出均有测试。
+- 多个 `submit()` 并发执行时，jobs、entries、pending bytes、image bytes、接收写盘队列 slots/bytes 六项全局计数任何时刻都不超过各自预算；边界值、超限值和整数溢出均有测试。
 - `XFER_MAX_ENTRIES` 继续作为单任务上限，但不能替代全局 entries 上限；多任务累计条目数达到全局上限时必须整体背压/拒绝。
 - 图片在预算预留前不得进行完整堆复制；连续提交多张大图时 RSS 峰值受全局 image-memory budget 约束，释放/取消后计数回落。
 - 任务在排队、扫描、传输、完成、失败、取消、超时、断线和应用退出各路径均准确释放预算；重复完成/取消不会重复释放。
@@ -154,12 +154,26 @@
 **第一批已提交：发送端全局资源预算基础。**
 
 - 新增跨平台公共模块 `src/core/xfer_budget.h/.c`，Windows 使用 SRWLOCK，macOS 使用 pthread mutex；两端共享同一套预算语义。
+- 初始发送端默认上限：jobs=16、entries=32768、pending bytes=8 GiB、image bytes=256 MiB、单张图片=256 MiB。**这些数值是安全起始值，不是实机调优结论**，后续必须通过 RSS/工作集压测校准。
+- Windows/macOS 文件提交先预留 job slot；目录扫描发现每个文件/目录时原子预留 entry 和文件字节；任一资源超限则整批回滚，不进入队列。
+- 图片提交在分配/复制 payload 前预留 job、entry、pending bytes 和 image bytes；任务释放时由 job 生命周期统一释放 reservation。
+- 第一批只覆盖发送端排队/活动作业及 xfer 层持有的图片 payload；接收端写盘队列与图片转换临时内存尚未纳入。
+
+- 新增跨平台公共模块 `src/core/xfer_budget.h/.c`，Windows 使用 SRWLOCK，macOS 使用 pthread mutex；两端共享同一套预算语义。
 - 初始默认上限：jobs=16、entries=32768、pending bytes=8 GiB、image bytes=256 MiB、单张图片=256 MiB。**这些数值是安全起始值，不是实机调优结论**，后续必须通过 RSS/工作集压测校准。
 - Windows/macOS 文件提交先预留 job slot；目录扫描发现每个文件/目录时原子预留 entry 和文件字节；任一资源超限则整批回滚，不进入队列。
 - 图片提交在分配/复制 payload 前预留 job、entry、pending bytes 和 image bytes；任务释放时由 job 生命周期统一释放 reservation。
-- 当前第一批只覆盖**发送端排队/活动作业及 xfer 层持有的图片 payload**。接收端写盘队列预算、macOS 剪贴板转换阶段的临时 bitmap/flip buffers、异步扫描、速率限制/自适应节流尚未完成；不能将本批视为完整阶段二。
+- 第一批只覆盖**发送端排队/活动作业及 xfer 层持有的图片 payload**；第二批已将**接收端写盘队列**纳入 Task reservation 和全局账本。macOS 剪贴板 `dataForType` 仍在主队列读取，压缩图片数据、bitmap、行翻转和 xfer payload 的临时内存尚未全部纳入预算；Token Bucket、自适应节流、固定缓冲池仍未完成，不能将当前工作视为完整阶段二。
 - `pending bytes` 当前按任务完整保留量计数，直到任务终态统一释放；不是实时递减的剩余字节显示值。
-- 已增加预算边界、超限、幂等释放及 32 线程并发抢占测试；Windows HA 测试夹具已链接新模块。Windows MSVC 与 macOS 构建、核心测试、协议测试、TCP/角色重连集成及打包 CI 全部通过（[Actions #42021950477](https://github.com/alex520lq/HopDesk/actions/runs/42021950477)，提交 `8ba90741ba8bb170a795c895f093cc78e7ad3aa1`）。
+- 第一批预算边界、超限、幂等释放及 32 线程并发抢占测试通过；Windows HA 测试夹具已链接新模块。第一批 CI：[Actions #42021950477](https://github.com/alex520lq/HopDesk/actions/runs/42021950477)，提交 `8ba90741ba8bb170a795c895f093cc78e7ad3aa1`。
+
+**第二批已提交：接收端写盘队列预算。**
+
+- 新增接收队列全局限制：8 slots / 8 MiB；slot 统计包含排队、正在写盘和正在分配的缓冲区，不再漏算 writer 当前持有的 chunk。
+- 接收 chunk 在 `malloc`/复制前预留 Task 级 rx buffer slot 与 bytes；写线程释放实际 buffer 后归还 reservation。接收任务在所有 writer buffer 释放前不能进入终态或销毁 Task。
+- 资源快照新增 rx queue 当前值/高水位、拒绝次数、释放次数和账本异常计数；测试覆盖 slot/bytes 边界、错误释放和任务终态保护。
+- Windows/macOS 原生构建、核心测试、回归测试、协议、TCP、角色重连及打包 CI 全部通过：[Actions #42042092381](https://github.com/alex520lq/HopDesk/actions/runs/42042092381)，代码提交 `e8c7d300910a859ca11842321dce254ec005170e`，测试夹具提交 `1da692c071b7dcf7c4627fc1aa2cc55a44075409`。
+- 真实双机性能、RSS、磁盘压力及键鼠延迟尚未执行；CI 通过不代表实机验收通过。
 
 ### 阶段三：任务模型、双向一致性与产品验收
 
@@ -224,7 +238,8 @@
 |---|---|---|---|---|
 | 计划建立/基线校准 | `614959cbc74c1c29540a7a7d31f4bd1447d2dd31` | 已存在本计划文档；校准为 PR #8 当前 HEAD，保留问题 ID、产品语义、架构、三阶段任务和验收矩阵 | 文档与代码锚点复核 | 待 CI |
 | 阶段一代码与 CI | `59260df3e627aef3b0b2fa63873f391226680fa4` | Offer/Request、按需扫描/传输、协议与测试夹具修复；Windows/macOS 主程序及打包 | 核心、协议、TCP、HA/角色重连测试通过 | CI 全部成功；真实双机/桌面粘贴验收仍待执行 |
-| 阶段二第一批：发送端预算基础 | `e47a3b1ac5802b0dcb23f7137734bea254ca6470`（代码）；`7185ecd10279dcfd06574b422a438706af65f00f`（Windows 测试夹具）；`8ba90741ba8bb170a795c895f093cc78e7ad3aa1`（并发测试） | 新增跨平台预算账本；发送端 jobs/entries/pending bytes/image bytes 预留；图片复制前预算检查；32 线程并发预算测试 | Windows/macOS CI 全部成功；[Actions #42021950477](https://github.com/alex520lq/HopDesk/actions/runs/42021950477) | 接收端预算、macOS 临时图像内存、限速/节流及实机压测仍待实施；文件枚举已由 Paste Worker 在后台执行 |
+| 阶段二第一批：发送端预算基础 | `e47a3b1ac5802b0dcb23f7137734bea254ca6470`（代码）；`7185ecd10279dcfd06574b422a438706af65f00f`（Windows 测试夹具）；`8ba90741ba8bb170a795c895f093cc78e7ad3aa1`（并发测试） | 新增跨平台预算账本；发送端 jobs/entries/pending bytes/image bytes 预留；图片复制前预算检查；32 线程并发预算测试 | Windows/macOS CI 全部成功；[Actions #42021950477](https://github.com/alex520lq/HopDesk/actions/runs/42021950477) | 已完成第一批自动化验证；临时图像内存、限速/节流、实机压测仍待实施；文件枚举已由 Paste Worker 在后台执行 |
+| 阶段二第二批：接收端写盘队列预算 | `e8c7d300910a859ca11842321dce254ec005170e`（代码）；`1da692c071b7dcf7c4627fc1aa2cc55a44075409`（回归夹具） | 接收写盘队列 slot + bytes 纳入 Task reservation 与全局账本；writer 活动 buffer 计入 slot；分配前预留、释放后归还；账本高水位/拒绝/释放/异常计数 | Windows/macOS CI 全部成功；[Actions #42042092381](https://github.com/alex520lq/HopDesk/actions/runs/42042092381) | 自动化验证通过；实机压测未执行；图片转换临时内存与速率控制仍待实施 |
 | 阶段三 | 待实施 | Task ID 状态模型、reservation 账本、独立取消/重试、UI/历史与双向验收 | 待执行 | 待执行 |
 
 ## 7. 本轮明确不做的事

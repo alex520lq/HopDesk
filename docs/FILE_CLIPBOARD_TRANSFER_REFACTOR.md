@@ -200,9 +200,11 @@
 - Windows/macOS 传输页展示当前资源 usage/limits、RX 高水位、预算拒绝、reservation/RX/temp 释放、图片临时缓冲转移及账本异常计数；同时修复 macOS 当前任务卡片标题与任务标题重叠。
 - 新增 `src/core/xfer_ack_window.h`：固定 4 槽、batch/id 关联、发送/收到/取出状态、RTT 记录、单项/整批清理。
 - 两端 sender 以 4 个文件为上限填充窗口，再按文件收取 ACK；CRC、逐文件 ACK、失败隔离和重试仍保留。接收端仍按 TCP 顺序逐个完成文件写盘，不会同时打开多个当前文件。
-- 每个 ACK deadline 从 FILE_END 完整写入后计算。ACK 槽在发送 FILE_END 前先进入 sent 状态，避免快速 ACK 竞态；写入完成后再发布独立 deadline。若 ACK 在 deadline 发布前到达，先保存 received timestamp，随后按实际接收时间与 deadline 比较，不再把 FILE_END 写入耗时错误计入 ACK 等待期限。
+- 每个 ACK deadline 从 FILE_END 完整写入后计算，并统一使用单调纳秒时钟。ACK 槽在发送 FILE_END 前先进入 sent 状态，避免快速 ACK 竞态；写入完成后再发布独立 deadline。若 ACK 在 deadline 发布前到达，先保存 received timestamp，随后按实际接收时间与 deadline 比较，不再把 FILE_END 写入耗时错误计入 ACK 等待期限。
 - 新增核心测试覆盖 ACK 先于 deadline 发布的竞态、deadline 前到达和恰好到达 deadline 的边界（等于 deadline 按超时处理）。
-- 预算 UI、ACK window 与 ACK deadline 边界修复已提交；最新 ACK window/deadline 代码尚未获得新的 Windows/macOS 原生 CI 结果。此前 speed/ETA、任务生命周期与双平台原生构建通过 [Actions #42055108661](https://github.com/alex520lq/HopDesk/actions/runs/42055108661)，但该结果早于 ACK window。实机小文件吞吐、磁盘压力和键鼠延迟仍待测试。
+- ACK window 使用局部 send cursor 填充；重连 checkpoint `j->next_i` 只在对应文件获得最终 ACK 或明确终态结果后推进。断线时从最早未确认文件恢复；若在窗口填充阶段断线，当前窗口可能安全重传，但不会跳过未确认条目。认证 session 变化时仍从头开始，避免把旧接收会话的进度误当成新会话状态。
+- 恢复 ACK window 重构时意外丢失的 Windows `send_image_job()` / `send_done()`，避免图片发送和批次结束路径链接失败。
+- 最新 CI [Actions #42059765078](https://github.com/alex520lq/HopDesk/actions/runs/42059765078)：Windows MSVC、核心、协议、TCP、角色/重连集成、更新脚本、打包与 Artifact 上传全部通过；macOS job 未分配 runner（runner_id=0、无执行步骤），因此 macOS 本轮结果为基础设施未执行，不能标记通过。实机小文件吞吐、磁盘压力和键鼠延迟仍待测试。
 
 ### 阶段三：任务模型、双向一致性与产品验收
 
@@ -270,7 +272,7 @@
 | 阶段二第一批：发送端预算基础 | `e47a3b1ac5802b0dcb23f7137734bea254ca6470`（代码）；`7185ecd10279dcfd06574b422a438706af65f00f`（Windows 测试夹具）；`8ba90741ba8bb170a795c895f093cc78e7ad3aa1`（并发测试） | 新增跨平台预算账本；发送端 jobs/entries/pending bytes/image bytes 预留；图片复制前预算检查；32 线程并发预算测试 | Windows/macOS CI 全部成功；[Actions #42021950477](https://github.com/alex520lq/HopDesk/actions/runs/42021950477) | 已完成第一批自动化验证；临时图像内存、限速/节流、实机压测仍待实施；文件枚举已由 Paste Worker 在后台执行 |
 | 阶段二第二批：接收端写盘队列预算 | `e8c7d300910a859ca11842321dce254ec005170e`（代码）；`1da692c071b7dcf7c4627fc1aa2cc55a44075409`（回归夹具） | 接收写盘队列 slot + bytes 纳入 Task reservation 与全局账本；writer 活动 buffer 计入 slot；分配前预留、释放后归还；账本高水位/拒绝/释放/异常计数 | Windows/macOS CI 全部成功；[Actions #42042092381](https://github.com/alex520lq/HopDesk/actions/runs/42042092381) | 自动化验证通过；实机压测未执行 |
 | 阶段二第三批：图片临时预算转移与自适应限速 | `f3190e77764f171d4c23d3c4cbefebfd2e6e5701` | 图片快照/转换临时预算、原子 owned-buffer 预算转移、分块直发、Token Bucket/AIMD、可配置速率上限、预算限额快照 | Windows/macOS 核心、协议、TCP、角色/重连集成与打包全部通过；[Actions #42051872404](https://github.com/alex520lq/HopDesk/actions/runs/42051872404) | 自动化验证通过；真实双机/弱网/RSS/键鼠延迟压测待执行 |
-| 阶段二第四批：speed/ETA、预算 UI 与 ACK window | `e99ef04`, `7f84820`, `02659ea`, `2992810`, `98398b5`, `587484e`, `3b99894`, `7072d1c`, `db37431`, `2738dab`, `48abfec`, `846da91`, `89ec493`, `86dd3f0`, `38c474b`, `3685f3e`, `7b50d28`, `7adfc7b`, `625dcd5` | 单调时钟 speed/ETA、双端资源预算可观测 UI、固定 4 槽 ACK window、逐文件重试与批次清理、FILE_END 完整写入后启动 ACK deadline | 最新 head 尚无 Actions run；需在 Actions 手动运行 Build HopDesk / `workflow_dispatch` | 实机 10,000 小文件、ACK 丢失/超时、双向并发和键鼠延迟待测 |
+| 阶段二第四批：speed/ETA、预算 UI 与 ACK window | `e99ef04`, `7f84820`, `02659ea`, `2992810`, `98398b5`, `587484e`, `3b99894`, `7072d1c`, `db37431`, `2738dab`, `48abfec`, `846da91`, `89ec493`, `86dd3f0`, `38c474b`, `3685f3e`, `7b50d28`, `7adfc7b`, `625dcd5`, `f032c7c`, `feb95f4`, `f4f78e6`, `f4f966d` | 单调时钟 speed/ETA、双端资源预算可观测 UI、固定 4 槽 ACK window、逐文件重试、单调 deadline、ACK 后推进重连 checkpoint、恢复 Windows 图片/批次发送 helper | Windows 完整 CI 通过 [Actions #42059765078](https://github.com/alex520lq/HopDesk/actions/runs/42059765078)；macOS runner 未分配，待重跑 | 实机 10,000 小文件、ACK 丢失/超时、断线恢复、双向并发和键鼠延迟待测 |
 | 阶段三 | 待实施 | Task ID 状态模型、reservation 账本、独立取消/重试、UI/历史与双向验收 | 待执行 | 待执行 |
 
 ## 7. 本轮明确不做的事

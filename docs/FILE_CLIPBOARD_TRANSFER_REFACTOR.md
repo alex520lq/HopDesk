@@ -159,7 +159,7 @@
 - 图片提交在分配/复制 payload 前预留 job、entry、pending bytes 和 image bytes；任务释放时由 job 生命周期统一释放 reservation。
 - 当前第一批只覆盖**发送端排队/活动作业及 xfer 层持有的图片 payload**。接收端写盘队列预算、macOS 剪贴板转换阶段的临时 bitmap/flip buffers、异步扫描、速率限制/自适应节流尚未完成；不能将本批视为完整阶段二。
 - `pending bytes` 当前按任务完整保留量计数，直到任务终态统一释放；不是实时递减的剩余字节显示值。
-- 已增加核心预算边界/释放测试，并将 Windows HA 测试夹具链接新模块。CI 结果以本轮最新提交对应的 Actions 记录为准。
+- 已增加预算边界、超限、幂等释放及 32 线程并发抢占测试；Windows HA 测试夹具已链接新模块。Windows MSVC 与 macOS 构建、核心测试、协议测试、TCP/角色重连集成及打包 CI 全部通过（[Actions #42021950477](https://github.com/alex520lq/HopDesk/actions/runs/42021950477)，提交 `8ba90741ba8bb170a795c895f093cc78e7ad3aa1`）。
 
 ### 阶段三：任务模型、双向一致性与产品验收
 
@@ -224,7 +224,7 @@
 |---|---|---|---|---|
 | 计划建立/基线校准 | `614959cbc74c1c29540a7a7d31f4bd1447d2dd31` | 已存在本计划文档；校准为 PR #8 当前 HEAD，保留问题 ID、产品语义、架构、三阶段任务和验收矩阵 | 文档与代码锚点复核 | 待 CI |
 | 阶段一代码与 CI | `59260df3e627aef3b0b2fa63873f391226680fa4` | Offer/Request、按需扫描/传输、协议与测试夹具修复；Windows/macOS 主程序及打包 | 核心、协议、TCP、HA/角色重连测试通过 | CI 全部成功；真实双机/桌面粘贴验收仍待执行 |
-| 阶段二第一批：发送端预算基础 | `42666a4346bef1baf53e850213fbd1ab26c146b4`（代码）；`7185ecd10279dcfd06574b422a438706af65f00f`（测试夹具） | 新增跨平台预算账本；发送端 jobs/entries/pending bytes/image bytes 预留；图片复制前预算检查；核心预算测试 | 核心预算测试已加入；CI 待本轮确认 | 接收端预算、macOS 临时图像内存、异步扫描、限速和实机压测仍待实施 |
+| 阶段二第一批：发送端预算基础 | `e47a3b1ac5802b0dcb23f7137734bea254ca6470`（代码）；`7185ecd10279dcfd06574b422a438706af65f00f`（Windows 测试夹具）；`8ba90741ba8bb170a795c895f093cc78e7ad3aa1`（并发测试） | 新增跨平台预算账本；发送端 jobs/entries/pending bytes/image bytes 预留；图片复制前预算检查；32 线程并发预算测试 | Windows/macOS CI 全部成功；[Actions #42021950477](https://github.com/alex520lq/HopDesk/actions/runs/42021950477) | 接收端预算、macOS 临时图像内存、限速/节流及实机压测仍待实施；文件枚举已由 Paste Worker 在后台执行 |
 | 阶段三 | 待实施 | Task ID 状态模型、reservation 账本、独立取消/重试、UI/历史与双向验收 | 待执行 | 待执行 |
 
 ## 7. 本轮明确不做的事

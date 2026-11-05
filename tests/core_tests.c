@@ -656,11 +656,13 @@ static void test_xfer_global_budget(void) {
     CHECK(!hop_xfer_budget_reserve_image_temp(&a,1));
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.image_temp_bytes==32&&snap.image_temp_bytes_high_water==32);
+    CHECK(snap.image_bytes==532); /* 500-byte payload reservation + 32 temp bytes */
     CHECK(snap.rejected_image_temp_bytes==1);
     CHECK(hop_xfer_budget_release_image_temp(&a,16));
     CHECK(hop_xfer_budget_release_image_temp(&a,16));
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.image_temp_bytes==0&&snap.released_image_temp_bytes==32);
+    CHECK(snap.image_bytes==500);
     hop_xfer_budget_release(&a);
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0&&snap.image_bytes==0);
@@ -719,7 +721,7 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     CHECK(hop_xfer_task_set_state(&a,HOP_XFER_TASK_QUEUED)); /* retry */
     CHECK(hop_xfer_task_set_state(&a,HOP_XFER_TASK_ACTIVE));
     hop_xfer_budget_get_snapshot(&snap);
-    CHECK(snap.jobs==1&&snap.entries==2&&snap.pending_bytes==500&&snap.image_bytes==400);
+    CHECK(snap.jobs==1&&snap.entries==2&&snap.pending_bytes==500&&snap.image_bytes==656);
     CHECK(snap.rx_queue_slots==1&&snap.rx_queue_bytes==128);
     CHECK(snap.image_temp_bytes==256);
     CHECK(!hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));

@@ -185,20 +185,29 @@ int hop_xfer_budget_release_rx_buffer(hop_xfer_reservation_handle *r, uint64_t b
 }
 
 int hop_xfer_budget_reserve_image_temp(hop_xfer_reservation_handle *r, uint64_t bytes) {
-    uint64_t next;
+    uint64_t temp_next, image_next;
     if (!r || !r->task_id || !r->handle_id || !r->active || !bytes) return 0;
     LOCK();
-    if (!add64(s_used.image_temp_bytes, bytes, &next) ||
-        next > s_limits.max_image_temp_bytes ||
-        bytes > UINT64_MAX - r->image_temp_bytes) {
+    /* image_bytes is the combined live image-memory ceiling: final payloads
+     * plus temporary decode/conversion buffers. image_temp_bytes is its subset. */
+    if (!add64(s_used.image_temp_bytes, bytes, &temp_next) ||
+        temp_next > s_limits.max_image_temp_bytes ||
+        !add64(s_used.image_bytes, bytes, &image_next) ||
+        image_next > s_limits.max_image_bytes ||
+        bytes > UINT64_MAX - r->image_temp_bytes ||
+        bytes > UINT64_MAX - r->image_bytes) {
         s_used.rejected_image_temp_bytes++;
         UNLOCK();
         return 0;
     }
-    s_used.image_temp_bytes = next;
-    if (next > s_used.image_temp_bytes_high_water)
-        s_used.image_temp_bytes_high_water = next;
+    s_used.image_temp_bytes = temp_next;
+    s_used.image_bytes = image_next;
+    if (temp_next > s_used.image_temp_bytes_high_water)
+        s_used.image_temp_bytes_high_water = temp_next;
+    if (image_next > s_used.image_bytes_high_water)
+        s_used.image_bytes_high_water = image_next;
     r->image_temp_bytes += bytes;
+    r->image_bytes += bytes;
     UNLOCK();
     return 1;
 }
@@ -206,13 +215,16 @@ int hop_xfer_budget_reserve_image_temp(hop_xfer_reservation_handle *r, uint64_t 
 int hop_xfer_budget_release_image_temp(hop_xfer_reservation_handle *r, uint64_t bytes) {
     if (!r || !r->task_id || !r->handle_id || !r->active || !bytes) return 0;
     LOCK();
-    if (bytes > r->image_temp_bytes || bytes > s_used.image_temp_bytes) {
+    if (bytes > r->image_temp_bytes || bytes > r->image_bytes ||
+        bytes > s_used.image_temp_bytes || bytes > s_used.image_bytes) {
         s_used.accounting_errors++;
         UNLOCK();
         return 0;
     }
     r->image_temp_bytes -= bytes;
+    r->image_bytes -= bytes;
     s_used.image_temp_bytes -= bytes;
+    s_used.image_bytes -= bytes;
     if (bytes > UINT64_MAX - s_used.released_image_temp_bytes) {
         s_used.accounting_errors++;
     } else {

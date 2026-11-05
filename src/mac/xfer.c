@@ -1208,7 +1208,7 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
     l.v = NULL; l.n = l.cap = 0;
 
     uint64_t total = 0;
-    for (int i = 0; i < l.n; ++i) total += l.v[i].size;
+    for (int i = 0; i < j->n; ++i) total += j->e[i].size;
 
     hop_log(HOP_LOG_INFO, "xfer: queued batch %u, %d entries, %.1f MB",
             j->batch, j->n, (double)total / 1048576.0);

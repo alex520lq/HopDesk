@@ -768,6 +768,26 @@ static void test_xfer_ack_window(void) {
     CHECK(hop_xfer_ack_window_take(&window,11,1,&status,&rtt_ns));
     CHECK(status==1&&rtt_ns==100000000ull);
     CHECK(hop_xfer_ack_window_count(&window)==0);
+
+    /* Deadline starts after FILE_END is fully written, not when the ACK slot
+     * is armed. This also covers an ACK racing ahead of deadline publication. */
+    CHECK(hop_xfer_ack_window_register(&window,12,1));
+    CHECK(!hop_xfer_ack_window_set_deadline(&window,12,1,5000));
+    CHECK(hop_xfer_ack_window_mark_sent(&window,12,1,1000));
+    CHECK(hop_xfer_ack_window_deliver(&window,12,1,0,4500));
+    CHECK(hop_xfer_ack_window_set_deadline(&window,12,1,5000));
+    int expired=1;
+    CHECK(hop_xfer_ack_window_take_ex(&window,12,1,&status,&rtt_ns,&expired));
+    CHECK(status==0&&!expired);
+
+    CHECK(hop_xfer_ack_window_register(&window,12,2));
+    CHECK(hop_xfer_ack_window_mark_sent(&window,12,2,6000));
+    CHECK(hop_xfer_ack_window_set_deadline(&window,12,2,7000));
+    CHECK(hop_xfer_ack_window_deliver(&window,12,2,0,7000));
+    expired=0;
+    CHECK(hop_xfer_ack_window_take_ex(&window,12,2,&status,&rtt_ns,&expired));
+    CHECK(expired); /* deadline equality is expired, matching ack_wait's >= */
+    CHECK(hop_xfer_ack_window_count(&window)==0);
 }
 
 static void test_xfer_rate_limiter(void) {

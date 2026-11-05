@@ -15,6 +15,7 @@
 #include "../core/xfer_tracking.h"
 #include "../core/xfer_budget.h"
 #include "../core/xfer_task.h"
+#include "../core/xfer_rate.h"
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -94,6 +95,7 @@ static struct {
     xf_job          *q_head, *q_tail;
     uint32_t         batch_seq;
     uint32_t         chunk;
+    hop_xfer_rate_limiter rate; /* sender thread only */
     pthread_t        th_conn, th_send;
 
     /* ---- 取消 ----
@@ -533,8 +535,54 @@ static void walk_into(elist *l, const char *full, const char *rel) {
  * GB 级传输漏检一次就是静默损坏。 */
 #define CHUNK_HDR (25u + HOP_DATA_PREFIX)   /* 5 帧头 + 4 id + 8 off + 4 len + 4 crc */
 
+#define XFER_RATE_INITIAL_BPS (128ull * 1024ull * 1024ull)
+#define XFER_RATE_MIN_BPS     (64ull * 1024ull * 1024ull)
+#define XFER_RATE_MAX_BPS     (512ull * 1024ull * 1024ull)
+
+static uint64_t rate_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static int rate_wait_for_chunk(uint32_t bytes) {
+    for (;;) {
+        uint64_t delay = hop_xfer_rate_wait_ns(&s_x.rate, bytes, rate_now_ns());
+        if (delay == UINT64_MAX) {
+            hop_log(HOP_LOG_ERROR, "xfer: chunk exceeds token-bucket burst");
+            return 0;
+        }
+        if (!delay) return 1;
+        if (s_x.stop) return 0;
+        if (delay > 10000000ull) delay = 10000000ull; /* check shutdown at least every 10 ms */
+        struct timespec ts = {(time_t)(delay / 1000000000ull),(long)(delay % 1000000000ull)};
+        while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {}
+    }
+}
+
+static uint32_t rate_queue_pressure_permille(void) {
+    hop_xfer_budget_snapshot snap;
+    hop_xfer_budget_get_snapshot(&snap);
+    uint64_t bytes = snap.rx_queue_bytes * 1000ull / HOP_XFER_DEFAULT_RX_QUEUE_BYTES;
+    uint64_t slots = (uint64_t)snap.rx_queue_slots * 1000ull / HOP_XFER_DEFAULT_RX_QUEUE_SLOTS;
+    uint64_t pressure = bytes > slots ? bytes : slots;
+    return (uint32_t)(pressure > 1000ull ? 1000ull : pressure);
+}
+
+static void rate_feedback(uint64_t ack_rtt_us) {
+    uint64_t before = s_x.rate.current_rate_bytes_per_sec;
+    uint32_t pressure = rate_queue_pressure_permille();
+    hop_xfer_rate_feedback(&s_x.rate, ack_rtt_us, pressure);
+    if (s_x.rate.current_rate_bytes_per_sec < before) {
+        hop_log(HOP_LOG_INFO, "xfer: adaptive send rate %.1f MB/s (ack %.1f ms, local rx queue %u/1000)",
+                (double)s_x.rate.current_rate_bytes_per_sec / 1048576.0,
+                (double)ack_rtt_us / 1000.0, pressure);
+    }
+}
+
 static int send_chunk(int fd, uint8_t *tx, uint32_t batch, uint32_t id, uint64_t off,
                       const uint8_t *data, uint32_t len, uint32_t crc) {
+    if (!rate_wait_for_chunk(len)) return 0;
     int send_guard = hop_watchdog_begin("data frame send", 10000);
     hop_encode_header(tx, HOP_MSG_FILE_CHUNK, 20 + HOP_DATA_PREFIX + len);
     hop_put_be32(tx + HOP_DATA_PREFIX + 5, id);
@@ -546,7 +594,10 @@ static int send_chunk(int fd, uint8_t *tx, uint32_t batch, uint32_t id, uint64_t
     pthread_mutex_lock(&s_x.slock);
     hop_data_prefix(tx + HOP_HEADER_SIZE, &s_x.session, batch);
     pthread_mutex_unlock(&s_x.slock);
+    uint64_t send_started = rate_now_ns();
     int ok = send_session_current(fd) && send_all(fd, tx, CHUNK_HDR + len);
+    uint64_t send_us = (rate_now_ns() - send_started) / 1000ull;
+    hop_xfer_rate_note_send_time(&s_x.rate, len, send_us);
     pthread_mutex_unlock(&s_txlock);
     if(ok) status_chunk(HOP_XFER_DIR_SEND,batch,id,off,len);
     hop_watchdog_end(send_guard);
@@ -763,7 +814,10 @@ static int send_file_entry(int fd, uint8_t *tx, uint32_t batch,
     /* 本地就没读成功，没必要再等回执：接收端那份注定是残缺的 */
     if (local_fail) return XFER_LOCAL_IO;
 
-    return ack_wait(batch, id);
+    uint64_t ack_started = rate_now_ns();
+    int ack_status = ack_wait(batch, id);
+    rate_feedback((rate_now_ns() - ack_started) / 1000ull);
+    return ack_status;
 }
 
 /* run_job 的结局 */
@@ -837,6 +891,8 @@ static int run_job(int fd, uint8_t *tx, xf_job *j) {
             off += n;
             yield_cpu();
             if (cancel_requested(j->batch)) return JOB_CANCELLED;
+            if (peer_aborted(j->batch)) return JOB_PEER_ABORT;
+            if (cancel_requested(j->batch)) return JOB_CANCELLED;
         }
 
         uint8_t endp[9];
@@ -844,6 +900,7 @@ static int run_job(int fd, uint8_t *tx, xf_job *j) {
         endp[4] = HOP_FILE_OK;
         hop_put_be32(endp + 5, 0);      /* 图片不做整文件 CRC，块 CRC 已足够 */
         if (!send_small(fd, HOP_MSG_FILE_END, endp, 9, j->batch)) return JOB_NET_DOWN;
+        rate_feedback(0);
 
         j->ok = 1;
         j->next_i = j->n;
@@ -1092,6 +1149,8 @@ void xfer_init(const hop_config *cfg) {
     if (ck < 64) ck = 64;
     if (ck > 4096) ck = 4096;
     s_x.chunk = (uint32_t)ck * 1024u;
+    hop_xfer_rate_init(&s_x.rate, XFER_RATE_INITIAL_BPS, XFER_RATE_MIN_BPS,
+                       XFER_RATE_MAX_BPS, (uint64_t)s_x.chunk * 2u, rate_now_ns());
 
     pthread_mutex_init(&s_x.slock, NULL);
     pthread_mutex_init(&s_x.qlock, NULL);

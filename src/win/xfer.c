@@ -900,6 +900,47 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
     return XFER_ACK_PENDING;
 }
 
+/* Image payloads share the same rate limiter and owned-buffer path as files. */
+static int send_image_job(SOCKET c, uint8_t *tx, xfer_job *j) {
+    uint8_t bp[20];
+    hop_put_be32(bp, j->batch);
+    hop_put_be32(bp + 4, 1);
+    hop_put_be32(bp + 8, (uint32_t)j->w);
+    hop_put_be32(bp + 12, (uint32_t)j->h);
+    hop_put_be32(bp + 16, (uint32_t)j->stride);
+    if (!send_small(c, HOP_MSG_IMAGE_BEGIN, bp, 20, j->batch)) return 0;
+
+    uint64_t total = (uint64_t)j->stride * (uint64_t)j->h;
+    uint64_t off = 0;
+    while (off < total) {
+        uint32_t n = (uint32_t)((total - off) < s_x.chunk ? (total - off) : s_x.chunk);
+        uint32_t crc = hop_crc32(0, j->pixels + off, n);
+        if (!send_chunk(c, tx, j->batch, 1, off, j->pixels + off, n, crc)) return 0;
+        off += n;
+        yield_cpu();
+        if (cancel_requested(j->batch)) return -1;
+        if (peer_aborted(j->batch)) return -2;
+    }
+
+    uint8_t endp[9];
+    hop_put_be32(endp, 1);
+    endp[4] = HOP_FILE_OK;
+    hop_put_be32(endp + 5, 0);
+    if (!send_small(c, HOP_MSG_FILE_END, endp, 9, j->batch)) return 0;
+    rate_feedback(0);
+    return 1;
+}
+
+/* 收尾：报告本批实际送达数，保留部分成功语义。 */
+static int send_done(SOCKET c, const xfer_job *j) {
+    uint8_t dp[20];
+    hop_put_be32(dp, j->batch);
+    hop_put_be32(dp + 4, (uint32_t)j->ok);
+    hop_put_be32(dp + 8, hop_xfer_job_total(j->is_image,j->n));
+    hop_put_be64(dp + 12, 0);
+    return send_small(c, HOP_MSG_XFER_DONE, dp, 20, j->batch);
+}
+
 /* run_job 的结局 */
 #define JOB_DONE        0   /* 全部条目都有结论了（可能部分失败），该送 DONE */
 #define JOB_NET_DOWN    1   /* 链路断了，整批退回队列等重连 */

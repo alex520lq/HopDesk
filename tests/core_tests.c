@@ -8,6 +8,7 @@
 #include "xfer_task.h"
 #include "xfer_tracking.h"
 #include "xfer_rate.h"
+#include "xfer_ack_window.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -730,6 +731,45 @@ static void test_xfer_global_budget(void) {
 }
 
 
+static void test_xfer_ack_window(void) {
+    hop_xfer_ack_window window;
+    int status=0;
+    uint64_t rtt_ns=0;
+    hop_xfer_ack_window_reset(&window);
+    for(uint32_t id=1;id<=HOP_XFER_ACK_WINDOW_CAPACITY;id++)
+        CHECK(hop_xfer_ack_window_register(&window,10,id));
+    CHECK(hop_xfer_ack_window_count(&window)==HOP_XFER_ACK_WINDOW_CAPACITY);
+    CHECK(!hop_xfer_ack_window_register(&window,10,5));
+    for(uint32_t id=1;id<=HOP_XFER_ACK_WINDOW_CAPACITY;id++)
+        CHECK(hop_xfer_ack_window_mark_sent(&window,10,id,1000000000ull+id*1000000ull));
+
+    /* ACKs can arrive out of order and must not overwrite each other. */
+    CHECK(hop_xfer_ack_window_deliver(&window,10,3,2,1500000000ull));
+    CHECK(!hop_xfer_ack_window_deliver(&window,10,3,0,1501000000ull));
+    CHECK(!hop_xfer_ack_window_take(&window,10,1,&status,&rtt_ns));
+    CHECK(hop_xfer_ack_window_take(&window,10,3,&status,&rtt_ns));
+    CHECK(status==2&&rtt_ns==497000000ull);
+    CHECK(hop_xfer_ack_window_count(&window)==3);
+    CHECK(!hop_xfer_ack_window_deliver(&window,10,3,0,1600000000ull));
+
+    CHECK(hop_xfer_ack_window_deliver(&window,10,1,0,1600000000ull));
+    CHECK(hop_xfer_ack_window_take(&window,10,1,&status,&rtt_ns));
+    CHECK(status==0&&rtt_ns==599000000ull);
+    CHECK(hop_xfer_ack_window_register(&window,10,5));
+    CHECK(hop_xfer_ack_window_count(&window)==3);
+    hop_xfer_ack_window_unregister(&window,10,2);
+    CHECK(hop_xfer_ack_window_count(&window)==2);
+    hop_xfer_ack_window_unregister_batch(&window,10);
+    CHECK(hop_xfer_ack_window_count(&window)==0);
+
+    CHECK(hop_xfer_ack_window_register(&window,11,1));
+    CHECK(hop_xfer_ack_window_mark_sent(&window,11,1,2000000000ull));
+    CHECK(hop_xfer_ack_window_deliver(&window,11,1,1,2100000000ull));
+    CHECK(hop_xfer_ack_window_take(&window,11,1,&status,&rtt_ns));
+    CHECK(status==1&&rtt_ns==100000000ull);
+    CHECK(hop_xfer_ack_window_count(&window)==0);
+}
+
 static void test_xfer_rate_limiter(void) {
     hop_xfer_rate_limiter rate;
     hop_xfer_rate_init(&rate,1000,100,2000,100,0);
@@ -904,6 +944,7 @@ int main(void) {
     test_file_end_ack_abort_done_decoders();
     test_update_manifest_validation();
     test_xfer_global_budget();
+    test_xfer_ack_window();
     test_xfer_rate_limiter();
     test_xfer_tracking_speed_and_eta();
     test_xfer_task_identity_and_lifecycle();

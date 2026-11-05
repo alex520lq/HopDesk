@@ -749,6 +749,37 @@ static void test_xfer_rate_limiter(void) {
     CHECK(rate.current_rate_bytes_per_sec>128ull*1024ull*1024ull);
 }
 
+static void test_xfer_task_image_buffer_transfer(void) {
+    hop_xfer_budget_limits limits={4u,8u,4096u,2048u,2048u,2u,1024u,1024u};
+    hop_xfer_budget_snapshot snap;
+    hop_xfer_task source,target;
+    memset(&source,0,sizeof(source));
+    memset(&target,0,sizeof(target));
+    CHECK(hop_xfer_budget_set_limits_for_test(&limits));
+    CHECK(hop_xfer_task_init(&source,0,0,201));
+    CHECK(hop_xfer_task_init(&target,0,0,202));
+    CHECK(hop_xfer_task_reserve_job(&source));
+    CHECK(hop_xfer_task_reserve_job(&target));
+    CHECK(hop_xfer_task_set_state(&source,HOP_XFER_TASK_ACTIVE));
+    CHECK(hop_xfer_task_reserve_image_temp(&source,512));
+    CHECK(hop_xfer_task_transfer_image_temp(&source,&target,256));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==2&&snap.entries==1&&snap.pending_bytes==256);
+    CHECK(snap.image_bytes==512&&snap.image_temp_bytes==256);
+    CHECK(snap.transferred_image_temp_bytes==256);
+    CHECK(hop_xfer_task_release_image_temp(&source,256));
+    CHECK(hop_xfer_task_finish(&source,HOP_XFER_TASK_COMPLETED));
+    CHECK(hop_xfer_task_set_state(&target,HOP_XFER_TASK_QUEUED));
+    CHECK(hop_xfer_task_finish(&target,HOP_XFER_TASK_COMPLETED));
+    hop_xfer_task_dispose(&source);
+    hop_xfer_task_dispose(&target);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0);
+    CHECK(snap.image_bytes==0&&snap.image_temp_bytes==0);
+    hop_xfer_budget_limits defaults={16u,32768u,8ull*1024ull*1024ull*1024ull,256ull*1024ull*1024ull,256ull*1024ull*1024ull,8u,8ull*1024ull*1024ull,512ull*1024ull*1024ull};
+    CHECK(hop_xfer_budget_set_limits_for_test(&defaults));
+}
+
 static void test_xfer_task_identity_and_lifecycle(void) {
     hop_xfer_budget_limits limits={4u,8u,4096u,2048u,2048u,2u,1024u,1024u};
     hop_xfer_budget_snapshot snap;
@@ -832,6 +863,7 @@ int main(void) {
     test_xfer_global_budget();
     test_xfer_rate_limiter();
     test_xfer_task_identity_and_lifecycle();
+    test_xfer_task_image_buffer_transfer();
 
     if (g_failures) {
         fprintf(stderr, "HopDesk core tests: %d failure(s)\n", g_failures);

@@ -24,6 +24,7 @@
 #include "../core/xfer_task.h"
 
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 
 static NSInteger         s_last_change;
@@ -348,9 +349,11 @@ static void poll_pasteboard(void) {
     @autoreleasepool {
         NSPasteboard *pb = [NSPasteboard generalPasteboard];
         NSInteger cc = [pb changeCount];
+        NSInteger previous_change;
 
         pthread_mutex_lock(&s_offer_lock);
-        int unchanged=(cc==s_last_change);
+        previous_change=s_last_change;
+        int unchanged=(cc==previous_change);
         if(!unchanged)s_last_change=cc;
         pthread_mutex_unlock(&s_offer_lock);
         if(unchanged)return;
@@ -374,6 +377,9 @@ static void poll_pasteboard(void) {
             /* Do not materialize another large NSData snapshot while the
              * previous image is still being decoded or converted. */
             if (!image_work_can_start()) {
+                pthread_mutex_lock(&s_offer_lock);
+                if (s_last_change == cc) s_last_change = previous_change;
+                pthread_mutex_unlock(&s_offer_lock);
                 hop_log(HOP_LOG_INFO, "clip: image conversion already active; latest snapshot deferred");
                 return;
             }

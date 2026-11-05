@@ -13,6 +13,9 @@
 /* Receiving clipboard payloads would be a test failure; no desktop writes. */
 void clip_apply_remote_paths(const wchar_t *const *paths, int n) {(void)paths;(void)n;assert(0);}
 void clip_apply_remote_image(const uint8_t *p,int w,int h,int stride) {(void)p;(void)w;(void)h;(void)stride;assert(0);}
+void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n,int success) {
+    (void)batch;(void)paths;(void)n;(void)success;
+}
 
 static hop_session_id s_last_ack;
 static uint8_t s_last_body[256];static uint32_t s_last_len;

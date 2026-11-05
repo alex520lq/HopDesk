@@ -2,7 +2,6 @@
 #include <string.h>
 
 #define RATE_NS_PER_SEC 1000000000ull
-#define RATE_SEND_CONGESTED_US 20000ull
 #define RATE_ACK_CONGESTED_US 500000ull
 #define RATE_ACK_HEALTHY_US 100000ull
 #define RATE_QUEUE_CONGESTED_PERMILLE 750u
@@ -10,7 +9,8 @@
 
 static uint64_t ewma(uint64_t old_value, uint64_t sample) {
     if (!old_value) return sample;
-    return (old_value * 7u + sample) / 8u;
+    /* Split the weighted average to avoid overflowing old*7 + sample. */
+    return old_value - old_value / 8u + sample / 8u;
 }
 
 static void decrease_rate(hop_xfer_rate_limiter *rate, uint32_t numerator, uint32_t denominator) {
@@ -93,13 +93,18 @@ void hop_xfer_rate_note_send_time(hop_xfer_rate_limiter *rate, uint64_t bytes, u
     rate->send_samples++;
     /* Compare socket blocking time with the time allowed by our current rate;
      * this works across chunk sizes and does not penalize a normal 1 GbE send. */
-    uint64_t expected_us = (bytes * 1000000ull +
-                            rate->current_rate_bytes_per_sec - 1u) /
-                           rate->current_rate_bytes_per_sec;
+    uint64_t expected_us;
+    if (bytes > (UINT64_MAX - rate->current_rate_bytes_per_sec + 1u) / 1000000ull) {
+        expected_us = UINT64_MAX;
+    } else {
+        expected_us = (bytes * 1000000ull +
+                       rate->current_rate_bytes_per_sec - 1u) /
+                      rate->current_rate_bytes_per_sec;
+    }
     uint64_t congested_us = expected_us > (UINT64_MAX - 2000u) / 2u ?
                             UINT64_MAX : expected_us * 2u + 2000u;
-    if ((rate->send_samples & 7u) == 0 &&
-        rate->send_time_ewma_us >= congested_us)
+    rate->send_congested = (uint8_t)(rate->send_time_ewma_us >= congested_us);
+    if ((rate->send_samples & 7u) == 0 && rate->send_congested)
         decrease_rate(rate, 9u, 10u);
 }
 
@@ -112,10 +117,10 @@ void hop_xfer_rate_feedback(hop_xfer_rate_limiter *rate,
     if (queue_pressure_permille > 1000u) queue_pressure_permille = 1000u;
 
     congested = queue_pressure_permille >= RATE_QUEUE_CONGESTED_PERMILLE ||
-                rate->send_time_ewma_us >= RATE_SEND_CONGESTED_US ||
+                rate->send_congested ||
                 rate->ack_rtt_ewma_us >= RATE_ACK_CONGESTED_US;
     healthy = queue_pressure_permille <= RATE_QUEUE_HEALTHY_PERMILLE &&
-              rate->send_time_ewma_us < 5000u &&
+              !rate->send_congested &&
               (!rate->ack_rtt_ewma_us || rate->ack_rtt_ewma_us <= RATE_ACK_HEALTHY_US);
 
     if (congested) {

@@ -1240,7 +1240,7 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
         return 0;
     }
 
-    xfer_job *job = (xfer_job *)calloc(1, sizeof(*job));
+    xf_job *job = (xfer_job *)calloc(1, sizeof(*job));
     if (!job) {
         hop_xfer_task_finish(&l.task, HOP_XFER_TASK_FAILED);
         elist_free(&l);
@@ -1296,7 +1296,7 @@ static int xfer_submit_image_impl(const uint8_t *bgra, int w, int h, int stride)
         return 0;
     }
 
-    xfer_job *job=(xfer_job*)calloc(1,sizeof(*job));
+    xf_job *job=(xf_job*)calloc(1,sizeof(*job));
     if(!job){hop_xfer_task_finish(&task,HOP_XFER_TASK_FAILED);hop_xfer_task_dispose(&task);return 0;}
     size_t total=(size_t)total64;
     uint8_t *copy=(uint8_t*)malloc(total);

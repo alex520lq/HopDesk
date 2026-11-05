@@ -168,7 +168,10 @@
 - 新增 Token Bucket + AIMD 发送限速：按 socket send duration（按 chunk 大小归一化）、FILE_ACK 等待时间和本机接收写盘队列压力反馈；每 8 个 chunk 进行一次反馈，拥塞时乘性降速，健康时按配置上限的 1% 加性恢复。Windows 使用高精度 waitable timer（不可用时回退），macOS 使用可中断的短间隔 nanosleep。
 - 新增配置项 `xfer_rate_limit_mib`（16–4096 MiB/s），默认 128 MiB/s、初始 64 MiB/s、最低 4 MiB/s；默认值是暂定起始值，未经过真实 Wi-Fi/千兆网校准。限速值不能被当作实机性能结论。
 - 图片 owned-buffer 提交现在在预算检查后直接接管现有像素缓冲区；发送图片 chunk 不再复制到通用 tx buffer。预算快照现在同时返回当前 usage、高水位、拒绝/释放/转移计数和配置上限。
-- **仍未完成**：有限 ACK 窗口/小文件批次；预算指标的原生 UI 展示；扫描、CRC、读写盘、剪贴板应用的完整分阶段计时；固定缓冲池以外的完整分配复用；真实双机 RSS/吞吐/键鼠延迟压测。当前只完成阶段二的资源控制与限速基础，不能标记阶段二整体完成。
+- 传输状态新增基于单调时钟的 speed / ETA：按实际进度采样并使用 EWMA 平滑；连续 2 秒没有进度时，UI 不再显示陈旧速率。Windows/macOS 传输管理页显示 jobs/entries/pending/image/RX 当前值与限额、高水位、拒绝数、reservation/RX/temp 释放数、图片缓冲转移量及账本异常。
+- 新增共享固定容量 4 的 ACK window：发送端在 FILE_BEGIN 前登记 batch/id，在 FILE_END 前标记发送；ACK 按 batch/id 精确归位，支持乱序到达；窗口填满后再统一收取 ACK。每个文件仍保留独立 CRC、ACK、失败隔离与重试，TCP 数据帧仍串行发送，没有引入无界并发或额外数据缓冲。
+- ACK 超时按每个 FILE_END 的单调时钟 RTT/截止时间计算；取消、对端 ABORT、断线和任务结束都会清理该 batch 的所有 ACK 槽，过期 ACK 不会覆盖其他文件或重试状态。
+- **仍未完成**：扫描、CRC、读写盘、剪贴板应用的完整分阶段计时；发送侧固定大小可复用缓冲池；真实双机 RSS/吞吐/键鼠延迟压测。ACK window 目前是有界文件级在途回执，不代表接收端并行写多个文件。阶段二仍不能在实机验收前标记整体完成。
 - `pending bytes` 当前按任务完整保留量计数，直到任务终态统一释放；不是实时递减的剩余字节显示值。
 - 第一批预算边界、超限、幂等释放及 32 线程并发抢占测试通过；Windows HA 测试夹具已链接新模块。第一批 CI：[Actions #42021950477](https://github.com/alex520lq/HopDesk/actions/runs/42021950477)，提交 `8ba90741ba8bb170a795c895f093cc78e7ad3aa1`。
 
@@ -190,6 +193,15 @@
 - 新增 `xfer_rate_limit_mib` 配置（16–4096 MiB/s，默认128）；预算快照同时暴露当前限额。预算转移、限速、配置边界均增加核心测试。
 - Windows/macOS 原生构建、核心测试、文件传输协议测试、TCP loopback、角色/重连集成测试和打包 CI 全部通过：[Actions #42051872404](https://github.com/alex520lq/HopDesk/actions/runs/42051872404)，代码提交 `f3190e77764f171d4c23d3c4cbefebfd2e6e5701`。
 - **实机验收仍未执行**；默认速率尚未实测校准。ACK 窗口、预算 UI、完整阶段计时和压力报告继续列为待办。
+
+**第四批已提交：传输可观测性与有界 ACK window。**
+
+- `hop_xfer_tracking` 以单调时间计算传输速率和 ETA，进度回退/文件重试会重置采样；UI 在进度停滞超过 2 秒后隐藏过期速率。
+- Windows/macOS 传输页展示当前资源 usage/limits、RX 高水位、预算拒绝、reservation/RX/temp 释放、图片临时缓冲转移及账本异常计数；同时修复 macOS 当前任务卡片标题与任务标题重叠。
+- 新增 `src/core/xfer_ack_window.h`：固定 4 槽、batch/id 关联、发送/收到/取出状态、RTT 记录、单项/整批清理。
+- 两端 sender 以 4 个文件为上限填充窗口，再按文件收取 ACK；CRC、逐文件 ACK、失败隔离和重试仍保留。接收端仍按 TCP 顺序逐个完成文件写盘，不会同时打开多个当前文件。
+- 每个 ACK deadline 从该文件 FILE_END 发出时计算；窗口填充期间已到达的 ACK 会保留，超时后清理对应槽；取消、ABORT、断线和任务结束清理整批 ACK 状态。
+- 本批自动化验证待最新 Windows/macOS CI 完成；此前 speed/ETA 与任务生命周期测试已通过 [Actions #42055108661](https://github.com/alex520lq/HopDesk/actions/runs/42055108661)。实机小文件吞吐、磁盘压力和键鼠延迟仍待测试。
 
 ### 阶段三：任务模型、双向一致性与产品验收
 
@@ -257,6 +269,7 @@
 | 阶段二第一批：发送端预算基础 | `e47a3b1ac5802b0dcb23f7137734bea254ca6470`（代码）；`7185ecd10279dcfd06574b422a438706af65f00f`（Windows 测试夹具）；`8ba90741ba8bb170a795c895f093cc78e7ad3aa1`（并发测试） | 新增跨平台预算账本；发送端 jobs/entries/pending bytes/image bytes 预留；图片复制前预算检查；32 线程并发预算测试 | Windows/macOS CI 全部成功；[Actions #42021950477](https://github.com/alex520lq/HopDesk/actions/runs/42021950477) | 已完成第一批自动化验证；临时图像内存、限速/节流、实机压测仍待实施；文件枚举已由 Paste Worker 在后台执行 |
 | 阶段二第二批：接收端写盘队列预算 | `e8c7d300910a859ca11842321dce254ec005170e`（代码）；`1da692c071b7dcf7c4627fc1aa2cc55a44075409`（回归夹具） | 接收写盘队列 slot + bytes 纳入 Task reservation 与全局账本；writer 活动 buffer 计入 slot；分配前预留、释放后归还；账本高水位/拒绝/释放/异常计数 | Windows/macOS CI 全部成功；[Actions #42042092381](https://github.com/alex520lq/HopDesk/actions/runs/42042092381) | 自动化验证通过；实机压测未执行 |
 | 阶段二第三批：图片临时预算转移与自适应限速 | `f3190e77764f171d4c23d3c4cbefebfd2e6e5701` | 图片快照/转换临时预算、原子 owned-buffer 预算转移、分块直发、Token Bucket/AIMD、可配置速率上限、预算限额快照 | Windows/macOS 核心、协议、TCP、角色/重连集成与打包全部通过；[Actions #42051872404](https://github.com/alex520lq/HopDesk/actions/runs/42051872404) | 自动化验证通过；真实双机/弱网/RSS/键鼠延迟压测待执行 |
+| 阶段二第四批：speed/ETA、预算 UI 与 ACK window | `e99ef04`, `7f84820`, `02659ea`, `2992810`, `98398b5`, `587484e`, `3b99894`, `7072d1c`, `db37431`, `2738dab`, `48abfec`, `846da91`, `89ec493`, `86dd3f0` | 单调时钟 speed/ETA、双端资源预算可观测 UI、固定 4 槽 ACK window、逐文件重试与批次清理 | 待最新 CI | 实机 10,000 小文件、ACK 丢失/超时、双向并发和键鼠延迟待测 |
 | 阶段三 | 待实施 | Task ID 状态模型、reservation 账本、独立取消/重试、UI/历史与双向验收 | 待执行 | 待执行 |
 
 ## 7. 本轮明确不做的事

@@ -232,12 +232,16 @@ int main(void){
 #include <assert.h>
 typedef void *HGLOBAL;typedef unsigned UINT;typedef int HWND;typedef unsigned DWORD;
 #define IDT_CLIP_RETRY 1
-#define CLIP_SUPPRESS_MS 400
 #define hop_log(...) ((void)0)
 static struct {HWND hwnd;} g_app={1};
-static int s_suppress;static DWORD s_suppress_until;
-static HGLOBAL s_pending_global;static UINT s_pending_format;static DWORD s_pending_sequence,s_remote_sequence;
-static int can_open,fail_set,freed;static HGLOBAL clipboard;static DWORD sequence=1;
+static HGLOBAL s_pending_global;
+static UINT s_pending_format;
+static DWORD s_pending_sequence,s_remote_sequence,s_last_sequence;
+static int s_pending_clear_remote;
+static int can_open,fail_set,freed,clear_remote_calls;
+static HGLOBAL clipboard;static DWORD sequence=1;
+static int apply_global_expected(UINT,HGLOBAL,DWORD,int,int);
+static void clip_clear_remote_offer_local(void){clear_remote_calls++;}
 static int open_retry(HWND h){(void)h;return can_open;}
 static int EmptyClipboard(void){clipboard=NULL;sequence++;return 1;}
 static HGLOBAL SetClipboardData(UINT f,HGLOBAL h){(void)f;if(fail_set)return NULL;clipboard=h;sequence++;return h;}
@@ -262,7 +266,7 @@ int main(void){
     puts("PASS: production Windows clipboard retry preserves newer remote/local content");return 0;
 }
 '''
-    run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','apply_global','clip_retry_pending'])+clip_main)
+    run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','apply_global_expected','apply_global','clip_retry_pending'])+clip_main)
     for platform in ['win','mac']:
         source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', (ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8'))
         common=r'''

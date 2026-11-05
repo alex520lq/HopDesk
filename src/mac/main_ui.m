@@ -34,6 +34,7 @@ static NSTextField *s_connectionRole, *s_connectionStatus, *s_connectionPeer, *s
 static NSTextField *s_cfg[CFG_COUNT], *s_cfgNote;
 static NSPopUpButton *s_edgePopups[2];
 static NSTextField *s_xferTitle, *s_xferDetail, *s_xferCounts;
+static NSTextField *s_xferBudget, *s_xferMemory, *s_xferBudgetStats;
 static NSProgressIndicator *s_xferProgress;
 static NSTextView *s_xferFiles, *s_xferHistory, *s_logView;
 static NSButton *s_retryButton;
@@ -273,6 +274,22 @@ static void refresh_transfer_page(void) {
     s_xferDetail.stringValue=[NSString stringWithFormat:@"%@  ·  %@  ·  %@",direction,phase,utf8(st.detail)];
     s_xferCounts.stringValue=[NSString stringWithFormat:@"文件 %u / %u    排队 %u    数据 %@ / %@",
         st.files_done,st.files_total,st.queued_count,byte_count(st.bytes_done),byte_count(st.bytes_total)];
+    hop_xfer_budget_snapshot budget; memset(&budget,0,sizeof(budget)); xfer_get_budget_snapshot(&budget);
+    s_xferBudget.stringValue=[NSString stringWithFormat:@"预算  jobs %u/%u  ·  entries %u/%u  ·  pending %@/%@",
+        budget.jobs,budget.limits.max_jobs,budget.entries,budget.limits.max_entries,
+        byte_count(budget.pending_bytes),byte_count(budget.limits.max_pending_bytes)];
+    s_xferMemory.stringValue=[NSString stringWithFormat:@"内存  image %@/%@ (temp %@/ %@)  ·  RX %u/%u slots  ·  %@/%@",
+        byte_count(budget.image_bytes),byte_count(budget.limits.max_image_bytes),
+        byte_count(budget.image_temp_bytes),byte_count(budget.limits.max_image_temp_bytes),
+        budget.rx_queue_slots,budget.limits.max_rx_queue_slots,
+        byte_count(budget.rx_queue_bytes),byte_count(budget.limits.max_rx_queue_bytes)];
+    uint64_t rejected=budget.rejected_jobs+budget.rejected_entries+budget.rejected_bytes+
+        budget.rejected_images+budget.rejected_rx_buffers+budget.rejected_image_temp_bytes+
+        budget.rejected_image_transfers;
+    s_xferBudgetStats.stringValue=[NSString stringWithFormat:@"峰值 jobs %u · entries %u · pending %@ · image %@  ·  拒绝 %llu  ·  账本异常 %llu",
+        budget.jobs_high_water,budget.entries_high_water,
+        byte_count(budget.pending_bytes_high_water),byte_count(budget.image_bytes_high_water),
+        (unsigned long long)rejected,(unsigned long long)budget.accounting_errors];
     s_xferProgress.doubleValue=st.bytes_total?MIN(100.0,100.0*(double)st.bytes_done/(double)st.bytes_total):(st.phase==HOP_XFER_COMPLETED?100:0);
     s_retryButton.enabled=st.direction==HOP_XFER_DIR_SEND;
     if (!s_fileSnapshot) s_fileSnapshot=calloc(HOP_XFER_FILE_LIMIT,sizeof(*s_fileSnapshot));
@@ -456,10 +473,13 @@ static void build_pages(NSView *root) {
     p=s_pages[3];
     card=ui_card(p,NSMakeRect(20,458,840,184));
     ui_label(card,@"当前任务",NSMakeRect(22,142,780,22),13,YES);
-    s_xferTitle=ui_label(card,@"暂无传输任务",NSMakeRect(22,104,780,28),18,YES);
-    s_xferDetail=ui_label(card,@"等待文件传输",NSMakeRect(22,76,780,20),11,NO);
-    s_xferCounts=ui_label(card,@"文件 0 / 0    排队 0    数据 0 B / 0 B",NSMakeRect(22,48,780,20),11,NO);
-    s_xferProgress=[[NSProgressIndicator alloc] initWithFrame:NSMakeRect(22,22,780,12)];
+    s_xferTitle=ui_label(card,@"暂无传输任务",NSMakeRect(22,146,780,26),17,YES);
+    s_xferDetail=ui_label(card,@"等待文件传输",NSMakeRect(22,120,780,18),10,NO);
+    s_xferCounts=ui_label(card,@"文件 0 / 0    排队 0    数据 0 B / 0 B",NSMakeRect(22,96,780,18),10,NO);
+    s_xferBudget=ui_label(card,@"预算 jobs 0/16 · entries 0/32768 · pending 0 B/8 GB",NSMakeRect(22,72,780,16),9,NO);
+    s_xferMemory=ui_label(card,@"内存 image 0/256 MB · RX 0/8 slots",NSMakeRect(22,52,780,16),9,NO);
+    s_xferBudgetStats=ui_label(card,@"峰值与拒绝计数等待采样",NSMakeRect(22,32,780,16),9,NO);
+    s_xferProgress=[[NSProgressIndicator alloc] initWithFrame:NSMakeRect(22,10,780,10)];
     s_xferProgress.minValue=0;s_xferProgress.maxValue=100;s_xferProgress.indeterminate=NO;
     [card addSubview:s_xferProgress];
     card=ui_card(p,NSMakeRect(20,220,840,220));

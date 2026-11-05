@@ -316,6 +316,10 @@ void xfer_get_status(hop_xfer_status *out) {
     pthread_mutex_unlock(&s_status_lock);
 }
 
+void xfer_get_budget_snapshot(hop_xfer_budget_snapshot *out) {
+    hop_xfer_budget_get_snapshot(out);
+}
+
 
 
 static int send_all(int fd, const void *buf, size_t len) {

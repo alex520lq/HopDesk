@@ -107,16 +107,6 @@ int hop_xfer_task_reserve_image(hop_xfer_task *task, uint64_t bytes) {
            hop_xfer_budget_reserve_image(&task->reservation, bytes);
 }
 
-int hop_xfer_task_reserve_temp_image(hop_xfer_task *task, uint64_t bytes) {
-    return task_owns_reservation(task) && !hop_xfer_task_is_terminal(task) &&
-           hop_xfer_budget_reserve_temp_image(&task->reservation, bytes);
-}
-
-int hop_xfer_task_release_temp_image(hop_xfer_task *task, uint64_t bytes) {
-    return task_owns_reservation(task) &&
-           hop_xfer_budget_release_temp_image(&task->reservation, bytes);
-}
-
 int hop_xfer_task_reserve_rx_buffer(hop_xfer_task *task, uint64_t bytes) {
     return task_owns_reservation(task) && !hop_xfer_task_is_terminal(task) &&
            hop_xfer_budget_reserve_rx_buffer(&task->reservation, bytes);

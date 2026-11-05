@@ -8,6 +8,7 @@
 void hop_log(hop_log_level level,const char *fmt,...){(void)level;(void)fmt;}
 static struct {hop_config cfg;double screen_w,screen_h;} g_mac;
 static int s_authed,s_rejected,connected,injected,returned,clip_applied,inject_resets,status_sharing;
+static int clip_offer_received,clip_offer_clear_received,clip_paste_request_received,clip_paste_failed_received;
 static uint64_t s_last_rx;
 static hop_session_id s_control_session;
 static uint8_t sent_type,sent[256];static uint32_t sent_len;
@@ -24,6 +25,10 @@ static void inject_key(uint16_t k,int d){(void)k;(void)d;injected++;}
 static void inject_reset(void){inject_resets++;}
 static void statusbar_update(int on,int sharing){(void)on;status_sharing=sharing;}
 static void clipboard_apply(const char *s){assert(!strcmp(s,"hello"));clip_applied++;}
+static void clipboard_on_remote_file_offer(const uint8_t *p,uint32_t len){(void)p;(void)len;clip_offer_received++;}
+static void clipboard_on_remote_file_offer_clear(const uint8_t *p,uint32_t len){(void)p;(void)len;clip_offer_clear_received++;}
+static void clipboard_on_paste_request(const uint8_t *p,uint32_t len){(void)p;(void)len;clip_paste_request_received++;}
+static void clipboard_on_paste_failed(const uint8_t *p,uint32_t len){(void)p;(void)len;clip_paste_failed_received++;}
 static void disp_wake(int s){(void)s;}
 static void disp_set_input(uint16_t n){(void)n;}
 static void disp_sleep(void){}
@@ -32,7 +37,7 @@ static void reset(void){
     hop_session_id old;if(hop_session_current(&old))hop_session_clear(&old);
     memset(&g_mac,0,sizeof(g_mac));g_mac.cfg.role=HOP_ROLE_SERVER;
     strcpy(g_mac.cfg.token,"secret");strcpy(g_mac.cfg.device_name,"Mac-server");
-    g_mac.screen_w=1440;g_mac.screen_h=900;s_authed=s_rejected=connected=injected=returned=clip_applied=inject_resets=status_sharing=0;
+    g_mac.screen_w=1440;g_mac.screen_h=900;s_authed=s_rejected=connected=injected=returned=clip_applied=inject_resets=status_sharing=clip_offer_received=clip_offer_clear_received=clip_paste_request_received=clip_paste_failed_received=0;
     sent_type=0;sent_len=0;
 }
 int main(void){
@@ -54,6 +59,12 @@ int main(void){
     dispatch_message(NULL,HOP_MSG_CLIP_TEXT,payload,9);assert(clip_applied==1);
     hop_put_be32(payload,HOP_DEV_SERVER);dispatch_message(NULL,HOP_MSG_CLIP_TEXT,payload,9);assert(clip_applied==1);
     reset();g_mac.cfg.role=HOP_ROLE_CLIENT;s_authed=1;status_sharing=1;
+    dispatch_message(NULL,HOP_MSG_CLIP_FILE_OFFER,NULL,0);
+    dispatch_message(NULL,HOP_MSG_CLIP_FILE_OFFER_CLEAR,NULL,0);
+    dispatch_message(NULL,HOP_MSG_CLIP_PASTE_REQUEST,NULL,0);
+    dispatch_message(NULL,HOP_MSG_CLIP_PASTE_FAILED,NULL,0);
+    assert(clip_offer_received==1 && clip_offer_clear_received==1 &&
+           clip_paste_request_received==1 && clip_paste_failed_received==1);
     dispatch_message(NULL,HOP_MSG_EDGE_LEAVE,NULL,0);
     assert(inject_resets==1 && status_sharing==0);
     reset();puts("PASS: production macOS dispatch authentication, role gating, clipboard origin and server return");return 0;

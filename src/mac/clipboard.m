@@ -262,7 +262,11 @@ static BOOL send_image(NSImage *img, NSInteger expected_change, hop_xfer_task *t
     }
     hop_log(HOP_LOG_INFO, "clip: image out %dx%d task=%llu", w, h,
             (unsigned long long)task->id);
-    ok = xfer_submit_image(flip, w, h, (int)stride) ? YES : NO;
+    {
+        uint8_t *owned_pixels = flip;
+        flip = NULL; /* xfer_submit_image_owned consumes the buffer on every return path */
+        ok = xfer_submit_image_owned(owned_pixels, w, h, (int)stride) ? YES : NO;
+    }
 
 cleanup:
     if (flip) free(flip);

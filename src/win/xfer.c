@@ -780,14 +780,8 @@ static int ack_wait(uint32_t batch, uint32_t id, uint64_t *rtt_us) {
     }
 }
 
-/* 发送一个条目，并等接收端的单文件回执。
- *
- * 返回 >=0：接收端 ACK 的 status（HOP_FILE_ACK_*）
- * 返回 XFER_SEND_DEAD  ：写 socket 失败，连接已断 → 整批退回队列
- * 返回 XFER_LOCAL_IO   ：本地读失败 → 重发同一个文件
- * 返回 XFER_CANCELLED  ：用户取消 → 不重试
- * 返回 XFER_ACK_TIMEOUT：END 发出去了但等不到回执 → 重发同一个文件
- */
+/* 发送一个条目。成功写出 FILE_END 后返回 XFER_ACK_PENDING；
+ * run_job 在最多 4 个已发送文件组成的窗口中统一收取 ACK。 */
 static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
                            uint32_t id, const xfer_entry *e) {
     uint32_t nlen = (uint32_t)strlen(e->name);
@@ -891,16 +885,13 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
     hop_put_be32(endp, id);
     endp[4] = end_status;
     hop_put_be32(endp + 5, fcrc);
+    /* Register/mark the ACK before FILE_END: the writer may finish and ACK
+     * immediately after the frame reaches the peer. Local read errors are
+     * reported in FILE_END and resolved by the same per-file ACK path. */
+    if (!ack_mark_sent(batch, id)) return XFER_LOCAL_IO;
     if (!send_small(c, HOP_MSG_FILE_END, endp, 9, batch)) return XFER_SEND_DEAD;
-
-    /* 本地就没读成功，没必要再等回执：接收端那份注定是残缺的，
-     * 等到的结论也只会是"失败"。直接进重试。 */
-    if (local_fail) return XFER_LOCAL_IO;
-
-    uint64_t ack_started = rate_now_ns();
-    int ack_status = ack_wait(batch, id);
-    rate_feedback((rate_now_ns() - ack_started) / 1000ull);
-    return ack_status;
+    (void)local_fail;
+    return XFER_ACK_PENDING;
 }
 
 static int send_image_job(SOCKET c, uint8_t *tx, xfer_job *j) {

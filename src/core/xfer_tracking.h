@@ -68,9 +68,13 @@ static inline void hop_xfer_tracking_chunk(hop_xfer_tracking *t, uint32_t batch,
         t->status.bytes_done += end - f->bytes_done;
         f->bytes_done = end;
         t->status.last_progress_ms = now_ms;
-        if (!t->sample_ms || now_ms <= t->sample_ms) {
+        if (!t->sample_ms || now_ms <= t->sample_ms ||
+            now_ms - t->sample_ms > 2000u) {
+            /* Do not average an idle pause into the next active throughput sample. */
             t->sample_ms = now_ms;
             t->sample_bytes = t->status.bytes_done;
+            t->status.speed_bytes_per_sec = 0;
+            t->status.eta_seconds = 0;
         } else if (t->status.bytes_done > t->sample_bytes) {
             uint64_t elapsed_ms = now_ms - t->sample_ms;
             uint64_t delta_bytes = t->status.bytes_done - t->sample_bytes;

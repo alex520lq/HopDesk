@@ -72,6 +72,7 @@ typedef struct xf_job {
     int       attempt;        /* 连接级（作业级）已重试次数 */
     uint64_t  retry_at;       /* 毫秒时间戳，早于它不发送 */
     uint64_t  give_up_at;     /* 断线重连预算的截止时刻，0 = 未开始计时 */
+    uint64_t  scan_ns;        /* source enumeration duration, recorded on first visible attempt */
 } xf_job;
 
 typedef struct {
@@ -196,7 +197,8 @@ static void history_save(void) {
 static hop_xfer_tracking *status_for(int direction) {
     return direction == HOP_XFER_DIR_SEND ? &s_send_status : &s_receive_status;
 }
-static void status_begin(uint32_t batch,int direction,uint32_t files,uint64_t bytes,const char *name,int phase) {
+static int status_begin(uint32_t batch,int direction,uint32_t files,uint64_t bytes,const char *name,int phase) {
+    int created=0;
     pthread_mutex_lock(&s_status_lock);
     hop_xfer_tracking *t = status_for(direction);
     /* The FIFO sender retains this snapshot while retrying the same job. */
@@ -204,6 +206,7 @@ static void status_begin(uint32_t batch,int direction,uint32_t files,uint64_t by
         if (direction == HOP_XFER_DIR_SEND)
             for(int i=0;i<HOP_XFER_FILE_LIMIT;i++){free(s_retry_paths[i]);s_retry_paths[i]=NULL;}
         hop_xfer_tracking_begin(t,batch,direction,files,bytes,name,phase);
+        created=1;
     } else t->status.phase=phase;
     t->sample_ms=hop_monotonic_ms();
     t->sample_bytes=t->status.bytes_done;
@@ -213,10 +216,16 @@ static void status_begin(uint32_t batch,int direction,uint32_t files,uint64_t by
     t->revision=++s_status_revision;
     snprintf(t->status.detail,sizeof(t->status.detail),"%s",direction==HOP_XFER_DIR_SEND?"Sending to peer":"Receiving from peer");
     pthread_mutex_unlock(&s_status_lock);
+    return created;
 }
 static void status_chunk(int direction,uint32_t batch,uint32_t id,uint64_t off,uint32_t n) {
     pthread_mutex_lock(&s_status_lock);
     hop_xfer_tracking_chunk(status_for(direction),batch,id,off,n,hop_monotonic_ms());
+    pthread_mutex_unlock(&s_status_lock);
+}
+static void status_stage_time(int direction,uint32_t batch,int stage,uint64_t elapsed_ns) {
+    pthread_mutex_lock(&s_status_lock);
+    hop_xfer_tracking_add_time(status_for(direction),batch,stage,elapsed_ns);
     pthread_mutex_unlock(&s_status_lock);
 }
 static void status_file_phase(int direction,uint32_t batch,int index,int phase,uint32_t attempts) {
@@ -226,6 +235,7 @@ static void status_file_phase(int direction,uint32_t batch,int index,int phase,u
 }
 static void status_end(int direction,uint32_t batch,int phase,const char *detail) {
     int changed=0;
+    uint64_t timing[HOP_XFER_TIME_COUNT]={0};
     pthread_mutex_lock(&s_status_lock);
     hop_xfer_tracking *t=status_for(direction);
     if(hop_xfer_tracking_end(t,batch,phase,detail)) {
@@ -237,10 +247,23 @@ static void status_end(int direction,uint32_t batch,int phase,const char *detail
         h->bytes_done=t->status.bytes_done;h->bytes_total=t->status.bytes_total;h->finished_at=(uint64_t)time(NULL);
         snprintf(h->name,sizeof(h->name),"%s",t->status.name);
         snprintf(h->detail,sizeof(h->detail),"%s",t->status.detail);
+        memcpy(timing,t->stage_ns,sizeof(timing));
         if(s_history_count<HOP_XFER_HISTORY_LIMIT)s_history_count++;
     }
     pthread_mutex_unlock(&s_status_lock);
-    if(changed)history_save();
+    if(changed) {
+        hop_log(HOP_LOG_INFO,
+                "xfer timing batch=%u dir=%s scan=%llums read=%llums crc=%llums send=%llums receive=%llums write=%llums clipboard_dispatch=%llums",
+                batch,direction==HOP_XFER_DIR_SEND?"send":"receive",
+                (unsigned long long)(timing[HOP_XFER_TIME_SCAN]/1000000ull),
+                (unsigned long long)(timing[HOP_XFER_TIME_READ]/1000000ull),
+                (unsigned long long)(timing[HOP_XFER_TIME_CRC]/1000000ull),
+                (unsigned long long)(timing[HOP_XFER_TIME_SEND]/1000000ull),
+                (unsigned long long)(timing[HOP_XFER_TIME_RECEIVE]/1000000ull),
+                (unsigned long long)(timing[HOP_XFER_TIME_WRITE]/1000000ull),
+                (unsigned long long)(timing[HOP_XFER_TIME_CLIPBOARD_DISPATCH]/1000000ull));
+        history_save();
+    }
 }
 static void status_set_files(uint32_t batch,const xf_entry *entries,int n) {
     pthread_mutex_lock(&s_status_lock);
@@ -282,8 +305,9 @@ static void status_start_job(const xf_job *j) {
     uint64_t total_bytes=0;
     for(int i=0;i<j->n;i++)total_bytes+=j->e[i].size;
     if(j->is_image)total_bytes=(uint64_t)j->stride*j->h;
-    status_begin(j->batch,HOP_XFER_DIR_SEND,hop_xfer_job_total(j->is_image,j->n),total_bytes,
+    int created=status_begin(j->batch,HOP_XFER_DIR_SEND,hop_xfer_job_total(j->is_image,j->n),total_bytes,
                  j->is_image?"Image":j->e[0].name,HOP_XFER_SENDING);
+    if(created && j->scan_ns)status_stage_time(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_TIME_SCAN,j->scan_ns);
     if(j->is_image)status_image(j->batch,HOP_XFER_DIR_SEND,total_bytes);
     else status_set_files(j->batch,j->e,j->n);
 }
@@ -1416,6 +1440,7 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
         return 0;
     }
 
+    uint64_t scan_started_ns=rate_now_ns();
     for (int i = 0; i < n; ++i) {
         if (!paths[i] || !paths[i][0]) { l.failed = 1; break; }
         const char *bn = strrchr(paths[i], '/');
@@ -1423,6 +1448,7 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
         walk_into(&l, paths[i], bn);
         if (l.failed) break;
     }
+    uint64_t scan_elapsed_ns=rate_now_ns()-scan_started_ns;
 
     if (l.failed || l.n == 0) {
         if (l.budget_rejected)
@@ -1444,6 +1470,7 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
     }
 
     job->batch = batch;
+    job->scan_ns = scan_elapsed_ns;
     job->n = l.n;
     job->e = l.v;
     if (!hop_xfer_task_set_state(&l.task, HOP_XFER_TASK_QUEUED) ||

@@ -40,10 +40,6 @@ int hop_xfer_budget_reservation_init(hop_xfer_reservation_handle*, uint64_t task
 int hop_xfer_budget_reserve_job(hop_xfer_reservation_handle*);
 int hop_xfer_budget_reserve_entry(hop_xfer_reservation_handle*, uint64_t bytes);
 int hop_xfer_budget_reserve_image(hop_xfer_reservation_handle*, uint64_t bytes);
-/* Temporary decode/conversion/copy buffers share the global image and pending
- * byte ceilings, but do not consume a file-entry slot. */
-int hop_xfer_budget_reserve_temp_image(hop_xfer_reservation_handle*, uint64_t bytes);
-int hop_xfer_budget_release_temp_image(hop_xfer_reservation_handle*, uint64_t bytes);
 int hop_xfer_budget_reserve_rx_buffer(hop_xfer_reservation_handle*, uint64_t bytes);
 int hop_xfer_budget_release_rx_buffer(hop_xfer_reservation_handle*, uint64_t bytes);
 int hop_xfer_budget_reserve_image_temp(hop_xfer_reservation_handle*, uint64_t bytes);

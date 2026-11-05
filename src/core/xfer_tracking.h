@@ -62,7 +62,6 @@ static inline void hop_xfer_tracking_chunk(hop_xfer_tracking *t, uint32_t batch,
     if (off > f->bytes_total || size > f->bytes_total - off) return;
     uint64_t end = off + size;
     if (end > f->bytes_done) {
-        uint64_t previous_done = t->status.bytes_done;
         t->status.bytes_done += end - f->bytes_done;
         f->bytes_done = end;
         t->status.last_progress_ms = now_ms;
@@ -86,10 +85,10 @@ static inline void hop_xfer_tracking_chunk(hop_xfer_tracking *t, uint32_t batch,
                 uint64_t remaining = t->status.bytes_total > t->status.bytes_done ?
                     t->status.bytes_total - t->status.bytes_done : 0;
                 t->status.eta_seconds = t->status.speed_bytes_per_sec ?
-                    remaining / t->status.speed_bytes_per_sec : 0;
+                    remaining / t->status.speed_bytes_per_sec +
+                    (remaining % t->status.speed_bytes_per_sec != 0) : 0;
             }
         }
-        (void)previous_done;
     }
 }
 static inline void hop_xfer_tracking_phase(hop_xfer_tracking *t, uint32_t batch,

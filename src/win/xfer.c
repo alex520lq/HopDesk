@@ -928,16 +928,19 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
         uint32_t id;
         int index;
         int attempts;
+        int pending;
         uint64_t deadline_ns;
-    } pending_ack;
+    } window_item;
 
     while (j->next_i < j->n) {
-        pending_ack pending[HOP_XFER_ACK_WINDOW_CAPACITY];
-        uint32_t pending_count = 0;
+        window_item window[HOP_XFER_ACK_WINDOW_CAPACITY];
+        uint32_t window_count = 0;
+        int send_index = j->next_i;
 
-        /* Fill a small bounded window. TCP preserves FILE_BEGIN/CHUNK/END
-         * order; the receiver still commits one file at a time. */
-        while (pending_count < HOP_XFER_ACK_WINDOW_CAPACITY && j->next_i < j->n) {
+        /* Fill a bounded window using a local cursor. j->next_i is the
+         * durable resume point and must advance only after each entry has a
+         * final ACK/result; a disconnect during fill must not skip sent files. */
+        while (window_count < HOP_XFER_ACK_WINDOW_CAPACITY && send_index < j->n) {
             if (cancel_requested(j->batch)) {
                 ack_unregister_batch(j->batch);
                 return JOB_CANCELLED;
@@ -947,9 +950,14 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
                 return JOB_PEER_ABORT;
             }
 
-            int index = j->next_i;
+            int index = send_index;
             const xfer_entry *e = &j->e[index];
             uint32_t id = (uint32_t)(index + 1);
+            window_item *item = &window[window_count];
+            memset(item,0,sizeof(*item));
+            item->entry = e;
+            item->id = id;
+            item->index = index;
             status_file_phase(HOP_XFER_DIR_SEND,j->batch,index,HOP_XFER_FILE_SENDING,0);
 
             int attempts = 0;
@@ -957,14 +965,14 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
             uint64_t deadline_ns = 0;
             for (;;) {
                 ++attempts;
-                st = send_file_entry(c, tx, j->batch, id, e, &deadline_ns);
+                st = send_file_entry(c,tx,j->batch,id,e,&deadline_ns);
                 if (st == XFER_ACK_PENDING) break;
-                if (st == XFER_SEND_DEAD || st == XFER_PEER_ABORT || st == XFER_CANCELLED ||
-                    st == HOP_FILE_ACK_BADPATH) break;
+                if (st == XFER_SEND_DEAD || st == XFER_PEER_ABORT ||
+                    st == XFER_CANCELLED || st == HOP_FILE_ACK_BADPATH) break;
                 if (attempts >= HOP_XFER_FILE_RETRY_MAX) break;
                 unsigned d = hop_xfer_file_retry_delay_ms((unsigned)attempts);
                 hop_log(HOP_LOG_WARN, "xfer: retry %d/%d for %s in %u ms (send status %d)",
-                        attempts, HOP_XFER_FILE_RETRY_MAX, e->rel, d, st);
+                        attempts,HOP_XFER_FILE_RETRY_MAX,e->rel,d,st);
                 Sleep(d);
             }
 
@@ -981,71 +989,75 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
                 return JOB_CANCELLED;
             }
 
+            item->attempts = attempts;
             if (st == XFER_ACK_PENDING) {
-                pending[pending_count].entry = e;
-                pending[pending_count].id = id;
-                pending[pending_count].index = index;
-                pending[pending_count].attempts = attempts;
-                pending[pending_count].deadline_ns = deadline_ns;
-                ++pending_count;
+                item->pending = 1;
+                item->deadline_ns = deadline_ns;
             } else {
                 status_file_phase(HOP_XFER_DIR_SEND,j->batch,index,HOP_XFER_FILE_FAILED,(uint32_t)attempts);
                 hop_log(HOP_LOG_ERROR, "xfer: could not send %s after %d attempt(s) (status %d)",
-                        e->rel, attempts, st);
+                        e->rel,attempts,st);
             }
-            j->next_i++;
+            ++window_count;
+            ++send_index;
         }
 
-        /* Drain this window. ACK slots retain out-of-order results while we
-         * wait for each file; retries reuse a slot only after it is consumed. */
-        for (uint32_t pi = 0; pi < pending_count; ++pi) {
-            pending_ack *p = &pending[pi];
-            uint64_t rtt_us = 0;
-            int st = ack_wait(j->batch,p->id,p->deadline_ns,&rtt_us);
-            if (rtt_us) rate_feedback(rtt_us);
-            int attempts = p->attempts;
+        /* Drain in file order. If the link dies, j->next_i still points at
+         * the first unresolved entry, while earlier confirmed entries remain
+         * committed and are not retransmitted after reconnect. */
+        for (uint32_t wi = 0; wi < window_count; ++wi) {
+            window_item *item = &window[wi];
+            if (item->pending) {
+                uint64_t rtt_us = 0;
+                int st = ack_wait(j->batch,item->id,item->deadline_ns,&rtt_us);
+                if (rtt_us) rate_feedback(rtt_us);
+                int attempts = item->attempts;
 
-            while (st != HOP_FILE_ACK_OK && st != HOP_FILE_ACK_BADPATH) {
-                if (st == XFER_SEND_DEAD) {
-                    ack_unregister_batch(j->batch);
-                    return JOB_NET_DOWN;
-                }
-                if (st == XFER_PEER_ABORT) {
-                    ack_unregister_batch(j->batch);
-                    return JOB_PEER_ABORT;
-                }
-                if (st == XFER_CANCELLED) {
-                    ack_unregister_batch(j->batch);
-                    return JOB_CANCELLED;
-                }
-                if (attempts >= HOP_XFER_FILE_RETRY_MAX) break;
+                while (st != HOP_FILE_ACK_OK && st != HOP_FILE_ACK_BADPATH) {
+                    if (st == XFER_SEND_DEAD) {
+                        ack_unregister_batch(j->batch);
+                        return JOB_NET_DOWN;
+                    }
+                    if (st == XFER_PEER_ABORT) {
+                        ack_unregister_batch(j->batch);
+                        return JOB_PEER_ABORT;
+                    }
+                    if (st == XFER_CANCELLED) {
+                        ack_unregister_batch(j->batch);
+                        return JOB_CANCELLED;
+                    }
+                    if (attempts >= HOP_XFER_FILE_RETRY_MAX) break;
 
-                unsigned d = hop_xfer_file_retry_delay_ms((unsigned)attempts);
-                hop_log(HOP_LOG_WARN, "xfer: retry %d/%d for %s in %u ms (ACK status %d)",
-                        attempts, HOP_XFER_FILE_RETRY_MAX, p->entry->rel, d, st);
-                Sleep(d);
+                    unsigned d = hop_xfer_file_retry_delay_ms((unsigned)attempts);
+                    hop_log(HOP_LOG_WARN, "xfer: retry %d/%d for %s in %u ms (ACK status %d)",
+                            attempts,HOP_XFER_FILE_RETRY_MAX,item->entry->rel,d,st);
+                    Sleep(d);
 
-                ++attempts;
-                uint64_t retry_deadline_ns = 0;
-                st = send_file_entry(c,tx,j->batch,p->id,p->entry,&retry_deadline_ns);
-                if (st == XFER_ACK_PENDING) {
-                    rtt_us = 0;
-                    st = ack_wait(j->batch,p->id,retry_deadline_ns,&rtt_us);
-                    if (rtt_us) rate_feedback(rtt_us);
+                    ++attempts;
+                    uint64_t retry_deadline_ns = 0;
+                    st = send_file_entry(c,tx,j->batch,item->id,item->entry,&retry_deadline_ns);
+                    if (st == XFER_ACK_PENDING) {
+                        rtt_us = 0;
+                        st = ack_wait(j->batch,item->id,retry_deadline_ns,&rtt_us);
+                        if (rtt_us) rate_feedback(rtt_us);
+                    }
+                }
+
+                if (st == HOP_FILE_ACK_OK) {
+                    j->ok++;
+                    status_file_phase(HOP_XFER_DIR_SEND,j->batch,item->index,
+                                      HOP_XFER_FILE_COMPLETED,(uint32_t)attempts);
+                } else {
+                    status_file_phase(HOP_XFER_DIR_SEND,j->batch,item->index,
+                                      HOP_XFER_FILE_FAILED,(uint32_t)attempts);
+                    hop_log(HOP_LOG_ERROR, "xfer: giving up on %s after %d attempt(s) (status %d)",
+                            item->entry->rel,attempts,st);
                 }
             }
-
-            if (st == HOP_FILE_ACK_OK) {
-                j->ok++;
-                status_file_phase(HOP_XFER_DIR_SEND,j->batch,p->index,HOP_XFER_FILE_COMPLETED,(uint32_t)attempts);
-            } else {
-                status_file_phase(HOP_XFER_DIR_SEND,j->batch,p->index,HOP_XFER_FILE_FAILED,(uint32_t)attempts);
-                hop_log(HOP_LOG_ERROR, "xfer: giving up on %s after %d attempt(s) (status %d)",
-                        p->entry->rel, attempts, st);
-            }
+            /* This is the only place that advances the reconnect checkpoint. */
+            j->next_i = item->index + 1;
         }
     }
-
     ack_unregister_batch(j->batch);
     return JOB_DONE;
 }

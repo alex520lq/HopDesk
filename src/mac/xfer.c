@@ -1462,7 +1462,7 @@ int xfer_submit_paths_for_paste(const char *const *paths, int n, uint32_t reques
 
 int xfer_submit_image(const uint8_t *bgra, int w, int h, int stride) {
     if (!hop_update_work_enter()) return 0;
-    int result = xfer_submit_image_impl(bgra, NULL, w, h, stride);
+    int result = xfer_submit_image_impl(bgra, NULL, w, h, stride, NULL, 0);
     hop_update_work_leave();
     return result;
 }
@@ -1470,7 +1470,23 @@ int xfer_submit_image(const uint8_t *bgra, int w, int h, int stride) {
 int xfer_submit_image_owned(uint8_t *bgra, int w, int h, int stride) {
     if (!bgra) return 0;
     if (!hop_update_work_enter()) { free(bgra); return 0; }
-    int result = xfer_submit_image_impl(bgra, bgra, w, h, stride);
+    int result = xfer_submit_image_impl(bgra, bgra, w, h, stride, NULL, 0);
+    hop_update_work_leave();
+    return result;
+}
+
+int xfer_submit_image_owned_from_task(uint8_t *bgra, int w, int h, int stride,
+                                       hop_xfer_task *source_task, uint64_t reserved_bytes) {
+    if (!bgra) {
+        release_image_source_reservation(source_task, reserved_bytes);
+        return 0;
+    }
+    if (!hop_update_work_enter()) {
+        free(bgra);
+        release_image_source_reservation(source_task, reserved_bytes);
+        return 0;
+    }
+    int result = xfer_submit_image_impl(bgra, bgra, w, h, stride, source_task, reserved_bytes);
     hop_update_work_leave();
     return result;
 }

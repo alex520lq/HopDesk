@@ -18,6 +18,7 @@
 #include "hop.h"
 #include "../core/xfer_status.h"
 #include "../core/xfer_budget.h"
+#include "../core/xfer_task.h"
 
 /* 起监听 + 发送线程。失败返回 0。 */
 int  xfer_init(HWND hwnd, const hop_config *cfg);
@@ -54,5 +55,10 @@ int  xfer_submit_paths_for_paste(const wchar_t *const *paths, int n, uint32_t re
 int  xfer_submit_image(const uint8_t *bgra, int w, int h, int stride);
 /* 消费调用方的 BGRA 缓冲区（成功/失败都会释放）；避免整张图片再次复制。 */
 int  xfer_submit_image_owned(uint8_t *bgra, int w, int h, int stride);
+/* Transfer an already-budgeted temporary pixel buffer into the queued image
+ * task without double-counting the same allocation. Always consumes bgra and
+ * the source task's 'reserved_bytes' reservation, whether accepted or rejected. */
+int  xfer_submit_image_owned_from_task(uint8_t *bgra, int w, int h, int stride,
+                                       hop_xfer_task *source_task, uint64_t reserved_bytes);
 
 #endif

@@ -709,7 +709,7 @@ static void test_xfer_rate_limiter(void) {
     CHECK(hop_xfer_rate_wait_ns(&rate,101,100000000ull)==UINT64_MAX);
 
     hop_xfer_rate_init(&rate,1000,100,2000,100,0);
-    hop_xfer_rate_note_send_time(&rate,1000);
+    hop_xfer_rate_note_send_time(&rate,100,1000);
     hop_xfer_rate_feedback(&rate,50000,0);
     CHECK(rate.current_rate_bytes_per_sec==1050&&rate.rate_increases==1);
     uint64_t healthy_rate=rate.current_rate_bytes_per_sec;
@@ -717,7 +717,7 @@ static void test_xfer_rate_limiter(void) {
     CHECK(rate.current_rate_bytes_per_sec<healthy_rate&&rate.rate_decreases==1);
 
     hop_xfer_rate_init(&rate,1000,100,2000,100,0);
-    for(int i=0;i<8;i++)hop_xfer_rate_note_send_time(&rate,50000);
+    for(int i=0;i<8;i++)hop_xfer_rate_note_send_time(&rate,100,50000);
     CHECK(rate.current_rate_bytes_per_sec==900&&rate.rate_decreases==1);
 }
 

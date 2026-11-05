@@ -7,6 +7,7 @@
 #include "update.h"
 #include "main_ui.h"
 #include "../core/xfer_status.h"
+#include "../core/hop.h"
 
 #include <commctrl.h>
 #include <stdio.h>
@@ -363,8 +364,15 @@ static void refresh_transfers(void) {
     }
     swprintf(row, 1800, L"%ls", name[0] ? name : L"暂无传输任务"); set_text(s_xfer_title, row);
     utf8_to_wide(st.detail, detail, HOP_XFER_STATUS_DETAIL);
-    swprintf(row, 1800, L"%ls  ·  %ls  ·  %ls", st.direction == HOP_XFER_DIR_SEND ? L"发送" :
-             st.direction == HOP_XFER_DIR_RECEIVE ? L"接收" : L"待机", phase, detail);
+    uint64_t now_ms=hop_monotonic_ms();
+    uint64_t speed=st.speed_bytes_per_sec;
+    if(!st.last_progress_ms || now_ms<st.last_progress_ms || now_ms-st.last_progress_ms>2000) speed=0;
+    if(speed) swprintf(row,1800,L"%ls  ·  %ls  ·  %ls  ·  %.1f MiB/s  ·  ETA %llus",
+        st.direction==HOP_XFER_DIR_SEND?L"发送":st.direction==HOP_XFER_DIR_RECEIVE?L"接收":L"待机",
+        phase,detail,(double)speed/1048576.0,(unsigned long long)st.eta_seconds);
+    else swprintf(row,1800,L"%ls  ·  %ls  ·  %ls  ·  速率 --  ·  ETA --",
+        st.direction==HOP_XFER_DIR_SEND?L"发送":st.direction==HOP_XFER_DIR_RECEIVE?L"接收":L"待机",
+        phase,detail);
     set_text(s_xfer_detail, row);
     swprintf(row, 1800, L"文件 %u / %u    排队 %u    数据 %llu / %llu MB",
              st.files_done, st.files_total, st.queued_count,

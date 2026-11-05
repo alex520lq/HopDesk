@@ -623,13 +623,16 @@ static int send_chunk(SOCKET c, uint8_t *tx, uint32_t batch, uint32_t id, uint64
     hop_put_be64(tx + HOP_DATA_PREFIX + 9, off);
     hop_put_be32(tx + HOP_DATA_PREFIX + 17, len);
     hop_put_be32(tx + HOP_DATA_PREFIX + 21, crc);
-    if (data != tx + CHUNK_HDR) memcpy(tx + CHUNK_HDR, data, len);
     EnterCriticalSection(&s_txlock);
     EnterCriticalSection(&s_x.lock);
     hop_data_prefix(tx + HOP_HEADER_SIZE, &s_x.session, batch);
     LeaveCriticalSection(&s_x.lock);
     uint64_t send_started = rate_now_ns();
-    int ok = send_session_current(c) && send_all(c, (const char *)tx, (int)(CHUNK_HDR + len));
+    int ok = send_session_current(c) &&
+             (data == tx + CHUNK_HDR ?
+              send_all(c, (const char *)tx, (int)(CHUNK_HDR + len)) :
+              (send_all(c, (const char *)tx, (int)CHUNK_HDR) &&
+               send_all(c, (const char *)data, (int)len)));
     uint64_t send_us = (rate_now_ns() - send_started) / 1000ull;
     hop_xfer_rate_note_send_time(&s_x.rate, len, send_us);
     LeaveCriticalSection(&s_txlock);

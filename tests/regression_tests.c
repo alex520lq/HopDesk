@@ -55,7 +55,7 @@ int main(void){
     assert(receive_state.status.bytes_total==1048576 && receive_state.status.bytes_done==0);
     assert(receive_state.status.files_done==0);
     hop_xfer_tracking_chunk(&receive_state,7,1,0,128,2000);
-    hop_xfer_tracking_chunk(&receive_state,7,1,0,128);
+    hop_xfer_tracking_chunk(&receive_state,7,1,0,128,2000);
     assert(receive_state.status.bytes_done==128);
     hop_xfer_tracking_chunk(&receive_state,8,1,128,128,3000);
     assert(receive_state.status.bytes_done==128);

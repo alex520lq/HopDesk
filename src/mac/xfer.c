@@ -1206,22 +1206,31 @@ static void *send_thread(void *arg) {
         xf_job *j = NULL, *expired = NULL;
         int fd;
 
+        /* Do not consume job retry attempts while the data channel is down.
+         * Snapshot outside qlock to keep the slock/qlock order non-nested. */
+        pthread_mutex_lock(&s_x.slock);
+        int peer_ready_snapshot = s_x.peer_ready;
+        pthread_mutex_unlock(&s_x.slock);
+
         pthread_mutex_lock(&s_x.qlock);
-        /* 等到"有事可做"：有作业到期（或过期），或者被 stop 唤醒。
-         * 200 ms 一轮 —— 重连退避和取消都靠这个轮询推进。 */
+        /* Wait for an expired/cancelled job even offline, but only dequeue a
+         * retry when the data channel was ready at the start of this pass.
+         * A 200 ms poll refreshes the snapshot after reconnect. */
         for (;;) {
             if (s_x.stop) break;
             uint64_t n = now_ms();
-            xf_job *p;
-            p=s_x.q_head;
-            if(p && !(p->batch==s_x.cancel_batch || (p->give_up_at && n>=p->give_up_at)||p->retry_at<=n))p=NULL;
-            if (p) break;
+            xf_job *p = s_x.q_head;
+            if (p && (p->batch == s_x.cancel_batch ||
+                      (p->give_up_at && n >= p->give_up_at) ||
+                      (peer_ready_snapshot && p->retry_at <= n)))
+                break;
 
             struct timespec ts;
             clock_gettime(CLOCK_REALTIME, &ts);
             ts.tv_nsec += 200 * 1000000L;
             if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
             pthread_cond_timedwait(&s_x.qcond, &s_x.qlock, &ts);
+            if (!peer_ready_snapshot) break; /* refresh connection state outside qlock */
         }
 
         if (s_x.stop) {
@@ -1244,7 +1253,7 @@ static void *send_thread(void *arg) {
                 expired->next = NULL;
                 break;
             }
-            if (cur->retry_at <= now) {
+            if (peer_ready_snapshot && cur->retry_at <= now) {
                 j = cur;
                 queue_unlink(prev, cur);
                 break;

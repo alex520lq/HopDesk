@@ -54,6 +54,7 @@ typedef struct xfer_job {
 typedef struct {
     xfer_entry *v;
     int n, cap;
+    int failed; /* incomplete/unsafe snapshots are never queued */
 } elist;
 
 /* ---------------- 全局状态 ---------------- */
@@ -325,11 +326,17 @@ static uint64_t ft_to_unix(const FILETIME *ft) {
 /* ---------------- 条目列表 ---------------- */
 
 static int elist_push(elist *l, xfer_entry *e) {
-    if (l->n >= XFER_MAX_ENTRIES) return 0;
+    if (!e || !e->name || !e->rel ||
+        strlen(e->name) > HOP_NAME_LEN_MAX ||
+        strlen(e->rel) > HOP_PATH_LEN_MAX ||
+        l->n >= XFER_MAX_ENTRIES) {
+        l->failed = 1;
+        return 0;
+    }
     if (l->n == l->cap) {
         int nc = l->cap ? l->cap * 2 : 32;
         xfer_entry *nv = (xfer_entry *)realloc(l->v, (size_t)nc * sizeof(*nv));
-        if (!nv) return 0;
+        if (!nv) { l->failed = 1; return 0; }
         l->v = nv;
         l->cap = nc;
     }
@@ -346,6 +353,7 @@ static void elist_free(elist *l) {
     free(l->v);
     l->v = NULL;
     l->n = l->cap = 0;
+    l->failed = 0;
 }
 
 /* 递归收集。rel 是 UTF-8 相对路径（不含首尾斜杠）。 */
@@ -354,11 +362,22 @@ static BOOL guarded_find_next(HANDLE h, WIN32_FIND_DATAW *data) {
     BOOL ok = FindNextFileW(h, data); hop_watchdog_end(guard); return ok;
 }
 static void walk_into(elist *l, const wchar_t *full, const char *rel) {
+    if (!l || l->failed) return;
     WIN32_FILE_ATTRIBUTE_DATA fad;
     int stat_guard = hop_watchdog_begin("file attributes", HOP_IO_DEADLINE_MS);
     int stat_ok = GetFileAttributesExW(full, GetFileExInfoStandard, &fad);
     hop_watchdog_end(stat_guard);
-    if (!stat_ok) return;
+    if (!stat_ok) {
+        l->failed = 1;
+        hop_log(HOP_LOG_WARN, "xfer: source path disappeared or is inaccessible");
+        return;
+    }
+    /* Do not follow symlinks, junctions or other reparse points. */
+    if (fad.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+        l->failed = 1;
+        hop_log(HOP_LOG_WARN, "xfer: reparse point rejected from file selection");
+        return;
+    }
 
     int is_dir = (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
     const wchar_t *bn = base_name(full);
@@ -372,6 +391,7 @@ static void walk_into(elist *l, const wchar_t *full, const char *rel) {
 
     if (!e.full || !e.name || !e.rel) {
         free(e.full); free(e.name); free(e.rel);
+        l->failed = 1;
         return;
     }
 
@@ -394,7 +414,7 @@ static void walk_into(elist *l, const wchar_t *full, const char *rel) {
 
     size_t dl = wcslen(full);
     wchar_t *pat = (wchar_t *)malloc((dl + 3) * sizeof(wchar_t));
-    if (!pat) return;
+    if (!pat) { l->failed = 1; return; }
     wcscpy(pat, full);
     if (dl && pat[dl - 1] != L'\\' && pat[dl - 1] != L'/') wcscat(pat, L"\\");
     wcscat(pat, L"*");
@@ -404,7 +424,11 @@ static void walk_into(elist *l, const wchar_t *full, const char *rel) {
     HANDLE h = FindFirstFileW(pat, &fd);
     hop_watchdog_end(find_guard);
     free(pat);
-    if (h == INVALID_HANDLE_VALUE) return;
+    if (h == INVALID_HANDLE_VALUE) {
+        l->failed = 1;
+        hop_log(HOP_LOG_WARN, "xfer: cannot enumerate selected directory");
+        return;
+    }
 
     do {
         if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
@@ -412,7 +436,7 @@ static void walk_into(elist *l, const wchar_t *full, const char *rel) {
         size_t fl = wcslen(full);
         int need_sep = (fl && full[fl - 1] != L'\\' && full[fl - 1] != L'/');
         wchar_t *child = (wchar_t *)malloc((fl + wcslen(fd.cFileName) + 3) * sizeof(wchar_t));
-        if (!child) continue;
+        if (!child) { l->failed = 1; break; }
         wcscpy(child, full);
         if (need_sep) wcscat(child, L"\\");
         wcscat(child, fd.cFileName);
@@ -430,12 +454,14 @@ static void walk_into(elist *l, const wchar_t *full, const char *rel) {
             }
             free(cname);
         }
-
-        if (crel) walk_into(l, child, crel);
+        if (!crel) l->failed = 1;
+        else walk_into(l, child, crel);
         free(crel);
         free(child);
+        if (l->failed) break;
     } while (guarded_find_next(h, &fd));
 
+    if (!l->failed && GetLastError() != ERROR_NO_MORE_FILES) l->failed = 1;
     FindClose(h);
 }
 
@@ -651,7 +677,7 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
     uint8_t  end_status = HOP_FILE_OK;
     int      local_fail = 0;
 
-    if (!(e->flags & HOP_FILE_FLAG_DIR) && e->size > 0) {
+    if (!(e->flags & HOP_FILE_FLAG_DIR)) {
         int open_guard = hop_watchdog_begin("file open", HOP_IO_DEADLINE_MS);
         HANDLE h = CreateFileW(e->full, GENERIC_READ,
                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -665,12 +691,27 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
             local_fail = 1;
         } else {
             uint64_t off = 0;
-            for (;;) {
+            while (off < e->size) {
+                uint64_t remaining = e->size - off;
+                DWORD request = (DWORD)(remaining < s_x.chunk ? remaining : s_x.chunk);
                 DWORD got = 0;
                 int read_guard = hop_watchdog_begin("file chunk read", HOP_IO_DEADLINE_MS);
-                int read_ok = ReadFile(h, tx + CHUNK_HDR, (DWORD)s_x.chunk, &got, NULL);
+                int read_ok = ReadFile(h, tx + CHUNK_HDR, request, &got, NULL);
                 hop_watchdog_end(read_guard);
-                if (!read_ok || got == 0) break;
+                if (!read_ok) {
+                    DWORD error = GetLastError();
+                    hop_log(HOP_LOG_WARN, "xfer: read failed, %s (err %lu)", e->rel, error);
+                    end_status = HOP_FILE_IO_ERROR;
+                    local_fail = 1;
+                    break;
+                }
+                if (got == 0) {
+                    hop_log(HOP_LOG_WARN, "xfer: unexpected EOF, %s (%llu/%llu bytes)",
+                            e->rel, (unsigned long long)off, (unsigned long long)e->size);
+                    end_status = HOP_FILE_IO_ERROR;
+                    local_fail = 1;
+                    break;
+                }
                 uint32_t ccrc = hop_crc32(0, tx + CHUNK_HDR, got);
                 if (!send_chunk(c, tx, batch, id, off, tx + CHUNK_HDR, got, ccrc)) {
                     CloseHandle(h);
@@ -679,11 +720,20 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
                 fcrc = hop_xfer_file_crc_step(fcrc, off, ccrc);
                 off += got;
                 yield_cpu();
-                /* 取消的响应粒度 = 一个分块。再细就要每 4 KB 查一次锁，
-                 * 那点响应速度换不来任何可感知的差别。 */
                 if (cancel_requested(batch)) {
                     CloseHandle(h);
                     return XFER_CANCELLED;
+                }
+            }
+            if (!local_fail && off == e->size) {
+                BYTE extra = 0; DWORD extra_got = 0;
+                int read_guard = hop_watchdog_begin("file size probe", HOP_IO_DEADLINE_MS);
+                int read_ok = ReadFile(h, &extra, 1, &extra_got, NULL);
+                hop_watchdog_end(read_guard);
+                if (!read_ok || extra_got != 0) {
+                    hop_log(HOP_LOG_WARN, "xfer: source changed while queued, %s", e->rel);
+                    end_status = HOP_FILE_IO_ERROR;
+                    local_fail = 1;
                 }
             }
             CloseHandle(h);
@@ -1132,15 +1182,20 @@ static int xfer_submit_paths_impl(const wchar_t *const *paths, int n) {
     memset(&l, 0, sizeof(l));
 
     for (int i = 0; i < n; ++i) {
-        if (!paths[i] || !paths[i][0]) continue;
+        if (!paths[i] || !paths[i][0]) { l.failed = 1; break; }
         const wchar_t *bn = base_name(paths[i]);
         char *root = w2u(bn);
-        if (!root) continue;
+        if (!root) { l.failed = 1; break; }
         walk_into(&l, paths[i], root);
         free(root);
+        if (l.failed) break;
     }
 
-    if (l.n == 0) { elist_free(&l); return 0; }
+    if (l.failed || l.n == 0) {
+        hop_log(HOP_LOG_WARN, "xfer: source tree rejected; no partial transfer queued");
+        elist_free(&l);
+        return 0;
+    }
 
     xfer_job *j = (xfer_job *)calloc(1, sizeof(*j));
     if (!j) { elist_free(&l); return 0; }

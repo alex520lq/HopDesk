@@ -174,6 +174,7 @@ static struct {
     int      cur_fail;      /* 本条目已判死：-1 = 正常，否则是 FILE_END 要回的 ACK 状态。
                              * 坏路径和坏数据都在这里落定，FILE_END 只负责回执。 */
     uint64_t cur_size;      /* 声明的大小：超出就拒收，防止被灌成无限大 */
+    uint64_t cur_received; /* 已按连续偏移成功入队的文件字节数 */
     /* 当前文件的校验累加：每块 CRC 折进来，FILE_END 时与发送端比对 */
     uint32_t fcrc;
     uint8_t *img;
@@ -209,6 +210,7 @@ static void rx_clear_state(void) {
     s_rx.fcrc = 0;
     s_rx.cur_id = 0;
     s_rx.cur_size = 0;
+    s_rx.cur_received = 0;
     s_rx.cur_is_image = s_rx.cur_is_dir = 0;
     s_rx.img_w = s_rx.img_h = s_rx.img_stride = 0;
     s_rx.cur_fail = -1;
@@ -429,6 +431,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             s_rx.cur_is_dir   = (flags & HOP_FILE_FLAG_DIR) ? 1 : 0;
             s_rx.cur_fail     = -1;
             s_rx.cur_size     = 0;
+            s_rx.cur_received = 0;
             s_rx.fcrc         = 0;
             s_wq.err          = 0;
 
@@ -463,7 +466,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 memset(&t, 0, sizeof(t));
                 t.kind = RX_OPEN;
                 snprintf(t.path, sizeof(t.path), "%s", path);
-                wq_push(&t);
+                if (!wq_push(&t)) s_rx.cur_fail = HOP_FILE_ACK_DISK;
 
                 /* 不在这里进剪贴板清单 —— 此刻文件还没写成功。
                  * 写盘失败 / 校验失败的文件绝不能出现在剪贴板里，
@@ -567,6 +570,17 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 break;
             }
 
+            /* TCP is ordered: reject gaps, overlaps and chunks after a prior
+             * file failure instead of creating sparse or truncated files. */
+            if (s_rx.cur_fail >= 0) break;
+            if (off != s_rx.cur_received || off > s_rx.cur_size ||
+                (uint64_t)n > s_rx.cur_size - off) {
+                hop_log(HOP_LOG_ERROR, "xfer: non-contiguous file chunk rejected (off=%llu received=%llu size=%llu)",
+                        (unsigned long long)off, (unsigned long long)s_rx.cur_received,
+                        (unsigned long long)s_rx.cur_size);
+                s_rx.cur_fail = HOP_FILE_ACK_CRC;
+                break;
+            }
             /* 不许超出声明的大小：否则对端能一直灌，把磁盘写爆 */
             if (off + n > s_rx.cur_size) {
                 hop_log(HOP_LOG_ERROR, "xfer: chunk beyond declared size (%llu+%u > %llu)",
@@ -582,10 +596,15 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             t.off = off;
             t.len = n;
             t.data = (uint8_t *)malloc(n);
-            if (!t.data) return;
+            if (!t.data) { s_rx.cur_fail = HOP_FILE_ACK_DISK; break; }
             memcpy(t.data, data, n);
-            if (!wq_push(&t)) free(t.data);
-            else status_chunk(HOP_XFER_DIR_RECEIVE,s_rx.batch,s_rx.cur_id,off,n);
+            if (!wq_push(&t)) {
+                free(t.data);
+                s_rx.cur_fail = HOP_FILE_ACK_DISK;
+                break;
+            }
+            s_rx.cur_received += n;
+            status_chunk(HOP_XFER_DIR_RECEIVE,s_rx.batch,s_rx.cur_id,off,n);
 
             /* 文件 CRC 折入本块 CRC：既覆盖数据（块 CRC 已验证），
              * 也覆盖顺序与偏移，且不需要把整份文件重算一遍 */
@@ -620,7 +639,12 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                     hop_log(HOP_LOG_ERROR, "xfer: peer reported status %u for %s",
                             (unsigned)status, s_rx.cur_path ? s_rx.cur_path : "?");
                     ack = HOP_FILE_ACK_DISK;
-                } else if (s_rx.cur_size > 0 && want != s_rx.fcrc) {
+                } else if (s_rx.cur_received != s_rx.cur_size) {
+                    hop_log(HOP_LOG_ERROR, "xfer: incomplete file rejected (%llu/%llu bytes)",
+                            (unsigned long long)s_rx.cur_received,
+                            (unsigned long long)s_rx.cur_size);
+                    ack = HOP_FILE_ACK_CRC;
+                } else if (want != s_rx.fcrc) {
                     hop_log(HOP_LOG_ERROR,
                             "xfer: FILE CRC MISMATCH %s (expect %08x got %08x)",
                             s_rx.cur_path ? s_rx.cur_path : "?", want, s_rx.fcrc);

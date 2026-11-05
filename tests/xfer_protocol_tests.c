@@ -42,6 +42,7 @@ static void rx_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
         uint32_t n=hop_get_be32(p+12),crc=hop_get_be32(p+16);
         if(hop_crc32(0,p+20,n)!=crc){r->ack=HOP_FILE_ACK_CRC;return;}
         if(r->bad_path)return;
+        if(off!=r->received){r->ack=HOP_FILE_ACK_CRC;return;}
         memcpy(r->bytes+off,p+20,n);
         r->file_crc=hop_xfer_file_crc_step(r->file_crc,off,crc);
         r->received+=n;
@@ -52,7 +53,8 @@ static void rx_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
         if(!hop_xfer_decode_file_end(p,len,&m)){r->protocol_error=1;return;}
         if(!r->active || m.id!=r->id){r->protocol_error=1;return;}
         if(r->bad_path)r->ack=HOP_FILE_ACK_BADPATH;
-        else if(r->ack==HOP_FILE_ACK_CRC || m.status!=HOP_FILE_OK || m.file_crc!=r->file_crc)
+        else if(r->ack==HOP_FILE_ACK_CRC || m.status!=HOP_FILE_OK ||
+                r->received!=r->size || m.file_crc!=r->file_crc)
             r->ack=HOP_FILE_ACK_CRC;
         else r->ack=HOP_FILE_ACK_OK;
         r->done=1;
@@ -92,13 +94,14 @@ static void run_file_case(int mode,uint64_t size,uint32_t chunk_size,const char*
         if(!source){++failures;hop_decoder_free(d);free(r.bytes);return;}
         for(uint64_t i=0;i<size;i++)source[i]=(uint8_t)((i*31u+17u)&0xFFu);
         uint32_t chunks=(uint32_t)((size+chunk_size-1)/chunk_size);
+        uint32_t send_chunks = mode==5 && chunks>0 ? chunks-1 : chunks;
         uint32_t whole=0;
         for(uint64_t pos=0;pos<size;pos+=chunk_size){
             uint32_t count=(uint32_t)((size-pos)<chunk_size?(size-pos):chunk_size);
             uint32_t crc=hop_crc32(0,source+pos,count);
             whole=hop_xfer_file_crc_step(whole,pos,crc);
         }
-        for(uint32_t step=0;step<chunks;step++){
+        for(uint32_t step=0;step<send_chunks;step++){
             uint32_t index=(mode==3)?(chunks-1-step):step;
             uint64_t off=(uint64_t)index*chunk_size;
             uint32_t n=(uint32_t)((size-off)<chunk_size?(size-off):chunk_size);
@@ -142,6 +145,7 @@ static void test_file_transfer_wire_roundtrip(void){
     run_file_case(2,8192,4096,"offset.bin",HOP_FILE_ACK_CRC);
     run_file_case(3,8192,4096,"order.bin",HOP_FILE_ACK_CRC);
     run_file_case(4,1024,512,"../escape.bin",HOP_FILE_ACK_BADPATH);
+    run_file_case(5,8192,4096,"truncated.bin",HOP_FILE_ACK_CRC);
 }
 
 static void test_directory_entry(void){

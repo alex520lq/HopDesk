@@ -178,6 +178,7 @@ static void wq_stop(void) {
 typedef struct {
     uint32_t  batch;
     int       active;
+    hop_xfer_budget_reservation budget;
     uint32_t  dead_batch;    /* 已作废的批次（本地取消 / 对端中止）。
                               * 它之后的帧一律忽略，且不再为它建目录 ——
                               * 否则取消之后对端再发一帧就把目录又建回来了。 */
@@ -234,6 +235,7 @@ static void rx_clear_state(void) {
     s_rx.cur_is_image = s_rx.cur_is_dir = 0;
     s_rx.img_w = s_rx.img_h = s_rx.img_stride = 0;
     s_rx.cur_fail = -1;
+    hop_xfer_budget_release(&s_rx.budget);
     s_rx.dir[0] = L'\0';
 }
 
@@ -367,6 +369,11 @@ static void rx_begin_batch(uint32_t batch) {
     InterlockedExchange(&s_x.cancel_rx, 0);
 
     rx_reset();
+    if (!hop_xfer_budget_reserve_job(&s_rx.budget)) {
+        s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_TOO_LARGE;
+        send_abort_msg(s_x.client,batch,HOP_ABORT_TOO_LARGE);
+        return;
+    }
     /* Keep the last tombstone: a late old BEGIN must not replace a newer task. */
     s_rx.active = 1;
     s_rx.batch = batch;
@@ -608,12 +615,22 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 return;
             }
 
+            size_t expected = (size_t)stride * (size_t)h;
+            if (!s_rx.cur_is_image) {
+                if (!hop_xfer_budget_reserve_image(&s_rx.budget,(uint64_t)expected)) {
+                    rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
+                    return;
+                }
+            } else if (s_rx.img_expected != expected) {
+                rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
+                return;
+            }
             s_rx.cur_is_image = 1;
             s_rx.cur_id = msg.id;
             s_rx.img_w = w;
             s_rx.img_h = h;
             s_rx.img_stride = stride;
-            s_rx.img_expected = (size_t)stride * (size_t)h;
+            s_rx.img_expected = expected;
             status_image(batch,HOP_XFER_DIR_RECEIVE,s_rx.img_expected);
             s_rx.img_len = 0;
             break;

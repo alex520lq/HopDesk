@@ -4,6 +4,7 @@
  * OS/network/filesystem doubles isolate lifecycle, not real desktop integration. */
 #include "hop.h"
 #include "xfer_tracking.h"
+#include "xfer_budget.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>

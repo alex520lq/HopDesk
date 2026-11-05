@@ -9,6 +9,7 @@
 #include "mac_app.h"
 #include "xfer.h"
 #include "../core/xfer_status.h"
+#include "../core/hop.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -271,7 +272,13 @@ static void refresh_transfer_page(void) {
     }
     s_xferTitle.stringValue=st.name[0]?utf8(st.name):@"暂无传输任务";
     NSString *direction=st.direction==HOP_XFER_DIR_SEND?@"发送":st.direction==HOP_XFER_DIR_RECEIVE?@"接收":@"待机";
-    s_xferDetail.stringValue=[NSString stringWithFormat:@"%@  ·  %@  ·  %@",direction,phase,utf8(st.detail)];
+    uint64_t now_ms=hop_monotonic_ms();
+    uint64_t speed=st.speed_bytes_per_sec;
+    if(!st.last_progress_ms || now_ms<st.last_progress_ms || now_ms-st.last_progress_ms>2000) speed=0;
+    NSString *rate=speed?[NSString stringWithFormat:@"%@/s",byte_count(speed)]:@"速率 --";
+    NSString *eta=speed?[NSString stringWithFormat:@"ETA %llus",(unsigned long long)st.eta_seconds]:@"ETA --";
+    s_xferDetail.stringValue=[NSString stringWithFormat:@"%@  ·  %@  ·  %@  ·  %@  ·  %@",
+        direction,phase,utf8(st.detail),rate,eta];
     s_xferCounts.stringValue=[NSString stringWithFormat:@"文件 %u / %u    排队 %u    数据 %@ / %@",
         st.files_done,st.files_total,st.queued_count,byte_count(st.bytes_done),byte_count(st.bytes_total)];
     hop_xfer_budget_snapshot budget; memset(&budget,0,sizeof(budget)); xfer_get_budget_snapshot(&budget);

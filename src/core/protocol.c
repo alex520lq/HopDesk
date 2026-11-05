@@ -14,7 +14,7 @@ static int clip_offer_name_valid(const char *name, size_t len) {
     if (!name || len == 0 || len > HOP_NAME_LEN_MAX) return 0;
     for (size_t i = 0; i < len; ++i) {
         unsigned char c = (unsigned char)name[i];
-        if (c == 0 || c == '/' || c == '\\\\' || c < 0x20 || c == 0x7f) return 0;
+        if (c == 0 || c == '/' || c == '\\' || c < 0x20 || c == 0x7f) return 0;
     }
     return 1;
 }

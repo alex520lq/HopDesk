@@ -18,11 +18,13 @@ static pthread_mutex_t s_budget_lock = PTHREAD_MUTEX_INITIALIZER;
 #define DEFAULT_MAX_PENDING_BYTES (8ull * 1024ull * 1024ull * 1024ull)
 #define DEFAULT_MAX_IMAGE_BYTES (256ull * 1024ull * 1024ull)
 #define DEFAULT_MAX_SINGLE_IMAGE_BYTES (256ull * 1024ull * 1024ull)
+#define DEFAULT_MAX_IMAGE_TEMP_BYTES (512ull * 1024ull * 1024ull)
 
 static hop_xfer_budget_limits s_limits = {
     DEFAULT_MAX_JOBS, DEFAULT_MAX_ENTRIES,
     DEFAULT_MAX_PENDING_BYTES, DEFAULT_MAX_IMAGE_BYTES, DEFAULT_MAX_SINGLE_IMAGE_BYTES,
-    HOP_XFER_DEFAULT_RX_QUEUE_SLOTS, HOP_XFER_DEFAULT_RX_QUEUE_BYTES
+    HOP_XFER_DEFAULT_RX_QUEUE_SLOTS, HOP_XFER_DEFAULT_RX_QUEUE_BYTES,
+    DEFAULT_MAX_IMAGE_TEMP_BYTES
 };
 static hop_xfer_budget_snapshot s_used;
 static uint64_t s_next_handle_id;
@@ -182,10 +184,48 @@ int hop_xfer_budget_release_rx_buffer(hop_xfer_reservation_handle *r, uint64_t b
     return 1;
 }
 
+int hop_xfer_budget_reserve_image_temp(hop_xfer_reservation_handle *r, uint64_t bytes) {
+    uint64_t next;
+    if (!r || !r->task_id || !r->handle_id || !r->active || !bytes) return 0;
+    LOCK();
+    if (!add64(s_used.image_temp_bytes, bytes, &next) ||
+        next > s_limits.max_image_temp_bytes ||
+        bytes > UINT64_MAX - r->image_temp_bytes) {
+        s_used.rejected_image_temp_bytes++;
+        UNLOCK();
+        return 0;
+    }
+    s_used.image_temp_bytes = next;
+    if (next > s_used.image_temp_bytes_high_water)
+        s_used.image_temp_bytes_high_water = next;
+    r->image_temp_bytes += bytes;
+    UNLOCK();
+    return 1;
+}
+
+int hop_xfer_budget_release_image_temp(hop_xfer_reservation_handle *r, uint64_t bytes) {
+    if (!r || !r->task_id || !r->handle_id || !r->active || !bytes) return 0;
+    LOCK();
+    if (bytes > r->image_temp_bytes || bytes > s_used.image_temp_bytes) {
+        s_used.accounting_errors++;
+        UNLOCK();
+        return 0;
+    }
+    r->image_temp_bytes -= bytes;
+    s_used.image_temp_bytes -= bytes;
+    if (bytes > UINT64_MAX - s_used.released_image_temp_bytes) {
+        s_used.accounting_errors++;
+    } else {
+        s_used.released_image_temp_bytes += bytes;
+    }
+    UNLOCK();
+    return 1;
+}
+
 void hop_xfer_budget_release(hop_xfer_reservation_handle *r) {
     if (!r || !r->task_id || !r->handle_id || !r->active) return;
     LOCK();
-    if (r->rx_queue_slots || r->rx_queue_bytes) {
+    if (r->rx_queue_slots || r->rx_queue_bytes || r->image_temp_bytes) {
         /* Keep the reservation alive until the writer releases every buffer. */
         s_used.accounting_errors++;
         UNLOCK();
@@ -216,10 +256,11 @@ int hop_xfer_budget_set_limits_for_test(const hop_xfer_budget_limits *l) {
     if (!l || !l->max_jobs || !l->max_entries ||
         !l->max_pending_bytes || !l->max_image_bytes ||
         !l->max_single_image_bytes || l->max_single_image_bytes > l->max_image_bytes ||
-        !l->max_rx_queue_slots || !l->max_rx_queue_bytes) return 0;
+        !l->max_rx_queue_slots || !l->max_rx_queue_bytes ||
+        !l->max_image_temp_bytes) return 0;
     LOCK();
     if (s_used.jobs || s_used.entries || s_used.pending_bytes || s_used.image_bytes ||
-        s_used.rx_queue_slots || s_used.rx_queue_bytes) {
+        s_used.rx_queue_slots || s_used.rx_queue_bytes || s_used.image_temp_bytes) {
         UNLOCK();
         return 0;
     }

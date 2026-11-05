@@ -48,6 +48,8 @@ int hop_xfer_task_reserve_entry(hop_xfer_task *task, uint64_t bytes);
 int hop_xfer_task_reserve_image(hop_xfer_task *task, uint64_t bytes);
 int hop_xfer_task_reserve_rx_buffer(hop_xfer_task *task, uint64_t bytes);
 int hop_xfer_task_release_rx_buffer(hop_xfer_task *task, uint64_t bytes);
+int hop_xfer_task_reserve_image_temp(hop_xfer_task *task, uint64_t bytes);
+int hop_xfer_task_release_image_temp(hop_xfer_task *task, uint64_t bytes);
 int hop_xfer_task_finish(hop_xfer_task *task, hop_xfer_task_state terminal_state);
 void hop_xfer_task_dispose(hop_xfer_task *task);
 int hop_xfer_task_is_terminal(const hop_xfer_task *task);

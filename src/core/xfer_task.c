@@ -117,10 +117,21 @@ int hop_xfer_task_release_rx_buffer(hop_xfer_task *task, uint64_t bytes) {
            hop_xfer_budget_release_rx_buffer(&task->reservation, bytes);
 }
 
+int hop_xfer_task_reserve_image_temp(hop_xfer_task *task, uint64_t bytes) {
+    return task_owns_reservation(task) && !hop_xfer_task_is_terminal(task) &&
+           hop_xfer_budget_reserve_image_temp(&task->reservation, bytes);
+}
+
+int hop_xfer_task_release_image_temp(hop_xfer_task *task, uint64_t bytes) {
+    return task_owns_reservation(task) &&
+           hop_xfer_budget_release_image_temp(&task->reservation, bytes);
+}
+
 int hop_xfer_task_finish(hop_xfer_task *task, hop_xfer_task_state terminal_state) {
     if (!task_owns_reservation(task)) return 0;
     /* A receive task cannot become terminal while its writer still owns buffers. */
-    if (task->reservation.rx_queue_slots || task->reservation.rx_queue_bytes) return 0;
+    if (task->reservation.rx_queue_slots || task->reservation.rx_queue_bytes ||
+        task->reservation.image_temp_bytes) return 0;
     if (terminal_state != HOP_XFER_TASK_COMPLETED &&
         terminal_state != HOP_XFER_TASK_PARTIAL &&
         terminal_state != HOP_XFER_TASK_FAILED &&
@@ -138,7 +149,8 @@ int hop_xfer_task_finish(hop_xfer_task *task, hop_xfer_task_state terminal_state
 void hop_xfer_task_dispose(hop_xfer_task *task) {
     if (!task || !task->initialized) return;
     /* Do not invalidate the owner while the disk writer still references it. */
-    if (task->reservation.rx_queue_slots || task->reservation.rx_queue_bytes) return;
+    if (task->reservation.rx_queue_slots || task->reservation.rx_queue_bytes ||
+        task->reservation.image_temp_bytes) return;
     if (!hop_xfer_task_is_terminal(task)) {
         if (!hop_xfer_task_finish(task, HOP_XFER_TASK_INTERRUPTED)) return;
     } else {

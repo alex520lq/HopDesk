@@ -667,6 +667,24 @@ static void test_xfer_global_budget(void) {
     hop_xfer_budget_release(&a);
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0&&snap.image_bytes==0);
+
+    /* Promote an already-reserved conversion buffer without double-counting
+     * its physical allocation against the combined image-memory ceiling. */
+    CHECK(hop_xfer_budget_reserve_job(&a));
+    CHECK(hop_xfer_budget_reserve_job(&b));
+    CHECK(hop_xfer_budget_reserve_image_temp(&a,16));
+    CHECK(hop_xfer_budget_transfer_image_temp(&a,&b,8));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.image_bytes==16&&snap.image_temp_bytes==8);
+    CHECK(snap.entries==1&&snap.pending_bytes==8);
+    CHECK(snap.transferred_image_temp_bytes==8);
+    CHECK(hop_xfer_budget_release_image_temp(&a,8));
+    hop_xfer_budget_release(&a);
+    hop_xfer_budget_release(&b);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0);
+    CHECK(snap.image_bytes==0&&snap.image_temp_bytes==0);
+
     hop_xfer_budget_limits concurrent_limits={4u,64u,1024u,512u,512u,2u,1024u,1024u};
     CHECK(hop_xfer_budget_set_limits_for_test(&concurrent_limits));
     budget_thread_context contexts[32];

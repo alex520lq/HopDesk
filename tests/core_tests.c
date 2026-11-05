@@ -717,7 +717,7 @@ static void test_xfer_rate_limiter(void) {
     CHECK(rate.current_rate_bytes_per_sec<healthy_rate&&rate.rate_decreases==1);
 
     hop_xfer_rate_init(&rate,1000,100,2000,100,0);
-    for(int i=0;i<8;i++)hop_xfer_rate_note_send_time(&rate,100,50000);
+    for(int i=0;i<8;i++)hop_xfer_rate_note_send_time(&rate,100,250000);
     CHECK(rate.current_rate_bytes_per_sec==900&&rate.rate_decreases==1);
 }
 

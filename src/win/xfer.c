@@ -552,7 +552,7 @@ static int send_small(SOCKET c, uint8_t type, const uint8_t *p, uint32_t len, ui
  * GB 级传输漏检一次就是静默损坏。 */
 #define CHUNK_HDR (25u + HOP_DATA_PREFIX)   /* 5 帧头 + 4 id + 8 off + 4 len + 4 crc */
 
-#define XFER_RATE_MIN_MIB       16ull
+#define XFER_RATE_MIN_MIB       4ull
 #define XFER_RATE_INITIAL_MIB   64ull
 #define XFER_RATE_MIB_BYTES     (1024ull * 1024ull)
 

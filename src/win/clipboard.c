@@ -16,6 +16,7 @@
  * ===================================================================== */
 #include "app.h"
 #include "xfer.h"
+#include "../core/xfer_task.h"
 
 #include <shellapi.h>
 #include <stdio.h>
@@ -344,8 +345,38 @@ static int send_drop(HDROP drop, UINT count) {
     return ok;
 }
 
+static volatile LONG s_image_task_seq;
+
+static int image_work_task_begin(hop_xfer_task *task) {
+    if (!task) return 0;
+    memset(task, 0, sizeof(*task));
+    uint32_t transfer_id = (uint32_t)InterlockedIncrement(&s_image_task_seq);
+    if (!transfer_id) transfer_id = (uint32_t)InterlockedIncrement(&s_image_task_seq);
+    if (!hop_xfer_task_init(task, 0, 0, transfer_id) ||
+        !hop_xfer_task_reserve_job(task) ||
+        !hop_xfer_task_set_state(task, HOP_XFER_TASK_ACTIVE)) {
+        if (task->initialized) {
+            (void)hop_xfer_task_finish(task, HOP_XFER_TASK_FAILED);
+            hop_xfer_task_dispose(task);
+        }
+        return 0;
+    }
+    return 1;
+}
+
+static void image_work_task_finish(hop_xfer_task *task, int success) {
+    if (!task || !task->initialized) return;
+    if (task->reservation.image_temp_bytes &&
+        !hop_xfer_task_release_image_temp(task, task->reservation.image_temp_bytes)) {
+        hop_log(HOP_LOG_ERROR, "clip: image temporary budget release failed (task=%llu)",
+                (unsigned long long)task->id);
+    }
+    (void)hop_xfer_task_finish(task, success ? HOP_XFER_TASK_COMPLETED : HOP_XFER_TASK_FAILED);
+    hop_xfer_task_dispose(task);
+}
+
 /* CF_DIB -> 自上而下 BGRA。只处理 BI_RGB 的 24/32 位，其余（压缩格式）跳过。 */
-static int send_dib(HANDLE h, DWORD sequence) {
+static int send_dib(HANDLE h, DWORD sequence, hop_xfer_task *task) {
     SIZE_T available = GlobalSize(h);
     if (available < sizeof(BITMAPINFOHEADER)) return -1;
     const BITMAPINFOHEADER *bi = (const BITMAPINFOHEADER *)GlobalLock(h);
@@ -358,7 +389,8 @@ static int send_dib(HANDLE h, DWORD sequence) {
 
     if (hgt == INT_MIN) { GlobalUnlock(h); return -1; }
     if (hgt < 0) { topdown = 1; hgt = -hgt; }
-    if (w <= 0 || hgt <= 0 || bi->biCompression != BI_RGB || (bpp != 24 && bpp != 32)) {
+    if (w <= 0 || hgt <= 0 || w > INT_MAX / 4 ||
+        bi->biCompression != BI_RGB || (bpp != 24 && bpp != 32)) {
         hop_log(HOP_LOG_INFO, "clip: dib %dx%d %dbpp comp %lu unsupported, skipped",
                 w, hgt, bpp, (unsigned long)bi->biCompression);
         GlobalUnlock(h);
@@ -366,6 +398,7 @@ static int send_dib(HANDLE h, DWORD sequence) {
     }
 
     size_t stride = (size_t)w * 4;
+    if ((size_t)hgt > SIZE_MAX / stride) { GlobalUnlock(h); return -1; }
     size_t total = stride * (size_t)hgt;
     if (total > CLIP_IMG_MAX_BYTES) {
         hop_log(HOP_LOG_WARN, "clip: image %.1f MB too large, skipped",
@@ -374,15 +407,25 @@ static int send_dib(HANDLE h, DWORD sequence) {
         return -1;
     }
 
-    size_t src_stride = (((size_t)w * bpp + 31) / 32) * 4;
+    size_t src_stride = (((size_t)w * (size_t)bpp + 31) / 32) * 4;
     uint64_t offset = (uint64_t)bi->biSize + (uint64_t)bi->biClrUsed * 4;
     if (bi->biSize < sizeof(*bi) || offset > available ||
         (uint64_t)src_stride * (unsigned)hgt > available - offset) {
         GlobalUnlock(h); return -1;
     }
+    if (!task || !hop_xfer_task_reserve_image_temp(task, (uint64_t)total)) {
+        GlobalUnlock(h);
+        hop_log(HOP_LOG_WARN, "clip: DIB conversion memory budget exhausted");
+        return -1;
+    }
+
     const uint8_t *src = (const uint8_t *)bi + (size_t)offset;
     uint8_t *dst = (uint8_t *)malloc(total);
-    if (!dst) { GlobalUnlock(h); return 0; }
+    if (!dst) {
+        GlobalUnlock(h);
+        (void)hop_xfer_task_release_image_temp(task, (uint64_t)total);
+        return 0;
+    }
 
     for (int y = 0; y < hgt; ++y) {
         /* DIB 默认自下而上；topdown 时行序已经正确 */
@@ -407,10 +450,16 @@ static int send_dib(HANDLE h, DWORD sequence) {
     }
 
     GlobalUnlock(h);
-    hop_log(HOP_LOG_INFO, "clip: image out %dx%d", w, hgt);
-    if (GetClipboardSequenceNumber() != sequence) { free(dst); return -1; }
-    int ok = xfer_submit_image(dst, w, hgt, (int)stride);
+    hop_log(HOP_LOG_INFO, "clip: image out %dx%d task=%llu", w, hgt,
+            (unsigned long long)task->id);
+    int ok = -1;
+    if (GetClipboardSequenceNumber() == sequence)
+        ok = xfer_submit_image(dst, w, hgt, (int)stride);
     free(dst);
+    if (!hop_xfer_task_release_image_temp(task, (uint64_t)total)) {
+        hop_log(HOP_LOG_ERROR, "clip: DIB conversion budget release failed (task=%llu)",
+                (unsigned long long)task->id);
+    }
     if (!ok) hop_log(HOP_LOG_WARN, "clip: image not queued; will retry");
     return ok;
 }
@@ -422,6 +471,9 @@ static DWORD WINAPI image_worker(LPVOID arg) {
     DWORD sequence = (DWORD)(ULONG_PTR)arg;
     UINT format = CF_DIB;
     HGLOBAL copy = NULL;
+    hop_xfer_task image_task;
+    memset(&image_task, 0, sizeof(image_task));
+    int image_task_ready = 0;
     int opened = 0, result = 0;
     for (int i = 0; i < 6 && !opened; ++i) {
         opened = OpenClipboard(NULL) != 0;
@@ -436,13 +488,26 @@ static DWORD WINAPI image_worker(LPVOID arg) {
             SIZE_T bytes = src ? GlobalSize(src) : 0;
             if (bytes >= (format == CF_DIB ? sizeof(BITMAPINFOHEADER) : sizeof(HOP_DROPFILES)) &&
                 bytes <= CLIP_IMG_MAX_BYTES) {
-                copy = GlobalAlloc(GMEM_MOVEABLE, bytes);
-                void *from = GlobalLock(src);
-                void *to = copy ? GlobalLock(copy) : NULL;
-                if (from && to) memcpy(to, from, bytes);
-                if (from) GlobalUnlock(src);
-                if (to) GlobalUnlock(copy);
-                if (!from || !to) { if (copy) GlobalFree(copy); copy = NULL; }
+                if (format == CF_DIB) {
+                    if (!image_work_task_begin(&image_task)) result = -1;
+                    else {
+                        image_task_ready = 1;
+                        if (!hop_xfer_task_reserve_image_temp(&image_task, (uint64_t)bytes)) {
+                            hop_log(HOP_LOG_WARN, "clip: DIB snapshot memory budget exhausted (task=%llu)",
+                                    (unsigned long long)image_task.id);
+                            result = -1;
+                        }
+                    }
+                }
+                if (result != -1) {
+                    copy = GlobalAlloc(GMEM_MOVEABLE, bytes);
+                    void *from = GlobalLock(src);
+                    void *to = copy ? GlobalLock(copy) : NULL;
+                    if (from && to) memcpy(to, from, bytes);
+                    if (from) GlobalUnlock(src);
+                    if (to) GlobalUnlock(copy);
+                    if (!from || !to) { if (copy) GlobalFree(copy); copy = NULL; }
+                }
             } else result = -1;
         }
         CloseClipboard();
@@ -452,9 +517,11 @@ static DWORD WINAPI image_worker(LPVOID arg) {
         else if (format == CF_HDROP) {
             UINT count = DragQueryFileW((HDROP)copy, 0xFFFFFFFF, NULL, 0);
             result = count ? send_drop((HDROP)copy, count) : -1;
-        } else result = send_dib(copy, sequence);
+        } else result = send_dib(copy, sequence, &image_task);
         GlobalFree(copy);
     }
+    if (image_task_ready)
+        image_work_task_finish(&image_task, result > 0);
     InterlockedExchange(&s_image_busy, 0);
     if (!result || GetClipboardSequenceNumber() != sequence)
         PostMessageW(g_app.hwnd, WM_APP_CLIP, 0, 0);

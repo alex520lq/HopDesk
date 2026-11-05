@@ -147,6 +147,11 @@ static void status_begin(uint32_t batch,int direction,uint32_t files,uint64_t by
             for(int i=0;i<HOP_XFER_FILE_LIMIT;i++){free(s_retry_paths[i]);s_retry_paths[i]=NULL;}
         hop_xfer_tracking_begin(t,batch,direction,files,bytes,name,phase);
     } else t->status.phase=phase;
+    t->sample_ms=hop_monotonic_ms();
+    t->sample_bytes=t->status.bytes_done;
+    t->status.speed_bytes_per_sec=0;
+    t->status.last_progress_ms=0;
+    t->status.eta_seconds=0;
     t->revision=++s_status_revision;
     snprintf(t->status.detail,sizeof(t->status.detail),"%s",direction==HOP_XFER_DIR_SEND?"Sending to peer":"Receiving from peer");
     ReleaseSRWLockExclusive(&s_status_lock);

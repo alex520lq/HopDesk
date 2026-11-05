@@ -552,9 +552,22 @@ static int send_small(SOCKET c, uint8_t type, const uint8_t *p, uint32_t len, ui
  * GB 级传输漏检一次就是静默损坏。 */
 #define CHUNK_HDR (25u + HOP_DATA_PREFIX)   /* 5 帧头 + 4 id + 8 off + 4 len + 4 crc */
 
-#define XFER_RATE_INITIAL_BPS (128ull * 1024ull * 1024ull)
-#define XFER_RATE_MIN_BPS     (64ull * 1024ull * 1024ull)
-#define XFER_RATE_MAX_BPS     (512ull * 1024ull * 1024ull)
+#define XFER_RATE_MIN_MIB       16ull
+#define XFER_RATE_INITIAL_MIB   64ull
+#define XFER_RATE_MIB_BYTES     (1024ull * 1024ull)
+
+static void rate_init_from_config(hop_xfer_rate_limiter *rate, int configured_max_mib,
+                                  uint64_t burst_bytes, uint64_t now_ns) {
+    uint64_t max_mib = configured_max_mib < 16 ? 16u :
+                       configured_max_mib > 4096 ? 4096u :
+                       (uint64_t)configured_max_mib;
+    uint64_t max_bps = max_mib * XFER_RATE_MIB_BYTES;
+    uint64_t min_bps = XFER_RATE_MIN_MIB * XFER_RATE_MIB_BYTES;
+    uint64_t initial_bps = XFER_RATE_INITIAL_MIB * XFER_RATE_MIB_BYTES;
+    if (min_bps > max_bps) min_bps = max_bps;
+    if (initial_bps > max_bps) initial_bps = max_bps;
+    hop_xfer_rate_init(rate, initial_bps, min_bps, max_bps, burst_bytes, now_ns);
+}
 
 static uint64_t rate_now_ns(void) {
     LARGE_INTEGER counter, frequency;
@@ -1177,8 +1190,11 @@ int xfer_init(HWND hwnd, const hop_config *cfg) {
     if (ck < 64) ck = 64;
     if (ck > 4096) ck = 4096;
     s_x.chunk = (uint32_t)ck * 1024u;
-    hop_xfer_rate_init(&s_x.rate, XFER_RATE_INITIAL_BPS, XFER_RATE_MIN_BPS,
-                       XFER_RATE_MAX_BPS, (uint64_t)s_x.chunk * 2u, rate_now_ns());
+    rate_init_from_config(&s_x.rate, cfg->xfer_rate_limit_mib,
+                          (uint64_t)s_x.chunk * 2u, rate_now_ns());
+    hop_log(HOP_LOG_INFO, "xfer: adaptive rate initial %.1f MiB/s, ceiling %.1f MiB/s",
+            (double)s_x.rate.current_rate_bytes_per_sec / XFER_RATE_MIB_BYTES,
+            (double)s_x.rate.max_rate_bytes_per_sec / XFER_RATE_MIB_BYTES);
 
     InitializeCriticalSection(&s_x.lock);
     InitializeCriticalSection(&s_txlock);

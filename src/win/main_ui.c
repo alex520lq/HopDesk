@@ -47,7 +47,8 @@ static HWND s_title, s_header_status, s_footer;
 static HWND s_overview_status, s_overview_peer, s_overview_channels, s_overview_sharing;
 static HWND s_connection_role, s_connection_status, s_connection_peer, s_connection_ports;
 static HWND s_cfg[CFG_COUNT], s_cfg_note;
-static HWND s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_progress, s_xfer_files, s_xfer_history, s_xfer_retry_button;
+static HWND s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_budget, s_xfer_memory, s_xfer_budget_stats;
+static HWND s_xfer_progress, s_xfer_files, s_xfer_history, s_xfer_retry_button;
 static HWND s_log_edit;
 static HWND s_update_version, s_update_source;
 static HFONT s_font, s_font_title, s_font_small;
@@ -370,6 +371,30 @@ static void refresh_transfers(void) {
              (unsigned long long)(st.bytes_done / 1048576ULL),
              (unsigned long long)(st.bytes_total / 1048576ULL));
     set_text(s_xfer_counts, row);
+    hop_xfer_budget_snapshot budget; memset(&budget,0,sizeof(budget)); xfer_get_budget_snapshot(&budget);
+    swprintf(row,1800,L"预算  jobs %u/%u  ·  entries %u/%u  ·  pending %llu/%llu MiB",
+        budget.jobs,budget.limits.max_jobs,budget.entries,budget.limits.max_entries,
+        (unsigned long long)(budget.pending_bytes/1048576ULL),
+        (unsigned long long)(budget.limits.max_pending_bytes/1048576ULL));
+    set_text(s_xfer_budget,row);
+    swprintf(row,1800,L"内存  image %llu/%llu MiB (temp %llu/%llu MiB)  ·  RX %u/%u slots  ·  %llu/%llu MiB",
+        (unsigned long long)(budget.image_bytes/1048576ULL),
+        (unsigned long long)(budget.limits.max_image_bytes/1048576ULL),
+        (unsigned long long)(budget.image_temp_bytes/1048576ULL),
+        (unsigned long long)(budget.limits.max_image_temp_bytes/1048576ULL),
+        budget.rx_queue_slots,budget.limits.max_rx_queue_slots,
+        (unsigned long long)(budget.rx_queue_bytes/1048576ULL),
+        (unsigned long long)(budget.limits.max_rx_queue_bytes/1048576ULL));
+    set_text(s_xfer_memory,row);
+    uint64_t rejected=budget.rejected_jobs+budget.rejected_entries+budget.rejected_bytes+
+        budget.rejected_images+budget.rejected_rx_buffers+budget.rejected_image_temp_bytes+
+        budget.rejected_image_transfers;
+    swprintf(row,1800,L"峰值 jobs %u · entries %u · pending %llu MiB · image %llu MiB  ·  拒绝 %llu  ·  账本异常 %llu",
+        budget.jobs_high_water,budget.entries_high_water,
+        (unsigned long long)(budget.pending_bytes_high_water/1048576ULL),
+        (unsigned long long)(budget.image_bytes_high_water/1048576ULL),
+        (unsigned long long)rejected,(unsigned long long)budget.accounting_errors);
+    set_text(s_xfer_budget_stats,row);
     int pct = st.bytes_total ? (int)(100ULL * st.bytes_done / st.bytes_total) : (st.phase==HOP_XFER_COMPLETED ? 100 : 0);
     SendMessageW(s_xfer_progress, PBM_SETPOS, pct > 100 ? 100 : pct, 0);
     if (s_xfer_retry_button) EnableWindow(s_xfer_retry_button, st.direction == HOP_XFER_DIR_SEND);
@@ -490,13 +515,16 @@ static void create_pages(HWND h) {
     p=s_pages[2]; create_settings_page(p);
 
     p=s_pages[3];
-    group(p,L"当前任务",20,14,800,145);
-    s_xfer_title=label(p,L"暂无传输任务",40,42,740,24); set_font(s_xfer_title,s_font_title);
-    s_xfer_detail=label(p,L"等待文件传输",40,72,740,22);
-    s_xfer_counts=label(p,L"文件 0 / 0    排队 0    数据 0 / 0 MB",40,100,740,22);
-    s_xfer_progress=child(p,PROGRESS_CLASSW,L"",PBS_SMOOTH,40,128,740,14,0);
-    group(p,L"文件明细",20,174,800,195);
-    s_xfer_files=child(p,L"LISTBOX",L"",LBS_NOTIFY|WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS|WS_TABSTOP,40,198,760,155,UI_ID_FILES);
+    group(p,L"当前任务",20,14,800,182);
+    s_xfer_title=label(p,L"暂无传输任务",40,40,740,24); set_font(s_xfer_title,s_font_title);
+    s_xfer_detail=label(p,L"等待文件传输",40,68,740,18);
+    s_xfer_counts=label(p,L"文件 0 / 0    排队 0    数据 0 / 0 MB",40,92,740,18);
+    s_xfer_budget=label(p,L"预算 jobs 0/16 · entries 0/32768 · pending 0/8192 MiB",40,116,740,16);
+    s_xfer_memory=label(p,L"内存 image 0/256 MiB · RX 0/8 slots",40,136,740,16);
+    s_xfer_budget_stats=label(p,L"峰值与拒绝计数等待采样",40,156,740,16);
+    s_xfer_progress=child(p,PROGRESS_CLASSW,L"",PBS_SMOOTH,40,178,740,10,0);
+    group(p,L"文件明细",20,210,800,159);
+    s_xfer_files=child(p,L"LISTBOX",L"",LBS_NOTIFY|WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS|WS_TABSTOP,40,232,760,119,UI_ID_FILES);
     group(p,L"传输历史",20,386,800,175);
     s_xfer_history=child(p,L"LISTBOX",L"",WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS,40,410,760,135,0);
     s_xfer_retry_button=button(p,L"重试选中文件",500,572,140,34,UI_ID_XFER_RETRY);

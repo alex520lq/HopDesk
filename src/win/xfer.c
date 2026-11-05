@@ -11,6 +11,7 @@
 #include "../core/xfer_tracking.h"
 #include "../core/xfer_budget.h"
 #include "../core/xfer_task.h"
+#include "../core/xfer_rate.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -267,6 +268,7 @@ static struct {
     xfer_job        *q_head, *q_tail;
     uint32_t         batch_seq;
     uint32_t         chunk;     /* 实际分块字节数 */
+    hop_xfer_rate_limiter rate; /* sender thread only */
 
     /* ---- 取消 ----
      * cur_batch 由发送线程在开始一批时设置；cancel_batch 由 UI 线程设置。
@@ -549,8 +551,72 @@ static int send_small(SOCKET c, uint8_t type, const uint8_t *p, uint32_t len, ui
  * GB 级传输漏检一次就是静默损坏。 */
 #define CHUNK_HDR (25u + HOP_DATA_PREFIX)   /* 5 帧头 + 4 id + 8 off + 4 len + 4 crc */
 
+#define XFER_RATE_INITIAL_BPS (128ull * 1024ull * 1024ull)
+#define XFER_RATE_MIN_BPS     (64ull * 1024ull * 1024ull)
+#define XFER_RATE_MAX_BPS     (512ull * 1024ull * 1024ull)
+
+static uint64_t rate_now_ns(void) {
+    LARGE_INTEGER counter, frequency;
+    QueryPerformanceCounter(&counter);
+    QueryPerformanceFrequency(&frequency);
+    uint64_t q = (uint64_t)counter.QuadPart;
+    uint64_t f = (uint64_t)frequency.QuadPart;
+    return (q / f) * 1000000000ull + ((q % f) * 1000000000ull) / f;
+}
+
+static void rate_sleep_ns(uint64_t ns) {
+    if (ns >= 1000000ull) {
+        DWORD ms = (DWORD)(ns / 1000000ull);
+        if (ms > 10) ms = 10;
+        if (ms) Sleep(ms);
+        return;
+    }
+    LARGE_INTEGER start, now, frequency;
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&start);
+    do {
+        SwitchToThread();
+        QueryPerformanceCounter(&now);
+    } while (((uint64_t)(now.QuadPart - start.QuadPart) * 1000000000ull) /
+             (uint64_t)frequency.QuadPart < ns);
+}
+
+static int rate_wait_for_chunk(uint32_t bytes) {
+    for (;;) {
+        uint64_t delay = hop_xfer_rate_wait_ns(&s_x.rate, bytes, rate_now_ns());
+        if (delay == UINT64_MAX) {
+            hop_log(HOP_LOG_ERROR, "xfer: chunk exceeds token-bucket burst");
+            return 0;
+        }
+        if (!delay) return 1;
+        if (WaitForSingleObject(s_x.stop, 0) == WAIT_OBJECT_0) return 0;
+        rate_sleep_ns(delay);
+    }
+}
+
+static uint32_t rate_queue_pressure_permille(void) {
+    hop_xfer_budget_snapshot snap;
+    hop_xfer_budget_get_snapshot(&snap);
+    uint64_t bytes = snap.rx_queue_bytes * 1000ull / HOP_XFER_DEFAULT_RX_QUEUE_BYTES;
+    uint64_t slots = (uint64_t)snap.rx_queue_slots * 1000ull / HOP_XFER_DEFAULT_RX_QUEUE_SLOTS;
+    uint64_t pressure = bytes > slots ? bytes : slots;
+    return (uint32_t)(pressure > 1000ull ? 1000ull : pressure);
+}
+
+static void rate_feedback(uint64_t ack_rtt_us) {
+    uint64_t before = s_x.rate.current_rate_bytes_per_sec;
+    uint32_t pressure = rate_queue_pressure_permille();
+    hop_xfer_rate_feedback(&s_x.rate, ack_rtt_us, pressure);
+    if (s_x.rate.current_rate_bytes_per_sec < before) {
+        hop_log(HOP_LOG_INFO, "xfer: adaptive send rate %.1f MB/s (ack %.1f ms, local rx queue %u/1000)",
+                (double)s_x.rate.current_rate_bytes_per_sec / 1048576.0,
+                (double)ack_rtt_us / 1000.0, pressure);
+    }
+}
+
 static int send_chunk(SOCKET c, uint8_t *tx, uint32_t batch, uint32_t id, uint64_t off,
                       const uint8_t *data, uint32_t len, uint32_t crc) {
+    if (!rate_wait_for_chunk(len)) return 0;
     int send_guard = hop_watchdog_begin("data frame send", 10000);
     hop_encode_header(tx, HOP_MSG_FILE_CHUNK, 20 + HOP_DATA_PREFIX + len);
     hop_put_be32(tx + HOP_DATA_PREFIX + 5, id);
@@ -562,7 +628,10 @@ static int send_chunk(SOCKET c, uint8_t *tx, uint32_t batch, uint32_t id, uint64
     EnterCriticalSection(&s_x.lock);
     hop_data_prefix(tx + HOP_HEADER_SIZE, &s_x.session, batch);
     LeaveCriticalSection(&s_x.lock);
+    uint64_t send_started = rate_now_ns();
     int ok = send_session_current(c) && send_all(c, (const char *)tx, (int)(CHUNK_HDR + len));
+    uint64_t send_us = (rate_now_ns() - send_started) / 1000ull;
+    hop_xfer_rate_note_send_time(&s_x.rate, len, send_us);
     LeaveCriticalSection(&s_txlock);
     if(ok) status_chunk(HOP_XFER_DIR_SEND,batch,id,off,len);
     hop_watchdog_end(send_guard);
@@ -773,7 +842,10 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
      * 等到的结论也只会是"失败"。直接进重试。 */
     if (local_fail) return XFER_LOCAL_IO;
 
-    return ack_wait(batch, id);
+    uint64_t ack_started = rate_now_ns();
+    int ack_status = ack_wait(batch, id);
+    rate_feedback((rate_now_ns() - ack_started) / 1000ull);
+    return ack_status;
 }
 
 static int send_image_job(SOCKET c, uint8_t *tx, xfer_job *j) {
@@ -793,13 +865,17 @@ static int send_image_job(SOCKET c, uint8_t *tx, xfer_job *j) {
         if (!send_chunk(c, tx, j->batch, 1, off, j->pixels + off, n, crc)) return 0;
         off += n;
         yield_cpu();
+        if (cancel_requested(j->batch)) return -1;
+        if (peer_aborted(j->batch)) return -2;
     }
 
     uint8_t endp[9];
     hop_put_be32(endp, 1);
     endp[4] = HOP_FILE_OK;
     hop_put_be32(endp + 5, 0);
-    return send_small(c, HOP_MSG_FILE_END, endp, 9, j->batch);
+    if (!send_small(c, HOP_MSG_FILE_END, endp, 9, j->batch)) return 0;
+    rate_feedback(0);
+    return 1;
 }
 
 /* 收尾：告诉接收端本批实际送达了多少。
@@ -826,7 +902,10 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
     if(cancel_requested(j->batch))return JOB_CANCELLED;
     if(peer_aborted(j->batch))return JOB_PEER_ABORT;
     if (j->is_image) {
-        if (!send_image_job(c, tx, j)) return JOB_NET_DOWN;
+        int image_result = send_image_job(c, tx, j);
+        if (image_result == -1) return JOB_CANCELLED;
+        if (image_result == -2) return JOB_PEER_ABORT;
+        if (!image_result) return JOB_NET_DOWN;
         j->ok = 1;
         j->next_i = j->n;
         status_file_phase(HOP_XFER_DIR_SEND,j->batch,0,HOP_XFER_FILE_COMPLETED,1);
@@ -1077,6 +1156,8 @@ int xfer_init(HWND hwnd, const hop_config *cfg) {
     if (ck < 64) ck = 64;
     if (ck > 4096) ck = 4096;
     s_x.chunk = (uint32_t)ck * 1024u;
+    hop_xfer_rate_init(&s_x.rate, XFER_RATE_INITIAL_BPS, XFER_RATE_MIN_BPS,
+                       XFER_RATE_MAX_BPS, (uint64_t)s_x.chunk * 2u, rate_now_ns());
 
     InitializeCriticalSection(&s_x.lock);
     InitializeCriticalSection(&s_txlock);

@@ -800,6 +800,28 @@ static void test_xfer_ack_window(void) {
     CHECK(hop_xfer_ack_window_advance_checkpoint(&checkpoint,1));
     CHECK(checkpoint==2);
     CHECK(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,-1));
+
+    /* Simulate a disconnect while filling a four-file window: only ACKed
+     * contiguous entries may move the reconnect checkpoint. */
+    hop_xfer_ack_window_reset(&window);
+    for(uint32_t id=1;id<=HOP_XFER_ACK_WINDOW_CAPACITY;id++) {
+        CHECK(hop_xfer_ack_window_register(&window,13,id));
+        CHECK(hop_xfer_ack_window_mark_sent(&window,13,id,10000u+id));
+        CHECK(hop_xfer_ack_window_set_deadline(&window,13,id,20000u+id));
+    }
+    CHECK(hop_xfer_ack_window_deliver(&window,13,1,HOP_FILE_ACK_OK,11000));
+    CHECK(hop_xfer_ack_window_deliver(&window,13,2,HOP_FILE_ACK_OK,12000));
+    checkpoint=0;
+    CHECK(hop_xfer_ack_window_take(&window,13,1,&status,&rtt_ns));
+    CHECK(status==HOP_FILE_ACK_OK);
+    CHECK(hop_xfer_ack_window_advance_checkpoint(&checkpoint,0));
+    CHECK(hop_xfer_ack_window_take(&window,13,2,&status,&rtt_ns));
+    CHECK(status==HOP_FILE_ACK_OK);
+    CHECK(hop_xfer_ack_window_advance_checkpoint(&checkpoint,1));
+    CHECK(!hop_xfer_ack_window_take(&window,13,3,&status,&rtt_ns));
+    CHECK(checkpoint==2);
+    hop_xfer_ack_window_unregister_batch(&window,13);
+    CHECK(hop_xfer_ack_window_count(&window)==0);
 }
 
 static void test_xfer_rate_limiter(void) {

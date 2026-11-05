@@ -589,13 +589,15 @@ static int send_chunk(int fd, uint8_t *tx, uint32_t batch, uint32_t id, uint64_t
     hop_put_be64(tx + HOP_DATA_PREFIX + 9, off);
     hop_put_be32(tx + HOP_DATA_PREFIX + 17, len);
     hop_put_be32(tx + HOP_DATA_PREFIX + 21, crc);
-    if (data != tx + CHUNK_HDR) memcpy(tx + CHUNK_HDR, data, len);
     pthread_mutex_lock(&s_txlock);
     pthread_mutex_lock(&s_x.slock);
     hop_data_prefix(tx + HOP_HEADER_SIZE, &s_x.session, batch);
     pthread_mutex_unlock(&s_x.slock);
     uint64_t send_started = rate_now_ns();
-    int ok = send_session_current(fd) && send_all(fd, tx, CHUNK_HDR + len);
+    int ok = send_session_current(fd) &&
+             (data == tx + CHUNK_HDR ?
+              send_all(fd, tx, CHUNK_HDR + len) :
+              (send_all(fd, tx, CHUNK_HDR) && send_all(fd, data, len)));
     uint64_t send_us = (rate_now_ns() - send_started) / 1000ull;
     hop_xfer_rate_note_send_time(&s_x.rate, len, send_us);
     pthread_mutex_unlock(&s_txlock);

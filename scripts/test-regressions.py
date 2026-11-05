@@ -477,4 +477,33 @@ int main(void){
     fixture=(ROOT/'tests/dual_role_control_fixture.c.in').read_text(encoding='utf-8').replace('@DISPATCH@',dispatch)
     run('dual_role_control',fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/xfer_validate.c','src/core/crc32.c'],threads=True)
 
+    # An unconfirmed ACK must force a fresh data channel before the same
+    # batch/file ID is reused; the unresolved file remains the resume point.
+    for platform in ['mac','win']:
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        receiver=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        job=extract(sender,'run_job')
+        timeout=job.index('if (st == XFER_ACK_TIMEOUT)')
+        kick=job.index('xfer_kick();',timeout)
+        net_down=job.index('return JOB_NET_DOWN;',kick)
+        assert timeout < kick < net_down
+        kick_fn=extract(sender,'xfer_kick')
+        assert 'peer_ready = 0' in kick_fn or 'peer_ready=0' in kick_fn
+
+        handler=extract(receiver,'on_data_msg')
+        begin=handler[handler.index('case HOP_MSG_FILE_BEGIN:'):handler.index('case HOP_MSG_IMAGE_BEGIN:')]
+        end=handler[handler.index('case HOP_MSG_FILE_END:'):handler.index('case HOP_MSG_FILE_ACK:')]
+        assert 'rx_remove_top(s_rx.cur_path)' in begin
+        close=end.index('rx_close_file()')
+        cleanup=end.index('unlink(' if platform=='mac' else 'DeleteFileW(')
+        assert close < cleanup, 'failed receive cleanup must wait for writer close'
+
+        if platform=='mac':
+            queue=extract(sender,'send_thread')
+            assert 'peer_ready_snapshot' in queue and 'waited_for_queue' in queue
+            assert '!waited_for_queue && peer_ready_snapshot' in queue
+        else:
+            queue=extract(sender,'send_thread')
+            assert 'c != INVALID_SOCKET && cur->retry_at <= now' in queue
+
     print('All targeted regressions passed.',flush=True)

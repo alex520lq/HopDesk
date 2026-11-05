@@ -1473,7 +1473,7 @@ static int xfer_submit_image_impl(const uint8_t *bgra, uint8_t *owned, int w, in
         return 0;
     }
 
-    xf_job *job=(xf_job*)calloc(1,sizeof(*job));
+    xfer_job *job=(xfer_job*)calloc(1,sizeof(*job));
     if(!job){
         if(owned)free(owned);
         hop_xfer_task_finish(&task,HOP_XFER_TASK_FAILED);

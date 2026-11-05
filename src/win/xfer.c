@@ -763,6 +763,11 @@ static int ack_wait(uint32_t batch, uint32_t id, uint64_t deadline, uint64_t *rt
         int hit = hop_xfer_ack_window_take(&s_ack.window, batch, id, &status, &rtt_ns);
         LeaveCriticalSection(&s_ack.lock);
         if (hit) {
+            /* A slot may be filled while the sender is still completing the
+             * rest of this window. Enforce the per-file deadline using the
+             * measured monotonic RTT, not the later time ack_wait was entered. */
+            if (rtt_ns > (uint64_t)HOP_XFER_ACK_TIMEOUT_MS * 1000000ull)
+                return XFER_ACK_TIMEOUT;
             if (rtt_us) *rtt_us = rtt_ns / 1000ull;
             return status;
         }

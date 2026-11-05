@@ -9,6 +9,7 @@
  * 文件描述符由写线程独占，避免"网络线程关文件、写线程还在写"的竞态。
  */
 #define RX_Q_SLOTS 8
+#define RX_Q_MAX_BYTES (8ull * 1024ull * 1024ull)
 
 enum { RX_OPEN = 1, RX_WRITE, RX_CLOSE };
 
@@ -23,6 +24,7 @@ typedef struct {
 static struct {
     rx_task         ring[RX_Q_SLOTS];
     int             head, tail, count, busy;
+    uint64_t        queued_bytes;
     pthread_mutex_t lock;
     pthread_cond_t  cv_work, cv_space;
     pthread_t       th;
@@ -89,11 +91,13 @@ static void *writer_thread(void *arg) {
         wq_task_run(&t);
         hop_watchdog_end(disk_guard);
 
+        free(t.data);
         pthread_mutex_lock(&s_wq.lock);
+        if (t.kind == RX_WRITE)
+            s_wq.queued_bytes = t.len > s_wq.queued_bytes ? 0 : s_wq.queued_bytes - t.len;
         s_wq.busy = 0;
         pthread_cond_broadcast(&s_wq.cv_space);
         pthread_mutex_unlock(&s_wq.lock);
-        free(t.data);
     }
     if (s_wq.f >= 0) { close(s_wq.f); s_wq.f = -1; }
     return NULL;
@@ -101,9 +105,11 @@ static void *writer_thread(void *arg) {
 
 /* 入队。队列满时阻塞 —— 这就是背压的着力点。 */
 static int wq_push(const rx_task *t) {
+    uint64_t add_bytes = t && t->kind == RX_WRITE ? t->len : 0;
+    if (!t || add_bytes > RX_Q_MAX_BYTES) return 0;
     int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
     pthread_mutex_lock(&s_wq.lock);
-    while (s_wq.count >= RX_Q_SLOTS && !s_wq.stop)
+    while ((s_wq.count >= RX_Q_SLOTS || s_wq.queued_bytes > RX_Q_MAX_BYTES - add_bytes) && !s_wq.stop)
         pthread_cond_wait(&s_wq.cv_space, &s_wq.lock);
     if (s_wq.stop) {
         pthread_mutex_unlock(&s_wq.lock);
@@ -113,6 +119,7 @@ static int wq_push(const rx_task *t) {
     s_wq.ring[s_wq.tail] = *t;
     s_wq.tail = (s_wq.tail + 1) % RX_Q_SLOTS;
     s_wq.count++;
+    s_wq.queued_bytes += add_bytes;
     pthread_cond_signal(&s_wq.cv_work);
     pthread_mutex_unlock(&s_wq.lock);
     hop_watchdog_end(queue_guard);

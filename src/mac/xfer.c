@@ -1213,6 +1213,7 @@ static void *send_thread(void *arg) {
         pthread_mutex_unlock(&s_x.slock);
 
         pthread_mutex_lock(&s_x.qlock);
+        int waited_for_queue = 0;
         /* Wait for an expired/cancelled job even offline, but only dequeue a
          * retry when the data channel was ready at the start of this pass.
          * A 200 ms poll refreshes the snapshot after reconnect. */
@@ -1230,6 +1231,7 @@ static void *send_thread(void *arg) {
             ts.tv_nsec += 200 * 1000000L;
             if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
             pthread_cond_timedwait(&s_x.qcond, &s_x.qlock, &ts);
+            waited_for_queue = 1;
             break; /* refresh connection state outside qlock after every poll */
         }
 
@@ -1253,7 +1255,7 @@ static void *send_thread(void *arg) {
                 expired->next = NULL;
                 break;
             }
-            if (peer_ready_snapshot && cur->retry_at <= now) {
+            if (!waited_for_queue && peer_ready_snapshot && cur->retry_at <= now) {
                 j = cur;
                 queue_unlink(prev, cur);
                 break;

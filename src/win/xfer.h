@@ -45,6 +45,7 @@ void xfer_cancel(void);
 /* 提交一批本机路径（文件或目录，目录递归）。内部深拷贝路径，
  * 调用方返回后可以自由释放自己的数组。返回 0 = 未连接，已丢弃。 */
 int  xfer_submit_paths(const wchar_t *const *paths, int n);
+int  xfer_submit_paths_for_paste(const wchar_t *const *paths, int n, uint32_t request_id);
 
 /* 提交一张图片：裸 BGRA、自上而下、行距 stride 字节。内部拷贝像素。 */
 int  xfer_submit_image(const uint8_t *bgra, int w, int h, int stride);

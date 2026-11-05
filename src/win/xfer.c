@@ -1166,9 +1166,12 @@ void xfer_cancel(void) {
 }
 
 static int submit(xfer_job *j) {
-    int ok = 0;
+    int ok = 0, duplicate = 0;
     EnterCriticalSection(&s_x.lock);
-    if (s_x.client != INVALID_SOCKET && s_x.peer_ready) {
+    if (s_x.cur_batch == j->batch) duplicate = 1;
+    for (xfer_job *q = s_x.q_head; q && !duplicate; q = q->next)
+        if (q->batch == j->batch) duplicate = 1;
+    if (!duplicate && s_x.client != INVALID_SOCKET && s_x.peer_ready) {
         if (s_x.q_tail) s_x.q_tail->next = j;
         else            s_x.q_head = j;
         s_x.q_tail = j;
@@ -1179,7 +1182,7 @@ static int submit(xfer_job *j) {
     return ok;
 }
 
-static int xfer_submit_paths_impl(const wchar_t *const *paths, int n) {
+static int xfer_submit_paths_impl(const wchar_t *const *paths, int n, uint32_t requested_batch) {
     if (!paths || n <= 0) return 0;
     if (!xfer_connected()) {
         hop_log(HOP_LOG_WARN, "xfer: data channel not connected, drop %d path(s)", n);
@@ -1208,7 +1211,12 @@ static int xfer_submit_paths_impl(const wchar_t *const *paths, int n) {
     xfer_job *j = (xfer_job *)calloc(1, sizeof(*j));
     if (!j) { elist_free(&l); return 0; }
 
-    do { j->batch = InterlockedIncrement((LONG *)&s_x.batch_seq); } while (!j->batch);
+    if (requested_batch) {
+        if (!(requested_batch & HOP_XFER_PASTE_BATCH_FLAG)) { job_free(j); elist_free(&l); return 0; }
+        j->batch = requested_batch;
+    } else {
+        do { j->batch = InterlockedIncrement((LONG *)&s_x.batch_seq); } while (!j->batch);
+    }
     j->n = l.n;
     j->e = l.v;                 /* 直接接管 */
 
@@ -1258,7 +1266,14 @@ int xfer_listening(void) { return InterlockedCompareExchange(&s_x.listening, 0, 
 
 int xfer_submit_paths(const wchar_t *const *paths, int n) {
     if (!hop_update_work_enter()) return 0;
-    int result = xfer_submit_paths_impl(paths, n);
+    int result = xfer_submit_paths_impl(paths, n, 0);
+    hop_update_work_leave();
+    return result;
+}
+
+int xfer_submit_paths_for_paste(const wchar_t *const *paths, int n, uint32_t request_id) {
+    if (!(request_id & HOP_XFER_PASTE_BATCH_FLAG) || !hop_update_work_enter()) return 0;
+    int result = xfer_submit_paths_impl(paths, n, request_id);
     hop_update_work_leave();
     return result;
 }

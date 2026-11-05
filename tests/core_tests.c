@@ -385,6 +385,59 @@ static void test_decoder_all_split_points(void) {
 }
 
 
+
+static void test_lazy_clipboard_protocol(void) {
+    const char *names[] = {"report.txt", "资料", "empty-folder"};
+    uint8_t offer[HOP_CLIP_OFFER_MAX_PAYLOAD];
+    uint32_t n = hop_clip_file_offer_encode(offer, sizeof(offer),
+                                            HOP_DEV_SERVER, 42, names, 3);
+    CHECK(n > HOP_CLIP_OFFER_HEADER_BYTES);
+    hop_clip_file_offer_msg decoded;
+    CHECK(hop_clip_file_offer_decode(offer, n, &decoded));
+    CHECK(decoded.origin == HOP_DEV_SERVER && decoded.generation == 42 && decoded.count == 3);
+    CHECK(decoded.name_lens[0] == strlen(names[0]));
+    CHECK(memcmp(decoded.names[0], names[0], decoded.name_lens[0]) == 0);
+    CHECK(decoded.name_lens[1] == strlen(names[1]));
+    CHECK(memcmp(decoded.names[1], names[1], decoded.name_lens[1]) == 0);
+    CHECK(!hop_clip_file_offer_decode(offer, n - 1, &decoded));
+    offer[n] = 0xEE;
+    CHECK(!hop_clip_file_offer_decode(offer, n + 1, &decoded));
+
+    const char *bad_names[] = {"../escape"};
+    CHECK(hop_clip_file_offer_encode(offer, sizeof(offer), HOP_DEV_SERVER, 43,
+                                     bad_names, 1) == 0);
+    CHECK(hop_clip_file_offer_encode(offer, sizeof(offer), HOP_DEV_SERVER, 0,
+                                     names, 3) == 0);
+
+    uint8_t clear[HOP_CLIP_OFFER_CLEAR_BYTES];
+    hop_put_be32(clear, HOP_DEV_CLIENT);
+    hop_put_be64(clear + 4, 77);
+    uint32_t origin = 0; uint64_t generation = 0;
+    CHECK(hop_clip_file_offer_clear_decode(clear, sizeof(clear), &origin, &generation));
+    CHECK(origin == HOP_DEV_CLIENT && generation == 77);
+    CHECK(!hop_clip_file_offer_clear_decode(clear, sizeof(clear)-1, &origin, &generation));
+
+    uint8_t request[HOP_CLIP_PASTE_REQUEST_BYTES];
+    uint32_t request_id = HOP_XFER_PASTE_BATCH_FLAG | 9u;
+    CHECK(hop_clip_paste_request_encode(request, request_id, HOP_DEV_SERVER, 42, 1234) ==
+          HOP_CLIP_PASTE_REQUEST_BYTES);
+    hop_clip_paste_request_msg req;
+    CHECK(hop_clip_paste_request_decode(request, sizeof(request), &req));
+    CHECK(req.request_id == request_id && req.origin == HOP_DEV_SERVER &&
+          req.generation == 42 && req.clipboard_version == 1234);
+    CHECK(!hop_clip_paste_request_decode(request, sizeof(request)-1, &req));
+    hop_put_be32(request, 9);
+    CHECK(!hop_clip_paste_request_decode(request, sizeof(request), &req));
+
+    uint8_t failed[HOP_CLIP_PASTE_FAILED_BYTES];
+    CHECK(hop_clip_paste_failed_encode(failed, request_id, HOP_CLIP_PASTE_FAIL_STALE) ==
+          HOP_CLIP_PASTE_FAILED_BYTES);
+    uint32_t failed_id = 0; uint8_t reason = 0;
+    CHECK(hop_clip_paste_failed_decode(failed, sizeof(failed), &failed_id, &reason));
+    CHECK(failed_id == request_id && reason == HOP_CLIP_PASTE_FAIL_STALE);
+    CHECK(!hop_clip_paste_failed_decode(failed, sizeof(failed)-1, &failed_id, &reason));
+}
+
 static void test_clipboard_origin_routing(void) {
     CHECK(hop_clip_should_apply_remote(HOP_DEV_CLIENT, HOP_DEV_SERVER));
     CHECK(hop_clip_should_apply_remote(HOP_DEV_SERVER, HOP_DEV_CLIENT));
@@ -549,6 +602,7 @@ int main(void) {
     test_xfer_chunk_bounds();
     test_xfer_retry_policy();
     test_clipboard_origin_routing();
+    test_lazy_clipboard_protocol();
     test_file_crc_fold();
     test_relative_path_wire_bytes();
     test_file_begin_decode();

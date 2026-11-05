@@ -57,8 +57,11 @@ typedef enum {
     HOP_MSG_KEY_MODS     = 22,  /* S -> C: modmask(uint16)         */
 
     HOP_MSG_CLIP_TEXT    = 30,  /* 双向: origin(uint32) + UTF-8    */
-    /* 31 曾是"整文件一帧传完"的 CLIP_FILE，已废弃：
-     * 大文件走数据通道，单帧 8 MB 上限一并取消。 */
+    /* 31 曾是"整文件一帧传完"的 CLIP_FILE，已废弃。 */
+    HOP_MSG_CLIP_FILE_OFFER       = 32, /* 双向: 轻量文件 Offer，不含路径/文件数据 */
+    HOP_MSG_CLIP_FILE_OFFER_CLEAR = 33, /* 双向: 清除/替换旧 Offer */
+    HOP_MSG_CLIP_PASTE_REQUEST    = 34, /* 双向: 真正跨端粘贴时才请求数据 */
+    HOP_MSG_CLIP_PASTE_FAILED     = 35, /* 双向: Offer 过期/源不可用/队列拒绝 */
 
     HOP_MSG_DISP_WAKE    = 40,  /* S -> C: seconds(uint32)         */
     HOP_MSG_DISP_INPUT   = 41,  /* S -> C: vcp(uint16)             */
@@ -94,6 +97,37 @@ typedef enum {
 #define HOP_FILE_OK          0
 #define HOP_FILE_IO_ERROR    1
 #define HOP_FILE_CRC_ERROR   2
+
+/* ---- Lazy file clipboard ----
+ * File Offer IDs are monotonically increasing generations scoped to the
+ * authenticated control session and origin device. Paste request IDs reserve
+ * the high bit of the data-channel batch namespace. */
+#define HOP_CLIP_OFFER_MAX_ITEMS 256u
+#define HOP_CLIP_OFFER_HEADER_BYTES 14u
+#define HOP_CLIP_OFFER_MAX_PAYLOAD (HOP_CLIP_OFFER_HEADER_BYTES + HOP_CLIP_OFFER_MAX_ITEMS * (2u + HOP_NAME_LEN_MAX))
+#define HOP_CLIP_OFFER_CLEAR_BYTES 12u
+#define HOP_CLIP_PASTE_REQUEST_BYTES 24u
+#define HOP_CLIP_PASTE_FAILED_BYTES 5u
+#define HOP_XFER_PASTE_BATCH_FLAG 0x80000000u
+#define HOP_CLIP_PASTE_FAIL_STALE 1u
+#define HOP_CLIP_PASTE_FAIL_BUSY 2u
+#define HOP_CLIP_PASTE_FAIL_SOURCE_IO 3u
+#define HOP_CLIP_PASTE_FAIL_TRANSFER 4u
+
+typedef struct {
+    uint32_t origin;
+    uint64_t generation;
+    uint16_t count;
+    const uint8_t *names[HOP_CLIP_OFFER_MAX_ITEMS];
+    uint16_t name_lens[HOP_CLIP_OFFER_MAX_ITEMS];
+} hop_clip_file_offer_msg;
+
+typedef struct {
+    uint32_t request_id;
+    uint32_t origin;
+    uint64_t generation;
+    uint64_t clipboard_version;
+} hop_clip_paste_request_msg;
 
 /* ---- FILE_ACK 的 status（接收端报告"这个文件到底成没成"） ---- */
 #define HOP_FILE_ACK_OK       0
@@ -393,6 +427,22 @@ int hop_xfer_hello_valid(const uint8_t *payload, uint32_t len, const char *token
 int hop_xfer_relpath_bytes_safe(const uint8_t *rel, size_t len);
 int hop_xfer_relpath_safe(const char *rel);
 int hop_clip_should_apply_remote(uint32_t origin, uint32_t local_device);
+uint32_t hop_clip_file_offer_encode(uint8_t *out, uint32_t capacity,
+                                    uint32_t origin, uint64_t generation,
+                                    const char *const *names, int count);
+int hop_clip_file_offer_decode(const uint8_t *payload, uint32_t len,
+                               hop_clip_file_offer_msg *out);
+int hop_clip_file_offer_clear_decode(const uint8_t *payload, uint32_t len,
+                                     uint32_t *origin, uint64_t *generation);
+uint32_t hop_clip_paste_request_encode(uint8_t out[HOP_CLIP_PASTE_REQUEST_BYTES],
+                                       uint32_t request_id, uint32_t origin,
+                                       uint64_t generation, uint64_t clipboard_version);
+int hop_clip_paste_request_decode(const uint8_t *payload, uint32_t len,
+                                  hop_clip_paste_request_msg *out);
+uint32_t hop_clip_paste_failed_encode(uint8_t out[HOP_CLIP_PASTE_FAILED_BYTES],
+                                      uint32_t request_id, uint8_t reason);
+int hop_clip_paste_failed_decode(const uint8_t *payload, uint32_t len,
+                                 uint32_t *request_id, uint8_t *reason);
 uint32_t hop_xfer_file_crc_step(uint32_t seed, uint64_t offset, uint32_t chunk_crc);
 int hop_xfer_image_valid(int32_t width, int32_t height, int32_t stride);
 int hop_xfer_chunk_valid(const uint8_t *payload, uint32_t len,

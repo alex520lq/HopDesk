@@ -1200,7 +1200,8 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
     hop_log(HOP_LOG_INFO, "xfer: queued batch %u, %d entries, %.1f MB",
             j->batch, j->n, (double)total / 1048576.0);
 
-    return submit(j);
+    if (!submit(j)) { job_free(j); return 0; }
+    return 1;
 }
 
 static int xfer_submit_image_impl(const uint8_t *bgra, int w, int h, int stride) {
@@ -1226,7 +1227,8 @@ static int xfer_submit_image_impl(const uint8_t *bgra, int w, int h, int stride)
     hop_log(HOP_LOG_INFO, "xfer: queued image %dx%d (%.1f MB)",
             w, h, (double)total / 1048576.0);
 
-    return submit(j);
+    if (!submit(j)) { job_free(j); return 0; }
+    return 1;
 }
 
 void xfer_kick(void) {

@@ -36,7 +36,7 @@ void xfer_cancel(void);
 
 /* 提交本机路径（文件或目录，目录递归）。内部深拷贝，返回后调用方可释放。 */
 int  xfer_submit_paths(const char *const *paths, int n);
-int  xfer_submit_paths_for_paste(const char *const *paths, int n, uint32_t request_id);
+int  xfer_submit_paths_for_paste(const char *const *paths, int n, uint32_t request_id, uint64_t offer_id);
 
 /* 提交图片：裸 BGRA、自上而下、行距 stride 字节。内部拷贝像素。 */
 int  xfer_submit_image(const uint8_t *bgra, int w, int h, int stride);

@@ -11,12 +11,18 @@ typedef struct {
  uint64_t pending_bytes_high_water,image_bytes_high_water;
  uint64_t rejected_jobs,rejected_entries,rejected_bytes,rejected_images;
 } hop_xfer_budget_snapshot;
-typedef struct { uint32_t jobs,entries; uint64_t pending_bytes,image_bytes; int active; } hop_xfer_budget_reservation;
-void hop_xfer_budget_reservation_init(hop_xfer_budget_reservation*);
-int hop_xfer_budget_reserve_job(hop_xfer_budget_reservation*);
-int hop_xfer_budget_reserve_entry(hop_xfer_budget_reservation*,uint64_t);
-int hop_xfer_budget_reserve_image(hop_xfer_budget_reservation*,uint64_t);
-void hop_xfer_budget_release(hop_xfer_budget_reservation*);
+typedef struct {
+ uint64_t task_id;
+ uint64_t handle_id;
+ uint32_t jobs,entries;
+ uint64_t pending_bytes,image_bytes;
+ int active;
+} hop_xfer_reservation_handle;
+int hop_xfer_budget_reservation_init(hop_xfer_reservation_handle*,uint64_t task_id);
+int hop_xfer_budget_reserve_job(hop_xfer_reservation_handle*);
+int hop_xfer_budget_reserve_entry(hop_xfer_reservation_handle*,uint64_t);
+int hop_xfer_budget_reserve_image(hop_xfer_reservation_handle*,uint64_t);
+void hop_xfer_budget_release(hop_xfer_reservation_handle*);
 void hop_xfer_budget_get_snapshot(hop_xfer_budget_snapshot*);
 int hop_xfer_budget_set_limits_for_test(const hop_xfer_budget_limits*);
 #ifdef __cplusplus

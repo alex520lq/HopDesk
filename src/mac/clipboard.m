@@ -447,7 +447,7 @@ void clipboard_apply_image(const uint8_t *bgra, int w, int h, int stride) {
 }
 
 /* Lazy file clipboard request/response control plane. */
-typedef struct { char **paths; int count; uint32_t request_id; } clip_paste_work;
+typedef struct { char **paths; int count; uint32_t request_id; uint64_t offer_id; } clip_paste_work;
 static void clip_send_paste_failed(uint32_t request_id,uint8_t reason) {
     uint8_t p[HOP_CLIP_PASTE_FAILED_BYTES];
     uint32_t n=hop_clip_paste_failed_encode(p,request_id,reason);
@@ -518,7 +518,7 @@ void clipboard_on_paste_failed(const uint8_t *p,uint32_t len) {
 }
 static void clip_paste_worker(void *arg) {
     clip_paste_work *w=(clip_paste_work*)arg;
-    int ok=xfer_submit_paths_for_paste((const char *const *)w->paths,w->count,w->request_id);
+    int ok=xfer_submit_paths_for_paste((const char *const *)w->paths,w->count,w->request_id,w->offer_id);
     if(!ok)clip_send_paste_failed(w->request_id,
         xfer_connected()?HOP_CLIP_PASTE_FAIL_SOURCE_IO:HOP_CLIP_PASTE_FAIL_TRANSFER);
     for(int i=0;i<w->count;++i)free(w->paths[i]);
@@ -542,7 +542,7 @@ void clipboard_on_paste_request(const uint8_t *p,uint32_t len) {
         pthread_mutex_unlock(&s_offer_lock);free(w);
         clip_send_paste_failed(m.request_id,HOP_CLIP_PASTE_FAIL_STALE);return;
     }
-    w->count=s_local_offer_count;w->request_id=m.request_id;
+    w->count=s_local_offer_count;w->request_id=m.request_id;w->offer_id=m.generation;
     w->paths=(char**)calloc((size_t)w->count,sizeof(char*));
     if(w->paths)for(int i=0;i<w->count;++i)w->paths[i]=strdup(s_local_offer_paths[i]);
     int copy_ok=w->paths!=NULL;

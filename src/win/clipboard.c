@@ -649,11 +649,11 @@ static void clip_send_paste_failed(uint32_t request_id,uint8_t reason) {
     uint32_t n=hop_clip_paste_failed_encode(p,request_id,reason);
     if(n)(void)net_server_send(g_app.net,HOP_MSG_CLIP_PASTE_FAILED,p,n);
 }
-typedef struct { wchar_t **paths; int count; uint32_t request_id; } clip_paste_work;
+typedef struct { wchar_t **paths; int count; uint32_t request_id; uint64_t offer_id; } clip_paste_work;
 static DWORD WINAPI clip_paste_worker(LPVOID arg) {
     clip_paste_work *w=(clip_paste_work*)arg;
     SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
-    int ok=xfer_submit_paths_for_paste((const wchar_t *const *)w->paths,w->count,w->request_id);
+    int ok=xfer_submit_paths_for_paste((const wchar_t *const *)w->paths,w->count,w->request_id,w->offer_id);
     if(!ok)clip_send_paste_failed(w->request_id,
         xfer_connected()?HOP_CLIP_PASTE_FAIL_SOURCE_IO:HOP_CLIP_PASTE_FAIL_TRANSFER);
     for(int i=0;i<w->count;++i)free(w->paths[i]);
@@ -737,7 +737,7 @@ void clip_on_paste_request(const uint8_t *p,uint32_t len) {
         ReleaseSRWLockExclusive(&s_offer_lock);free(w);
         clip_send_paste_failed(m.request_id,HOP_CLIP_PASTE_FAIL_STALE);return;
     }
-    w->count=s_local_offer_count;w->request_id=m.request_id;
+    w->count=s_local_offer_count;w->request_id=m.request_id;w->offer_id=m.generation;
     w->paths=(wchar_t**)calloc((size_t)w->count,sizeof(wchar_t*));
     if(w->paths)for(int i=0;i<w->count;++i)w->paths[i]=_wcsdup(s_local_offer_paths[i]);
     int copy_ok=w->paths!=NULL;

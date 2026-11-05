@@ -169,7 +169,7 @@ static void wq_stop(void) {
 static struct {
     uint32_t batch;
     int      active;
-    hop_xfer_budget_reservation budget;
+    hop_xfer_task task;
     uint8_t reserved_entries[HOP_XFER_FILE_LIMIT];
     uint64_t reserved_entry_sizes[HOP_XFER_FILE_LIMIT];
     uint32_t dead_batch;    /* 已作废的批次（本地取消 / 对端中止）。
@@ -226,7 +226,7 @@ static void rx_clear_state(void) {
     s_rx.cur_fail = -1;
     memset(s_rx.reserved_entries,0,sizeof(s_rx.reserved_entries));
     memset(s_rx.reserved_entry_sizes,0,sizeof(s_rx.reserved_entry_sizes));
-    hop_xfer_budget_release(&s_rx.budget);
+    hop_xfer_task_dispose(&s_rx.task);
     s_rx.dir[0] = '\0';
 }
 
@@ -301,6 +301,8 @@ static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
     rx_discard_dir();
     s_rx.dead_batch = batch;
     s_rx.dead_reason = reason;
+    hop_xfer_task_finish(&s_rx.task,reason==HOP_ABORT_CANCEL?
+                         HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
     rx_clear_state();
     status_end(HOP_XFER_DIR_RECEIVE,batch,
                reason==HOP_ABORT_CANCEL?HOP_XFER_CANCELLED:HOP_XFER_FAILED,
@@ -324,14 +326,30 @@ static void rx_begin_batch(uint32_t batch) {
     __sync_lock_test_and_set(&s_x.cancel_rx, 0);
 
     rx_reset();
-    if (!hop_xfer_budget_reserve_job(&s_rx.budget)) {
+    if (!hop_xfer_task_init(&s_rx.task,0,(batch & HOP_XFER_PASTE_BATCH_FLAG)?batch:0,batch)) {
+        s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_DISK;
+        send_abort(batch,HOP_ABORT_DISK);
+        return;
+    }
+    if (!hop_xfer_task_reserve_job(&s_rx.task)) {
         s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_TOO_LARGE;
+        hop_xfer_task_finish(&s_rx.task,HOP_XFER_TASK_FAILED);
+        hop_xfer_task_dispose(&s_rx.task);
         send_abort(batch,HOP_ABORT_TOO_LARGE);
+        return;
+    }
+    if (!hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE)) {
+        s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_DISK;
+        hop_xfer_task_finish(&s_rx.task,HOP_XFER_TASK_FAILED);
+        hop_xfer_task_dispose(&s_rx.task);
+        send_abort(batch,HOP_ABORT_DISK);
         return;
     }
     /* Keep the last tombstone: a late old BEGIN must not replace a newer task. */
     s_rx.active = 1;
     s_rx.batch = batch;
+    hop_log(HOP_LOG_INFO,"xfer: receive batch %u task=%llu",
+            batch,(unsigned long long)s_rx.task.id);
     status_begin(batch,HOP_XFER_DIR_RECEIVE,0,0,"Incoming files",HOP_XFER_RECEIVING);
 
     char session_hex[33]; hop_session_hex(&s_x.session, session_hex);
@@ -380,6 +398,7 @@ static void rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
         status_file_phase(HOP_XFER_DIR_RECEIVE,batch,0,HOP_XFER_FILE_COMPLETED,1);
     int complete=(ok==total) && (!s_rx.cur_is_image ||
         (s_rx.img && s_rx.img_len==s_rx.img_expected));
+    hop_xfer_task_finish(&s_rx.task,complete?HOP_XFER_TASK_COMPLETED:(s_rx.cur_is_image?HOP_XFER_TASK_FAILED:HOP_XFER_TASK_PARTIAL));
     status_end(HOP_XFER_DIR_RECEIVE,batch,complete?HOP_XFER_COMPLETED:
                (s_rx.cur_is_image?HOP_XFER_FAILED:HOP_XFER_PARTIAL),
                complete?"Receive completed":"Receive incomplete; clipboard not updated");
@@ -476,7 +495,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             s_rx.cur_size = size;
             if (!s_rx.cur_path) { s_rx.cur_fail=HOP_FILE_ACK_DISK; break; }
             if (!s_rx.reserved_entries[id - 1]) {
-                if (!hop_xfer_budget_reserve_entry(&s_rx.budget,size)) {
+                if (!hop_xfer_task_reserve_entry(&s_rx.task,size)) {
                     rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
                     return;
                 }
@@ -538,7 +557,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
             size_t expected = (size_t)stride * (size_t)h;
             if (!s_rx.cur_is_image) {
-                if (!hop_xfer_budget_reserve_image(&s_rx.budget,(uint64_t)expected)) {
+                if (!hop_xfer_task_reserve_image(&s_rx.task,(uint64_t)expected)) {
                     rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
                     return;
                 }

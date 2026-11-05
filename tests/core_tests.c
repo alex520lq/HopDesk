@@ -5,6 +5,7 @@
 #include "hop.h"
 #include "update_manifest.h"
 #include "xfer_budget.h"
+#include "xfer_task.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -590,17 +591,17 @@ static void test_update_manifest_validation(void) {
 
 
 
-typedef struct { hop_xfer_budget_reservation reservation; int acquired; } budget_thread_context;
+typedef struct { hop_xfer_task task; uint32_t transfer_id; int acquired; } budget_thread_context;
 #ifdef _WIN32
 static DWORD WINAPI budget_reserve_worker(LPVOID value) {
     budget_thread_context *ctx=(budget_thread_context*)value;
-    ctx->acquired=hop_xfer_budget_reserve_job(&ctx->reservation);
+    ctx->acquired=hop_xfer_task_init(&ctx->task,0,0,ctx->transfer_id) && hop_xfer_task_reserve_job(&ctx->task);
     return 0;
 }
 #else
 static void *budget_reserve_worker(void *value) {
     budget_thread_context *ctx=(budget_thread_context*)value;
-    ctx->acquired=hop_xfer_budget_reserve_job(&ctx->reservation);
+    ctx->acquired=hop_xfer_task_init(&ctx->task,0,0,ctx->transfer_id) && hop_xfer_task_reserve_job(&ctx->task);
     return NULL;
 }
 #endif
@@ -608,10 +609,11 @@ static void *budget_reserve_worker(void *value) {
 static void test_xfer_global_budget(void) {
     hop_xfer_budget_limits limits={2u,3u,1000u,600u,500u};
     hop_xfer_budget_snapshot snap;
-    hop_xfer_budget_reservation a,b,c;
-    hop_xfer_budget_reservation_init(&a);
-    hop_xfer_budget_reservation_init(&b);
-    hop_xfer_budget_reservation_init(&c);
+    hop_xfer_reservation_handle a,b,c;
+    memset(&a,0,sizeof(a));memset(&b,0,sizeof(b));memset(&c,0,sizeof(c));
+    CHECK(hop_xfer_budget_reservation_init(&a,1001));
+    CHECK(hop_xfer_budget_reservation_init(&b,1002));
+    CHECK(hop_xfer_budget_reservation_init(&c,1003));
     CHECK(hop_xfer_budget_set_limits_for_test(&limits));
     CHECK(hop_xfer_budget_reserve_job(&a));
     CHECK(hop_xfer_budget_reserve_entry(&a,400));
@@ -643,6 +645,7 @@ static void test_xfer_global_budget(void) {
     CHECK(hop_xfer_budget_set_limits_for_test(&concurrent_limits));
     budget_thread_context contexts[32];
     memset(contexts,0,sizeof(contexts));
+    for(int i=0;i<32;i++)contexts[i].transfer_id=(uint32_t)i+1;
 #ifdef _WIN32
     HANDLE threads[32]={0};
     int created=0;
@@ -659,9 +662,55 @@ static void test_xfer_global_budget(void) {
     CHECK(created==32&&acquired==4);
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==4&&snap.jobs_high_water==4);
-    for(int i=0;i<32;i++)hop_xfer_budget_release(&contexts[i].reservation);
+    for(int i=0;i<32;i++)hop_xfer_task_dispose(&contexts[i].task);
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==0);
+    hop_xfer_budget_limits defaults={16u,32768u,8ull*1024ull*1024ull*1024ull,256ull*1024ull*1024ull,256ull*1024ull*1024ull};
+    CHECK(hop_xfer_budget_set_limits_for_test(&defaults));
+}
+
+
+static void test_xfer_task_identity_and_lifecycle(void) {
+    hop_xfer_budget_limits limits={4u,8u,4096u,2048u,2048u};
+    hop_xfer_budget_snapshot snap;
+    hop_xfer_task a,b,moved;
+    memset(&a,0,sizeof(a));memset(&b,0,sizeof(b));memset(&moved,0,sizeof(moved));
+    CHECK(hop_xfer_budget_set_limits_for_test(&limits));
+    CHECK(hop_xfer_task_init(&a,UINT64_C(0xABCDEF),UINT32_C(0x80000001),123));
+    CHECK(hop_xfer_task_init(&b,0,0,124));
+    CHECK(a.id!=0&&b.id!=0&&a.id!=b.id);
+    CHECK(a.reservation.task_id==a.id&&b.reservation.task_id==b.id);
+    CHECK(a.offer_id==UINT64_C(0xABCDEF)&&a.request_id==UINT32_C(0x80000001)&&a.transfer_id==123);
+    CHECK(b.offer_id==0&&b.request_id==0&&b.transfer_id==124);
+    CHECK(a.reservation.handle_id!=0&&b.reservation.handle_id!=0);
+    CHECK(a.reservation.handle_id!=b.reservation.handle_id);
+    CHECK(a.state==HOP_XFER_TASK_CREATED);
+    CHECK(hop_xfer_task_reserve_job(&a));
+    CHECK(hop_xfer_task_reserve_entry(&a,100));
+    CHECK(hop_xfer_task_reserve_image(&a,400));
+    CHECK(hop_xfer_task_set_state(&a,HOP_XFER_TASK_SCANNING));
+    CHECK(hop_xfer_task_set_state(&a,HOP_XFER_TASK_QUEUED));
+    CHECK(hop_xfer_task_set_state(&a,HOP_XFER_TASK_ACTIVE));
+    CHECK(hop_xfer_task_set_state(&a,HOP_XFER_TASK_QUEUED)); /* retry */
+    CHECK(hop_xfer_task_set_state(&a,HOP_XFER_TASK_ACTIVE));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==1&&snap.entries==2&&snap.pending_bytes==500&&snap.image_bytes==400);
+    CHECK(hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));
+    CHECK(!hop_xfer_task_finish(&a,HOP_XFER_TASK_CANCELLED));
+    CHECK(!hop_xfer_task_set_state(&a,HOP_XFER_TASK_ACTIVE));
+    CHECK(!hop_xfer_task_reserve_entry(&a,1));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0&&snap.image_bytes==0);
+    CHECK(hop_xfer_task_move(&moved,&b));
+    CHECK(!b.initialized&&moved.initialized&&moved.id!=0);
+    CHECK(hop_xfer_task_reserve_job(&moved));
+    CHECK(hop_xfer_task_set_state(&moved,HOP_XFER_TASK_ACTIVE));
+    CHECK(hop_xfer_task_finish(&moved,HOP_XFER_TASK_CANCELLED));
+    hop_xfer_task_dispose(&a);
+    hop_xfer_task_dispose(&b);
+    hop_xfer_task_dispose(&moved);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0&&snap.image_bytes==0);
     hop_xfer_budget_limits defaults={16u,32768u,8ull*1024ull*1024ull*1024ull,256ull*1024ull*1024ull,256ull*1024ull*1024ull};
     CHECK(hop_xfer_budget_set_limits_for_test(&defaults));
 }
@@ -694,6 +743,7 @@ int main(void) {
     test_file_end_ack_abort_done_decoders();
     test_update_manifest_validation();
     test_xfer_global_budget();
+    test_xfer_task_identity_and_lifecycle();
 
     if (g_failures) {
         fprintf(stderr, "HopDesk core tests: %d failure(s)\n", g_failures);

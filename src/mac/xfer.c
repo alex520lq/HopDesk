@@ -14,6 +14,7 @@
 #include "../core/update_state.h"
 #include "../core/xfer_tracking.h"
 #include "../core/xfer_budget.h"
+#include "../core/xfer_task.h"
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -55,7 +56,7 @@ typedef struct xf_job {
     hop_session_id session;
     uint32_t  batch;
     int       is_image;
-    hop_xfer_budget_reservation budget;
+    hop_xfer_task task;
     int       n;
     xf_entry *e;
     uint8_t  *pixels;
@@ -76,7 +77,7 @@ typedef struct {
     int n, cap;
     int failed; /* incomplete/unsafe snapshots are never queued */
     int budget_rejected;
-    hop_xfer_budget_reservation budget;
+    hop_xfer_task task;
 } elist;
 
 /* ---------------- 状态 ---------------- */
@@ -404,7 +405,7 @@ static int elist_push(elist *l, xf_entry *e) {
         l->failed = 1;
         return 0;
     }
-    if (!hop_xfer_budget_reserve_entry(&l->budget, e->size)) {
+    if (!hop_xfer_task_reserve_entry(&l->task, e->size)) {
         l->budget_rejected = 1;
         l->failed = 1;
         return 0;
@@ -430,7 +431,7 @@ static void elist_free(elist *l) {
     l->v = NULL;
     l->n = l->cap = 0;
     l->failed = 0;
-    hop_xfer_budget_release(&l->budget);
+    hop_xfer_task_dispose(&l->task);
 }
 
 /* 递归收集。lstat 而不是 stat：符号链接跳过，避免环和越界。 */
@@ -917,7 +918,7 @@ static void job_free(xf_job *j) {
     }
     free(j->e);
     free(j->pixels);
-    hop_xfer_budget_release(&j->budget);
+    hop_xfer_task_dispose(&j->task);
     free(j);
 }
 
@@ -989,7 +990,9 @@ static void *send_thread(void *arg) {
                     "xfer: batch %u abandoned, peer never came back (%d/%d delivered)",
                     expired->batch, expired->ok, expired->n);
             status_start_job(expired);
-            status_end(HOP_XFER_DIR_SEND,expired->batch,cancel_requested(expired->batch)?HOP_XFER_CANCELLED:HOP_XFER_FAILED,"Transfer stopped while queued");
+            int was_cancelled=cancel_requested(expired->batch);
+            hop_xfer_task_finish(&expired->task,was_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
+            status_end(HOP_XFER_DIR_SEND,expired->batch,was_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED,"Transfer stopped while queued");
             job_free(expired);
             continue;
         }
@@ -1000,6 +1003,9 @@ static void *send_thread(void *arg) {
         hop_session_id transport_session = s_x.session;
         pthread_mutex_unlock(&s_x.slock);
         job_bind_session(j, &transport_session);
+        if(!hop_xfer_task_set_state(&j->task,HOP_XFER_TASK_ACTIVE)){
+            hop_xfer_task_finish(&j->task,HOP_XFER_TASK_FAILED);job_free(j);continue;
+        }
         status_start_job(j);
 
         int r = (fd >= 0) ? run_job(fd, tx, j) : JOB_NET_DOWN;
@@ -1019,6 +1025,13 @@ static void *send_thread(void *arg) {
                         "xfer: batch %u interrupted at entry %d, retry %d/%d in %u ms",
                         j->batch, j->next_i, j->attempt,
                         HOP_XFER_JOB_RETRY_MAX - 1, d);
+                if(!hop_xfer_task_set_state(&j->task,HOP_XFER_TASK_QUEUED)){
+                    hop_log(HOP_LOG_ERROR,"xfer: task=%llu could not return to queued state",
+                            (unsigned long long)j->task.id);
+                    status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Invalid task retry state");
+                    hop_xfer_task_finish(&j->task,HOP_XFER_TASK_FAILED);
+                    job_free(j);continue;
+                }
                 /* 退回队首，保持 FIFO，next_i 保留 —— 重连后从断点条目继续，不重传已确认的 */
                 j->next = NULL;
                 pthread_mutex_lock(&s_x.qlock);
@@ -1039,11 +1052,21 @@ static void *send_thread(void *arg) {
                         j->batch, j->ok, j->n);
             if (fd >= 0) send_done(fd, j);
         }
-        if (r == JOB_DONE) status_end(HOP_XFER_DIR_SEND,j->batch,j->ok==(int)hop_xfer_job_total(j->is_image,j->n)?HOP_XFER_COMPLETED:HOP_XFER_PARTIAL,
-                                      j->ok==(int)hop_xfer_job_total(j->is_image,j->n)?"Transfer completed":"Some files failed");
-        else if (r == JOB_CANCELLED) status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_CANCELLED,"Cancelled");
-        else if (r == JOB_PEER_ABORT) status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Peer aborted transfer");
-        if(r==JOB_NET_DOWN)status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Reconnect attempts exhausted");
+        if (r == JOB_DONE) {
+            int complete=j->ok==(int)hop_xfer_job_total(j->is_image,j->n);
+            hop_xfer_task_finish(&j->task,complete?HOP_XFER_TASK_COMPLETED:HOP_XFER_TASK_PARTIAL);
+            status_end(HOP_XFER_DIR_SEND,j->batch,complete?HOP_XFER_COMPLETED:HOP_XFER_PARTIAL,
+                       complete?"Transfer completed":"Some files failed");
+        } else if (r == JOB_CANCELLED) {
+            hop_xfer_task_finish(&j->task,HOP_XFER_TASK_CANCELLED);
+            status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_CANCELLED,"Cancelled");
+        } else if (r == JOB_PEER_ABORT) {
+            hop_xfer_task_finish(&j->task,HOP_XFER_TASK_FAILED);
+            status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Peer aborted transfer");
+        } else if (r == JOB_NET_DOWN) {
+            hop_xfer_task_finish(&j->task,HOP_XFER_TASK_FAILED);
+            status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Reconnect attempts exhausted");
+        }
         job_free(j);
     }
 
@@ -1169,17 +1192,31 @@ static int submit(xf_job *j) {
     return !duplicate;
 }
 
-static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requested_batch) {
+static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requested_batch, uint64_t offer_id) {
     if (!paths || n <= 0) return 0;
+    if (requested_batch && !(requested_batch & HOP_XFER_PASTE_BATCH_FLAG)) return 0;
     if (!xfer_connected()) {
         hop_log(HOP_LOG_WARN, "xfer: data channel not connected, drop %d path(s)", n);
         return 0;
     }
 
+    uint32_t batch = requested_batch;
+    if (!batch) { do { batch = __sync_add_and_fetch(&s_x.batch_seq, 1); } while (!batch); }
+
     elist l;
     memset(&l, 0, sizeof(l));
-    if (!hop_xfer_budget_reserve_job(&l.budget)) {
-        hop_log(HOP_LOG_WARN, "xfer: global job budget exhausted");
+    if (!hop_xfer_task_init(&l.task,offer_id,requested_batch,batch)) return 0;
+    if (!hop_xfer_task_reserve_job(&l.task)) {
+        uint64_t task_id=l.task.id;
+        hop_xfer_task_finish(&l.task, HOP_XFER_TASK_FAILED);
+        elist_free(&l);
+        hop_log(HOP_LOG_WARN, "xfer: global job budget exhausted (task=%llu)",
+                (unsigned long long)task_id);
+        return 0;
+    }
+    if (!hop_xfer_task_set_state(&l.task, HOP_XFER_TASK_SCANNING)) {
+        hop_xfer_task_finish(&l.task, HOP_XFER_TASK_FAILED);
+        elist_free(&l);
         return 0;
     }
 
@@ -1193,35 +1230,46 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
 
     if (l.failed || l.n == 0) {
         if (l.budget_rejected)
-            hop_log(HOP_LOG_WARN, "xfer: global entries/pending-bytes budget exceeded; batch rejected");
+            hop_log(HOP_LOG_WARN, "xfer: global entries/pending-bytes budget exceeded; batch rejected (task=%llu)",
+                    (unsigned long long)l.task.id);
         else
-            hop_log(HOP_LOG_WARN, "xfer: source tree rejected; no partial transfer queued");
+            hop_log(HOP_LOG_WARN, "xfer: source tree rejected; no partial transfer queued (task=%llu)",
+                    (unsigned long long)l.task.id);
+        hop_xfer_task_finish(&l.task, HOP_XFER_TASK_FAILED);
         elist_free(&l);
         return 0;
     }
 
-    xf_job *j = (xf_job *)calloc(1, sizeof(*j));
-    if (!j) { elist_free(&l); return 0; }
-
-    if (requested_batch) {
-        if (!(requested_batch & HOP_XFER_PASTE_BATCH_FLAG)) { job_free(j); elist_free(&l); return 0; }
-        j->batch = requested_batch;
-    } else {
-        do { j->batch = __sync_add_and_fetch(&s_x.batch_seq, 1); } while (!j->batch);
+    xfer_job *job = (xfer_job *)calloc(1, sizeof(*job));
+    if (!job) {
+        hop_xfer_task_finish(&l.task, HOP_XFER_TASK_FAILED);
+        elist_free(&l);
+        return 0;
     }
-    j->n = l.n;
-    j->e = l.v;
-    j->budget = l.budget;
-    memset(&l.budget, 0, sizeof(l.budget));
+
+    job->batch = batch;
+    job->n = l.n;
+    job->e = l.v;
+    if (!hop_xfer_task_set_state(&l.task, HOP_XFER_TASK_QUEUED) ||
+        !hop_xfer_task_move(&job->task, &l.task)) {
+        free(job);
+        hop_xfer_task_finish(&l.task, HOP_XFER_TASK_FAILED);
+        elist_free(&l);
+        return 0;
+    }
     l.v = NULL; l.n = l.cap = 0;
 
     uint64_t total = 0;
-    for (int i = 0; i < j->n; ++i) total += j->e[i].size;
+    for (int i = 0; i < job->n; ++i) total += job->e[i].size;
 
-    hop_log(HOP_LOG_INFO, "xfer: queued batch %u, %d entries, %.1f MB",
-            j->batch, j->n, (double)total / 1048576.0);
+    hop_log(HOP_LOG_INFO, "xfer: queued batch %u task=%llu, %d entries, %.1f MB",
+            job->batch, (unsigned long long)job->task.id, job->n, (double)total / 1048576.0);
 
-    if (!submit(j)) { job_free(j); return 0; }
+    if (!submit(job)) {
+        hop_xfer_task_finish(&job->task, HOP_XFER_TASK_FAILED);
+        job_free(job);
+        return 0;
+    }
     return 1;
 }
 
@@ -1233,29 +1281,45 @@ static int xfer_submit_image_impl(const uint8_t *bgra, int w, int h, int stride)
         (uint64_t)(uint32_t)stride>UINT64_MAX/(uint64_t)(uint32_t)h) return 0;
     total64=(uint64_t)(uint32_t)stride*(uint64_t)(uint32_t)h;
     if(total64>(uint64_t)SIZE_MAX||!xfer_connected())return 0;
-    hop_xfer_budget_reservation budget;
-    hop_xfer_budget_reservation_init(&budget);
-    if(!hop_xfer_budget_reserve_job(&budget)||!hop_xfer_budget_reserve_image(&budget,total64)){
-        hop_xfer_budget_release(&budget);
-        hop_log(HOP_LOG_WARN,"xfer: global image memory budget exhausted");return 0;
+
+    uint32_t batch;
+    do { batch = __sync_add_and_fetch(&s_x.batch_seq, 1); } while (!batch);
+    hop_xfer_task task;
+    memset(&task,0,sizeof(task));
+    if(!hop_xfer_task_init(&task,0,0,batch))return 0;
+    if(!hop_xfer_task_reserve_job(&task)||!hop_xfer_task_reserve_image(&task,total64)){
+        uint64_t task_id=task.id;
+        hop_xfer_task_finish(&task,HOP_XFER_TASK_FAILED);
+        hop_xfer_task_dispose(&task);
+        hop_log(HOP_LOG_WARN,"xfer: global image memory budget exhausted (task=%llu)",
+                (unsigned long long)task_id);
+        return 0;
     }
+
+    xfer_job *job=(xfer_job*)calloc(1,sizeof(*job));
+    if(!job){hop_xfer_task_finish(&task,HOP_XFER_TASK_FAILED);hop_xfer_task_dispose(&task);return 0;}
     size_t total=(size_t)total64;
     uint8_t *copy=(uint8_t*)malloc(total);
-    if(!copy){hop_xfer_budget_release(&budget);return 0;}
+    if(!copy){free(job);hop_xfer_task_finish(&task,HOP_XFER_TASK_FAILED);hop_xfer_task_dispose(&task);return 0;}
     memcpy(copy,bgra,total);
-    xf_job *j=(xf_job*)calloc(1,sizeof(*j));
-    if(!j){free(copy);hop_xfer_budget_release(&budget);return 0;}
-    j->budget=budget;memset(&budget,0,sizeof(budget));
 
-    do { j->batch = __sync_add_and_fetch(&s_x.batch_seq, 1); } while (!j->batch);
-    j->is_image = 1;
-    j->pixels = copy;
-    j->w = w; j->h = h; j->stride = stride;
+    if(!hop_xfer_task_set_state(&task,HOP_XFER_TASK_QUEUED)||
+       !hop_xfer_task_move(&job->task,&task)){
+        free(copy);free(job);hop_xfer_task_finish(&task,HOP_XFER_TASK_FAILED);hop_xfer_task_dispose(&task);return 0;
+    }
+    job->batch=batch;
+    job->is_image=1;
+    job->pixels=copy;
+    job->w=w;job->h=h;job->stride=stride;
 
-    hop_log(HOP_LOG_INFO, "xfer: queued image %dx%d (%.1f MB)",
-            w, h, (double)total / 1048576.0);
+    hop_log(HOP_LOG_INFO, "xfer: queued image %dx%d batch=%u task=%llu (%.1f MB)",
+            w, h, job->batch, (unsigned long long)job->task.id, (double)total / 1048576.0);
 
-    if (!submit(j)) { job_free(j); return 0; }
+    if (!submit(job)) {
+        hop_xfer_task_finish(&job->task,HOP_XFER_TASK_FAILED);
+        job_free(job);
+        return 0;
+    }
     return 1;
 }
 
@@ -1267,14 +1331,14 @@ void xfer_kick(void) {
 
 int xfer_submit_paths(const char *const *paths, int n) {
     if (!hop_update_work_enter()) return 0;
-    int result = xfer_submit_paths_impl(paths, n, 0);
+    int result = xfer_submit_paths_impl(paths, n, 0, 0);
     hop_update_work_leave();
     return result;
 }
 
-int xfer_submit_paths_for_paste(const char *const *paths, int n, uint32_t request_id) {
+int xfer_submit_paths_for_paste(const char *const *paths, int n, uint32_t request_id, uint64_t offer_id) {
     if (!(request_id & HOP_XFER_PASTE_BATCH_FLAG) || !hop_update_work_enter()) return 0;
-    int result = xfer_submit_paths_impl(paths, n, request_id);
+    int result = xfer_submit_paths_impl(paths, n, request_id, offer_id);
     hop_update_work_leave();
     return result;
 }

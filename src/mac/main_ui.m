@@ -282,7 +282,7 @@ static void refresh_transfer_page(void) {
     s_xferCounts.stringValue=[NSString stringWithFormat:@"文件 %u / %u    排队 %u    数据 %@ / %@",
         st.files_done,st.files_total,st.queued_count,byte_count(st.bytes_done),byte_count(st.bytes_total)];
     hop_xfer_budget_snapshot budget; memset(&budget,0,sizeof(budget)); xfer_get_budget_snapshot(&budget);
-    s_xferBudget.stringValue=[NSString stringWithFormat:@"预算  jobs %u/%u  ·  entries %u/%u  ·  pending %@/%@",
+    s_xferBudget.stringValue=[NSString stringWithFormat:@"预算  jobs %u/%u  ·  entries %u/%u  ·  待传输 %@/%@",
         budget.jobs,budget.limits.max_jobs,budget.entries,budget.limits.max_entries,
         byte_count(budget.pending_bytes),byte_count(budget.limits.max_pending_bytes)];
     s_xferMemory.stringValue=[NSString stringWithFormat:@"内存  image %@/%@ (temp %@/ %@)  ·  RX %u/%u slots  ·  %@/%@",
@@ -293,7 +293,7 @@ static void refresh_transfer_page(void) {
     uint64_t rejected=budget.rejected_jobs+budget.rejected_entries+budget.rejected_bytes+
         budget.rejected_images+budget.rejected_rx_buffers+budget.rejected_image_temp_bytes+
         budget.rejected_image_transfers;
-    s_xferBudgetStats.stringValue=[NSString stringWithFormat:@"峰值 jobs %u · entries %u · pending %@ · image %@  ·  拒绝 %llu  ·  账本异常 %llu",
+    s_xferBudgetStats.stringValue=[NSString stringWithFormat:@"峰值 jobs %u · entries %u · 待传输 %@ · image %@  ·  拒绝 %llu  ·  账本异常 %llu",
         budget.jobs_high_water,budget.entries_high_water,
         byte_count(budget.pending_bytes_high_water),byte_count(budget.image_bytes_high_water),
         (unsigned long long)rejected,(unsigned long long)budget.accounting_errors];

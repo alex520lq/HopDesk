@@ -890,6 +890,7 @@ static void send_ack(int fd, uint32_t batch, uint32_t id, int status) {
 
 static int run_job(int fd, uint8_t *tx, xf_job *j) {
 
+    ack_unregister_batch(j->batch);
     if(cancel_requested(j->batch))return JOB_CANCELLED;
     if(peer_aborted(j->batch))return JOB_PEER_ABORT;
     if (j->is_image) {

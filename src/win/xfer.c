@@ -887,6 +887,7 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
 /* 实际发送（send 线程持有 tx 缓冲）。 */
 static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
 
+    ack_unregister_batch(j->batch);
     if(cancel_requested(j->batch))return JOB_CANCELLED;
     if(peer_aborted(j->batch))return JOB_PEER_ABORT;
     if (j->is_image) {

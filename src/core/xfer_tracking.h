@@ -38,16 +38,19 @@ static inline void hop_xfer_tracking_file(hop_xfer_tracking *t, uint32_t batch,
     int i = (int)id - 1;
     hop_xfer_file_status *f = &t->files[i];
     if (i < t->count) {
+        /* Re-registering an existing id is a retry: roll back only that
+         * file's progress and restart the throughput sample window. New files
+         * must not reset the batch-wide speed estimate. */
         t->status.bytes_total -= f->bytes_total;
         t->status.bytes_done -= f->bytes_done;
         if (f->phase == HOP_XFER_FILE_COMPLETED && t->status.files_done) t->status.files_done--;
+        t->sample_ms = 0;
+        t->sample_bytes = t->status.bytes_done;
+        t->status.speed_bytes_per_sec = 0;
+        t->status.last_progress_ms = 0;
+        t->status.eta_seconds = 0;
     }
     if (t->count < (int)id) t->count = (int)id;
-    t->sample_ms = 0;
-    t->sample_bytes = t->status.bytes_done;
-    t->status.speed_bytes_per_sec = 0;
-    t->status.last_progress_ms = 0;
-    t->status.eta_seconds = 0;
     memset(f, 0, sizeof(*f));
     f->index = (uint32_t)i; f->phase = phase;
     f->is_directory = directory; f->bytes_total = size;

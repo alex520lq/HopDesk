@@ -854,6 +854,13 @@ static void test_xfer_tracking_speed_and_eta(void) {
     CHECK(tracking.status.eta_seconds==8);
     CHECK(tracking.status.last_progress_ms==2000);
 
+    /* A long pause must not be averaged into the next active throughput sample. */
+    hop_xfer_tracking_chunk(&tracking,7,1,200000,100000,5000);
+    CHECK(tracking.status.speed_bytes_per_sec==0&&tracking.status.eta_seconds==0);
+    hop_xfer_tracking_chunk(&tracking,7,1,300000,100000,6000);
+    CHECK(tracking.status.speed_bytes_per_sec==100000);
+    CHECK(tracking.status.eta_seconds==6);
+
     /* Re-registering a retry rolls progress and its rate sample back. */
     hop_xfer_tracking_file(&tracking,7,1,"large.bin",1000000,0,HOP_XFER_FILE_SENDING);
     CHECK(tracking.status.bytes_done==0);

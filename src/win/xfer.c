@@ -666,7 +666,9 @@ static int send_chunk(SOCKET c, uint8_t *tx, uint32_t batch, uint32_t id, uint64
                send_all(c, (const char *)data, (int)len)));
     uint64_t send_us = (rate_now_ns() - send_started) / 1000ull;
     hop_xfer_rate_note_send_time(&s_x.rate, len, send_us);
+    int feedback_due = (s_x.rate.send_samples & 7u) == 0;
     LeaveCriticalSection(&s_txlock);
+    if (feedback_due) rate_feedback(0);
     if(ok) status_chunk(HOP_XFER_DIR_SEND,batch,id,off,len);
     hop_watchdog_end(send_guard);
     return ok;

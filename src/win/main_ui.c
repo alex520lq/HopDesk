@@ -709,12 +709,12 @@ void main_ui_show_page(int page) {
         char addresses[512];local_addresses(addresses,sizeof(addresses));utf8_to_wide(addresses,s_addresses,512);
         WNDCLASSW wc; memset(&wc,0,sizeof(wc));
         wc.lpfnWndProc=main_wnd_proc; wc.hInstance=g_app.inst;
-        wc.hCursor=LoadCursorW(NULL,IDC_ARROW); wc.hbrBackground=GetSysColorBrush(COLOR_WINDOW);
+        wc.hCursor=LoadCursorW(NULL,MAKEINTRESOURCEW(32512)); wc.hbrBackground=GetSysColorBrush(COLOR_WINDOW);
         wc.lpszClassName=L"HopDeskMainWindow";
         RegisterClassW(&wc);
         WNDCLASSW pc; memset(&pc,0,sizeof(pc));
         pc.lpfnWndProc=page_proc; pc.hInstance=g_app.inst;
-        pc.hCursor=LoadCursorW(NULL,IDC_ARROW); pc.hbrBackground=GetSysColorBrush(COLOR_WINDOW);
+        pc.hCursor=LoadCursorW(NULL,MAKEINTRESOURCEW(32512)); pc.hbrBackground=GetSysColorBrush(COLOR_WINDOW);
         pc.lpszClassName=L"HopDeskMainPage";
         RegisterClassW(&pc);
         s_main=CreateWindowExW(WS_EX_APPWINDOW,L"HopDeskMainWindow",L"HopDesk",

@@ -21,6 +21,7 @@ typedef struct {
     uint64_t rate_increases;
     uint64_t rate_decreases;
     uint32_t send_samples;
+    uint8_t send_congested;
 } hop_xfer_rate_limiter;
 
 void hop_xfer_rate_init(hop_xfer_rate_limiter *rate,

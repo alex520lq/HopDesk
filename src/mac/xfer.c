@@ -1240,7 +1240,7 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
         return 0;
     }
 
-    xf_job *job = (xfer_job *)calloc(1, sizeof(*job));
+    xf_job *job = (xf_job *)calloc(1, sizeof(*job));
     if (!job) {
         hop_xfer_task_finish(&l.task, HOP_XFER_TASK_FAILED);
         elist_free(&l);

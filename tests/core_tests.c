@@ -650,9 +650,9 @@ static void test_xfer_global_budget(void) {
     for(int i=0;i<32;i++)if(threads[i]){CHECK(WaitForSingleObject(threads[i],INFINITE)==WAIT_OBJECT_0);CloseHandle(threads[i]);}
 #else
     pthread_t threads[32];
-    int created=0;
-    for(int i=0;i<32;i++){if(pthread_create(&threads[i],NULL,budget_reserve_worker,&contexts[i])==0)created++;else CHECK(0);}
-    for(int i=0;i<created;i++)CHECK(pthread_join(threads[i],NULL)==0);
+    int created=0,started[32]={0};
+    for(int i=0;i<32;i++){if(pthread_create(&threads[i],NULL,budget_reserve_worker,&contexts[i])==0){created++;started[i]=1;}else CHECK(0);}
+    for(int i=0;i<32;i++)if(started[i])CHECK(pthread_join(threads[i],NULL)==0);
 #endif
     int acquired=0;
     for(int i=0;i<32;i++)if(contexts[i].acquired)acquired++;

@@ -84,10 +84,6 @@ uint64_t hop_xfer_rate_wait_ns(hop_xfer_rate_limiter *rate,
     wait_ns = (missing * RATE_NS_PER_SEC +
                rate->current_rate_bytes_per_sec - 1u) /
               rate->current_rate_bytes_per_sec;
-    if (wait_ns > UINT64_MAX - rate->throttle_wait_ns)
-        rate->throttle_wait_ns = UINT64_MAX;
-    else
-        rate->throttle_wait_ns += wait_ns;
     return wait_ns;
 }
 

@@ -234,6 +234,50 @@ int hop_xfer_budget_release_image_temp(hop_xfer_reservation_handle *r, uint64_t 
     return 1;
 }
 
+int hop_xfer_budget_transfer_image_temp(hop_xfer_reservation_handle *from,
+                                        hop_xfer_reservation_handle *to,
+                                        uint64_t bytes) {
+    uint64_t pending;
+    if (!from || !to || from == to || !from->task_id || !to->task_id ||
+        !from->handle_id || !to->handle_id || !from->active || !to->active || !bytes)
+        return 0;
+    LOCK();
+    if (bytes > from->image_temp_bytes || bytes > from->image_bytes ||
+        bytes > s_used.image_temp_bytes || bytes > s_used.image_bytes ||
+        s_used.entries >= s_limits.max_entries || s_used.entries == UINT32_MAX ||
+        to->entries == UINT32_MAX || bytes > UINT64_MAX - to->image_bytes ||
+        bytes > UINT64_MAX - to->pending_bytes ||
+        !add64(s_used.pending_bytes, bytes, &pending) ||
+        pending > s_limits.max_pending_bytes ||
+        bytes > s_limits.max_single_image_bytes) {
+        s_used.rejected_image_transfers++;
+        UNLOCK();
+        return 0;
+    }
+
+    /* The allocation does not change; only its lifetime owner and accounting
+     * category change. This avoids double-counting the same owned pixel buffer. */
+    from->image_temp_bytes -= bytes;
+    from->image_bytes -= bytes;
+    to->image_bytes += bytes;
+    to->pending_bytes += bytes;
+    to->entries++;
+    s_used.image_temp_bytes -= bytes;
+    s_used.pending_bytes = pending;
+    s_used.entries++;
+    if (s_used.entries > s_used.entries_high_water)
+        s_used.entries_high_water = s_used.entries;
+    if (pending > s_used.pending_bytes_high_water)
+        s_used.pending_bytes_high_water = pending;
+    if (bytes > UINT64_MAX - s_used.transferred_image_temp_bytes) {
+        s_used.accounting_errors++;
+    } else {
+        s_used.transferred_image_temp_bytes += bytes;
+    }
+    UNLOCK();
+    return 1;
+}
+
 void hop_xfer_budget_release(hop_xfer_reservation_handle *r) {
     if (!r || !r->task_id || !r->handle_id || !r->active) return;
     LOCK();

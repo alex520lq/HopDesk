@@ -738,7 +738,7 @@ static void test_xfer_rate_limiter(void) {
     hop_xfer_rate_init(&rate,1000,100,2000,100,0);
     hop_xfer_rate_note_send_time(&rate,100,1000);
     hop_xfer_rate_feedback(&rate,50000,0);
-    CHECK(rate.current_rate_bytes_per_sec==1050&&rate.rate_increases==1);
+    CHECK(rate.current_rate_bytes_per_sec==1020&&rate.rate_increases==1);
     uint64_t healthy_rate=rate.current_rate_bytes_per_sec;
     hop_xfer_rate_feedback(&rate,1000000,900);
     CHECK(rate.current_rate_bytes_per_sec<healthy_rate&&rate.rate_decreases==1);
@@ -758,7 +758,8 @@ static void test_xfer_rate_limiter(void) {
     CHECK(rate.send_congested==0);
     CHECK(rate.current_rate_bytes_per_sec==128ull*1024ull*1024ull);
     hop_xfer_rate_feedback(&rate,50000,0);
-    CHECK(rate.current_rate_bytes_per_sec==128ull*1024ull*1024ull+5ull*1024ull*1024ull+1ull);
+    CHECK(rate.current_rate_bytes_per_sec==128ull*1024ull*1024ull+
+          (512ull*1024ull*1024ull)/100ull);
 }
 
 static void test_xfer_task_image_buffer_transfer(void) {

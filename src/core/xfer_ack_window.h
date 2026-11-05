@@ -36,9 +36,10 @@ static inline uint32_t hop_xfer_ack_window_count(const hop_xfer_ack_window *wind
 
 /* Advance only the next contiguous resolved file. This is the reconnect
  * checkpoint (zero-based); an out-of-order ACK must never skip a gap. */
-static inline int hop_xfer_ack_window_advance_checkpoint(uint32_t *checkpoint,
-                                                          uint32_t resolved_index) {
-    if (!checkpoint || resolved_index != *checkpoint) return 0;
+static inline int hop_xfer_ack_window_advance_checkpoint(int *checkpoint,
+                                                          int resolved_index) {
+    if (!checkpoint || *checkpoint < 0 || resolved_index < 0 ||
+        resolved_index != *checkpoint) return 0;
     ++(*checkpoint);
     return 1;
 }

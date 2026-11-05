@@ -11,6 +11,8 @@ typedef struct {
     uint32_t id;
     int status;
     uint64_t sent_ns;
+    uint64_t deadline_ns;
+    uint64_t received_ns;
     uint64_t rtt_ns;
     uint8_t state; /* 0 free, 1 registered, 2 sent, 3 delivered */
 } hop_xfer_ack_slot;
@@ -64,6 +66,23 @@ static inline int hop_xfer_ack_window_mark_sent(hop_xfer_ack_window *window,
     return 0;
 }
 
+static inline int hop_xfer_ack_window_set_deadline(hop_xfer_ack_window *window,
+                                                       uint32_t batch, uint32_t id,
+                                                       uint64_t deadline_ns) {
+    if (!window || !batch || !id || !deadline_ns) return 0;
+    for (uint32_t i = 0; i < HOP_XFER_ACK_WINDOW_CAPACITY; ++i) {
+        hop_xfer_ack_slot *slot = &window->slots[i];
+        /* ACK may arrive while the sender is returning from FILE_END send.
+         * State 3 is therefore valid: take() runs only after this deadline is set. */
+        if ((slot->state == 2 || slot->state == 3) &&
+            slot->batch == batch && slot->id == id) {
+            slot->deadline_ns = deadline_ns;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static inline int hop_xfer_ack_window_deliver(hop_xfer_ack_window *window,
                                                uint32_t batch, uint32_t id,
                                                int status, uint64_t received_ns) {
@@ -72,6 +91,7 @@ static inline int hop_xfer_ack_window_deliver(hop_xfer_ack_window *window,
         hop_xfer_ack_slot *slot = &window->slots[i];
         if (slot->state == 2 && slot->batch == batch && slot->id == id) {
             slot->status = status;
+            slot->received_ns = received_ns;
             slot->rtt_ns = received_ns >= slot->sent_ns ?
                 received_ns - slot->sent_ns : 0;
             slot->state = 3;
@@ -81,20 +101,31 @@ static inline int hop_xfer_ack_window_deliver(hop_xfer_ack_window *window,
     return 0;
 }
 
-static inline int hop_xfer_ack_window_take(hop_xfer_ack_window *window,
-                                            uint32_t batch, uint32_t id,
-                                            int *status, uint64_t *rtt_ns) {
+static inline int hop_xfer_ack_window_take_ex(hop_xfer_ack_window *window,
+                                               uint32_t batch, uint32_t id,
+                                               int *status, uint64_t *rtt_ns,
+                                               int *deadline_expired) {
+    if (deadline_expired) *deadline_expired = 0;
     if (!window || !batch || !id) return 0;
     for (uint32_t i = 0; i < HOP_XFER_ACK_WINDOW_CAPACITY; ++i) {
         hop_xfer_ack_slot *slot = &window->slots[i];
         if (slot->state == 3 && slot->batch == batch && slot->id == id) {
             if (status) *status = slot->status;
             if (rtt_ns) *rtt_ns = slot->rtt_ns;
+            if (deadline_expired)
+                *deadline_expired = slot->deadline_ns &&
+                    slot->received_ns >= slot->deadline_ns;
             memset(slot, 0, sizeof(*slot));
             return 1;
         }
     }
     return 0;
+}
+
+static inline int hop_xfer_ack_window_take(hop_xfer_ack_window *window,
+                                            uint32_t batch, uint32_t id,
+                                            int *status, uint64_t *rtt_ns) {
+    return hop_xfer_ack_window_take_ex(window,batch,id,status,rtt_ns,NULL);
 }
 
 static inline void hop_xfer_ack_window_unregister(hop_xfer_ack_window *window,

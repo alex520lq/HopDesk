@@ -12,6 +12,7 @@
 #include <string.h>
 #include <time.h>
 #include <wchar.h>
+uint64_t hop_monotonic_ms(void){static uint64_t now=1000;return ++now;}
 #define hop_log(...) ((void)0)
 #define MAX_PATH 260
 #define RX_CLOSE 1

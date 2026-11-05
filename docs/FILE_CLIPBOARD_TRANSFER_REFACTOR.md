@@ -171,6 +171,7 @@
 - 传输状态新增基于单调时钟的 speed / ETA：按实际进度采样并使用 EWMA 平滑；连续 2 秒没有进度时，UI 不再显示陈旧速率。Windows/macOS 传输管理页显示 jobs/entries/pending/image/RX 当前值与限额、高水位、拒绝数、reservation/RX/temp 释放数、图片缓冲转移量及账本异常。
 - 新增共享固定容量 4 的 ACK window：发送端在 FILE_BEGIN 前登记 batch/id，在 FILE_END 前标记发送；ACK 按 batch/id 精确归位，支持乱序到达；窗口填满后再统一收取 ACK。每个文件仍保留独立 CRC、ACK、失败隔离与重试，TCP 数据帧仍串行发送，没有引入无界并发或额外数据缓冲。
 - ACK 超时按每个 FILE_END 的单调时钟 RTT/截止时间计算；取消、对端 ABORT、断线和任务结束都会清理该 batch 的所有 ACK 槽，过期 ACK 不会覆盖其他文件或重试状态。
+- 窗口填充途中发生发送断线时，不立即丢弃此前已发文件的 ACK：先按顺序收取已到达的 ACK，只推进连续已解决的断点；连接已失效时不再等待剩余 ACK，未确认文件从断点重试。
 - **仍未完成**：真实双机 RSS/吞吐/键鼠延迟压测；剪贴板异步应用完成时刻（当前只记录 API dispatch 耗时，不冒充系统剪贴板实际完成时间）。阶段计时已在第五批补齐。发送端目前只有一个 sender thread，因此使用单个固定大小、线程生命周期内复用的 TX buffer 已足够；图片 payload 直接 owned-buffer 分段发送，不需要再复制进 TX buffer。只有未来引入并行 sender 时才需要扩展成多槽固定 buffer pool。ACK window 目前是有界文件级在途回执，不代表接收端并行写多个文件。阶段二仍不能在实机验收前标记整体完成。
 - `pending bytes` 当前按任务完整保留量计数，直到任务终态统一释放；不是实时递减的剩余字节显示值。
 - 第一批预算边界、超限、幂等释放及 32 线程并发抢占测试通过；Windows HA 测试夹具已链接新模块。第一批 CI：[Actions #42021950477](https://github.com/alex520lq/HopDesk/actions/runs/42021950477)，提交 `8ba90741ba8bb170a795c895f093cc78e7ad3aa1`。

@@ -790,7 +790,7 @@ static void test_xfer_ack_window(void) {
     CHECK(hop_xfer_ack_window_count(&window)==0);
 
     /* Reconnect checkpoint advances only through a contiguous resolved prefix. */
-    uint32_t checkpoint = 0;
+    int checkpoint = 0;
     CHECK(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,1));
     CHECK(checkpoint==0);
     CHECK(hop_xfer_ack_window_advance_checkpoint(&checkpoint,0));
@@ -799,6 +799,7 @@ static void test_xfer_ack_window(void) {
     CHECK(checkpoint==1);
     CHECK(hop_xfer_ack_window_advance_checkpoint(&checkpoint,1));
     CHECK(checkpoint==2);
+    CHECK(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,-1));
 }
 
 static void test_xfer_rate_limiter(void) {

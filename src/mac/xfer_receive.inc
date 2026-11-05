@@ -89,7 +89,12 @@ static void *writer_thread(void *arg) {
         pthread_mutex_unlock(&s_wq.lock);
 
         int disk_guard = hop_watchdog_begin("disk writer task", HOP_IO_DEADLINE_MS);
+        uint64_t write_started_ns=rate_now_ns();
         wq_task_run(&t);
+        uint64_t write_elapsed_ns=rate_now_ns()-write_started_ns;
+        if(t.kind==RX_WRITE && t.budget_owner)
+            status_stage_time(HOP_XFER_DIR_RECEIVE,t.budget_owner->transfer_id,
+                              HOP_XFER_TIME_WRITE,write_elapsed_ns);
         hop_watchdog_end(disk_guard);
 
         free(t.data);
@@ -450,13 +455,19 @@ static void rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
                 "xfer: batch %u incomplete (%u/%u entries); staged data kept at %s; clipboard not updated",
                 batch, ok, total, s_rx.dir);
     } else if (s_rx.cur_is_image) {
-        if (s_rx.img && s_rx.img_len == s_rx.img_expected)
+        if (s_rx.img && s_rx.img_len == s_rx.img_expected) {
+            uint64_t clipboard_started_ns=rate_now_ns();
             clipboard_apply_image(s_rx.img, s_rx.img_w, s_rx.img_h, s_rx.img_stride);
-        else
+            status_stage_time(HOP_XFER_DIR_RECEIVE,batch,HOP_XFER_TIME_CLIPBOARD_DISPATCH,
+                              rate_now_ns()-clipboard_started_ns);
+        } else
             hop_log(HOP_LOG_ERROR, "xfer: incomplete image rejected (%llu/%llu bytes)",
                     (unsigned long long)s_rx.img_len, (unsigned long long)s_rx.img_expected);
     } else if (s_rx.ntop > 0) {
+        uint64_t clipboard_started_ns=rate_now_ns();
         clipboard_apply_paths((const char *const *)s_rx.tops, s_rx.ntop);
+        status_stage_time(HOP_XFER_DIR_RECEIVE,batch,HOP_XFER_TIME_CLIPBOARD_DISPATCH,
+                          rate_now_ns()-clipboard_started_ns);
     }
 
     hop_log(HOP_LOG_INFO, "xfer: batch %u done (%d items, %u/%u ACKed)",
@@ -648,6 +659,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
         case HOP_MSG_FILE_CHUNK: {
             if (!s_rx.active) return; /* late data after termination */
+            uint64_t receive_started_ns=rate_now_ns();
             if (len < 20) { rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1); return; }
             uint64_t off = hop_get_be64(p + 4);
             uint32_t n   = hop_get_be32(p + 12);
@@ -671,7 +683,13 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
              *
              * 坏一块只作废这一个文件，不再 ABORT 整批：
              * 发送端收到 ACK_CRC 会单独重发它，其余文件照常落地。 */
-            if (hop_crc32(0, data, n) != crc) {
+            uint64_t crc_started_ns=rate_now_ns();
+            int crc_ok=(hop_crc32(0, data, n) == crc);
+            status_stage_time(HOP_XFER_DIR_RECEIVE,s_rx.batch,HOP_XFER_TIME_CRC,
+                              rate_now_ns()-crc_started_ns);
+            if (!crc_ok) {
+                status_stage_time(HOP_XFER_DIR_RECEIVE,s_rx.batch,HOP_XFER_TIME_RECEIVE,
+                                  rate_now_ns()-receive_started_ns);
                 hop_log(HOP_LOG_ERROR,
                         "xfer: CHUNK CRC MISMATCH off=%llu len=%u (expect %08x)",
                         (unsigned long long)off, n, crc);
@@ -707,6 +725,8 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 memcpy(s_rx.img + off, data, n);
                 if (need > s_rx.img_len) s_rx.img_len = need;
                 status_chunk(HOP_XFER_DIR_RECEIVE,s_rx.batch,s_rx.cur_id,off,n);
+                status_stage_time(HOP_XFER_DIR_RECEIVE,s_rx.batch,HOP_XFER_TIME_RECEIVE,
+                                  rate_now_ns()-receive_started_ns);
                 break;
             }
 
@@ -740,6 +760,8 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             /* 文件 CRC 折入本块 CRC：既覆盖数据（块 CRC 已验证），
              * 也覆盖顺序与偏移，且不需要把整份文件重算一遍 */
             s_rx.fcrc = hop_xfer_file_crc_step(s_rx.fcrc, off, crc);
+            status_stage_time(HOP_XFER_DIR_RECEIVE,s_rx.batch,HOP_XFER_TIME_RECEIVE,
+                              rate_now_ns()-receive_started_ns);
             break;
         }
 

@@ -145,7 +145,7 @@ static BOOL send_paths(NSArray<NSURL *> *urls) {
 
 /* NSImage -> 自上而下 BGRA。用 CGBitmapContext 明确指定字节序，
  * 不依赖 NSBitmapImageRep 的默认通道顺序。 */
-static BOOL send_image(NSImage *img) {
+static BOOL send_image(NSImage *img, NSInteger expected_change) {
     if (!img) return NO;
 
     /* 必须用 CGImage 的像素尺寸，不能用 [img size]（那是"点"）。
@@ -185,6 +185,13 @@ static BOOL send_image(NSImage *img) {
                (uint8_t *)data + (size_t)(h - 1 - y) * stride, stride);
     }
 
+    /* Clipboard may change while the worker decodes/converts the snapshot. */
+    if ([[NSPasteboard generalPasteboard] changeCount] != expected_change) {
+        free(flip);
+        CGContextRelease(ctx);
+        hop_log(HOP_LOG_INFO, "clip: stale image conversion discarded");
+        return NO;
+    }
     hop_log(HOP_LOG_INFO, "clip: image out %dx%d", w, h);
     BOOL ok = xfer_submit_image(flip, w, h, (int)stride) ? YES : NO;
     free(flip);
@@ -215,7 +222,7 @@ static void send_image_data_async(NSData *data, NSInteger expected_change) {
         @autoreleasepool {
             if ([[NSPasteboard generalPasteboard] changeCount] == expected_change) {
                 NSImage *img = [[NSImage alloc] initWithData:data];
-                if (img) (void)send_image(img);
+                if (img) (void)send_image(img, expected_change);
                 else hop_log(HOP_LOG_WARN, "clip: image decode failed");
             } else {
                 hop_log(HOP_LOG_INFO, "clip: stale image snapshot ignored");

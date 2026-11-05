@@ -1666,6 +1666,7 @@ static int xfer_submit_image_impl(const uint8_t *bgra, uint8_t *owned, int w, in
 
 void xfer_kick(void) {
     pthread_mutex_lock(&s_x.slock);
+    s_x.peer_ready = 0;
     if (s_x.sock >= 0) shutdown(s_x.sock, SHUT_RDWR);
     pthread_mutex_unlock(&s_x.slock);
 }

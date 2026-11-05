@@ -155,6 +155,7 @@ static void test_config_defaults_and_loading(void) {
     CHECK(c.port == HOP_DEFAULT_PORT);
     CHECK(c.data_port == HOP_DATA_PORT);
     CHECK(c.xfer_chunk_kb == HOP_CHUNK_KB_DEFAULT);
+    CHECK(c.xfer_rate_limit_mib == 128);
     CHECK(c.token[0] == '\0');
 
     const char *path = "hopdesk-core-test.conf";
@@ -168,6 +169,7 @@ static void test_config_defaults_and_loading(void) {
           "token=test-secret\n"
           "host=127.0.0.1\n"
           "xfer_chunk_kb=512\n"
+          "xfer_rate_limit_mib=256\n"
           "disp_win_input=0x0F\n"
           "switch_push_ms=175\n", f);
     fclose(f);
@@ -179,6 +181,7 @@ static void test_config_defaults_and_loading(void) {
     CHECK(strcmp(c.token, "test-secret") == 0);
     CHECK(strcmp(c.peer_host, "127.0.0.1") == 0);
     CHECK(c.xfer_chunk_kb == 512);
+    CHECK(c.xfer_rate_limit_mib == 256);
     CHECK(c.disp_win_input == 0x0F);
     CHECK(c.switch_delay_ms == 175);
 
@@ -196,6 +199,13 @@ static void test_config_defaults_and_loading(void) {
     CHECK(c.switch_delay_ms == 175 && c.switch_cooldown_ms == 425);
     CHECK(c.edge_margin_px == 48 && c.disp_win_input == 0x0F);
     CHECK(c.xfer_chunk_kb == 512);
+    CHECK(c.xfer_rate_limit_mib == 256);
+    f = fopen(path, "w");
+    CHECK(f != NULL);
+    if (f) { fputs("xfer_rate_limit_mib=8\n", f); fclose(f); }
+    hop_config before_invalid = c;
+    CHECK(hop_config_load(&c, path) == 0);
+    CHECK(c.xfer_rate_limit_mib == before_invalid.xfer_rate_limit_mib);
     remove(path);
 }
 

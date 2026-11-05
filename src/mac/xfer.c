@@ -75,6 +75,7 @@ typedef struct {
     xf_entry *v;
     int n, cap;
     int failed; /* incomplete/unsafe snapshots are never queued */
+    int budget_rejected;
     hop_xfer_budget_reservation budget;
 } elist;
 
@@ -399,8 +400,12 @@ static int elist_push(elist *l, xf_entry *e) {
     if (!e || !e->name || !e->rel ||
         strlen(e->name) > HOP_NAME_LEN_MAX ||
         strlen(e->rel) > HOP_PATH_LEN_MAX ||
-        l->n >= XFER_MAX_ENTRIES ||
-        !hop_xfer_budget_reserve_entry(&l->budget, e->size)) {
+        l->n >= XFER_MAX_ENTRIES) {
+        l->failed = 1;
+        return 0;
+    }
+    if (!hop_xfer_budget_reserve_entry(&l->budget, e->size)) {
+        l->budget_rejected = 1;
         l->failed = 1;
         return 0;
     }
@@ -1187,7 +1192,10 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
     }
 
     if (l.failed || l.n == 0) {
-        hop_log(HOP_LOG_WARN, "xfer: source tree rejected; no partial transfer queued");
+        if (l.budget_rejected)
+            hop_log(HOP_LOG_WARN, "xfer: global entries/pending-bytes budget exceeded; batch rejected");
+        else
+            hop_log(HOP_LOG_WARN, "xfer: source tree rejected; no partial transfer queued");
         elist_free(&l);
         return 0;
     }

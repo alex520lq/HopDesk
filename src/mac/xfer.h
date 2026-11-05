@@ -43,5 +43,7 @@ int  xfer_submit_paths_for_paste(const char *const *paths, int n, uint32_t reque
 
 /* 提交图片：裸 BGRA、自上而下、行距 stride 字节。内部拷贝像素。 */
 int  xfer_submit_image(const uint8_t *bgra, int w, int h, int stride);
+/* 消费调用方的 BGRA 缓冲区（成功/失败都会释放）；避免整张图片再次复制。 */
+int  xfer_submit_image_owned(uint8_t *bgra, int w, int h, int stride);
 
 #endif

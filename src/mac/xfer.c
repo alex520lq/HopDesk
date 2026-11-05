@@ -16,6 +16,7 @@
 #include "../core/xfer_budget.h"
 #include "../core/xfer_task.h"
 #include "../core/xfer_rate.h"
+#include "../core/xfer_ack_window.h"
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -626,20 +627,14 @@ static int send_chunk(int fd, uint8_t *tx, uint32_t batch, uint32_t id, uint64_t
     return ok;
 }
 
-/* ---------------- 单文件 ACK ----------------
+/* ---------------- 有界单文件 ACK 窗口 ----------------
  *
- * 同一时刻只有一个文件在途（发送是串行的），所以一个槽就够。
- * 发送线程填完 END 就等这里；接收线程处理完 END 把结论放进来。
- *
- * 为什么要等：TCP 只保证"字节到了"，不保证"落盘成功、校验通过"。
- * 没有这个回执，发送端对"这个文件成没成"一无所知，
- * 就只能整批重传 —— 5 GB 的批次失败一次，代价是重传 5 GB。 */
+ * 最多允许 4 个文件等待接收端落盘 ACK。数据帧仍然串行写入同一 TCP
+ * stream；ACK 由接收端 writer 异步返回，按 batch/id 独立归位。 */
 static struct {
     pthread_mutex_t lock;
     pthread_cond_t  cond;
-    uint32_t        batch, id;
-    int             status;
-    int             valid;
+    hop_xfer_ack_window window;
 } s_ack;
 
 /* 返回值：>=0 是接收端 ACK 的 status；负数是本地/链路层面的失败 */
@@ -648,6 +643,7 @@ static struct {
 #define XFER_LOCAL_IO     (-3)
 #define XFER_CANCELLED    (-4)
 #define XFER_PEER_ABORT   (-5)
+#define XFER_ACK_PENDING  (-6)
 
 static uint64_t now_ms(void) {
     struct timespec ts;
@@ -655,21 +651,36 @@ static uint64_t now_ms(void) {
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000L);
 }
 
-static void ack_clear(void) {
+static int ack_register(uint32_t batch, uint32_t id) {
     pthread_mutex_lock(&s_ack.lock);
-    s_ack.valid = 0;
+    int ok = hop_xfer_ack_window_register(&s_ack.window, batch, id);
+    pthread_mutex_unlock(&s_ack.lock);
+    return ok;
+}
+
+static void ack_mark_sent(uint32_t batch, uint32_t id) {
+    pthread_mutex_lock(&s_ack.lock);
+    (void)hop_xfer_ack_window_mark_sent(&s_ack.window, batch, id, rate_now_ns());
     pthread_mutex_unlock(&s_ack.lock);
 }
 
-/* 接收线程调用。槽满（上一份没人取）就覆盖 —— 上一份已经超时，
- * 发送端本来就要重发，旧结论没有价值。 */
+static void ack_unregister(uint32_t batch, uint32_t id) {
+    pthread_mutex_lock(&s_ack.lock);
+    hop_xfer_ack_window_unregister(&s_ack.window, batch, id);
+    pthread_mutex_unlock(&s_ack.lock);
+}
+
+static void ack_unregister_batch(uint32_t batch) {
+    pthread_mutex_lock(&s_ack.lock);
+    hop_xfer_ack_window_unregister_batch(&s_ack.window, batch);
+    pthread_mutex_unlock(&s_ack.lock);
+}
+
+/* 接收线程只填写与当前 batch/id 匹配的槽；过期 ACK 不得覆盖其他文件。 */
 static void ack_deliver(uint32_t batch, uint32_t id, int status) {
     pthread_mutex_lock(&s_ack.lock);
-    s_ack.batch  = batch;
-    s_ack.id     = id;
-    s_ack.status = status;
-    s_ack.valid  = 1;
-    pthread_cond_broadcast(&s_ack.cond);
+    int delivered = hop_xfer_ack_window_deliver(&s_ack.window, batch, id, status, rate_now_ns());
+    if (delivered) pthread_cond_broadcast(&s_ack.cond);
     pthread_mutex_unlock(&s_ack.lock);
 }
 
@@ -695,13 +706,14 @@ static int peer_aborted(uint32_t batch) {
  * 只等一次会漏掉"信号早于等待"的情况。
  * 等待切片 100 ms，是为了让取消 / 对端中止能在 100 ms 内被看到 ——
  * 不然就要去折腾 condattr_setclock 让条件变量走单调时钟。 */
-static int ack_wait(uint32_t batch, uint32_t id) {
+static int ack_wait(uint32_t batch, uint32_t id, uint64_t *rtt_us) {
     uint64_t deadline = now_ms() + HOP_XFER_ACK_TIMEOUT_MS;
+    if (rtt_us) *rtt_us = 0;
     for (;;) {
         pthread_mutex_lock(&s_ack.lock);
-        int hit = s_ack.valid && s_ack.batch == batch && s_ack.id == id;
-        int st  = s_ack.status;
-        if (hit) s_ack.valid = 0;
+        int status = 0;
+        uint64_t rtt_ns = 0;
+        int hit = hop_xfer_ack_window_take(&s_ack.window, batch, id, &status, &rtt_ns);
         if (!hit) {
             uint64_t n = now_ms();
             if (n < deadline) {
@@ -715,13 +727,15 @@ static int ack_wait(uint32_t batch, uint32_t id) {
             }
         }
         pthread_mutex_unlock(&s_ack.lock);
-        if (hit) return st;
+        if (hit) {
+            if (rtt_us) *rtt_us = rtt_ns / 1000ull;
+            return status;
+        }
 
-        /* 对端中止 / 用户取消都不该干等满 10 秒 */
-        if (peer_aborted(batch)) return XFER_PEER_ABORT;
-        if (cancel_requested(batch)) return XFER_CANCELLED;
-        if (s_x.stop) return XFER_SEND_DEAD;      /* 退出时别把 join 拖满 10 秒 */
-        if (now_ms() >= deadline) return XFER_ACK_TIMEOUT;
+        if (peer_aborted(batch)) { ack_unregister(batch,id); return XFER_PEER_ABORT; }
+        if (cancel_requested(batch)) { ack_unregister(batch,id); return XFER_CANCELLED; }
+        if (s_x.stop) { ack_unregister(batch,id); return XFER_SEND_DEAD; }
+        if (now_ms() >= deadline) { ack_unregister(batch,id); return XFER_ACK_TIMEOUT; }
     }
 }
 

@@ -2,7 +2,7 @@
 #include "app.h"
 #include <string.h>
 #include <math.h>
-static BYTE held[256],buttons[3];
+static BYTE held[256],buttons[3],paste_suppressed[256];
 static double px,py,over;
 static int sharing;
 static void emit(INPUT *input){
@@ -35,7 +35,7 @@ static void button(int b,int down){
 void win_inject_reset(void){
     for(int k=0;k<256;++k)if(held[k]){key((WORD)k,0);held[k]=0;}
     for(int b=0;b<3;++b)if(buttons[b])button(b,0);
-    sharing=0;over=0;
+    sharing=0;over=0;memset(paste_suppressed,0,sizeof(paste_suppressed));
 }
 static double edge_margin(double w,double h){
     int edge=g_app.cfg.client_edge,vertical=edge>=HOP_EDGE_TOP;
@@ -87,7 +87,21 @@ void win_inject_message(uint8_t type,const uint8_t *p,uint32_t len){
     }break;
     case HOP_MSG_KEY_DOWN:case HOP_MSG_KEY_UP:if(len>=2){
         WORD vk=hop_mac_to_vk(hop_get_be16(p));int down=type==HOP_MSG_KEY_DOWN;
-        if(vk!=HOP_KEY_NONE && vk<256 && (sharing||(!down&&held[vk]))){key(vk,down);held[vk]=(BYTE)down;}
+        if(vk!=HOP_KEY_NONE && vk<256) {
+            if(!down && paste_suppressed[vk]) { paste_suppressed[vk]=0; break; }
+            if(down && vk=='V' &&
+               (held[VK_LCONTROL]||held[VK_RCONTROL]||held[VK_LWIN]||held[VK_RWIN]) &&
+               clipboard_request_remote_paste()) {
+                paste_suppressed[vk]=1;
+                const WORD mods[]={VK_LCONTROL,VK_RCONTROL,VK_LWIN,VK_RWIN};
+                for(unsigned i=0;i<sizeof(mods)/sizeof(mods[0]);++i) {
+                    WORD mod=mods[i];
+                    if(held[mod]) { key(mod,0); held[mod]=0; paste_suppressed[mod]=1; }
+                }
+                break;
+            }
+            if(sharing||(!down&&held[vk])){key(vk,down);held[vk]=(BYTE)down;}
+        }
     }break;
     default:break;
     }

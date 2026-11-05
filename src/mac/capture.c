@@ -107,6 +107,10 @@ static CGEventRef capture_event(CGEventTapProxy proxy,CGEventType type,CGEventRe
     if(!connected)return event;
     CGPoint p=CGEventGetLocation(event);
     if(!sharing){
+        if(type==kCGEventKeyDown &&
+           CGEventGetIntegerValueField(event,kCGKeyboardEventKeycode)==0x09 &&
+           (CGEventGetFlags(event)&(kCGEventFlagMaskCommand|kCGEventFlagMaskControl)) &&
+           clipboard_request_remote_paste()) return NULL;
         if(is_edge_motion_event(type)){
             if(at_edge(p)&&hop_monotonic_ms()>=cooldown){if(!edge_since)edge_since=hop_monotonic_ms();}
             else edge_since=0;

@@ -114,6 +114,18 @@ static void dispatch_message(void *user, uint8_t type, const uint8_t *p, uint32_
         case HOP_MSG_KEY_UP:
             if (len >= 2) inject_key(hop_get_be16(p), 0);
             break;
+        case HOP_MSG_CLIP_FILE_OFFER:
+            clipboard_on_remote_file_offer(p, len);
+            break;
+        case HOP_MSG_CLIP_FILE_OFFER_CLEAR:
+            clipboard_on_remote_file_offer_clear(p, len);
+            break;
+        case HOP_MSG_CLIP_PASTE_REQUEST:
+            clipboard_on_paste_request(p, len);
+            break;
+        case HOP_MSG_CLIP_PASTE_FAILED:
+            clipboard_on_paste_failed(p, len);
+            break;
         case HOP_MSG_CLIP_TEXT:
             /* origin(4) + UTF-8；自己发出去的不写回 */
             if (len > 4 && hop_clip_should_apply_remote(hop_get_be32(p), (g_mac.cfg.role==HOP_ROLE_SERVER?HOP_DEV_SERVER:HOP_DEV_CLIENT))) {
@@ -317,6 +329,7 @@ void net_set_keepalive(int s) {
 }
 
 static void set_connected(int on) {
+    clipboard_on_link(on);
     if (!on) {
         hop_session_clear(&s_control_session);
         pthread_mutex_lock(&s_dispatch_lock);

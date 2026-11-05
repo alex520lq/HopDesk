@@ -37,6 +37,7 @@ static NSTimer *s_transferTimer;
 - (void)doQuit:(id)sender {
     (void)sender;
     main_ui_shutdown();
+    clipboard_shutdown();
     net_request_stop();
     [NSApp terminate:nil];
 }

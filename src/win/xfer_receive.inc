@@ -336,6 +336,8 @@ static wchar_t *rx_path_for(const char *rel) {
  * is idempotent; repeated/stale ABORTs cannot end an unrelated active batch. */
 static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
     if (!batch) return;
+    if (batch & HOP_XFER_PASTE_BATCH_FLAG)
+        clip_complete_remote_paste(batch,NULL,0,0);
     if (notify_peer) { send_abort_msg(s_x.client,batch,reason); }
     if (!s_rx.active || s_rx.batch != batch) return;
     rx_close_file();

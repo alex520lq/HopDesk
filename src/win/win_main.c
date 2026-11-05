@@ -42,6 +42,7 @@ static void beside(wchar_t *out, int n, const wchar_t *name) {
 }
 
 static void on_link(int up) {
+    clip_on_link(up != 0);
     if (up) {
         if (up == 2 && g_app.state == HOP_LINK_SHARING) capture_set_sharing(0);
         if (g_app.state == HOP_LINK_DOWN) g_app.state = HOP_LINK_LOCAL;
@@ -80,6 +81,18 @@ static void on_recv(hop_recv *r) {
             break;
         case HOP_MSG_CLIP_TEXT:
             clip_apply_remote(r->data, r->len);
+            break;
+        case HOP_MSG_CLIP_FILE_OFFER:
+            clip_on_remote_file_offer(r->data, r->len);
+            break;
+        case HOP_MSG_CLIP_FILE_OFFER_CLEAR:
+            clip_on_remote_file_offer_clear(r->data, r->len);
+            break;
+        case HOP_MSG_CLIP_PASTE_REQUEST:
+            clip_on_paste_request(r->data, r->len);
+            break;
+        case HOP_MSG_CLIP_PASTE_FAILED:
+            clip_on_paste_failed(r->data, r->len);
             break;
         default:
             break;
@@ -141,6 +154,9 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_APP_CLIP:
             clip_on_worker_message((UINT)wp, (HGLOBAL)lp);
+            return 0;
+        case WM_APP_CLIP_PASTE:
+            clip_on_paste_message((HGLOBAL)lp, (DWORD)wp);
             return 0;
         case WM_APP_TRAY:
             if (LOWORD(lp) == WM_LBUTTONUP || LOWORD(lp) == NIN_SELECT ||

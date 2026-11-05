@@ -44,6 +44,7 @@ void inject_release_all(void);            /* 断线时松开所有修饰键 */
 
 /* clipboard.m */
 void clipboard_init(void);
+void clipboard_shutdown(void);
 void clipboard_apply(const char *utf8);   /* 收到对端文本 */
 /* 数据通道收完一批后回调：把落盘的顶层条目挂到剪贴板 */
 void clipboard_apply_paths(const char *const *paths, int n);

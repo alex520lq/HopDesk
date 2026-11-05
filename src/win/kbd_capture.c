@@ -103,7 +103,12 @@ static LRESULT CALLBACK kbd_proc(int code, WPARAM wp, LPARAM lp) {
 
     down = (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN);
     if(k->vkCode<256)s_physical_down[k->vkCode]=(BYTE)down;
-    if (g_app.state != HOP_LINK_SHARING) return CallNextHookEx(s_hook, code, wp, lp);
+    if (g_app.state != HOP_LINK_SHARING) {
+        if (down && k->vkCode == 'V' &&
+            (s_physical_down[VK_LCONTROL] || s_physical_down[VK_RCONTROL]) &&
+            clip_request_remote_paste()) return 1;
+        return CallNextHookEx(s_hook, code, wp, lp);
+    }
     if(down && k->vkCode==VK_ESCAPE && (GetAsyncKeyState(VK_CONTROL)&0x8000) && (GetAsyncKeyState(VK_MENU)&0x8000)){capture_set_sharing(0);return 1;}
     kc = hop_vk_to_mac((int)k->vkCode);
     if (kc != HOP_KEY_NONE) {

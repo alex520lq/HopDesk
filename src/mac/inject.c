@@ -120,6 +120,7 @@ void inject_init(void) {
 
 /* 把仍按着的修饰键全部松开：断线时不能让 Mac 卡住 Cmd */
 static uint8_t s_held_keys[65536 / 8];
+static uint8_t s_paste_suppressed[65536 / 8];
 void inject_release_all(void) {
     static const uint16_t pair[4][2] = {
         { 0x38, 0x3C },   /* shift L/R   */
@@ -163,6 +164,7 @@ void inject_reset(void) {
     s_modn[0] = s_modn[1] = s_modn[2] = s_modn[3] = 0;
     s_caps = 0;
     recompute_flags();
+    memset(s_paste_suppressed,0,sizeof(s_paste_suppressed));
     s_input.sharing = 0;
     s_inited = 0;
     s_over = 0;
@@ -286,6 +288,28 @@ void inject_key(uint16_t kc, int down) {
     int bit, i;
 
     if (!s_inited) inject_init();
+    uint8_t mask=(uint8_t)(1u<<(kc%8));
+    if(!down && (s_paste_suppressed[kc/8]&mask)) {
+        s_paste_suppressed[kc/8]&=(uint8_t)~mask;
+        return;
+    }
+    if(down && kc==0x09 && (s_modn[1]||s_modn[3]) && clipboard_request_remote_paste()) {
+        const uint16_t mods[]={0x37,0x36,0x3B,0x3E};
+        s_paste_suppressed[kc/8]|=mask;
+        for(unsigned mi=0;mi<sizeof(mods)/sizeof(mods[0]);++mi) {
+            uint16_t mk=mods[mi];uint8_t mm=(uint8_t)(1u<<(mk%8));
+            if(s_held_keys[mk/8]&mm) {
+                int mb=hop_mac_key_is_mod(mk),ix=mod_index(mb);
+                s_held_keys[mk/8]&=(uint8_t)~mm;
+                if(ix>=0&&s_modn[ix])s_modn[ix]--;
+                recompute_flags();
+                CGEventRef up=CGEventCreateKeyboardEvent(NULL,(CGKeyCode)mk,0);
+                if(up){CGEventSetType(up,kCGEventFlagsChanged);post(up);}
+                s_paste_suppressed[mk/8]|=mm;
+            }
+        }
+        return;
+    }
     bit = hop_mac_key_is_mod(kc);
     int was_held = (s_held_keys[kc / 8] & (1u << (kc % 8))) != 0;
     if (down) s_held_keys[kc / 8] |= (uint8_t)(1u << (kc % 8));

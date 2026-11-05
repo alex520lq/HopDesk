@@ -25,6 +25,7 @@ A green compile is not evidence that those manual/device cases passed.
 | XFER-009 | File CRC fold | Chunk offset + CRC fold, ordering/position sensitivity, sender/receiver shared helper |
 | XFER-010 | File wire round-trip | Empty, 1-byte, chunk boundaries, multi-chunk, CRC corruption, offset tamper, reorder, traversal path, empty directory |
 | XFER-011 | Image wire round-trip | Exact image bytes, truncated image, reordered chunks, corrupt CRC, beyond-declared-size chunk |
+| CLIP-012 | Lazy file clipboard codecs | Offer/clear/request/failed encode-decode, invalid names, request ID namespace, malformed lengths |
 
 ## B. Network/data-channel integration (next automation layer)
 
@@ -44,6 +45,7 @@ A green compile is not evidence that those manual/device cases passed.
 | XFER-013 | Backpressure | Slow disk, full 8-slot queue, bounded memory |
 | XFER-014 | Filesystem safety | Traversal, absolute paths, symlink/reparse escape, collisions |
 | XFER-015 | Image transfer | 1x1, common sizes, padded stride, cap, malformed dimensions |
+| CLIP-016 | Lazy file paste transaction | Offer then Paste Request, duplicate request idempotency, stale generation rejection, batch id binding |
 
 ## C. Platform/hardware tests (manual or dedicated self-hosted runners)
 
@@ -55,6 +57,11 @@ A green compile is not evidence that those manual/device cases passed.
 | CLIP-001 | Text clipboard | Unicode, multiline, empty/large, bidirectional loop suppression |
 | CLIP-002 | File clipboard | Single/multiple, folders, empty folders, actual Ctrl+C/Ctrl+V |
 | CLIP-003 | Image clipboard | PNG/TIFF/DIB, alpha, orientation, large/unsupported formats |
+| CLIP-004 | Local file paste | Copy file/folder then paste locally: native OS paste, no HopDesk transfer/history |
+| CLIP-005 | Cross-device lazy paste | Copy only publishes Offer; remote Ctrl+V triggers exactly one request and one transfer |
+| CLIP-006 | Clipboard race | User copies new content during transfer; completed old task must not overwrite it |
+| CLIP-007 | Offer lifetime | Local paste does not consume Offer; stale/cleared Offer cannot be requested |
+| CLIP-008 | Bidirectional file paste | Windows→Mac and Mac→Windows; single/multiple items and nested/empty folders |
 | DISP-001 | Windows DDC | Read/switch input, unsupported monitor, unplug/replug |
 | DISP-002 | macOS display | Wake/sleep, m1ddc success/failure/missing command |
 | APP-001 | Lifecycle | Single instance, startup, tray/menu, shutdown while connected |

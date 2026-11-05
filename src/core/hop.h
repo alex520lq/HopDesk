@@ -146,7 +146,7 @@ typedef struct {
  * 结果是每块都校验失败。所以连上就先比版本，别让用户对着
  * "传输一直失败"猜原因。 */
 #define HOP_XFER_PROTO_VER   6
-#define HOP_CTRL_PROTO_VER   6
+#define HOP_CTRL_PROTO_VER   7
 
 /* ---- XFER_ABORT 的 reason ---- */
 #define HOP_ABORT_CRC        1

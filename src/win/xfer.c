@@ -263,6 +263,7 @@ static struct {
     CRITICAL_SECTION lock;      /* 保护 client + 作业队列 + 取消标记 */
     HANDLE           stop;
     HANDLE           q_evt;
+    HANDLE           rate_timer; /* high-resolution pacing wait; sender thread only */
     HANDLE           th_listen;
     HANDLE           th_send;
     xfer_job        *q_head, *q_tail;
@@ -564,7 +565,24 @@ static uint64_t rate_now_ns(void) {
     return (q / f) * 1000000000ull + ((q % f) * 1000000000ull) / f;
 }
 
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+
 static void rate_sleep_ns(uint64_t ns) {
+    if (s_x.rate_timer) {
+        LARGE_INTEGER due;
+        uint64_t units = (ns + 99ull) / 100ull; /* negative 100 ns relative due time */
+        if (!units) units = 1;
+        due.QuadPart = -(LONGLONG)units;
+        if (SetWaitableTimer(s_x.rate_timer, &due, 0, NULL, NULL, FALSE)) {
+            HANDLE waits[2] = {s_x.stop, s_x.rate_timer};
+            (void)WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+            return;
+        }
+    }
+    /* Old Windows fallback: coarse waits for longer intervals, QPC yield for
+     * sub-millisecond pacing. Modern Windows uses the high-resolution timer. */
     if (ns >= 1000000ull) {
         DWORD ms = (DWORD)(ns / 1000000ull);
         if (ms > 10) ms = 10;
@@ -1169,6 +1187,10 @@ int xfer_init(HWND hwnd, const hop_config *cfg) {
     if (!s_ack.ev) goto fail;
     s_x.stop = CreateEventW(NULL, TRUE, FALSE, NULL);
     s_x.q_evt = CreateEventW(NULL, FALSE, FALSE, NULL);
+    s_x.rate_timer = CreateWaitableTimerExW(NULL, NULL,
+        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    if (!s_x.rate_timer)
+        hop_log(HOP_LOG_WARN, "xfer: high-resolution rate timer unavailable; using fallback pacing");
 
     if (!s_x.stop || !s_x.q_evt) goto fail;
 
@@ -1191,6 +1213,7 @@ fail:
     wq_stop();
     if (s_x.stop) CloseHandle(s_x.stop);
     if (s_x.q_evt) CloseHandle(s_x.q_evt);
+    if (s_x.rate_timer) { CloseHandle(s_x.rate_timer); s_x.rate_timer = NULL; }
     if (s_ack.ev) { CloseHandle(s_ack.ev); s_ack.ev = NULL; }
     DeleteCriticalSection(&s_x.lock);
     DeleteCriticalSection(&s_txlock);
@@ -1241,6 +1264,7 @@ void xfer_shutdown(void) {
     wq_stop();
     CloseHandle(s_x.stop);
     CloseHandle(s_x.q_evt);
+    if (s_x.rate_timer) { CloseHandle(s_x.rate_timer); s_x.rate_timer = NULL; }
     if (s_ack.ev) { CloseHandle(s_ack.ev); s_ack.ev = NULL; }
     DeleteCriticalSection(&s_x.lock);
     DeleteCriticalSection(&s_txlock);

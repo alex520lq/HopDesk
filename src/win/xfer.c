@@ -153,7 +153,7 @@ static void status_begin(uint32_t batch,int direction,uint32_t files,uint64_t by
 }
 static void status_chunk(int direction,uint32_t batch,uint32_t id,uint64_t off,uint32_t n) {
     AcquireSRWLockExclusive(&s_status_lock);
-    hop_xfer_tracking_chunk(status_for(direction),batch,id,off,n);
+    hop_xfer_tracking_chunk(status_for(direction),batch,id,off,n,hop_monotonic_ms());
     ReleaseSRWLockExclusive(&s_status_lock);
 }
 static void status_file_phase(int direction,uint32_t batch,int index,int phase,uint32_t attempts) {

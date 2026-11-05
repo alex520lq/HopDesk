@@ -238,6 +238,7 @@ typedef struct {
      * 多开连接在 1 Gbps 及以下收益为零；等链路升到 2.5G/10G 再加池化。 */
     uint16_t data_port;            /* 数据通道端口 */
     int      xfer_chunk_kb;        /* 分块大小（KB），64-4096 */
+    int      xfer_rate_limit_mib;  /* 数据通道速率上限（MiB/s），16-4096 */
 } hop_config;
 
 void hop_config_defaults(hop_config *c);

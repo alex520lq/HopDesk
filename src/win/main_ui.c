@@ -380,7 +380,7 @@ static void refresh_transfers(void) {
              (unsigned long long)(st.bytes_total / 1048576ULL));
     set_text(s_xfer_counts, row);
     hop_xfer_budget_snapshot budget; memset(&budget,0,sizeof(budget)); xfer_get_budget_snapshot(&budget);
-    swprintf(row,1800,L"预算  jobs %u/%u  ·  entries %u/%u  ·  pending %llu/%llu MiB",
+    swprintf(row,1800,L"预算  jobs %u/%u  ·  entries %u/%u  ·  待传输 %llu/%llu MiB",
         budget.jobs,budget.limits.max_jobs,budget.entries,budget.limits.max_entries,
         (unsigned long long)(budget.pending_bytes/1048576ULL),
         (unsigned long long)(budget.limits.max_pending_bytes/1048576ULL));
@@ -397,7 +397,7 @@ static void refresh_transfers(void) {
     uint64_t rejected=budget.rejected_jobs+budget.rejected_entries+budget.rejected_bytes+
         budget.rejected_images+budget.rejected_rx_buffers+budget.rejected_image_temp_bytes+
         budget.rejected_image_transfers;
-    swprintf(row,1800,L"峰值 jobs %u · entries %u · pending %llu MiB · image %llu MiB  ·  拒绝 %llu  ·  账本异常 %llu",
+    swprintf(row,1800,L"峰值 jobs %u · entries %u · 待传输峰值 %llu MiB · image %llu MiB  ·  拒绝 %llu  ·  账本异常 %llu",
         budget.jobs_high_water,budget.entries_high_water,
         (unsigned long long)(budget.pending_bytes_high_water/1048576ULL),
         (unsigned long long)(budget.image_bytes_high_water/1048576ULL),

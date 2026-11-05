@@ -690,14 +690,19 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                     rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
                     return;
                 }
+                /* IMAGE_BEGIN already reserved img_expected bytes in the
+                 * task ledger. Allocate that exact amount once: geometric growth
+                 * would make the real capacity exceed the reservation and may
+                 * transiently keep both old and new buffers alive during realloc. */
+                if (!s_rx.img) {
+                    s_rx.img = (uint8_t *)realloc(NULL, s_rx.img_expected);
+                    if (!s_rx.img) { rx_terminate(s_rx.batch,HOP_ABORT_DISK,1); return; }
+                    s_rx.img_cap = s_rx.img_expected;
+                }
                 if (need > s_rx.img_cap) {
-                    size_t nc = s_rx.img_cap ? s_rx.img_cap : (size_t)1024 * 1024;
-                    while (nc < need) nc *= 2;
-                    if (nc > HOP_IMG_MAX_BYTES) nc = (size_t)HOP_IMG_MAX_BYTES;
-                    uint8_t *nv = (uint8_t *)realloc(s_rx.img, nc);
-                    if (!nv) { rx_terminate(s_rx.batch,HOP_ABORT_DISK,1); return; }
-                    s_rx.img = nv;
-                    s_rx.img_cap = nc;
+                    hop_log(HOP_LOG_ERROR, "xfer: image buffer capacity exceeded");
+                    rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
+                    return;
                 }
                 memcpy(s_rx.img + off, data, n);
                 if (need > s_rx.img_len) s_rx.img_len = need;

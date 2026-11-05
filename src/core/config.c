@@ -159,7 +159,8 @@ static int config_utf8_path(const char *src, wchar_t *dst, int cap) {
 
 int hop_config_save_atomic(const hop_config *c, const char *path) {
     if (!c || !path || !path[0] || strlen(path) > 900 ||
-        (c->role!=HOP_ROLE_SERVER && c->role!=HOP_ROLE_CLIENT)) return 0;
+        (c->role!=HOP_ROLE_SERVER && c->role!=HOP_ROLE_CLIENT) ||
+        c->xfer_rate_limit_mib < 16 || c->xfer_rate_limit_mib > 4096) return 0;
     char temp[1024];
     int temp_len = snprintf(temp, sizeof(temp), "%s.tmp", path);
     if (temp_len <= 0 || (size_t)temp_len >= sizeof(temp)) return 0;

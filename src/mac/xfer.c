@@ -788,6 +788,10 @@ static int ack_wait(uint32_t batch, uint32_t id, uint64_t deadline_ns, uint64_t 
         if (peer_aborted(batch)) { ack_unregister(batch,id); return XFER_PEER_ABORT; }
         if (cancel_requested(batch)) { ack_unregister(batch,id); return XFER_CANCELLED; }
         if (s_x.stop) { ack_unregister(batch,id); return XFER_SEND_DEAD; }
+        pthread_mutex_lock(&s_x.slock);
+        int peer_ready = s_x.peer_ready;
+        pthread_mutex_unlock(&s_x.slock);
+        if (!peer_ready) { ack_unregister(batch,id); return XFER_SEND_DEAD; }
         if (rate_now_ns() >= deadline_ns) { ack_unregister(batch,id); return XFER_ACK_TIMEOUT; }
     }
 }
@@ -1133,13 +1137,12 @@ static int run_job(int fd, uint8_t *tx, xf_job *j) {
                 }
             }
             /* This is the only place that advances the reconnect checkpoint. */
-            if (item->index != j->next_i) {
+            if (!hop_xfer_ack_window_advance_checkpoint(&j->next_i,item->index)) {
                 hop_log(HOP_LOG_ERROR, "xfer: non-contiguous checkpoint batch=%u current=%d resolved=%d",
                         j->batch,j->next_i,item->index);
                 ack_unregister_batch(j->batch);
-                return JOB_LOCAL_ERROR;
+                return JOB_NET_DOWN;
             }
-            j->next_i++;
         }
         if (fill_result != JOB_DONE) {
             ack_unregister_batch(j->batch);

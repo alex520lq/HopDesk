@@ -684,7 +684,11 @@ static void rate_feedback(uint64_t ack_rtt_us) {
 static int send_chunk(SOCKET c, uint8_t *tx, uint32_t batch, uint32_t id, uint64_t off,
                       const uint8_t *data, uint32_t len, uint32_t crc,
                       uint64_t read_ns,uint64_t crc_ns) {
-    if (!rate_wait_for_chunk(len)) return 0;
+    if (!rate_wait_for_chunk(len)) {
+        status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_READ,read_ns);
+        status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_CRC,crc_ns);
+        return 0;
+    }
     int send_guard = hop_watchdog_begin("data frame send", 10000);
     hop_encode_header(tx, HOP_MSG_FILE_CHUNK, 20 + HOP_DATA_PREFIX + len);
     hop_put_be32(tx + HOP_DATA_PREFIX + 5, id);

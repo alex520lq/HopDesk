@@ -163,7 +163,12 @@
 - 初始默认上限：jobs=16、entries=32768、pending bytes=8 GiB、image bytes=256 MiB、单张图片=256 MiB。**这些数值是安全起始值，不是实机调优结论**，后续必须通过 RSS/工作集压测校准。
 - Windows/macOS 文件提交先预留 job slot；目录扫描发现每个文件/目录时原子预留 entry 和文件字节；任一资源超限则整批回滚，不进入队列。
 - 图片提交在分配/复制 payload 前预留 job、entry、pending bytes 和 image bytes；任务释放时由 job 生命周期统一释放 reservation。
-- 第一批只覆盖**发送端排队/活动作业及 xfer 层持有的图片 payload**；第二批已将**接收端写盘队列**纳入 Task reservation 和全局账本。macOS 剪贴板 `dataForType` 仍在主队列读取，压缩图片数据、bitmap、行翻转和 xfer payload 的临时内存尚未全部纳入预算；Token Bucket、自适应节流、固定缓冲池仍未完成，不能将当前工作视为完整阶段二。
+- 第一批覆盖发送端排队/活动作业及 xfer 层持有的图片 payload；第二批已将接收端写盘队列纳入 Task reservation 和全局账本；第三批进一步覆盖 macOS 图片快照/解码/转换临时内存，以及 Windows DIB 快照/转换内存。macOS `dataForType`、图片解码和 BGRA 转换均在 utility worker 执行，Windows 剪贴板锁只覆盖系统数据快照复制。
+- 图片临时缓冲区与最终队列 payload 共用全局 image-memory ceiling；新增 `hop_xfer_budget_transfer_image_temp()`，在不重复计数同一物理分配的前提下，将已分配的 BGRA 缓冲区预算原子转移到正式传输 Task。临时 Task 和传输 Task 分别持有各自的 Task ID / Reservation Handle。
+- 新增 Token Bucket + AIMD 发送限速：按 socket send duration（按 chunk 大小归一化）、FILE_ACK 等待时间和本机接收写盘队列压力反馈；每 8 个 chunk 进行一次反馈，拥塞时乘性降速，健康时按配置上限的 1% 加性恢复。Windows 使用高精度 waitable timer（不可用时回退），macOS 使用可中断的短间隔 nanosleep。
+- 新增配置项 `xfer_rate_limit_mib`（16–4096 MiB/s），默认 128 MiB/s、初始 64 MiB/s、最低 4 MiB/s；默认值是暂定起始值，未经过真实 Wi-Fi/千兆网校准。限速值不能被当作实机性能结论。
+- 图片 owned-buffer 提交现在在预算检查后直接接管现有像素缓冲区；发送图片 chunk 不再复制到通用 tx buffer。预算快照现在同时返回当前 usage、高水位、拒绝/释放/转移计数和配置上限。
+- **仍未完成**：有限 ACK 窗口/小文件批次；预算指标的原生 UI 展示；扫描、CRC、读写盘、剪贴板应用的完整分阶段计时；固定缓冲池以外的完整分配复用；真实双机 RSS/吞吐/键鼠延迟压测。当前只完成阶段二的资源控制与限速基础，不能标记阶段二整体完成。
 - `pending bytes` 当前按任务完整保留量计数，直到任务终态统一释放；不是实时递减的剩余字节显示值。
 - 第一批预算边界、超限、幂等释放及 32 线程并发抢占测试通过；Windows HA 测试夹具已链接新模块。第一批 CI：[Actions #42021950477](https://github.com/alex520lq/HopDesk/actions/runs/42021950477)，提交 `8ba90741ba8bb170a795c895f093cc78e7ad3aa1`。
 
@@ -174,6 +179,17 @@
 - 资源快照新增 rx queue 当前值/高水位、拒绝次数、释放次数和账本异常计数；测试覆盖 slot/bytes 边界、错误释放和任务终态保护。
 - Windows/macOS 原生构建、核心测试、回归测试、协议、TCP、角色重连及打包 CI 全部通过：[Actions #42042092381](https://github.com/alex520lq/HopDesk/actions/runs/42042092381)，代码提交 `e8c7d300910a859ca11842321dce254ec005170e`，测试夹具提交 `1da692c071b7dcf7c4627fc1aa2cc55a44075409`。
 - 真实双机性能、RSS、磁盘压力及键鼠延迟尚未执行；CI 通过不代表实机验收通过。
+
+**第三批已提交：剪贴板图片临时内存、owned-buffer 预算转移与自适应限速。**
+
+- macOS 图片 `dataForType`、NSImage 解码、CGContext bitmap 和行翻转均在 utility worker；预留临时内存额度后才物化剪贴板数据，按真实像素尺寸收窄额度。
+- Windows DIB 快照在复制前预留临时内存，剪贴板锁只覆盖数据快照；BGRA 转换和传输提交在后台 worker。
+- 新增原子 image-temp → queued-image 预算转移，避免同一 BGRA allocation 在转换 Task 和传输 Task 交接时被重复计数；失败路径释放源 reservation，成功路径由目标 Task 持有最终 payload reservation。
+- 图片提交使用 owned-buffer 接口，避免再复制整张像素图；文件/图片 chunk 发送直接引用原有数据缓冲，图片 chunk 采用 header + payload 分段发送。
+- 新增共享 Token Bucket/AIMD 限速模块；按 chunk 大小归一化 socket send time，结合文件 ACK 延迟与本机 RX 写盘队列压力进行调节；每 8 个 chunk 反馈一次。
+- 新增 `xfer_rate_limit_mib` 配置（16–4096 MiB/s，默认128）；预算快照同时暴露当前限额。预算转移、限速、配置边界均增加核心测试。
+- Windows/macOS 原生构建、核心测试、文件传输协议测试、TCP loopback、角色/重连集成测试和打包 CI 全部通过：[Actions #42051872404](https://github.com/alex520lq/HopDesk/actions/runs/42051872404)，代码提交 `f3190e77764f171d4c23d3c4cbefebfd2e6e5701`。
+- **实机验收仍未执行**；默认速率尚未实测校准。ACK 窗口、预算 UI、完整阶段计时和压力报告继续列为待办。
 
 ### 阶段三：任务模型、双向一致性与产品验收
 
@@ -239,7 +255,8 @@
 | 计划建立/基线校准 | `614959cbc74c1c29540a7a7d31f4bd1447d2dd31` | 已存在本计划文档；校准为 PR #8 当前 HEAD，保留问题 ID、产品语义、架构、三阶段任务和验收矩阵 | 文档与代码锚点复核 | 待 CI |
 | 阶段一代码与 CI | `59260df3e627aef3b0b2fa63873f391226680fa4` | Offer/Request、按需扫描/传输、协议与测试夹具修复；Windows/macOS 主程序及打包 | 核心、协议、TCP、HA/角色重连测试通过 | CI 全部成功；真实双机/桌面粘贴验收仍待执行 |
 | 阶段二第一批：发送端预算基础 | `e47a3b1ac5802b0dcb23f7137734bea254ca6470`（代码）；`7185ecd10279dcfd06574b422a438706af65f00f`（Windows 测试夹具）；`8ba90741ba8bb170a795c895f093cc78e7ad3aa1`（并发测试） | 新增跨平台预算账本；发送端 jobs/entries/pending bytes/image bytes 预留；图片复制前预算检查；32 线程并发预算测试 | Windows/macOS CI 全部成功；[Actions #42021950477](https://github.com/alex520lq/HopDesk/actions/runs/42021950477) | 已完成第一批自动化验证；临时图像内存、限速/节流、实机压测仍待实施；文件枚举已由 Paste Worker 在后台执行 |
-| 阶段二第二批：接收端写盘队列预算 | `e8c7d300910a859ca11842321dce254ec005170e`（代码）；`1da692c071b7dcf7c4627fc1aa2cc55a44075409`（回归夹具） | 接收写盘队列 slot + bytes 纳入 Task reservation 与全局账本；writer 活动 buffer 计入 slot；分配前预留、释放后归还；账本高水位/拒绝/释放/异常计数 | Windows/macOS CI 全部成功；[Actions #42042092381](https://github.com/alex520lq/HopDesk/actions/runs/42042092381) | 自动化验证通过；实机压测未执行；图片转换临时内存与速率控制仍待实施 |
+| 阶段二第二批：接收端写盘队列预算 | `e8c7d300910a859ca11842321dce254ec005170e`（代码）；`1da692c071b7dcf7c4627fc1aa2cc55a44075409`（回归夹具） | 接收写盘队列 slot + bytes 纳入 Task reservation 与全局账本；writer 活动 buffer 计入 slot；分配前预留、释放后归还；账本高水位/拒绝/释放/异常计数 | Windows/macOS CI 全部成功；[Actions #42042092381](https://github.com/alex520lq/HopDesk/actions/runs/42042092381) | 自动化验证通过；实机压测未执行 |
+| 阶段二第三批：图片临时预算转移与自适应限速 | `f3190e77764f171d4c23d3c4cbefebfd2e6e5701` | 图片快照/转换临时预算、原子 owned-buffer 预算转移、分块直发、Token Bucket/AIMD、可配置速率上限、预算限额快照 | Windows/macOS 核心、协议、TCP、角色/重连集成与打包全部通过；[Actions #42051872404](https://github.com/alex520lq/HopDesk/actions/runs/42051872404) | 自动化验证通过；真实双机/弱网/RSS/键鼠延迟压测待执行 |
 | 阶段三 | 待实施 | Task ID 状态模型、reservation 账本、独立取消/重试、UI/历史与双向验收 | 待执行 | 待执行 |
 
 ## 7. 本轮明确不做的事

@@ -456,9 +456,12 @@ static int send_dib(HANDLE h, DWORD sequence, hop_xfer_task *task) {
     hop_log(HOP_LOG_INFO, "clip: image out %dx%d task=%llu", w, hgt,
             (unsigned long long)task->id);
     int ok = -1;
-    if (GetClipboardSequenceNumber() == sequence)
-        ok = xfer_submit_image(dst, w, hgt, (int)stride);
-    free(dst);
+    if (GetClipboardSequenceNumber() == sequence) {
+        uint8_t *owned_pixels = dst;
+        dst = NULL; /* xfer_submit_image_owned consumes the buffer on every return path */
+        ok = xfer_submit_image_owned(owned_pixels, w, hgt, (int)stride);
+    }
+    if (dst) free(dst);
     if (!hop_xfer_task_release_image_temp(task, (uint64_t)total)) {
         hop_log(HOP_LOG_ERROR, "clip: DIB conversion budget release failed (task=%llu)",
                 (unsigned long long)task->id);

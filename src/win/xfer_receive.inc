@@ -401,7 +401,22 @@ static int rx_add_top(const wchar_t *p) {
     if (!s_rx.tops[s_rx.ntop]) return 0;
     s_rx.ntop++;
     return 1;
+}/* Remove a previously successful top-level file before retrying it.
+ * A retry opens with CREATE_ALWAYS; if it later fails, stale clipboard paths
+ * must not continue advertising the now-incomplete file. */
+static void rx_remove_top(const wchar_t *p) {
+    if (!p) return;
+    for (int i = 0; i < s_rx.ntop; ++i) {
+        if (wcscmp(s_rx.tops[i], p) != 0) continue;
+        free(s_rx.tops[i]);
+        if (i + 1 < s_rx.ntop)
+            memmove(&s_rx.tops[i], &s_rx.tops[i + 1],
+                    (size_t)(s_rx.ntop - i - 1) * sizeof(*s_rx.tops));
+        s_rx.ntop--;
+        return;
+    }
 }
+
 
 /* 把 UTF-8 相对路径拼到本批目录下，返回 malloc 的宽路径 */
 static wchar_t *rx_path_for(const char *rel) {
@@ -673,6 +688,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             if (!path) { s_rx.cur_fail = HOP_FILE_ACK_BADPATH; break; }
 
             s_rx.cur_path = path;
+            rx_remove_top(s_rx.cur_path);
             s_rx.cur_size = size;
             if (!s_rx.reserved_entries[id - 1]) {
                 if (!hop_xfer_task_reserve_entry(&s_rx.task,size)) {
@@ -883,11 +899,14 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             status_file_phase(HOP_XFER_DIR_RECEIVE,s_rx.batch,(int)id-1,HOP_XFER_FILE_VERIFYING,0);
             int ack = HOP_FILE_ACK_OK;
 
+            /* Always drain and close, including a file already marked bad by
+             * a chunk CRC or queue error. Failure cleanup must never race the
+             * writer's still-open handle. */
+            if (!s_rx.cur_is_dir) rx_close_file();
+
             if (s_rx.cur_fail >= 0) {
                 ack = s_rx.cur_fail;
             } else {
-                rx_close_file();     /* 关文件、比 CRC 之前必须排空写队列 */
-
                 if (wq_error_get()) {
                     hop_log(HOP_LOG_ERROR, "xfer: disk error, %ls incomplete",
                             s_rx.cur_path ? s_rx.cur_path : L"?");
@@ -914,6 +933,15 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 }
             }
 
+
+            if (ack != HOP_FILE_ACK_OK && !s_rx.cur_is_dir && s_rx.cur_path) {
+                if (!DeleteFileW(s_rx.cur_path)) {
+                    DWORD error = GetLastError();
+                    if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+                        hop_log(HOP_LOG_WARN, "xfer: failed to remove incomplete file %ls (err %lu)",
+                                s_rx.cur_path, error);
+                }
+            }
 
             status_file_phase(HOP_XFER_DIR_RECEIVE,s_rx.batch,(int)id-1,ack==HOP_FILE_ACK_OK?HOP_XFER_FILE_COMPLETED:HOP_XFER_FILE_FAILED,0);
 

@@ -362,6 +362,23 @@ static int rx_add_top(const char *p) {
     s_rx.ntop++;
     return 1;
 }
+ 
+/* Remove a previously successful top-level file before retrying it.
+ * A retry opens with truncate; if it later fails, stale clipboard paths must
+ * not continue advertising the now-incomplete file. */
+static void rx_remove_top(const char *p) {
+    if (!p) return;
+    for (int i = 0; i < s_rx.ntop; ++i) {
+        if (strcmp(s_rx.tops[i], p) != 0) continue;
+        free(s_rx.tops[i]);
+        if (i + 1 < s_rx.ntop)
+            memmove(&s_rx.tops[i], &s_rx.tops[i + 1],
+                    (size_t)(s_rx.ntop - i - 1) * sizeof(*s_rx.tops));
+        s_rx.ntop--;
+        return;
+    }
+}
+
 
 /* Receiver-thread only. Wire notification has no status side effects. Close the
  * writer before freeing paths/buffers or deleting staging files. Terminal state
@@ -575,6 +592,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             s_rx.cur_path = strdup(path);
             s_rx.cur_size = size;
             if (!s_rx.cur_path) { s_rx.cur_fail=HOP_FILE_ACK_DISK; break; }
+            rx_remove_top(s_rx.cur_path);
             if (!s_rx.reserved_entries[id - 1]) {
                 if (!hop_xfer_task_reserve_entry(&s_rx.task,size)) {
                     rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
@@ -778,11 +796,14 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             status_file_phase(HOP_XFER_DIR_RECEIVE,s_rx.batch,(int)id-1,HOP_XFER_FILE_VERIFYING,0);
             int ack = HOP_FILE_ACK_OK;
 
+            /* Always drain and close, including a file already marked bad by
+             * a chunk CRC or queue error. Failure cleanup must never race the
+             * writer's still-open handle. */
+            if (!s_rx.cur_is_dir) rx_close_file();
+
             if (s_rx.cur_fail >= 0) {
                 ack = s_rx.cur_fail;
             } else {
-                rx_close_file();     /* 关文件、比 CRC 之前必须排空写队列 */
-
                 if (s_wq.err) {
                     hop_log(HOP_LOG_ERROR, "xfer: disk error, %s incomplete",
                             s_rx.cur_path ? s_rx.cur_path : "?");
@@ -809,6 +830,12 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 }
             }
 
+
+            if (ack != HOP_FILE_ACK_OK && !s_rx.cur_is_dir && s_rx.cur_path) {
+                if (unlink(s_rx.cur_path) != 0 && errno != ENOENT)
+                    hop_log(HOP_LOG_WARN, "xfer: failed to remove incomplete file %s (%s)",
+                            s_rx.cur_path, strerror(errno));
+            }
 
             status_file_phase(HOP_XFER_DIR_RECEIVE,s_rx.batch,(int)id-1,ack==HOP_FILE_ACK_OK?HOP_XFER_FILE_COMPLETED:HOP_XFER_FILE_FAILED,0);
 

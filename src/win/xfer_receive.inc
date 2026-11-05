@@ -401,7 +401,9 @@ static int rx_add_top(const wchar_t *p) {
     if (!s_rx.tops[s_rx.ntop]) return 0;
     s_rx.ntop++;
     return 1;
-}/* Remove a previously successful top-level file before retrying it.
+}
+
+/* Remove a previously successful top-level file before retrying it.
  * A retry opens with CREATE_ALWAYS; if it later fails, stale clipboard paths
  * must not continue advertising the now-incomplete file. */
 static void rx_remove_top(const wchar_t *p) {

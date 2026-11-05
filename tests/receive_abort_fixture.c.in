@@ -126,6 +126,10 @@ static void assert_terminal(uint32_t batch,uint8_t reason,int before){
     assert(!s_rx.active && !s_rx.batch && s_rx.dead_batch==batch && s_rx.dead_reason==reason);
     assert(!s_rx.cur_path && !s_rx.img && !s_rx.tops && !s_rx.ntop && !s_rx.img_cap && !s_rx.img_expected);
     assert(!s_rx.cur_is_image && !s_rx.cur_id && !s_rx.cur_size && !s_rx.dir[0]);
+    hop_xfer_budget_snapshot budget_snapshot;
+    hop_xfer_budget_get_snapshot(&budget_snapshot);
+    assert(budget_snapshot.jobs==0 && budget_snapshot.entries==0 &&
+           budget_snapshot.pending_bytes==0 && budget_snapshot.image_bytes==0);
     assert(xfer_busy() && !s_receive_status.status.active && closed); /* outgoing state still owns admission */
     assert(saved==before+1 && s_history[0].batch==batch);
     assert(s_history[0].phase==(reason==HOP_ABORT_CANCEL?HOP_XFER_CANCELLED:HOP_XFER_FAILED));

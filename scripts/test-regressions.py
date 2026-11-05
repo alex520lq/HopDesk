@@ -271,6 +271,8 @@ int main(void){
         common=r'''
 #include "hop.h"
 #include "xfer_tracking.h"
+#include "xfer_budget.h"
+#include "xfer_task.h"
 #include <assert.h>
 #include <wchar.h>
 #define hop_log(...) ((void)0)
@@ -286,11 +288,11 @@ typedef xf_job xfer_job;
 typedef struct {int kind;} rx_task;
 static int s_status_lock,applied;static uint8_t wire[20];
 static hop_xfer_tracking s_receive_status;
-static struct {int active,cur_is_image,ntop;uint32_t batch;char *dir;uint8_t *img;size_t img_len,img_expected;int img_w,img_h,img_stride;void **tops;} s_rx;
+static struct {int active,cur_is_image,ntop;uint32_t batch;char *dir;uint8_t *img;size_t img_len,img_expected;int img_w,img_h,img_stride;void **tops;hop_xfer_task task;} s_rx;
 static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t batch){(void)batch;(void)fd;(void)type;assert(n==20);memcpy(wire,p,n);return 1;}
 static void wq_push(rx_task*t){(void)t;}
 static void wq_drain(void){}
-static void rx_reset(void){s_rx.active=0;}
+static void rx_reset(void){s_rx.active=0;hop_xfer_task_dispose(&s_rx.task);}
 static void status_file_phase(int d,uint32_t b,int i,int p,uint32_t a){assert(d==HOP_XFER_DIR_RECEIVE);hop_xfer_tracking_phase(&s_receive_status,b,i,p,a);}
 static void status_end(int d,uint32_t b,int p,const char*s){assert(d==HOP_XFER_DIR_RECEIVE);hop_xfer_tracking_end(&s_receive_status,b,p,s);}
 static void apply_image(const uint8_t*p,int w,int h,int stride){(void)p;(void)w;(void)h;(void)stride;applied++;}
@@ -304,7 +306,11 @@ static void apply_paths(const void*p,int n){(void)p;(void)n;}
 int main(void){
     xf_job j={0};j.batch=10;j.is_image=1;j.ok=1;assert(send_done(0,&j));
     assert(hop_get_be32(wire+4)==1 && hop_get_be32(wire+8)==1);
-    uint8_t pixel[4]={0};s_rx.active=1;s_rx.batch=j.batch;s_rx.cur_is_image=1;
+    uint8_t pixel[4]={0};
+    assert(hop_xfer_task_init(&s_rx.task,0,0,j.batch));
+    assert(hop_xfer_task_reserve_job(&s_rx.task));
+    assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
+    s_rx.active=1;s_rx.batch=j.batch;s_rx.cur_is_image=1;
     s_rx.img=pixel;s_rx.img_len=4;s_rx.img_expected=4;
     hop_xfer_tracking_begin(&s_receive_status,j.batch,HOP_XFER_DIR_RECEIVE,0,0,"Image",HOP_XFER_RECEIVING);
     hop_xfer_tracking_file(&s_receive_status,j.batch,1,"Image",4,0,HOP_XFER_FILE_RECEIVING);
@@ -312,13 +318,16 @@ int main(void){
     assert(applied==1 && !s_receive_status.status.active && s_receive_status.status.phase==HOP_XFER_COMPLETED);
     assert(s_receive_status.status.files_done==1);
     rx_finish_batch(j.batch,1,1);assert(applied==1);
-    s_rx.active=1;s_rx.batch=11;s_rx.img_len=3;
+    assert(hop_xfer_task_init(&s_rx.task,0,0,11));
+    assert(hop_xfer_task_reserve_job(&s_rx.task));
+    assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
+    s_rx.active=1;s_rx.batch=11;s_rx.cur_is_image=1;s_rx.img_len=3;s_rx.img_expected=4;
     hop_xfer_tracking_begin(&s_receive_status,11,HOP_XFER_DIR_RECEIVE,1,4,"Image",HOP_XFER_RECEIVING);
     rx_finish_batch(11,1,1);assert(applied==1 && s_receive_status.status.phase==HOP_XFER_FAILED);
     puts("PASS: production IMAGE DONE and clipboard completion path");return 0;
 }
 '''
-        run('image_'+platform,common+extract(source,'send_done')+'\n'+extract(source,'rx_finish_batch')+main,['src/core/protocol.c'])
+        run('image_'+platform,common+extract(source,'send_done')+'\n'+extract(source,'rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
     # Run the actual per-platform state wrappers, not only a reimplemented model.
     for platform in ['win','mac']:
         source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', (ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8'))

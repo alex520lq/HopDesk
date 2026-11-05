@@ -790,9 +790,9 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
              * 发送端收到 ACK_CRC 会单独重发它，其余文件照常落地。 */
             uint64_t crc_started_ns=rate_now_ns();
             int crc_ok=(hop_crc32(0, data, n) == crc);
-            status_stage_time(HOP_XFER_DIR_RECEIVE,s_rx.batch,HOP_XFER_TIME_CRC,
-                              rate_now_ns()-crc_started_ns);
+            uint64_t crc_elapsed_ns=rate_now_ns()-crc_started_ns;
             if (!crc_ok) {
+                status_stage_time(HOP_XFER_DIR_RECEIVE,s_rx.batch,HOP_XFER_TIME_CRC,crc_elapsed_ns);
                 status_stage_time(HOP_XFER_DIR_RECEIVE,s_rx.batch,HOP_XFER_TIME_RECEIVE,
                                   rate_now_ns()-receive_started_ns);
                 hop_log(HOP_LOG_ERROR,
@@ -829,9 +829,9 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 }
                 memcpy(s_rx.img + off, data, n);
                 if (need > s_rx.img_len) s_rx.img_len = need;
-                status_chunk(HOP_XFER_DIR_RECEIVE,s_rx.batch,s_rx.cur_id,off,n);
-                status_stage_time(HOP_XFER_DIR_RECEIVE,s_rx.batch,HOP_XFER_TIME_RECEIVE,
-                                  rate_now_ns()-receive_started_ns);
+                uint64_t receive_elapsed_ns=rate_now_ns()-receive_started_ns;
+                status_chunk_timed(HOP_XFER_DIR_RECEIVE,s_rx.batch,s_rx.cur_id,off,n,
+                                   0,crc_elapsed_ns,0,receive_elapsed_ns);
                 break;
             }
 
@@ -860,13 +860,12 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 break;
             }
             s_rx.cur_received += n;
-            status_chunk(HOP_XFER_DIR_RECEIVE,s_rx.batch,s_rx.cur_id,off,n);
-
             /* 文件 CRC 折入本块 CRC：既覆盖数据（块 CRC 已验证），
              * 也覆盖顺序与偏移，且不需要把整份文件重算一遍 */
             s_rx.fcrc = hop_xfer_file_crc_step(s_rx.fcrc, off, crc);
-            status_stage_time(HOP_XFER_DIR_RECEIVE,s_rx.batch,HOP_XFER_TIME_RECEIVE,
-                              rate_now_ns()-receive_started_ns);
+            uint64_t receive_elapsed_ns=rate_now_ns()-receive_started_ns;
+            status_chunk_timed(HOP_XFER_DIR_RECEIVE,s_rx.batch,s_rx.cur_id,off,n,
+                               0,crc_elapsed_ns,0,receive_elapsed_ns);
             break;
         }
 

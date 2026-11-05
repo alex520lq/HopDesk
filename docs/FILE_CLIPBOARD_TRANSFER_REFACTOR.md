@@ -192,7 +192,7 @@
 - 新增共享 Token Bucket/AIMD 限速模块；按 chunk 大小归一化 socket send time，结合文件 ACK 延迟与本机 RX 写盘队列压力进行调节；每 8 个 chunk 反馈一次。
 - 新增 `xfer_rate_limit_mib` 配置（16–4096 MiB/s，默认128）；预算快照同时暴露当前限额。预算转移、限速、配置边界均增加核心测试。
 - Windows/macOS 原生构建、核心测试、文件传输协议测试、TCP loopback、角色/重连集成测试和打包 CI 全部通过：[Actions #42051872404](https://github.com/alex520lq/HopDesk/actions/runs/42051872404)，代码提交 `f3190e77764f171d4c23d3c4cbefebfd2e6e5701`。
-- **实机验收仍未执行**；默认速率尚未实测校准。ACK 窗口、预算 UI、完整阶段计时和压力报告继续列为待办。
+- **实机验收仍未执行**；默认速率尚未实测校准。第四批已补齐有界 ACK window 和预算 UI；剩余完整阶段计时、发送侧固定大小可复用缓冲池和压力报告继续列为待办。
 
 **第四批已提交：传输可观测性与有界 ACK window。**
 
@@ -200,8 +200,9 @@
 - Windows/macOS 传输页展示当前资源 usage/limits、RX 高水位、预算拒绝、reservation/RX/temp 释放、图片临时缓冲转移及账本异常计数；同时修复 macOS 当前任务卡片标题与任务标题重叠。
 - 新增 `src/core/xfer_ack_window.h`：固定 4 槽、batch/id 关联、发送/收到/取出状态、RTT 记录、单项/整批清理。
 - 两端 sender 以 4 个文件为上限填充窗口，再按文件收取 ACK；CRC、逐文件 ACK、失败隔离和重试仍保留。接收端仍按 TCP 顺序逐个完成文件写盘，不会同时打开多个当前文件。
-- 每个 ACK deadline 从该文件 FILE_END 发出时计算；窗口填充期间已到达的 ACK 会保留，超时后清理对应槽；取消、ABORT、断线和任务结束清理整批 ACK 状态。
-- 本批自动化验证待最新 Windows/macOS CI 完成；此前 speed/ETA 与任务生命周期测试已通过 [Actions #42055108661](https://github.com/alex520lq/HopDesk/actions/runs/42055108661)。实机小文件吞吐、磁盘压力和键鼠延迟仍待测试。
+- 每个 ACK deadline 从 FILE_END 完整写入后计算。ACK 槽在发送 FILE_END 前先进入 sent 状态，避免快速 ACK 竞态；写入完成后再发布独立 deadline。若 ACK 在 deadline 发布前到达，先保存 received timestamp，随后按实际接收时间与 deadline 比较，不再把 FILE_END 写入耗时错误计入 ACK 等待期限。
+- 新增核心测试覆盖 ACK 先于 deadline 发布的竞态、deadline 前到达和恰好到达 deadline 的边界（等于 deadline 按超时处理）。
+- 预算 UI、ACK window 与 ACK deadline 边界修复已提交；最新 ACK window/deadline 代码尚未获得新的 Windows/macOS 原生 CI 结果。此前 speed/ETA、任务生命周期与双平台原生构建通过 [Actions #42055108661](https://github.com/alex520lq/HopDesk/actions/runs/42055108661)，但该结果早于 ACK window。实机小文件吞吐、磁盘压力和键鼠延迟仍待测试。
 
 ### 阶段三：任务模型、双向一致性与产品验收
 

@@ -161,9 +161,15 @@ static int status_begin(uint32_t batch,int direction,uint32_t files,uint64_t byt
     ReleaseSRWLockExclusive(&s_status_lock);
     return created;
 }
-static void status_chunk(int direction,uint32_t batch,uint32_t id,uint64_t off,uint32_t n) {
+static void status_chunk_timed(int direction,uint32_t batch,uint32_t id,uint64_t off,uint32_t n,
+        uint64_t read_ns,uint64_t crc_ns,uint64_t send_ns,uint64_t receive_ns) {
     AcquireSRWLockExclusive(&s_status_lock);
-    hop_xfer_tracking_chunk(status_for(direction),batch,id,off,n,hop_monotonic_ms());
+    hop_xfer_tracking *t=status_for(direction);
+    hop_xfer_tracking_chunk(t,batch,id,off,n,hop_monotonic_ms());
+    hop_xfer_tracking_add_time(t,batch,HOP_XFER_TIME_READ,read_ns);
+    hop_xfer_tracking_add_time(t,batch,HOP_XFER_TIME_CRC,crc_ns);
+    hop_xfer_tracking_add_time(t,batch,HOP_XFER_TIME_SEND,send_ns);
+    hop_xfer_tracking_add_time(t,batch,HOP_XFER_TIME_RECEIVE,receive_ns);
     ReleaseSRWLockExclusive(&s_status_lock);
 }
 static void status_stage_time(int direction,uint32_t batch,int stage,uint64_t elapsed_ns) {
@@ -676,7 +682,8 @@ static void rate_feedback(uint64_t ack_rtt_us) {
 }
 
 static int send_chunk(SOCKET c, uint8_t *tx, uint32_t batch, uint32_t id, uint64_t off,
-                      const uint8_t *data, uint32_t len, uint32_t crc) {
+                      const uint8_t *data, uint32_t len, uint32_t crc,
+                      uint64_t read_ns,uint64_t crc_ns) {
     if (!rate_wait_for_chunk(len)) return 0;
     int send_guard = hop_watchdog_begin("data frame send", 10000);
     hop_encode_header(tx, HOP_MSG_FILE_CHUNK, 20 + HOP_DATA_PREFIX + len);
@@ -696,11 +703,16 @@ static int send_chunk(SOCKET c, uint8_t *tx, uint32_t batch, uint32_t id, uint64
                send_all(c, (const char *)data, (int)len)));
     uint64_t send_us = (rate_now_ns() - send_started) / 1000ull;
     hop_xfer_rate_note_send_time(&s_x.rate, len, send_us);
-    status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_SEND,send_us*1000ull);
     int feedback_due = (s_x.rate.send_samples & 7u) == 0;
     LeaveCriticalSection(&s_txlock);
     if (feedback_due) rate_feedback(0);
-    if(ok) status_chunk(HOP_XFER_DIR_SEND,batch,id,off,len);
+    uint64_t send_ns=send_us*1000ull;
+    if(ok) status_chunk_timed(HOP_XFER_DIR_SEND,batch,id,off,len,read_ns,crc_ns,send_ns,0);
+    else {
+        status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_READ,read_ns);
+        status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_CRC,crc_ns);
+        status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_SEND,send_ns);
+    }
     hop_watchdog_end(send_guard);
     return ok;
 }
@@ -870,22 +882,23 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
                 int read_ok = ReadFile(h, tx + CHUNK_HDR, request, &got, NULL);
                 DWORD read_error = read_ok ? ERROR_SUCCESS : GetLastError();
                 hop_watchdog_end(read_guard);
-                status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_READ,
-                                  rate_now_ns()-read_started_ns);
+                uint64_t read_elapsed_ns=rate_now_ns()-read_started_ns;
                 if (!read_ok) {
+                    status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_READ,read_elapsed_ns);
                     hop_log(HOP_LOG_WARN, "xfer: read failed, %s (err %lu)", e->rel, read_error);
                     end_status = HOP_FILE_IO_ERROR; local_fail = 1; break;
                 }
                 if (got == 0) {
+                    status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_READ,read_elapsed_ns);
                     hop_log(HOP_LOG_WARN, "xfer: unexpected EOF, %s (%llu/%llu bytes)",
                             e->rel, (unsigned long long)off, (unsigned long long)e->size);
                     end_status = HOP_FILE_IO_ERROR; local_fail = 1; break;
                 }
                 uint64_t crc_started_ns=rate_now_ns();
                 uint32_t ccrc = hop_crc32(0, tx + CHUNK_HDR, got);
-                status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_CRC,
-                                  rate_now_ns()-crc_started_ns);
-                if (!send_chunk(c, tx, batch, id, off, tx + CHUNK_HDR, got, ccrc)) {
+                uint64_t crc_elapsed_ns=rate_now_ns()-crc_started_ns;
+                if (!send_chunk(c,tx,batch,id,off,tx+CHUNK_HDR,got,ccrc,
+                                read_elapsed_ns,crc_elapsed_ns)) {
                     CloseHandle(h); ack_unregister(batch,id); return XFER_SEND_DEAD;
                 }
                 fcrc = hop_xfer_file_crc_step(fcrc, off, ccrc);
@@ -947,9 +960,8 @@ static int send_image_job(SOCKET c, uint8_t *tx, xfer_job *j) {
         uint32_t n = (uint32_t)((total - off) < s_x.chunk ? (total - off) : s_x.chunk);
         uint64_t crc_started_ns=rate_now_ns();
         uint32_t crc = hop_crc32(0, j->pixels + off, n);
-        status_stage_time(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_TIME_CRC,
-                          rate_now_ns()-crc_started_ns);
-        if (!send_chunk(c, tx, j->batch, 1, off, j->pixels + off, n, crc)) return 0;
+        uint64_t crc_elapsed_ns=rate_now_ns()-crc_started_ns;
+        if (!send_chunk(c,tx,j->batch,1,off,j->pixels+off,n,crc,0,crc_elapsed_ns)) return 0;
         off += n;
         yield_cpu();
         if (cancel_requested(j->batch)) return -1;

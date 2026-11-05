@@ -13,18 +13,19 @@ static pthread_mutex_t s_budget_lock = PTHREAD_MUTEX_INITIALIZER;
 #define UNLOCK() pthread_mutex_unlock(&s_budget_lock)
 #endif
 
-#define DEFAULT_MAX_JOBS 16u
-#define DEFAULT_MAX_ENTRIES 32768u
-#define DEFAULT_MAX_PENDING_BYTES (8ull * 1024ull * 1024ull * 1024ull)
-#define DEFAULT_MAX_IMAGE_BYTES HOP_XFER_DEFAULT_MAX_IMAGE_BYTES
-#define DEFAULT_MAX_SINGLE_IMAGE_BYTES (256ull * 1024ull * 1024ull)
-#define DEFAULT_MAX_IMAGE_TEMP_BYTES (512ull * 1024ull * 1024ull)
-
-static hop_xfer_budget_limits s_limits = {
-    DEFAULT_MAX_JOBS, DEFAULT_MAX_ENTRIES,
-    DEFAULT_MAX_PENDING_BYTES, DEFAULT_MAX_IMAGE_BYTES, DEFAULT_MAX_SINGLE_IMAGE_BYTES,
+static const hop_xfer_budget_limits s_default_limits = {
+    HOP_XFER_DEFAULT_MAX_JOBS, HOP_XFER_DEFAULT_MAX_ENTRIES,
+    HOP_XFER_DEFAULT_MAX_PENDING_BYTES, HOP_XFER_DEFAULT_MAX_IMAGE_BYTES,
+    HOP_XFER_DEFAULT_MAX_SINGLE_IMAGE_BYTES,
     HOP_XFER_DEFAULT_RX_QUEUE_SLOTS, HOP_XFER_DEFAULT_RX_QUEUE_BYTES,
-    DEFAULT_MAX_IMAGE_TEMP_BYTES
+    HOP_XFER_DEFAULT_MAX_IMAGE_TEMP_BYTES
+};
+static hop_xfer_budget_limits s_limits = {
+    HOP_XFER_DEFAULT_MAX_JOBS, HOP_XFER_DEFAULT_MAX_ENTRIES,
+    HOP_XFER_DEFAULT_MAX_PENDING_BYTES, HOP_XFER_DEFAULT_MAX_IMAGE_BYTES,
+    HOP_XFER_DEFAULT_MAX_SINGLE_IMAGE_BYTES,
+    HOP_XFER_DEFAULT_RX_QUEUE_SLOTS, HOP_XFER_DEFAULT_RX_QUEUE_BYTES,
+    HOP_XFER_DEFAULT_MAX_IMAGE_TEMP_BYTES
 };
 static hop_xfer_budget_snapshot s_used;
 static uint64_t s_next_handle_id;
@@ -306,6 +307,7 @@ void hop_xfer_budget_get_snapshot(hop_xfer_budget_snapshot *out) {
     if (!out) return;
     LOCK();
     *out = s_used;
+    out->limits = s_limits;
     UNLOCK();
 }
 

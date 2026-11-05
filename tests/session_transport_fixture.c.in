@@ -1,5 +1,6 @@
 #include "hop.h"
 #include "update_state.h"
+#include "xfer_rate.h"
 #include <assert.h>
 #include <string.h>
 #include <stdio.h>
@@ -8,7 +9,7 @@
 #define SHUT_RDWR 2
 #define INVALID_SOCKET -1
 typedef int SOCKET;
-static struct {int client,sock,lock,slock;hop_session_id session;} s_x;
+static struct {int client,sock,lock,slock;hop_session_id session;hop_xfer_rate_limiter rate;} s_x;
 static struct {int active;uint32_t batch,dead_batch;uint8_t dead_reason;} s_rx;
 static hop_session_id s_rx_session;
 static struct {int marker;} s_send_status,s_receive_status;
@@ -25,6 +26,8 @@ static uint8_t captured[512];static size_t captured_len;static int delivered,clo
 #define pthread_mutex_lock(p) ((void)(p))
 #define pthread_mutex_unlock(p) ((void)(p))
 static int s_txlock;
+static uint64_t rate_now_ns(void){return 0;}
+static int rate_wait_for_chunk(uint32_t bytes){(void)bytes;return 1;}
 static int send_session_current(int fd){return fd==7 && hop_session_matches(&s_x.session);}
 static int send_all(int fd,const void *p,size_t n){assert(fd==7);assert(captured_len+n<=sizeof(captured));memcpy(captured+captured_len,p,n);captured_len+=n;return 1;}
 static void status_chunk(int d,uint32_t batch,uint32_t id,uint64_t off,uint32_t len){(void)d;(void)batch;(void)id;(void)off;(void)len;}

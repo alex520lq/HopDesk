@@ -163,6 +163,8 @@ static struct {
     uint32_t batch;
     int      active;
     hop_xfer_budget_reservation budget;
+    uint8_t reserved_entries[HOP_XFER_FILE_LIMIT];
+    uint64_t reserved_entry_sizes[HOP_XFER_FILE_LIMIT];
     uint32_t dead_batch;    /* 已作废的批次（本地取消 / 对端中止）。
                              * 它之后的帧一律忽略，且不再为它建目录 ——
                              * 否则取消之后对端再发一帧就把目录又建回来了。 */
@@ -215,6 +217,8 @@ static void rx_clear_state(void) {
     s_rx.cur_is_image = s_rx.cur_is_dir = 0;
     s_rx.img_w = s_rx.img_h = s_rx.img_stride = 0;
     s_rx.cur_fail = -1;
+    memset(s_rx.reserved_entries,0,sizeof(s_rx.reserved_entries));
+    memset(s_rx.reserved_entry_sizes,0,sizeof(s_rx.reserved_entry_sizes));
     hop_xfer_budget_release(&s_rx.budget);
     s_rx.dir[0] = '\0';
 }
@@ -431,6 +435,10 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
             rx_begin_batch(batch);
             if (!s_rx.active || s_rx.batch != batch) return;
+            if (id == 0 || id > HOP_XFER_FILE_LIMIT) {
+                rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
+                return;
+            }
 
             /* 先登记当前条目，确保坏路径也能在 FILE_END 时回 ACK。 */
             free(s_rx.cur_path);
@@ -459,6 +467,18 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
             s_rx.cur_path = strdup(path);
             s_rx.cur_size = size;
+            if (!s_rx.cur_path) { s_rx.cur_fail=HOP_FILE_ACK_DISK; break; }
+            if (!s_rx.reserved_entries[id - 1]) {
+                if (!hop_xfer_budget_reserve_entry(&s_rx.budget,size)) {
+                    rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
+                    return;
+                }
+                s_rx.reserved_entries[id - 1] = 1;
+                s_rx.reserved_entry_sizes[id - 1] = size;
+            } else if (s_rx.reserved_entry_sizes[id - 1] != size) {
+                rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
+                return;
+            }
             status_add_received_file(batch,id,rel,size,s_rx.cur_is_dir);
 
             if (s_rx.cur_is_dir) {

@@ -1230,7 +1230,7 @@ static void *send_thread(void *arg) {
             ts.tv_nsec += 200 * 1000000L;
             if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
             pthread_cond_timedwait(&s_x.qcond, &s_x.qlock, &ts);
-            if (!peer_ready_snapshot) break; /* refresh connection state outside qlock */
+            break; /* refresh connection state outside qlock after every poll */
         }
 
         if (s_x.stop) {

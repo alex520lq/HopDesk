@@ -264,8 +264,9 @@ static BOOL send_image(NSImage *img, NSInteger expected_change, hop_xfer_task *t
             (unsigned long long)task->id);
     {
         uint8_t *owned_pixels = flip;
-        flip = NULL; /* xfer_submit_image_owned consumes the buffer on every return path */
-        ok = xfer_submit_image_owned(owned_pixels, w, h, (int)stride) ? YES : NO;
+        flip = NULL; /* hand off the existing temp reservation with the pixel allocation */
+        ok = xfer_submit_image_owned_from_task(owned_pixels, w, h, (int)stride,
+                                               task, (uint64_t)total) ? YES : NO;
     }
 
 cleanup:

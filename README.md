@@ -193,6 +193,10 @@ edge_margin_px=40
 
 # 数据通道分块大小，单位 KB
 xfer_chunk_kb=256
+
+# 自适应发送速率上限，单位 MiB/s（16-4096）
+# 默认 128 是暂定起始值，需按真实 Wi-Fi/有线网络表现调整
+xfer_rate_limit_mib=128
 ```
 
 常用配置项：
@@ -209,6 +213,7 @@ xfer_chunk_kb=256
 | `switch_cooldown_ms` | `300` | 移交或收回后的边缘冷却时间 |
 | `edge_margin_px` | `40` | 边缘内移距离及收回越界阈值 |
 | `xfer_chunk_kb` | `256` | 数据通道分块大小，代码范围为 64–4096 KB |
+| `xfer_rate_limit_mib` | `128` | 自适应发送速率上限，单位 MiB/s，范围 16–4096；默认值尚待实机校准 |
 
 显示器相关配置包括 `disp_win_input`、`disp_mac_input`、`disp_wake_sec`、`mac_input_cmd` 和 `mac_sleep_cmd`。其中 DDC/CI 输入源值依赖显示器型号；macOS 默认切源命令使用 `m1ddc`，请确认命令已安装且适用于你的设备。
 

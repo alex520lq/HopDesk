@@ -2,9 +2,14 @@
 #define HOP_XFER_BUDGET_H
 #include <stdint.h>
 
+#define HOP_XFER_DEFAULT_MAX_JOBS 16u
+#define HOP_XFER_DEFAULT_MAX_ENTRIES 32768u
+#define HOP_XFER_DEFAULT_MAX_PENDING_BYTES (8ull * 1024ull * 1024ull * 1024ull)
 #define HOP_XFER_DEFAULT_RX_QUEUE_SLOTS 8u
 #define HOP_XFER_DEFAULT_RX_QUEUE_BYTES (8ull * 1024ull * 1024ull)
 #define HOP_XFER_DEFAULT_MAX_IMAGE_BYTES (256ull * 1024ull * 1024ull)
+#define HOP_XFER_DEFAULT_MAX_SINGLE_IMAGE_BYTES HOP_XFER_DEFAULT_MAX_IMAGE_BYTES
+#define HOP_XFER_DEFAULT_MAX_IMAGE_TEMP_BYTES (512ull * 1024ull * 1024ull)
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,6 +33,7 @@ typedef struct {
     uint64_t rejected_rx_buffers, rejected_image_temp_bytes, rejected_image_transfers;
     uint64_t released_reservations, released_rx_buffers, released_image_temp_bytes;
     uint64_t transferred_image_temp_bytes, accounting_errors;
+    hop_xfer_budget_limits limits; /* limits captured atomically with usage */
 } hop_xfer_budget_snapshot;
 
 typedef struct {

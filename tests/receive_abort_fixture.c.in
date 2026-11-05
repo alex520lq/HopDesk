@@ -87,7 +87,7 @@ static void clipboard_complete_remote_paste(uint32_t batch,const char *const *pa
 static void status_image(uint32_t batch,int d,uint64_t size){
     hop_xfer_tracking *t=status_for(d);hop_xfer_tracking_file(t,batch,1,"Image",size,0,HOP_XFER_FILE_RECEIVING);
 }
-static void status_chunk(int d,uint32_t b,uint32_t id,uint64_t off,uint32_t n){hop_xfer_tracking_chunk(status_for(d),b,id,off,n);}
+static void status_chunk(int d,uint32_t b,uint32_t id,uint64_t off,uint32_t n){hop_xfer_tracking_chunk(status_for(d),b,id,off,n,1);}
 static void status_file_phase(int d,uint32_t b,int i,int p,uint32_t a){hop_xfer_tracking_phase(status_for(d),b,i,p,a);}
 static void apply_image(const uint8_t*p,int w,int h,int stride){(void)p;(void)w;(void)h;(void)stride;applied++;}
 static void apply_paths(const void*p,int n){(void)p;(void)n;applied++;}

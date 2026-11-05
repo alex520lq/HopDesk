@@ -802,7 +802,7 @@ static void test_xfer_task_image_buffer_transfer(void) {
 static void test_xfer_tracking_speed_and_eta(void) {
     static hop_xfer_tracking tracking;
     memset(&tracking,0,sizeof(tracking));
-    hop_xfer_tracking_begin(&tracking,7,HOP_XFER_DIR_SEND,1,1000000,"large.bin",HOP_XFER_SENDING);
+    hop_xfer_tracking_begin(&tracking,7,HOP_XFER_DIR_SEND,1,0,"large.bin",HOP_XFER_SENDING);
     hop_xfer_tracking_file(&tracking,7,1,"large.bin",1000000,0,HOP_XFER_FILE_SENDING);
     hop_xfer_tracking_chunk(&tracking,7,1,0,100000,1000);
     CHECK(tracking.status.bytes_done==100000);

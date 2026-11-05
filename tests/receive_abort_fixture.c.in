@@ -149,7 +149,10 @@ int main(void){
         image_begin(batch,1);assert(xfer_busy());seed_resources();
         int old_closes=closes,old_discarded=discarded;
         /* Allocate an actual partial image before CRC, overlap and bounds failures. */
-        if(scenario==1 || scenario==3 || scenario==4)chunk(1,0,0);
+        if(scenario==1 || scenario==3 || scenario==4){
+            chunk(1,0,0);
+            assert(s_rx.img && s_rx.img_cap==s_rx.img_expected);
+        }
         uint8_t reason=HOP_ABORT_TOO_LARGE;fail_send=1; /* failed wire send must still clean up */
         switch(scenario){
             case 0:image_begin(batch,0);break;

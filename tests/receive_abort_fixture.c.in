@@ -45,6 +45,11 @@ typedef struct {int kind;uint64_t off;uint32_t len;uint8_t*data;} rx_task;
 static struct {int err;} s_wq;
 static void wq_drain(void){}
 static int wq_push(rx_task*t){if(t->kind==RX_CLOSE){closed=1;closes++;}else free(t->data);return 1;}
+static int wq_push_data(hop_xfer_task *owner,uint64_t off,const uint8_t *data,uint32_t len){
+    (void)off;(void)data;
+    if(!hop_xfer_task_reserve_rx_buffer(owner,len))return 0;
+    return hop_xfer_task_release_rx_buffer(owner,len);
+}
 @RX_STATE@
 static void history_save(void){assert(closed && !s_rx.img && !s_rx.cur_path && !s_rx.tops && !s_rx.active);saved++;}
 #ifdef FIXTURE_WINDOWS

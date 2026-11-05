@@ -12,6 +12,7 @@
 #include "../core/xfer_budget.h"
 #include "../core/xfer_task.h"
 #include "../core/xfer_rate.h"
+#include "../core/xfer_ack_window.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -679,20 +680,14 @@ static int send_chunk(SOCKET c, uint8_t *tx, uint32_t batch, uint32_t id, uint64
     return ok;
 }
 
-/* ---------------- 单文件 ACK ----------------
+/* ---------------- 有界单文件 ACK 窗口 ----------------
  *
- * 同一时刻只有一个文件在途（发送是串行的），所以一个槽就够。
- * 发送线程填完 END 就等这里；接收线程处理完 END 把结论放进来。
- *
- * 为什么要等：TCP 只保证"字节到了"，不保证"落盘成功、校验通过"。
- * 没有这个回执，发送端对"这个文件成没成"一无所知，
- * 就只能整批重传 —— 5 GB 的批次失败一次，代价是重传 5 GB。 */
+ * 最多允许 4 个文件等待接收端落盘 ACK。数据帧仍然串行写入同一 TCP
+ * stream；ACK 由接收端 writer 异步返回，按 batch/id 独立归位。 */
 static struct {
     CRITICAL_SECTION lock;
-    HANDLE           ev;        /* 自动重置：有信号就说明槽里可能有新东西 */
-    uint32_t         batch, id;
-    int              status;
-    int              valid;
+    HANDLE           ev;        /* 自动重置：任一已登记 ACK 到达时唤醒 sender */
+    hop_xfer_ack_window window;
 } s_ack;
 
 /* 返回值：>=0 是接收端 ACK 的 status；负数是本地/链路层面的失败 */
@@ -701,25 +696,41 @@ static struct {
 #define XFER_LOCAL_IO     (-3)
 #define XFER_CANCELLED    (-4)
 #define XFER_PEER_ABORT   (-5)
+#define XFER_ACK_PENDING  (-6)
 
 static uint64_t now_ms(void) { return (uint64_t)GetTickCount64(); }
 
-static void ack_clear(void) {
+static int ack_register(uint32_t batch, uint32_t id) {
     EnterCriticalSection(&s_ack.lock);
-    s_ack.valid = 0;
+    int ok = hop_xfer_ack_window_register(&s_ack.window, batch, id);
+    LeaveCriticalSection(&s_ack.lock);
+    return ok;
+}
+
+static void ack_mark_sent(uint32_t batch, uint32_t id) {
+    EnterCriticalSection(&s_ack.lock);
+    (void)hop_xfer_ack_window_mark_sent(&s_ack.window, batch, id, rate_now_ns());
     LeaveCriticalSection(&s_ack.lock);
 }
 
-/* 接收线程调用。槽满（上一份没人取）就覆盖 —— 上一份已经超时，
- * 发送端本来就要重发，旧结论没有价值。 */
+static void ack_unregister(uint32_t batch, uint32_t id) {
+    EnterCriticalSection(&s_ack.lock);
+    hop_xfer_ack_window_unregister(&s_ack.window, batch, id);
+    LeaveCriticalSection(&s_ack.lock);
+}
+
+static void ack_unregister_batch(uint32_t batch) {
+    EnterCriticalSection(&s_ack.lock);
+    hop_xfer_ack_window_unregister_batch(&s_ack.window, batch);
+    LeaveCriticalSection(&s_ack.lock);
+}
+
+/* Receiver writer thread stores ACKs only in their pre-registered batch/id slot. */
 static void ack_deliver(uint32_t batch, uint32_t id, int status) {
     EnterCriticalSection(&s_ack.lock);
-    s_ack.batch  = batch;
-    s_ack.id     = id;
-    s_ack.status = status;
-    s_ack.valid  = 1;
+    int delivered = hop_xfer_ack_window_deliver(&s_ack.window, batch, id, status, rate_now_ns());
     LeaveCriticalSection(&s_ack.lock);
-    SetEvent(s_ack.ev);
+    if (delivered) SetEvent(s_ack.ev);
 }
 
 /* 用户取消了这个批次？每块之后查一次，锁开销可以忽略。 */
@@ -742,26 +753,29 @@ static int peer_aborted(uint32_t batch) {
  *
  * 用"先查槽再等事件"的循环，而不是"先 ResetEvent 再等"：
  * ACK 可能在两者之间到达，后者会漏掉信号然后白等满 10 秒。 */
-static int ack_wait(uint32_t batch, uint32_t id) {
+static int ack_wait(uint32_t batch, uint32_t id, uint64_t *rtt_us) {
     uint64_t deadline = now_ms() + HOP_XFER_ACK_TIMEOUT_MS;
+    if (rtt_us) *rtt_us = 0;
     for (;;) {
         EnterCriticalSection(&s_ack.lock);
-        int hit = s_ack.valid && s_ack.batch == batch && s_ack.id == id;
-        int st  = s_ack.status;
-        if (hit) s_ack.valid = 0;
+        int status = 0;
+        uint64_t rtt_ns = 0;
+        int hit = hop_xfer_ack_window_take(&s_ack.window, batch, id, &status, &rtt_ns);
         LeaveCriticalSection(&s_ack.lock);
-        if (hit) return st;
+        if (hit) {
+            if (rtt_us) *rtt_us = rtt_ns / 1000ull;
+            return status;
+        }
 
-        /* 对端中止了就别干等：ABORT 的处理器会 SetEvent 把这个等待踢醒 */
-        if (peer_aborted(batch)) return XFER_PEER_ABORT;
-        /* 用户取消同理。发送大文件时线程绝大部分时间都停在这里而不是
-         * 分块循环里 —— 不检查这个，点了取消要等满 10 秒才有反应。 */
-        if (cancel_requested(batch)) return XFER_CANCELLED;
-        /* 退出时别把 join 拖满 10 秒 */
-        if (WaitForSingleObject(s_x.stop, 0) == WAIT_OBJECT_0) return XFER_SEND_DEAD;
+        if (peer_aborted(batch)) { ack_unregister(batch,id); return XFER_PEER_ABORT; }
+        if (cancel_requested(batch)) { ack_unregister(batch,id); return XFER_CANCELLED; }
+        if (WaitForSingleObject(s_x.stop, 0) == WAIT_OBJECT_0) {
+            ack_unregister(batch,id);
+            return XFER_SEND_DEAD;
+        }
 
         uint64_t n = now_ms();
-        if (n >= deadline) return XFER_ACK_TIMEOUT;
+        if (n >= deadline) { ack_unregister(batch,id); return XFER_ACK_TIMEOUT; }
         WaitForSingleObject(s_ack.ev, (DWORD)(deadline - n));
     }
 }

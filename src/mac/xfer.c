@@ -840,6 +840,7 @@ static int send_file_entry(int fd, uint8_t *tx, uint32_t batch,
         ack_unregister(batch,id); return XFER_SEND_DEAD;
     }
     (void)local_fail;
+    /* Start the wall-clock wait budget only after FILE_END is fully written. */
     *ack_deadline_ms = now_ms() + HOP_XFER_ACK_TIMEOUT_MS;
     return XFER_ACK_PENDING;
 }

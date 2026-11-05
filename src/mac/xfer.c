@@ -1338,35 +1338,36 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
     return 1;
 }
 
-static int xfer_submit_image_impl(const uint8_t *bgra, int w, int h, int stride) {
+static int xfer_submit_image_impl(const uint8_t *bgra, uint8_t *owned, int w, int h, int stride) {
     uint64_t min_stride,total64;
-    if (!bgra || w <= 0 || h <= 0 || stride <= 0) return 0;
+    if (!bgra || w <= 0 || h <= 0 || stride <= 0) { if (owned) free(owned); return 0; }
     min_stride=(uint64_t)(uint32_t)w*4u;
     if ((uint64_t)(uint32_t)stride<min_stride ||
         (uint64_t)(uint32_t)stride>UINT64_MAX/(uint64_t)(uint32_t)h) return 0;
     total64=(uint64_t)(uint32_t)stride*(uint64_t)(uint32_t)h;
-    if(total64>(uint64_t)SIZE_MAX||!xfer_connected())return 0;
+    if(total64>(uint64_t)SIZE_MAX||!xfer_connected()){if(owned)free(owned);return 0;}
 
     uint32_t batch;
     do { batch = __sync_add_and_fetch(&s_x.batch_seq, 1); } while (!batch);
     hop_xfer_task task;
     memset(&task,0,sizeof(task));
-    if(!hop_xfer_task_init(&task,0,0,batch))return 0;
+    if(!hop_xfer_task_init(&task,0,0,batch)){if(owned)free(owned);return 0;}
     if(!hop_xfer_task_reserve_job(&task)||!hop_xfer_task_reserve_image(&task,total64)){
         uint64_t task_id=task.id;
         hop_xfer_task_finish(&task,HOP_XFER_TASK_FAILED);
         hop_xfer_task_dispose(&task);
+        if(owned)free(owned);
         hop_log(HOP_LOG_WARN,"xfer: global image memory budget exhausted (task=%llu)",
                 (unsigned long long)task_id);
         return 0;
     }
 
     xf_job *job=(xf_job*)calloc(1,sizeof(*job));
-    if(!job){hop_xfer_task_finish(&task,HOP_XFER_TASK_FAILED);hop_xfer_task_dispose(&task);return 0;}
+    if(!job){if(owned)free(owned);hop_xfer_task_finish(&task,HOP_XFER_TASK_FAILED);hop_xfer_task_dispose(&task);return 0;}
     size_t total=(size_t)total64;
-    uint8_t *copy=(uint8_t*)malloc(total);
+    uint8_t *copy=owned ? owned : (uint8_t*)malloc(total);
     if(!copy){free(job);hop_xfer_task_finish(&task,HOP_XFER_TASK_FAILED);hop_xfer_task_dispose(&task);return 0;}
-    memcpy(copy,bgra,total);
+    if(!owned)memcpy(copy,bgra,total);
 
     if(!hop_xfer_task_set_state(&task,HOP_XFER_TASK_QUEUED)||
        !hop_xfer_task_move(&job->task,&task)){
@@ -1410,7 +1411,15 @@ int xfer_submit_paths_for_paste(const char *const *paths, int n, uint32_t reques
 
 int xfer_submit_image(const uint8_t *bgra, int w, int h, int stride) {
     if (!hop_update_work_enter()) return 0;
-    int result = xfer_submit_image_impl(bgra, w, h, stride);
+    int result = xfer_submit_image_impl(bgra, NULL, w, h, stride);
+    hop_update_work_leave();
+    return result;
+}
+
+int xfer_submit_image_owned(uint8_t *bgra, int w, int h, int stride) {
+    if (!bgra) return 0;
+    if (!hop_update_work_enter()) { free(bgra); return 0; }
+    int result = xfer_submit_image_impl(bgra, bgra, w, h, stride);
     hop_update_work_leave();
     return result;
 }

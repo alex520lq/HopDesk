@@ -359,7 +359,11 @@ static void elist_free(elist *l) {
 /* 递归收集。rel 是 UTF-8 相对路径（不含首尾斜杠）。 */
 static BOOL guarded_find_next(HANDLE h, WIN32_FIND_DATAW *data) {
     int guard = hop_watchdog_begin("directory next", HOP_IO_DEADLINE_MS);
-    BOOL ok = FindNextFileW(h, data); hop_watchdog_end(guard); return ok;
+    BOOL ok = FindNextFileW(h, data);
+    DWORD error = ok ? ERROR_SUCCESS : GetLastError();
+    hop_watchdog_end(guard);
+    if (!ok) SetLastError(error);
+    return ok;
 }
 static void walk_into(elist *l, const wchar_t *full, const char *rel) {
     if (!l || l->failed) return;
@@ -683,10 +687,11 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                NULL, OPEN_EXISTING,
                                FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+        DWORD open_error = h == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
         hop_watchdog_end(open_guard);
         if (h == INVALID_HANDLE_VALUE) {
             hop_log(HOP_LOG_WARN, "xfer: open failed, %s (err %lu)",
-                    e->rel, GetLastError());
+                    e->rel, open_error);
             end_status = HOP_FILE_IO_ERROR;
             local_fail = 1;
         } else {
@@ -697,9 +702,10 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
                 DWORD got = 0;
                 int read_guard = hop_watchdog_begin("file chunk read", HOP_IO_DEADLINE_MS);
                 int read_ok = ReadFile(h, tx + CHUNK_HDR, request, &got, NULL);
+                DWORD read_error = read_ok ? ERROR_SUCCESS : GetLastError();
                 hop_watchdog_end(read_guard);
                 if (!read_ok) {
-                    DWORD error = GetLastError();
+                    DWORD error = read_error;
                     hop_log(HOP_LOG_WARN, "xfer: read failed, %s (err %lu)", e->rel, error);
                     end_status = HOP_FILE_IO_ERROR;
                     local_fail = 1;
@@ -729,8 +735,10 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
                 BYTE extra = 0; DWORD extra_got = 0;
                 int read_guard = hop_watchdog_begin("file size probe", HOP_IO_DEADLINE_MS);
                 int read_ok = ReadFile(h, &extra, 1, &extra_got, NULL);
+                DWORD probe_error = read_ok ? ERROR_SUCCESS : GetLastError();
                 hop_watchdog_end(read_guard);
                 if (!read_ok || extra_got != 0) {
+                    if (!read_ok) SetLastError(probe_error);
                     hop_log(HOP_LOG_WARN, "xfer: source changed while queued, %s", e->rel);
                     end_status = HOP_FILE_IO_ERROR;
                     local_fail = 1;

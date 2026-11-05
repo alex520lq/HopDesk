@@ -104,8 +104,6 @@ void hop_xfer_rate_note_send_time(hop_xfer_rate_limiter *rate, uint64_t bytes, u
     uint64_t congested_us = expected_us > (UINT64_MAX - 2000u) / 2u ?
                             UINT64_MAX : expected_us * 2u + 2000u;
     rate->send_congested = (uint8_t)(rate->send_time_ewma_us >= congested_us);
-    if ((rate->send_samples & 7u) == 0 && rate->send_congested)
-        decrease_rate(rate, 9u, 10u);
 }
 
 void hop_xfer_rate_feedback(hop_xfer_rate_limiter *rate,
@@ -126,7 +124,9 @@ void hop_xfer_rate_feedback(hop_xfer_rate_limiter *rate,
     if (congested) {
         decrease_rate(rate, 4u, 5u);
     } else if (healthy && rate->current_rate_bytes_per_sec < rate->max_rate_bytes_per_sec) {
-        uint64_t increase = rate->current_rate_bytes_per_sec / 20u;
+        /* Additive increase: one percent of the configured ceiling per
+         * healthy feedback interval, independent of the current rate. */
+        uint64_t increase = rate->max_rate_bytes_per_sec / 100u;
         if (!increase) increase = 1;
         uint64_t room = rate->max_rate_bytes_per_sec - rate->current_rate_bytes_per_sec;
         if (increase > room) increase = room;

@@ -35,7 +35,7 @@ static NSTextField *s_connectionRole, *s_connectionStatus, *s_connectionPeer, *s
 static NSTextField *s_cfg[CFG_COUNT], *s_cfgNote;
 static NSPopUpButton *s_edgePopups[2];
 static NSTextField *s_xferTitle, *s_xferDetail, *s_xferCounts;
-static NSTextField *s_xferBudget, *s_xferMemory, *s_xferBudgetStats;
+static NSTextField *s_xferBudget, *s_xferMemory, *s_xferBudgetStats, *s_xferBudgetLifecycle;
 static NSProgressIndicator *s_xferProgress;
 static NSTextView *s_xferFiles, *s_xferHistory, *s_logView;
 static NSButton *s_retryButton;
@@ -293,10 +293,17 @@ static void refresh_transfer_page(void) {
     uint64_t rejected=budget.rejected_jobs+budget.rejected_entries+budget.rejected_bytes+
         budget.rejected_images+budget.rejected_rx_buffers+budget.rejected_image_temp_bytes+
         budget.rejected_image_transfers;
-    s_xferBudgetStats.stringValue=[NSString stringWithFormat:@"峰值 jobs %u · entries %u · 待传输 %@ · image %@  ·  拒绝 %llu  ·  账本异常 %llu",
+    s_xferBudgetStats.stringValue=[NSString stringWithFormat:@"峰值 jobs %u · entries %u · 待传输 %@ · image %@ · RX %u slots/%@ · 拒绝 %llu",
         budget.jobs_high_water,budget.entries_high_water,
         byte_count(budget.pending_bytes_high_water),byte_count(budget.image_bytes_high_water),
-        (unsigned long long)rejected,(unsigned long long)budget.accounting_errors];
+        budget.rx_queue_slots_high_water,byte_count(budget.rx_queue_bytes_high_water),
+        (unsigned long long)rejected];
+    s_xferBudgetLifecycle.stringValue=[NSString stringWithFormat:@"释放 tasks %llu · RX buffers %llu · image temp %@ · image handoff %@ · 账本异常 %llu",
+        (unsigned long long)budget.released_reservations,
+        (unsigned long long)budget.released_rx_buffers,
+        byte_count(budget.released_image_temp_bytes),
+        byte_count(budget.transferred_image_temp_bytes),
+        (unsigned long long)budget.accounting_errors];
     s_xferProgress.doubleValue=st.bytes_total?MIN(100.0,100.0*(double)st.bytes_done/(double)st.bytes_total):(st.phase==HOP_XFER_COMPLETED?100:0);
     s_retryButton.enabled=st.direction==HOP_XFER_DIR_SEND;
     if (!s_fileSnapshot) s_fileSnapshot=calloc(HOP_XFER_FILE_LIMIT,sizeof(*s_fileSnapshot));
@@ -478,15 +485,16 @@ static void build_pages(NSView *root) {
     p=s_pages[2]; build_settings_page(p);
 
     p=s_pages[3];
-    card=ui_card(p,NSMakeRect(20,458,840,184));
-    ui_label(card,@"当前任务",NSMakeRect(22,142,780,22),13,YES);
-    s_xferTitle=ui_label(card,@"暂无传输任务",NSMakeRect(22,146,780,26),17,YES);
-    s_xferDetail=ui_label(card,@"等待文件传输",NSMakeRect(22,120,780,18),10,NO);
-    s_xferCounts=ui_label(card,@"文件 0 / 0    排队 0    数据 0 B / 0 B",NSMakeRect(22,96,780,18),10,NO);
-    s_xferBudget=ui_label(card,@"预算 jobs 0/16 · entries 0/32768 · pending 0 B/8 GB",NSMakeRect(22,72,780,16),9,NO);
-    s_xferMemory=ui_label(card,@"内存 image 0/256 MB · RX 0/8 slots",NSMakeRect(22,52,780,16),9,NO);
-    s_xferBudgetStats=ui_label(card,@"峰值与拒绝计数等待采样",NSMakeRect(22,32,780,16),9,NO);
-    s_xferProgress=[[NSProgressIndicator alloc] initWithFrame:NSMakeRect(22,10,780,10)];
+    card=ui_card(p,NSMakeRect(20,438,840,204));
+    ui_label(card,@"当前任务",NSMakeRect(22,178,780,18),12,YES);
+    s_xferTitle=ui_label(card,@"暂无传输任务",NSMakeRect(22,150,780,24),16,YES);
+    s_xferDetail=ui_label(card,@"等待文件传输",NSMakeRect(22,126,780,18),10,NO);
+    s_xferCounts=ui_label(card,@"文件 0 / 0    排队 0    数据 0 B / 0 B",NSMakeRect(22,102,780,18),10,NO);
+    s_xferBudget=ui_label(card,@"预算 jobs 0/16 · entries 0/32768 · pending 0 B/8 GB",NSMakeRect(22,80,780,16),9,NO);
+    s_xferMemory=ui_label(card,@"内存 image 0/256 MB · RX 0/8 slots",NSMakeRect(22,60,780,16),9,NO);
+    s_xferBudgetStats=ui_label(card,@"峰值与拒绝计数等待采样",NSMakeRect(22,40,780,16),9,NO);
+    s_xferBudgetLifecycle=ui_label(card,@"资源释放与图片缓冲转移等待采样",NSMakeRect(22,20,780,16),9,NO);
+    s_xferProgress=[[NSProgressIndicator alloc] initWithFrame:NSMakeRect(22,4,780,10)];
     s_xferProgress.minValue=0;s_xferProgress.maxValue=100;s_xferProgress.indeterminate=NO;
     [card addSubview:s_xferProgress];
     card=ui_card(p,NSMakeRect(20,220,840,220));

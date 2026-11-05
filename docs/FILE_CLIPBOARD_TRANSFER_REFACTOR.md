@@ -213,7 +213,7 @@
 - 若发送窗口中途遇到 socket send failure，不再立即丢弃此前文件的 ACK；先按顺序 drain 已发送项，已到达的 ACK 正常提交，未确认项保留为恢复起点。
 - Windows/macOS 的 ACK wait 增加 peer-ready 检查；连接失效后及时返回网络中断，不必继续等完整 ACK timeout。
 - 新增共享 checkpoint helper，拒绝跳过缺口或倒退索引；核心测试覆盖部分窗口断线、连续 ACK 前缀和未确认尾项。
-- 当前分支 HEAD：`df99d053d7f7df603a53bbf2f75ab1fbf0c711c3`。**尚无该 HEAD 的原生 Actions 结果**：PR #8 的 pull ref 仍停留在 `e05efb0fbcd0a225ebf18f0a770e153972d1a730`，需要有 Actions 权限的用户在 Actions → Build HopDesk → Run workflow 选择 `fix/dual-role-server-client` 手动触发；不得把旧 CI 结果当作本批通过。
+- 第六批代码与测试基线：`df99d053d7f7df603a53bbf2f75ab1fbf0c711c3`（后续文档记录另有提交）。**尚无该代码基线的原生 Actions 结果**：PR #8 的 pull ref 仍停留在 `e05efb0fbcd0a225ebf18f0a770e153972d1a730`，需要有 Actions 权限的用户在 Actions → Build HopDesk → Run workflow 选择 `fix/dual-role-server-client` 手动触发；不得把旧 CI 结果当作本批通过。
 - 实机断线注入、ACK 延迟/丢失、10,000 小文件吞吐与双向同时传输仍待测试。
 
 **第五批已提交：按批次记录分阶段耗时。**

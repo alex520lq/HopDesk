@@ -18,7 +18,6 @@ typedef struct {
     uint64_t last_refill_ns;
     uint64_t ack_rtt_ewma_us;
     uint64_t send_time_ewma_us;
-    uint64_t throttle_wait_ns;
     uint64_t rate_increases;
     uint64_t rate_decreases;
     uint32_t send_samples;

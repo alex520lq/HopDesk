@@ -141,6 +141,57 @@ int hop_xfer_budget_reserve_image(hop_xfer_reservation_handle *r, uint64_t bytes
     return 1;
 }
 
+int hop_xfer_budget_reserve_temp_image(hop_xfer_reservation_handle *r, uint64_t bytes) {
+    uint64_t pending, image, temporary;
+    if (!r || !r->task_id || !r->handle_id || !r->active || !bytes) return 0;
+    LOCK();
+    if (!add64(s_used.pending_bytes, bytes, &pending) ||
+        pending > s_limits.max_pending_bytes ||
+        !add64(s_used.image_bytes, bytes, &image) ||
+        image > s_limits.max_image_bytes ||
+        !add64(s_used.temp_image_bytes, bytes, &temporary) ||
+        bytes > UINT64_MAX - r->pending_bytes ||
+        bytes > UINT64_MAX - r->image_bytes ||
+        bytes > UINT64_MAX - r->temp_image_bytes) {
+        s_used.rejected_temp_images++;
+        UNLOCK();
+        return 0;
+    }
+    s_used.pending_bytes = pending;
+    s_used.image_bytes = image;
+    s_used.temp_image_bytes = temporary;
+    if (pending > s_used.pending_bytes_high_water) s_used.pending_bytes_high_water = pending;
+    if (image > s_used.image_bytes_high_water) s_used.image_bytes_high_water = image;
+    if (temporary > s_used.temp_image_bytes_high_water)
+        s_used.temp_image_bytes_high_water = temporary;
+    r->pending_bytes += bytes;
+    r->image_bytes += bytes;
+    r->temp_image_bytes += bytes;
+    UNLOCK();
+    return 1;
+}
+
+int hop_xfer_budget_release_temp_image(hop_xfer_reservation_handle *r, uint64_t bytes) {
+    if (!r || !r->task_id || !r->handle_id || !r->active || !bytes) return 0;
+    LOCK();
+    if (bytes > r->temp_image_bytes || bytes > r->pending_bytes ||
+        bytes > r->image_bytes || bytes > s_used.temp_image_bytes ||
+        bytes > s_used.pending_bytes || bytes > s_used.image_bytes) {
+        s_used.accounting_errors++;
+        UNLOCK();
+        return 0;
+    }
+    r->temp_image_bytes -= bytes;
+    r->pending_bytes -= bytes;
+    r->image_bytes -= bytes;
+    s_used.temp_image_bytes -= bytes;
+    s_used.pending_bytes -= bytes;
+    s_used.image_bytes -= bytes;
+    s_used.released_temp_buffers++;
+    UNLOCK();
+    return 1;
+}
+
 int hop_xfer_budget_reserve_rx_buffer(hop_xfer_reservation_handle *r, uint64_t bytes) {
     uint64_t next;
     if (!r || !r->task_id || !r->handle_id || !r->active || !bytes) return 0;
@@ -231,16 +282,18 @@ void hop_xfer_budget_release(hop_xfer_reservation_handle *r) {
         UNLOCK();
         return;
     }
-    int had_resources = r->jobs || r->entries || r->pending_bytes || r->image_bytes;
+    int had_resources = r->jobs || r->entries || r->pending_bytes || r->image_bytes || r->temp_image_bytes;
     subtract_u32(&s_used.jobs, r->jobs);
     subtract_u32(&s_used.entries, r->entries);
     subtract_u64(&s_used.pending_bytes, r->pending_bytes);
     subtract_u64(&s_used.image_bytes, r->image_bytes);
+    subtract_u64(&s_used.temp_image_bytes, r->temp_image_bytes);
     if (had_resources) s_used.released_reservations++;
     r->jobs = 0;
     r->entries = 0;
     r->pending_bytes = 0;
     r->image_bytes = 0;
+    r->temp_image_bytes = 0;
     r->active = 0;
     UNLOCK();
 }

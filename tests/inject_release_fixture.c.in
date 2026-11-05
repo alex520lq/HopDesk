@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 typedef unsigned CGKeyCode;
 typedef unsigned long long CGEventFlags;
 typedef int CGMouseButton;
@@ -17,7 +18,8 @@ typedef struct {int type,down;unsigned code;CGEventFlags flags;} Event;
 typedef Event *CGEventRef;
 static int keyups,mouseups,enters;
 static struct {int sharing,btn_held[3];double mouse_x,mouse_y;} s_input;
-static uint8_t s_held_keys[65536/8],s_modn[4];
+static uint8_t s_held_keys[65536/8],s_paste_suppressed[65536/8],s_modn[4];
+static int clipboard_request_remote_paste(void){return 0;}
 static int s_caps,s_inited=1;static double s_over,s_h=1080;static CGEventFlags s_flags;
 static void inject_init(void){s_inited=1;}
 static void inject_enter(int y){(void)y;enters++;s_input.sharing=1;}

@@ -1027,6 +1027,7 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
         window_item window[HOP_XFER_ACK_WINDOW_CAPACITY];
         uint32_t window_count = 0;
         int send_index = j->next_i;
+        int fill_result = JOB_DONE;
 
         /* Fill a bounded window using a local cursor. j->next_i is the
          * durable resume point and must advance only after each entry has a
@@ -1068,8 +1069,10 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
             }
 
             if (st == XFER_SEND_DEAD) {
-                ack_unregister_batch(j->batch);
-                return JOB_NET_DOWN;
+                /* Do not discard earlier ACKs already in this partially-filled
+                 * window. Drain the contiguous prefix before reconnecting. */
+                fill_result = JOB_NET_DOWN;
+                break;
             }
             if (st == XFER_PEER_ABORT) {
                 ack_unregister_batch(j->batch);
@@ -1146,7 +1149,17 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
                 }
             }
             /* This is the only place that advances the reconnect checkpoint. */
-            j->next_i = item->index + 1;
+            if (item->index != j->next_i) {
+                hop_log(HOP_LOG_ERROR, "xfer: non-contiguous checkpoint batch=%u current=%d resolved=%d",
+                        j->batch,j->next_i,item->index);
+                ack_unregister_batch(j->batch);
+                return JOB_LOCAL_ERROR;
+            }
+            j->next_i++;
+        }
+        if (fill_result != JOB_DONE) {
+            ack_unregister_batch(j->batch);
+            return fill_result;
         }
     }
     ack_unregister_batch(j->batch);

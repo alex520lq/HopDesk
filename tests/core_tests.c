@@ -788,6 +788,17 @@ static void test_xfer_ack_window(void) {
     CHECK(hop_xfer_ack_window_take_ex(&window,12,2,&status,&rtt_ns,&expired));
     CHECK(expired); /* deadline equality is expired, matching ack_wait's >= */
     CHECK(hop_xfer_ack_window_count(&window)==0);
+
+    /* Reconnect checkpoint advances only through a contiguous resolved prefix. */
+    uint32_t checkpoint = 0;
+    CHECK(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,1));
+    CHECK(checkpoint==0);
+    CHECK(hop_xfer_ack_window_advance_checkpoint(&checkpoint,0));
+    CHECK(checkpoint==1);
+    CHECK(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,3));
+    CHECK(checkpoint==1);
+    CHECK(hop_xfer_ack_window_advance_checkpoint(&checkpoint,1));
+    CHECK(checkpoint==2);
 }
 
 static void test_xfer_rate_limiter(void) {

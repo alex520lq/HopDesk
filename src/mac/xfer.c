@@ -1096,6 +1096,18 @@ static int run_job(int fd, uint8_t *tx, xf_job *j) {
                 int attempts = item->attempts;
 
                 while (st != HOP_FILE_ACK_OK && st != HOP_FILE_ACK_BADPATH) {
+                    if (st == XFER_ACK_TIMEOUT) {
+                        /* A timeout is not a peer result. Reset this data
+                         * connection before retrying the same batch/id so a
+                         * delayed ACK from the old attempt cannot satisfy the
+                         * new one. The contiguous checkpoint stays unchanged. */
+                        hop_log(HOP_LOG_WARN,
+                                "xfer: ACK timeout for %s; reconnect before retrying entry %d",
+                                item->entry->rel,item->index);
+                        ack_unregister_batch(j->batch);
+                        xfer_kick();
+                        return JOB_NET_DOWN;
+                    }
                     if (st == XFER_SEND_DEAD) {
                         ack_unregister_batch(j->batch);
                         return JOB_NET_DOWN;
@@ -1123,17 +1135,6 @@ static int run_job(int fd, uint8_t *tx, xf_job *j) {
                         st = ack_wait(j->batch,item->id,retry_deadline_ns,&rtt_us);
                         if (rtt_us) rate_feedback(rtt_us);
                     }
-                }
-
-                if (st == XFER_ACK_TIMEOUT) {
-                    /* No peer result means the file is unresolved. The receiver
-                     * may already have committed it and only the ACK was lost.
-                     * Keep next_i at this file and retry the batch after reconnect. */
-                    hop_log(HOP_LOG_WARN,
-                            "xfer: ACK unconfirmed for %s after %d attempt(s); resume at entry %d",
-                            item->entry->rel,attempts,item->index);
-                    ack_unregister_batch(j->batch);
-                    return JOB_NET_DOWN;
                 }
 
                 if (st == HOP_FILE_ACK_OK) {

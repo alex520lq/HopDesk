@@ -696,6 +696,7 @@ static int send_chunk(SOCKET c, uint8_t *tx, uint32_t batch, uint32_t id, uint64
                send_all(c, (const char *)data, (int)len)));
     uint64_t send_us = (rate_now_ns() - send_started) / 1000ull;
     hop_xfer_rate_note_send_time(&s_x.rate, len, send_us);
+    status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_SEND,send_us*1000ull);
     int feedback_due = (s_x.rate.send_samples & 7u) == 0;
     LeaveCriticalSection(&s_txlock);
     if (feedback_due) rate_feedback(0);
@@ -864,10 +865,13 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
                 uint64_t remaining = e->size - off;
                 DWORD request = (DWORD)(remaining < s_x.chunk ? remaining : s_x.chunk);
                 DWORD got = 0;
+                uint64_t read_started_ns=rate_now_ns();
                 int read_guard = hop_watchdog_begin("file chunk read", HOP_IO_DEADLINE_MS);
                 int read_ok = ReadFile(h, tx + CHUNK_HDR, request, &got, NULL);
                 DWORD read_error = read_ok ? ERROR_SUCCESS : GetLastError();
                 hop_watchdog_end(read_guard);
+                status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_READ,
+                                  rate_now_ns()-read_started_ns);
                 if (!read_ok) {
                     hop_log(HOP_LOG_WARN, "xfer: read failed, %s (err %lu)", e->rel, read_error);
                     end_status = HOP_FILE_IO_ERROR; local_fail = 1; break;
@@ -877,7 +881,10 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
                             e->rel, (unsigned long long)off, (unsigned long long)e->size);
                     end_status = HOP_FILE_IO_ERROR; local_fail = 1; break;
                 }
+                uint64_t crc_started_ns=rate_now_ns();
                 uint32_t ccrc = hop_crc32(0, tx + CHUNK_HDR, got);
+                status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_CRC,
+                                  rate_now_ns()-crc_started_ns);
                 if (!send_chunk(c, tx, batch, id, off, tx + CHUNK_HDR, got, ccrc)) {
                     CloseHandle(h); ack_unregister(batch,id); return XFER_SEND_DEAD;
                 }
@@ -938,7 +945,10 @@ static int send_image_job(SOCKET c, uint8_t *tx, xfer_job *j) {
     uint64_t off = 0;
     while (off < total) {
         uint32_t n = (uint32_t)((total - off) < s_x.chunk ? (total - off) : s_x.chunk);
+        uint64_t crc_started_ns=rate_now_ns();
         uint32_t crc = hop_crc32(0, j->pixels + off, n);
+        status_stage_time(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_TIME_CRC,
+                          rate_now_ns()-crc_started_ns);
         if (!send_chunk(c, tx, j->batch, 1, off, j->pixels + off, n, crc)) return 0;
         off += n;
         yield_cpu();

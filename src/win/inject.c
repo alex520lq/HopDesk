@@ -91,7 +91,7 @@ void win_inject_message(uint8_t type,const uint8_t *p,uint32_t len){
             if(!down && paste_suppressed[vk]) { paste_suppressed[vk]=0; break; }
             if(down && vk=='V' &&
                (held[VK_LCONTROL]||held[VK_RCONTROL]||held[VK_LWIN]||held[VK_RWIN]) &&
-               clipboard_request_remote_paste()) {
+               clip_request_remote_paste()) {
                 paste_suppressed[vk]=1;
                 const WORD mods[]={VK_LCONTROL,VK_RCONTROL,VK_LWIN,VK_RWIN};
                 for(unsigned i=0;i<sizeof(mods)/sizeof(mods[0]);++i) {

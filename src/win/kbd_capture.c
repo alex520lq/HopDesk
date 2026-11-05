@@ -26,6 +26,7 @@ static int      s_nheld;
 /* Physical state is tracked even while events are swallowed. This lets a
  * key held across an edge handoff be released locally and restored on return. */
 static BYTE s_physical_down[256];
+static int s_local_paste_keyup_suppressed;
 static int is_mouse_vk(unsigned vk) {
     return vk==VK_LBUTTON||vk==VK_RBUTTON||vk==VK_MBUTTON||
            vk==VK_XBUTTON1||vk==VK_XBUTTON2;
@@ -104,9 +105,14 @@ static LRESULT CALLBACK kbd_proc(int code, WPARAM wp, LPARAM lp) {
     down = (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN);
     if(k->vkCode<256)s_physical_down[k->vkCode]=(BYTE)down;
     if (g_app.state != HOP_LINK_SHARING) {
+        if (!down && k->vkCode == 'V' && s_local_paste_keyup_suppressed) {
+            s_local_paste_keyup_suppressed=0; return 1;
+        }
         if (down && k->vkCode == 'V' &&
             (s_physical_down[VK_LCONTROL] || s_physical_down[VK_RCONTROL]) &&
-            clip_request_remote_paste()) return 1;
+            clip_request_remote_paste()) {
+            s_local_paste_keyup_suppressed=1; return 1;
+        }
         return CallNextHookEx(s_hook, code, wp, lp);
     }
     if(down && k->vkCode==VK_ESCAPE && (GetAsyncKeyState(VK_CONTROL)&0x8000) && (GetAsyncKeyState(VK_MENU)&0x8000)){capture_set_sharing(0);return 1;}

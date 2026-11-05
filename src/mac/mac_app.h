@@ -45,6 +45,13 @@ void inject_release_all(void);            /* 断线时松开所有修饰键 */
 /* clipboard.m */
 void clipboard_init(void);
 void clipboard_shutdown(void);
+void clipboard_on_link(int connected);
+void clipboard_on_remote_file_offer(const uint8_t *p, uint32_t len);
+void clipboard_on_remote_file_offer_clear(const uint8_t *p, uint32_t len);
+void clipboard_on_paste_request(const uint8_t *p, uint32_t len);
+void clipboard_on_paste_failed(const uint8_t *p, uint32_t len);
+int  clipboard_request_remote_paste(void);
+void clipboard_complete_remote_paste(uint32_t batch, const char *const *paths, int n, int success);
 void clipboard_apply(const char *utf8);   /* 收到对端文本 */
 /* 数据通道收完一批后回调：把落盘的顶层条目挂到剪贴板 */
 void clipboard_apply_paths(const char *const *paths, int n);

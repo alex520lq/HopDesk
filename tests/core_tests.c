@@ -9,6 +9,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <pthread.h>
+#endif
 
 static int g_failures;
 static int g_messages;
@@ -584,6 +589,22 @@ static void test_update_manifest_validation(void) {
 }
 
 
+
+typedef struct { hop_xfer_budget_reservation reservation; int acquired; } budget_thread_context;
+#ifdef _WIN32
+static DWORD WINAPI budget_reserve_worker(LPVOID value) {
+    budget_thread_context *ctx=(budget_thread_context*)value;
+    ctx->acquired=hop_xfer_budget_reserve_job(&ctx->reservation);
+    return 0;
+}
+#else
+static void *budget_reserve_worker(void *value) {
+    budget_thread_context *ctx=(budget_thread_context*)value;
+    ctx->acquired=hop_xfer_budget_reserve_job(&ctx->reservation);
+    return NULL;
+}
+#endif
+
 static void test_xfer_global_budget(void) {
     hop_xfer_budget_limits limits={2u,3u,1000u,600u,500u};
     hop_xfer_budget_snapshot snap;
@@ -618,6 +639,29 @@ static void test_xfer_global_budget(void) {
     hop_xfer_budget_release(&a);
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0&&snap.image_bytes==0);
+    hop_xfer_budget_limits concurrent_limits={4u,64u,1024u,512u,512u};
+    CHECK(hop_xfer_budget_set_limits_for_test(&concurrent_limits));
+    budget_thread_context contexts[32];
+    memset(contexts,0,sizeof(contexts));
+#ifdef _WIN32
+    HANDLE threads[32]={0};
+    int created=0;
+    for(int i=0;i<32;i++){threads[i]=CreateThread(NULL,0,budget_reserve_worker,&contexts[i],0,NULL);if(threads[i])created++;else CHECK(0);}
+    for(int i=0;i<32;i++)if(threads[i]){CHECK(WaitForSingleObject(threads[i],INFINITE)==WAIT_OBJECT_0);CloseHandle(threads[i]);}
+#else
+    pthread_t threads[32];
+    int created=0;
+    for(int i=0;i<32;i++){if(pthread_create(&threads[i],NULL,budget_reserve_worker,&contexts[i])==0)created++;else CHECK(0);}
+    for(int i=0;i<created;i++)CHECK(pthread_join(threads[i],NULL)==0);
+#endif
+    int acquired=0;
+    for(int i=0;i<32;i++)if(contexts[i].acquired)acquired++;
+    CHECK(created==32&&acquired==4);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==4&&snap.jobs_high_water==4);
+    for(int i=0;i<32;i++)hop_xfer_budget_release(&contexts[i].reservation);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==0);
     hop_xfer_budget_limits defaults={16u,32768u,8ull*1024ull*1024ull*1024ull,256ull*1024ull*1024ull,256ull*1024ull*1024ull};
     CHECK(hop_xfer_budget_set_limits_for_test(&defaults));
 }

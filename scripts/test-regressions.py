@@ -171,13 +171,14 @@ int main(void){
 typedef uint8_t BYTE;typedef uint16_t WORD;typedef uint32_t DWORD;typedef int32_t LONG;
 typedef struct {int role,client_edge,edge_margin_px;} cfg_t;
 typedef struct {cfg_t cfg;int peer_w,peer_h,state;void *net;} app_t;
-static app_t g_app;static BYTE held[256],buttons[3];static double px,py,over;static int sharing;
+static app_t g_app;static BYTE held[256],buttons[3],paste_suppressed[256];static double px,py,over;static int sharing,clip_request_result,injected_key_events;
 static int released_keys,released_buttons,refreshes;
 enum {HOP_ROLE_CLIENT=1,HOP_EDGE_TOP=2,HOP_LINK_LOCAL=1,HOP_LINK_SHARING=2,
  HOP_KEY_NONE=0xffff,HOP_MSG_EDGE_LEAVE=13,HOP_MSG_MOUSE_ENTER=14,HOP_MSG_MOUSE_MOVE=10,
  HOP_MSG_MOUSE_BUTTON=11,HOP_MSG_MOUSE_WHEEL=12,HOP_MSG_KEY_DOWN=20,HOP_MSG_KEY_UP=21,
- SM_CXSCREEN=1,SM_CYSCREEN=2,MOUSEEVENTF_HWHEEL=4,MOUSEEVENTF_WHEEL=8};
-static void key(WORD vk,int down){held[vk]=(BYTE)down;if(!down)released_keys++;}
+ SM_CXSCREEN=1,SM_CYSCREEN=2,MOUSEEVENTF_HWHEEL=4,MOUSEEVENTF_WHEEL=8,
+ VK_LCONTROL=0xA2,VK_RCONTROL=0xA3,VK_LWIN=0x5B,VK_RWIN=0x5C};
+static void key(WORD vk,int down){held[vk]=(BYTE)down;injected_key_events++;if(!down)released_keys++;}
 static void button(int b,int down){buttons[b]=(BYTE)down;if(!down)released_buttons++;}
 static void mouse(DWORD flags,LONG dx,LONG dy,DWORD data){(void)flags;(void)dx;(void)dy;(void)data;}
 static void enter(int along){(void)along;sharing=1;}
@@ -185,7 +186,8 @@ static double edge_margin(double w,double h){(void)w;(void)h;return 40;}
 static int GetSystemMetrics(int what){return what==SM_CYSCREEN?1080:1920;}
 static int SetCursorPos(int x,int y){(void)x;(void)y;return 1;}
 static uint16_t hop_get_be16(const uint8_t *p){return (uint16_t)(((uint16_t)p[0]<<8)|p[1]);}
-static WORD hop_mac_to_vk(uint16_t keycode){(void)keycode;return 65;}
+static WORD hop_mac_to_vk(uint16_t keycode){return keycode==0x09?'V':(keycode==0x3B?VK_LCONTROL:65);}
+static int clip_request_remote_paste(void){return clip_request_result;}
 static int net_server_send(void *net,uint8_t type,const void *p,uint32_t len){(void)net;(void)type;(void)p;(void)len;return 1;}
 static void ui_refresh(app_t *app){(void)app;refreshes++;}
 '''
@@ -196,7 +198,18 @@ int main(void){
     win_inject_message(HOP_MSG_EDGE_LEAVE,NULL,0);
     assert(!sharing && !held[65] && !buttons[0]);
     assert(g_app.state==HOP_LINK_LOCAL && released_keys==1 && released_buttons==1 && refreshes==1);
-    puts("PASS: Windows client releases stuck input on server return");return 0;
+    /* A remote file Offer consumes the first Ctrl+V and releases the modifier;
+       the physical key-up frames must not leak to the foreground application. */
+    sharing=1;held[VK_LCONTROL]=1;clip_request_result=1;injected_key_events=0;
+    uint8_t paste_key[2]={0,0x09};
+    win_inject_message(HOP_MSG_KEY_DOWN,paste_key,sizeof(paste_key));
+    assert(!held[VK_LCONTROL] && paste_suppressed['V'] && paste_suppressed[VK_LCONTROL]);
+    win_inject_message(HOP_MSG_KEY_UP,paste_key,sizeof(paste_key));
+    uint8_t ctrl_key[2]={0,0x3B};
+    win_inject_message(HOP_MSG_KEY_UP,ctrl_key,sizeof(ctrl_key));
+    assert(!paste_suppressed['V'] && !paste_suppressed[VK_LCONTROL]);
+    assert(injected_key_events==1);
+    puts("PASS: Windows client releases stuck input and consumes lazy-paste key sequence");return 0;
 }
 '''
     run('win_client_server_return',win_leave_preamble+

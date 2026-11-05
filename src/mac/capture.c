@@ -5,6 +5,7 @@
 #include <math.h>
 static CFMachPortRef tap;
 static int connected,sharing;
+static int s_local_paste_keyup_suppressed;
 static double peer_w,peer_h;
 static uint64_t edge_since,cooldown;
 static CGPoint anchor;

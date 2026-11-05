@@ -607,7 +607,7 @@ static void *budget_reserve_worker(void *value) {
 #endif
 
 static void test_xfer_global_budget(void) {
-    hop_xfer_budget_limits limits={2u,3u,1000u,600u,500u};
+    hop_xfer_budget_limits limits={2u,3u,1000u,600u,500u,2u,16u};
     hop_xfer_budget_snapshot snap;
     hop_xfer_reservation_handle a,b,c;
     memset(&a,0,sizeof(a));memset(&b,0,sizeof(b));memset(&c,0,sizeof(c));
@@ -638,10 +638,23 @@ static void test_xfer_global_budget(void) {
     CHECK(!hop_xfer_budget_reserve_image(&a,501));
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==1&&snap.entries==1&&snap.pending_bytes==500&&snap.image_bytes==500);
+    CHECK(hop_xfer_budget_reserve_rx_buffer(&a,8));
+    CHECK(hop_xfer_budget_reserve_rx_buffer(&a,8));
+    CHECK(!hop_xfer_budget_reserve_rx_buffer(&a,1));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.rx_queue_slots==2&&snap.rx_queue_bytes==16);
+    CHECK(snap.rx_queue_slots_high_water==2&&snap.rx_queue_bytes_high_water==16);
+    CHECK(snap.rejected_rx_buffers==1);
+    CHECK(hop_xfer_budget_release_rx_buffer(&a,8));
+    CHECK(hop_xfer_budget_release_rx_buffer(&a,8));
+    CHECK(!hop_xfer_budget_release_rx_buffer(&a,8));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.rx_queue_slots==0&&snap.rx_queue_bytes==0&&snap.released_rx_buffers==2);
+    CHECK(snap.accounting_errors==1);
     hop_xfer_budget_release(&a);
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0&&snap.image_bytes==0);
-    hop_xfer_budget_limits concurrent_limits={4u,64u,1024u,512u,512u};
+    hop_xfer_budget_limits concurrent_limits={4u,64u,1024u,512u,512u,2u,1024u};
     CHECK(hop_xfer_budget_set_limits_for_test(&concurrent_limits));
     budget_thread_context contexts[32];
     memset(contexts,0,sizeof(contexts));
@@ -665,13 +678,13 @@ static void test_xfer_global_budget(void) {
     for(int i=0;i<32;i++)hop_xfer_task_dispose(&contexts[i].task);
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==0);
-    hop_xfer_budget_limits defaults={16u,32768u,8ull*1024ull*1024ull*1024ull,256ull*1024ull*1024ull,256ull*1024ull*1024ull};
+    hop_xfer_budget_limits defaults={16u,32768u,8ull*1024ull*1024ull*1024ull,256ull*1024ull*1024ull,256ull*1024ull*1024ull,8u,8ull*1024ull*1024ull};
     CHECK(hop_xfer_budget_set_limits_for_test(&defaults));
 }
 
 
 static void test_xfer_task_identity_and_lifecycle(void) {
-    hop_xfer_budget_limits limits={4u,8u,4096u,2048u,2048u};
+    hop_xfer_budget_limits limits={4u,8u,4096u,2048u,2048u,2u,1024u};
     hop_xfer_budget_snapshot snap;
     hop_xfer_task a,b,moved;
     memset(&a,0,sizeof(a));memset(&b,0,sizeof(b));memset(&moved,0,sizeof(moved));
@@ -688,6 +701,7 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     CHECK(hop_xfer_task_reserve_job(&a));
     CHECK(hop_xfer_task_reserve_entry(&a,100));
     CHECK(hop_xfer_task_reserve_image(&a,400));
+    CHECK(hop_xfer_task_reserve_rx_buffer(&a,128));
     CHECK(hop_xfer_task_set_state(&a,HOP_XFER_TASK_SCANNING));
     CHECK(hop_xfer_task_set_state(&a,HOP_XFER_TASK_QUEUED));
     CHECK(hop_xfer_task_set_state(&a,HOP_XFER_TASK_ACTIVE));
@@ -695,6 +709,9 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     CHECK(hop_xfer_task_set_state(&a,HOP_XFER_TASK_ACTIVE));
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==1&&snap.entries==2&&snap.pending_bytes==500&&snap.image_bytes==400);
+    CHECK(snap.rx_queue_slots==1&&snap.rx_queue_bytes==128);
+    CHECK(!hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));
+    CHECK(hop_xfer_task_release_rx_buffer(&a,128));
     CHECK(hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));
     CHECK(!hop_xfer_task_finish(&a,HOP_XFER_TASK_CANCELLED));
     CHECK(!hop_xfer_task_set_state(&a,HOP_XFER_TASK_ACTIVE));
@@ -711,7 +728,7 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     hop_xfer_task_dispose(&moved);
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0&&snap.image_bytes==0);
-    hop_xfer_budget_limits defaults={16u,32768u,8ull*1024ull*1024ull*1024ull,256ull*1024ull*1024ull,256ull*1024ull*1024ull};
+    hop_xfer_budget_limits defaults={16u,32768u,8ull*1024ull*1024ull*1024ull,256ull*1024ull*1024ull,256ull*1024ull*1024ull,8u,8ull*1024ull*1024ull};
     CHECK(hop_xfer_budget_set_limits_for_test(&defaults));
 }
 

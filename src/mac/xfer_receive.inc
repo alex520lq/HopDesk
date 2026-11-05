@@ -8,8 +8,8 @@
  * 这就是显式背压：内存上界 = RX_Q_SLOTS × chunk，不随传输时长增长。
  * 文件描述符由写线程独占，避免"网络线程关文件、写线程还在写"的竞态。
  */
-#define RX_Q_SLOTS 8
-#define RX_Q_MAX_BYTES (8ull * 1024ull * 1024ull)
+#define RX_Q_SLOTS HOP_XFER_DEFAULT_RX_QUEUE_SLOTS
+#define RX_Q_MAX_BYTES HOP_XFER_DEFAULT_RX_QUEUE_BYTES
 
 enum { RX_OPEN = 1, RX_WRITE, RX_CLOSE };
 
@@ -19,11 +19,12 @@ typedef struct {
     uint64_t off;
     uint32_t len;
     uint8_t *data;
+    hop_xfer_task *budget_owner;
 } rx_task;
 
 static struct {
     rx_task         ring[RX_Q_SLOTS];
-    int             head, tail, count, busy;
+    int             head, tail, count, busy, reserved_slots;
     uint64_t        queued_bytes;
     pthread_mutex_t lock;
     pthread_cond_t  cv_work, cv_space;
@@ -92,6 +93,8 @@ static void *writer_thread(void *arg) {
         hop_watchdog_end(disk_guard);
 
         free(t.data);
+        if (t.kind == RX_WRITE && t.budget_owner)
+            (void)hop_xfer_task_release_rx_buffer(t.budget_owner, t.len);
         pthread_mutex_lock(&s_wq.lock);
         if (t.kind == RX_WRITE)
             s_wq.queued_bytes = t.len > s_wq.queued_bytes ? 0 : s_wq.queued_bytes - t.len;
@@ -109,7 +112,8 @@ static int wq_push(const rx_task *t) {
     if (!t || add_bytes > RX_Q_MAX_BYTES) return 0;
     int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
     pthread_mutex_lock(&s_wq.lock);
-    while ((s_wq.count >= RX_Q_SLOTS || s_wq.queued_bytes > RX_Q_MAX_BYTES - add_bytes) && !s_wq.stop)
+    while ((s_wq.count + s_wq.busy + s_wq.reserved_slots >= RX_Q_SLOTS ||
+             s_wq.queued_bytes > RX_Q_MAX_BYTES - add_bytes) && !s_wq.stop)
         pthread_cond_wait(&s_wq.cv_space, &s_wq.lock);
     if (s_wq.stop) {
         pthread_mutex_unlock(&s_wq.lock);
@@ -126,11 +130,77 @@ static int wq_push(const rx_task *t) {
     return 1;
 }
 
+static int wq_push_data(hop_xfer_task *owner, uint64_t off, const uint8_t *data, uint32_t len) {
+    if (!owner || !data || !len || len > RX_Q_MAX_BYTES) return 0;
+    int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
+    pthread_mutex_lock(&s_wq.lock);
+    while ((s_wq.count + s_wq.busy + s_wq.reserved_slots >= RX_Q_SLOTS ||
+            s_wq.queued_bytes > RX_Q_MAX_BYTES - len) && !s_wq.stop)
+        pthread_cond_wait(&s_wq.cv_space, &s_wq.lock);
+    if (s_wq.stop) {
+        pthread_mutex_unlock(&s_wq.lock);
+        hop_watchdog_end(queue_guard);
+        return 0;
+    }
+    s_wq.reserved_slots++;
+    s_wq.queued_bytes += len;
+    pthread_mutex_unlock(&s_wq.lock);
+
+    if (!hop_xfer_task_reserve_rx_buffer(owner, len)) {
+        pthread_mutex_lock(&s_wq.lock);
+        s_wq.reserved_slots--;
+        s_wq.queued_bytes -= len;
+        pthread_cond_broadcast(&s_wq.cv_space);
+        pthread_mutex_unlock(&s_wq.lock);
+        hop_watchdog_end(queue_guard);
+        return 0;
+    }
+
+    rx_task t;
+    memset(&t, 0, sizeof(t));
+    t.kind = RX_WRITE;
+    t.off = off;
+    t.len = len;
+    t.budget_owner = owner;
+    t.data = (uint8_t *)malloc(len);
+    if (!t.data) {
+        (void)hop_xfer_task_release_rx_buffer(owner, len);
+        pthread_mutex_lock(&s_wq.lock);
+        s_wq.reserved_slots--;
+        s_wq.queued_bytes -= len;
+        pthread_cond_broadcast(&s_wq.cv_space);
+        pthread_mutex_unlock(&s_wq.lock);
+        hop_watchdog_end(queue_guard);
+        return 0;
+    }
+    memcpy(t.data, data, len);
+
+    pthread_mutex_lock(&s_wq.lock);
+    if (s_wq.stop) {
+        s_wq.reserved_slots--;
+        s_wq.queued_bytes -= len;
+        pthread_cond_broadcast(&s_wq.cv_space);
+        pthread_mutex_unlock(&s_wq.lock);
+        free(t.data);
+        (void)hop_xfer_task_release_rx_buffer(owner, len);
+        hop_watchdog_end(queue_guard);
+        return 0;
+    }
+    s_wq.reserved_slots--;
+    s_wq.ring[s_wq.tail] = t;
+    s_wq.tail = (s_wq.tail + 1) % RX_Q_SLOTS;
+    s_wq.count++;
+    pthread_cond_signal(&s_wq.cv_work);
+    pthread_mutex_unlock(&s_wq.lock);
+    hop_watchdog_end(queue_guard);
+    return 1;
+}
+
 /* 等队列排空且写线程空闲。关文件、比对文件 CRC 之前必须调用。 */
 static void wq_drain(void) {
     int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
     pthread_mutex_lock(&s_wq.lock);
-    while ((s_wq.count > 0 || s_wq.busy) && !s_wq.stop)
+    while (s_wq.count > 0 || s_wq.busy || s_wq.reserved_slots > 0)
         pthread_cond_wait(&s_wq.cv_space, &s_wq.lock);
     pthread_mutex_unlock(&s_wq.lock);
     hop_watchdog_end(queue_guard);
@@ -655,16 +725,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
             /* 校验通过才入队。拷贝一份交给写线程 —— 解码器的缓冲
              * 在回调返回后就被释放了，不能把指针递出去。 */
-            rx_task t;
-            memset(&t, 0, sizeof(t));
-            t.kind = RX_WRITE;
-            t.off = off;
-            t.len = n;
-            t.data = (uint8_t *)malloc(n);
-            if (!t.data) { s_rx.cur_fail = HOP_FILE_ACK_DISK; break; }
-            memcpy(t.data, data, n);
-            if (!wq_push(&t)) {
-                free(t.data);
+            if (!wq_push_data(&s_rx.task, off, data, n)) {
                 s_rx.cur_fail = HOP_FILE_ACK_DISK;
                 break;
             }

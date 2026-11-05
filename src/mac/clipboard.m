@@ -31,7 +31,7 @@ static NSInteger         s_last_change;
 static dispatch_source_t s_timer;
 
 /* 单张图片上限：4K 截图裸 BGRA 约 33 MB，留到 256 MB 足够 */
-#define CLIP_IMG_MAX_BYTES (256ull * 1024ull * 1024ull)
+#define CLIP_IMG_MAX_BYTES HOP_XFER_DEFAULT_MAX_IMAGE_BYTES
 
 #include <pthread.h>
 
@@ -188,13 +188,13 @@ static void image_work_task_finish(hop_xfer_task *task, int success) {
     free(task);
 }
 
-/* NSImage -> 自上而下 BGRA。用 CGBitmapContext 明确指定字节序，
- * 不依赖 NSBitmapImageRep 的默认通道顺序。 */
-static BOOL send_image(NSImage *img, NSInteger expected_change, hop_xfer_task *task) {
-    if (!img || !task) return NO;
+/* NSImage -> 自上而下 BGRA。调用方在 NSImage 解码前预留转换额度；
+ * 这里按真实像素尺寸收窄额度，再分配 bitmap 与行翻转缓冲区。 */
+static BOOL send_image(NSImage *img, NSInteger expected_change, hop_xfer_task *task,
+                       uint64_t *conversion_reserved) {
+    if (!img || !task || !conversion_reserved || !*conversion_reserved) return NO;
 
-    /* 必须用 CGImage 的像素尺寸，不能用 [img size]（那是"点"）。
-     * Retina 截图在点上只有一半，按点取会掉一半分辨率。 */
+    /* CGImage 创建期间可能触发解码；调用方已提前预留最大可用转换内存。 */
     CGImageRef cg = [img CGImageForProposedRect:NULL context:nil hints:nil];
     if (!cg) return NO;
 
@@ -202,24 +202,34 @@ static BOOL send_image(NSImage *img, NSInteger expected_change, hop_xfer_task *t
     if (!cg_w || !cg_h || cg_w > (size_t)(INT_MAX / 4) || cg_h > (size_t)INT_MAX)
         return NO;
     int w = (int)cg_w, h = (int)cg_h;
-    size_t stride = cg_w * 4;
+    size_t stride = cg_w * 4u;
     if (cg_h > SIZE_MAX / stride) return NO;
     size_t total = stride * cg_h;
-    if (total > CLIP_IMG_MAX_BYTES) {
+    if (total > CLIP_IMG_MAX_BYTES || total > UINT64_MAX / 3u) {
         hop_log(HOP_LOG_WARN, "clip: image %.1f MB too large, skipped",
                 (double)total / 1048576.0);
         return NO;
     }
 
-    /* Conservative allowance for the decoded source, CGContext bitmap and
-     * vertical-flip buffer. xfer_submit_image separately reserves its queued
-     * payload before allocating that fourth copy. */
-    if (total > UINT64_MAX / 3u) return NO;
+    /* decoded source + CGContext bitmap + flip buffer; queued payload is
+     * reserved separately by xfer_submit_image before its copy. */
     uint64_t conversion_bytes = (uint64_t)total * 3u;
-    if (!hop_xfer_task_reserve_image_temp(task, conversion_bytes)) {
-        hop_log(HOP_LOG_WARN, "clip: image conversion memory budget exhausted (task=%llu)",
-                (unsigned long long)task->id);
-        return NO;
+    if (conversion_bytes > *conversion_reserved) {
+        uint64_t extra = conversion_bytes - *conversion_reserved;
+        if (!hop_xfer_task_reserve_image_temp(task, extra)) {
+            hop_log(HOP_LOG_WARN, "clip: image conversion memory budget exhausted (task=%llu)",
+                    (unsigned long long)task->id);
+            return NO;
+        }
+        *conversion_reserved = conversion_bytes;
+    } else if (*conversion_reserved > conversion_bytes) {
+        uint64_t unused = *conversion_reserved - conversion_bytes;
+        if (!hop_xfer_task_release_image_temp(task, unused)) {
+            hop_log(HOP_LOG_ERROR, "clip: conversion budget shrink failed (task=%llu)",
+                    (unsigned long long)task->id);
+            return NO;
+        }
+        *conversion_reserved = conversion_bytes;
     }
 
     CGColorSpaceRef cs = NULL;
@@ -238,8 +248,7 @@ static BOOL send_image(NSImage *img, NSInteger expected_change, hop_xfer_task *t
     void *data = CGBitmapContextGetData(ctx);
     if (!data) goto cleanup;
 
-    /* CGContext 原点在左下，CGBitmapContext 的行序是自上而下存的，
-     * 但 draw 进来之后第 0 行对应图像底部 —— 需要翻转成自上而下。 */
+    /* Keep the known-correct row-flip path; both bitmap allocations are budgeted. */
     flip = (uint8_t *)malloc(total);
     if (!flip) goto cleanup;
     for (int y = 0; y < h; ++y) {
@@ -247,7 +256,6 @@ static BOOL send_image(NSImage *img, NSInteger expected_change, hop_xfer_task *t
                (uint8_t *)data + (size_t)(h - 1 - y) * stride, stride);
     }
 
-    /* Clipboard may change while the worker decodes/converts the snapshot. */
     if ([[NSPasteboard generalPasteboard] changeCount] != expected_change) {
         hop_log(HOP_LOG_INFO, "clip: stale image conversion discarded");
         goto cleanup;
@@ -260,32 +268,22 @@ cleanup:
     if (flip) free(flip);
     if (ctx) CGContextRelease(ctx);
     if (cs) CGColorSpaceRelease(cs);
-    if (!hop_xfer_task_release_image_temp(task, conversion_bytes)) {
-        hop_log(HOP_LOG_ERROR, "clip: conversion buffer budget release failed (task=%llu)",
-                (unsigned long long)task->id);
-    }
     if (!ok) hop_log(HOP_LOG_WARN, "clip: image not queued; will retry");
     return ok;
 }
 
-/* Image decoding and BGRA conversion must not run on the main queue. Keep at
- * most one conversion in flight so rapid clipboard changes cannot create an
- * unbounded GCD backlog of large image snapshots. */
-static void send_image_data_async(NSData *data, NSInteger expected_change) {
-    if (!data) return;
-    NSUInteger data_bytes = [data length];
-    if (!data_bytes || data_bytes > CLIP_IMG_MAX_BYTES) {
-        hop_log(HOP_LOG_WARN, "clip: encoded image snapshot exceeds temporary budget");
-        return;
-    }
-
+/* Pasteboard image materialization, decoding and BGRA conversion all run on
+ * one utility worker. Reserve a bounded upper estimate before dataForType so
+ * the main queue never materializes a full image NSData snapshot. */
+static void send_image_data_async(NSPasteboardType imageType, NSInteger expected_change) {
+    if (!imageType) return;
     hop_xfer_task *task = image_work_task_create();
     if (!task) {
         hop_log(HOP_LOG_WARN, "clip: image conversion task budget exhausted");
         return;
     }
-    if (!hop_xfer_task_reserve_image_temp(task, (uint64_t)data_bytes)) {
-        hop_log(HOP_LOG_WARN, "clip: encoded image snapshot exceeds temporary memory budget (task=%llu)",
+    if (!hop_xfer_task_reserve_image_temp(task, CLIP_IMG_MAX_BYTES)) {
+        hop_log(HOP_LOG_WARN, "clip: image input memory budget exhausted (task=%llu)",
                 (unsigned long long)task->id);
         image_work_task_finish(task, 0);
         return;
@@ -304,19 +302,48 @@ static void send_image_data_async(NSData *data, NSInteger expected_change) {
     dispatch_group_enter(group);
     pthread_mutex_unlock(&s_offer_lock);
 
-    __block NSData *snapshot = data;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         int success = 0;
+        uint64_t conversion_reserved = 0;
         @autoreleasepool {
-            if (snapshot && [[NSPasteboard generalPasteboard] changeCount] == expected_change) {
-                NSImage *img = [[NSImage alloc] initWithData:snapshot];
-                if (img) success = send_image(img, expected_change, task) ? 1 : 0;
-                else hop_log(HOP_LOG_WARN, "clip: image decode failed");
+            NSPasteboard *pb = [NSPasteboard generalPasteboard];
+            if ([pb changeCount] == expected_change) {
+                NSData *snapshot = [pb dataForType:imageType];
+                NSUInteger data_bytes = [snapshot length];
+                if (data_bytes > 0 && data_bytes <= CLIP_IMG_MAX_BYTES) {
+                    uint64_t actual_input = (uint64_t)data_bytes;
+                    uint64_t unused_input = CLIP_IMG_MAX_BYTES - actual_input;
+                    if (!unused_input ||
+                        hop_xfer_task_release_image_temp(task, unused_input)) {
+                        uint64_t max_image = HOP_XFER_DEFAULT_MAX_IMAGE_BYTES;
+                        if (actual_input < max_image) {
+                            conversion_reserved = max_image - actual_input;
+                            if (hop_xfer_task_reserve_image_temp(task, conversion_reserved)) {
+                                NSImage *img = [[NSImage alloc] initWithData:snapshot];
+                                if (img)
+                                    success = send_image(img, expected_change, task,
+                                                         &conversion_reserved) ? 1 : 0;
+                                else
+                                    hop_log(HOP_LOG_WARN, "clip: image decode failed");
+                            } else {
+                                conversion_reserved = 0;
+                                hop_log(HOP_LOG_WARN, "clip: image decode memory budget exhausted");
+                            }
+                        } else {
+                            hop_log(HOP_LOG_WARN, "clip: no image memory remains after encoded snapshot");
+                        }
+                    } else {
+                        hop_log(HOP_LOG_ERROR, "clip: encoded snapshot budget adjustment failed");
+                    }
+                } else {
+                    hop_log(HOP_LOG_WARN, "clip: encoded image snapshot missing or too large");
+                }
             } else {
                 hop_log(HOP_LOG_INFO, "clip: stale image snapshot ignored");
             }
-            snapshot = nil;
         }
+        /* Task finish runs after the autorelease pool drains, so NSData/NSImage
+         * backing memory stays reserved until those objects have released it. */
         image_work_task_finish(task, success);
         pthread_mutex_lock(&s_offer_lock);
         s_image_work_active = 0;
@@ -383,12 +410,9 @@ static void poll_pasteboard(void) {
                 hop_log(HOP_LOG_INFO, "clip: image conversion already active; latest snapshot deferred");
                 return;
             }
-            NSData *imageData = [pb dataForType:imageType];
-            if (imageData) {
-                clip_clear_remote_offer_local(); clip_clear_local_offer(1);
-                send_image_data_async(imageData, cc);
-                return;
-            }
+            clip_clear_remote_offer_local(); clip_clear_local_offer(1);
+            send_image_data_async(imageType, cc);
+            return;
         }
 
         NSString *s = [pb stringForType:NSPasteboardTypeString];

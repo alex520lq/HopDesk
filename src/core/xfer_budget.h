@@ -4,6 +4,7 @@
 
 #define HOP_XFER_DEFAULT_RX_QUEUE_SLOTS 8u
 #define HOP_XFER_DEFAULT_RX_QUEUE_BYTES (8ull * 1024ull * 1024ull)
+#define HOP_XFER_DEFAULT_MAX_IMAGE_BYTES (256ull * 1024ull * 1024ull)
 
 #ifdef __cplusplus
 extern "C" {

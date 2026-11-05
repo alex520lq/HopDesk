@@ -6,6 +6,7 @@
 #include "update_manifest.h"
 #include "xfer_budget.h"
 #include "xfer_task.h"
+#include "xfer_tracking.h"
 #include "xfer_rate.h"
 
 #include <stdio.h>
@@ -798,6 +799,30 @@ static void test_xfer_task_image_buffer_transfer(void) {
     CHECK(hop_xfer_budget_set_limits_for_test(&defaults));
 }
 
+static void test_xfer_tracking_speed_and_eta(void) {
+    hop_xfer_tracking tracking;
+    memset(&tracking,0,sizeof(tracking));
+    hop_xfer_tracking_begin(&tracking,7,HOP_XFER_DIR_SEND,1,1000000,"large.bin",HOP_XFER_SENDING);
+    hop_xfer_tracking_file(&tracking,7,1,"large.bin",1000000,0,HOP_XFER_FILE_SENDING);
+    hop_xfer_tracking_chunk(&tracking,7,1,0,100000,1000);
+    CHECK(tracking.status.bytes_done==100000);
+    CHECK(tracking.status.speed_bytes_per_sec==0);
+    CHECK(tracking.status.last_progress_ms==1000);
+    hop_xfer_tracking_chunk(&tracking,7,1,100000,100000,2000);
+    CHECK(tracking.status.bytes_done==200000);
+    CHECK(tracking.status.speed_bytes_per_sec==100000);
+    CHECK(tracking.status.eta_seconds==8);
+    CHECK(tracking.status.last_progress_ms==2000);
+
+    /* Re-registering a retry rolls progress and its rate sample back. */
+    hop_xfer_tracking_file(&tracking,7,1,"large.bin",1000000,0,HOP_XFER_FILE_SENDING);
+    CHECK(tracking.status.bytes_done==0);
+    CHECK(tracking.status.speed_bytes_per_sec==0);
+    CHECK(tracking.status.last_progress_ms==0);
+    CHECK(hop_xfer_tracking_end(&tracking,7,HOP_XFER_COMPLETED,"done"));
+    CHECK(tracking.status.speed_bytes_per_sec==0&&tracking.status.eta_seconds==0);
+}
+
 static void test_xfer_task_identity_and_lifecycle(void) {
     hop_xfer_budget_limits limits={4u,8u,4096u,2048u,2048u,2u,1024u,1024u};
     hop_xfer_budget_snapshot snap;
@@ -880,6 +905,7 @@ int main(void) {
     test_update_manifest_validation();
     test_xfer_global_budget();
     test_xfer_rate_limiter();
+    test_xfer_tracking_speed_and_eta();
     test_xfer_task_identity_and_lifecycle();
     test_xfer_task_image_buffer_transfer();
 

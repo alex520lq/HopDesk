@@ -761,7 +761,7 @@ static int peer_aborted(uint32_t batch) {
  *
  * 用"先查槽再等事件"的循环，而不是"先 ResetEvent 再等"：
  * ACK 可能在两者之间到达，后者会漏掉信号然后白等满 10 秒。 */
-static int ack_wait(uint32_t batch, uint32_t id, uint64_t deadline, uint64_t *rtt_us) {
+static int ack_wait(uint32_t batch, uint32_t id, uint64_t deadline_ns, uint64_t *rtt_us) {
     if (rtt_us) *rtt_us = 0;
     for (;;) {
         EnterCriticalSection(&s_ack.lock);
@@ -786,18 +786,21 @@ static int ack_wait(uint32_t batch, uint32_t id, uint64_t deadline, uint64_t *rt
             return XFER_SEND_DEAD;
         }
 
-        uint64_t n = now_ms();
-        if (n >= deadline) { ack_unregister(batch,id); return XFER_ACK_TIMEOUT; }
-        WaitForSingleObject(s_ack.ev, (DWORD)(deadline - n));
+        uint64_t n = rate_now_ns();
+        if (n >= deadline_ns) { ack_unregister(batch,id); return XFER_ACK_TIMEOUT; }
+        uint64_t remaining_ns = deadline_ns - n;
+        uint64_t wait_ms = (remaining_ns + 999999ull) / 1000000ull;
+        if (wait_ms > (uint64_t)(MAXDWORD - 1u)) wait_ms = MAXDWORD - 1u;
+        WaitForSingleObject(s_ack.ev, (DWORD)wait_ms);
     }
 }
 
 /* 发送一个条目。成功写出 FILE_END 后返回 XFER_ACK_PENDING；
  * run_job 在最多 4 个已发送文件组成的窗口中统一收取 ACK。 */
 static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
-                           uint32_t id, const xfer_entry *e, uint64_t *ack_deadline_ms) {
-    if (!ack_deadline_ms || !ack_register(batch,id)) return XFER_LOCAL_IO;
-    *ack_deadline_ms = 0;
+                           uint32_t id, const xfer_entry *e, uint64_t *ack_deadline_ns) {
+    if (!ack_deadline_ns || !ack_register(batch,id)) return XFER_LOCAL_IO;
+    *ack_deadline_ns = 0;
     uint32_t nlen = (uint32_t)strlen(e->name);
     uint32_t plen = (uint32_t)strlen(e->rel);
     uint32_t blen = 4 + 4 + 8 + 8 + 1 + 2 + nlen + 2 + plen;
@@ -890,7 +893,7 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
      * the complete frame has been written. */
     uint64_t deadline_ns = rate_now_ns() +
         (uint64_t)HOP_XFER_ACK_TIMEOUT_MS * 1000000ull;
-    *ack_deadline_ms = now_ms() + HOP_XFER_ACK_TIMEOUT_MS;
+    *ack_deadline_ns = deadline_ns;
     if (!ack_set_deadline(batch,id,deadline_ns)) {
         ack_unregister(batch,id); return XFER_LOCAL_IO;
     }
@@ -925,7 +928,7 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
         uint32_t id;
         int index;
         int attempts;
-        uint64_t deadline_ms;
+        uint64_t deadline_ns;
     } pending_ack;
 
     while (j->next_i < j->n) {
@@ -951,10 +954,10 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
 
             int attempts = 0;
             int st = XFER_LOCAL_IO;
-            uint64_t deadline_ms = 0;
+            uint64_t deadline_ns = 0;
             for (;;) {
                 ++attempts;
-                st = send_file_entry(c, tx, j->batch, id, e, &deadline_ms);
+                st = send_file_entry(c, tx, j->batch, id, e, &deadline_ns);
                 if (st == XFER_ACK_PENDING) break;
                 if (st == XFER_SEND_DEAD || st == XFER_PEER_ABORT || st == XFER_CANCELLED ||
                     st == HOP_FILE_ACK_BADPATH) break;
@@ -983,7 +986,7 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
                 pending[pending_count].id = id;
                 pending[pending_count].index = index;
                 pending[pending_count].attempts = attempts;
-                pending[pending_count].deadline_ms = deadline_ms;
+                pending[pending_count].deadline_ns = deadline_ns;
                 ++pending_count;
             } else {
                 status_file_phase(HOP_XFER_DIR_SEND,j->batch,index,HOP_XFER_FILE_FAILED,(uint32_t)attempts);
@@ -998,7 +1001,7 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
         for (uint32_t pi = 0; pi < pending_count; ++pi) {
             pending_ack *p = &pending[pi];
             uint64_t rtt_us = 0;
-            int st = ack_wait(j->batch,p->id,p->deadline_ms,&rtt_us);
+            int st = ack_wait(j->batch,p->id,p->deadline_ns,&rtt_us);
             if (rtt_us) rate_feedback(rtt_us);
             int attempts = p->attempts;
 
@@ -1023,11 +1026,11 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
                 Sleep(d);
 
                 ++attempts;
-                uint64_t retry_deadline = 0;
-                st = send_file_entry(c,tx,j->batch,p->id,p->entry,&retry_deadline);
+                uint64_t retry_deadline_ns = 0;
+                st = send_file_entry(c,tx,j->batch,p->id,p->entry,&retry_deadline_ns);
                 if (st == XFER_ACK_PENDING) {
                     rtt_us = 0;
-                    st = ack_wait(j->batch,p->id,retry_deadline,&rtt_us);
+                    st = ack_wait(j->batch,p->id,retry_deadline_ns,&rtt_us);
                     if (rtt_us) rate_feedback(rtt_us);
                 }
             }

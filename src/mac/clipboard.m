@@ -36,6 +36,7 @@ static dispatch_source_t s_timer;
 static pthread_mutex_t s_offer_lock = PTHREAD_MUTEX_INITIALIZER;
 static dispatch_group_t s_paste_group;
 static int s_paste_scan_active;
+static int s_image_work_active;
 static int s_clip_stopping;
 static char *s_local_offer_paths[HOP_CLIP_OFFER_MAX_ITEMS];
 static int s_local_offer_count;
@@ -192,6 +193,41 @@ static BOOL send_image(NSImage *img) {
     return ok;
 }
 
+
+/* Image decoding and BGRA conversion must not run on the main queue. Keep at
+ * most one conversion in flight so rapid clipboard changes cannot create an
+ * unbounded GCD backlog of large image snapshots. */
+static void send_image_data_async(NSData *data, NSInteger expected_change) {
+    if (!data) return;
+    dispatch_group_t group = nil;
+    pthread_mutex_lock(&s_offer_lock);
+    if (s_clip_stopping || s_image_work_active || !s_paste_group) {
+        pthread_mutex_unlock(&s_offer_lock);
+        hop_log(HOP_LOG_WARN, "clip: image conversion busy; snapshot skipped");
+        return;
+    }
+    s_image_work_active = 1;
+    group = s_paste_group;
+    dispatch_group_enter(group);
+    pthread_mutex_unlock(&s_offer_lock);
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        @autoreleasepool {
+            if ([[NSPasteboard generalPasteboard] changeCount] == expected_change) {
+                NSImage *img = [[NSImage alloc] initWithData:data];
+                if (img) (void)send_image(img);
+                else hop_log(HOP_LOG_WARN, "clip: image decode failed");
+            } else {
+                hop_log(HOP_LOG_INFO, "clip: stale image snapshot ignored");
+            }
+        }
+        pthread_mutex_lock(&s_offer_lock);
+        s_image_work_active = 0;
+        pthread_mutex_unlock(&s_offer_lock);
+        dispatch_group_leave(group);
+    });
+}
+
 static BOOL send_text(NSString *s) {
     const char *u = [s UTF8String];
     uint32_t n;
@@ -236,11 +272,13 @@ static void poll_pasteboard(void) {
         }
 
         /* 图片：TIFF 覆盖最广（截图、浏览器、预览都是它） */
-        if ([pb availableTypeFromArray:@[ NSPasteboardTypeTIFF, NSPasteboardTypePNG ]] != nil) {
-            NSImage *img = [[NSImage alloc] initWithPasteboard:pb];
-            if (img) {
+        NSPasteboardType imageType =
+            [pb availableTypeFromArray:@[ NSPasteboardTypePNG, NSPasteboardTypeTIFF ]];
+        if (imageType != nil) {
+            NSData *imageData = [pb dataForType:imageType];
+            if (imageData) {
                 clip_clear_remote_offer_local(); clip_clear_local_offer(1);
-                (void)send_image(img);
+                send_image_data_async(imageData, cc);
                 return;
             }
         }
@@ -263,7 +301,7 @@ static void poll_pasteboard(void) {
 
 void clipboard_init(void) {
     pthread_mutex_lock(&s_offer_lock);
-    s_clip_stopping=0;s_paste_scan_active=0;
+    s_clip_stopping=0;s_paste_scan_active=0;s_image_work_active=0;
     s_paste_group=dispatch_group_create();
     s_last_change = [[NSPasteboard generalPasteboard] changeCount];
     pthread_mutex_unlock(&s_offer_lock);

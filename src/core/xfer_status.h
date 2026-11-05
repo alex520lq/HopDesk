@@ -26,6 +26,9 @@ typedef struct {
     uint32_t queued_count;
     uint64_t bytes_done;
     uint64_t bytes_total;
+    uint64_t speed_bytes_per_sec;
+    uint64_t last_progress_ms;
+    uint64_t eta_seconds;
     char name[HOP_XFER_STATUS_NAME];
     char detail[HOP_XFER_STATUS_DETAIL];
 } hop_xfer_status;

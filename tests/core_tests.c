@@ -6,6 +6,7 @@
 #include "update_manifest.h"
 #include "xfer_budget.h"
 #include "xfer_task.h"
+#include "xfer_rate.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -695,6 +696,31 @@ static void test_xfer_global_budget(void) {
 }
 
 
+static void test_xfer_rate_limiter(void) {
+    hop_xfer_rate_limiter rate;
+    hop_xfer_rate_init(&rate,1000,100,2000,100,0);
+    CHECK(rate.current_rate_bytes_per_sec==1000&&rate.tokens_bytes==100);
+    CHECK(hop_xfer_rate_wait_ns(&rate,50,0)==0);
+    CHECK(rate.tokens_bytes==50);
+    CHECK(hop_xfer_rate_wait_ns(&rate,100,0)==50000000ull);
+    CHECK(hop_xfer_rate_wait_ns(&rate,100,50000000ull)==50000000ull);
+    CHECK(hop_xfer_rate_wait_ns(&rate,50,100000000ull)==0);
+    CHECK(rate.throttle_wait_ns==100000000ull);
+    CHECK(hop_xfer_rate_wait_ns(&rate,101,100000000ull)==UINT64_MAX);
+
+    hop_xfer_rate_init(&rate,1000,100,2000,100,0);
+    hop_xfer_rate_note_send_time(&rate,1000);
+    hop_xfer_rate_feedback(&rate,50000,0);
+    CHECK(rate.current_rate_bytes_per_sec==1050&&rate.rate_increases==1);
+    uint64_t healthy_rate=rate.current_rate_bytes_per_sec;
+    hop_xfer_rate_feedback(&rate,1000000,900);
+    CHECK(rate.current_rate_bytes_per_sec<healthy_rate&&rate.rate_decreases==1);
+
+    hop_xfer_rate_init(&rate,1000,100,2000,100,0);
+    for(int i=0;i<8;i++)hop_xfer_rate_note_send_time(&rate,50000);
+    CHECK(rate.current_rate_bytes_per_sec==900&&rate.rate_decreases==1);
+}
+
 static void test_xfer_task_identity_and_lifecycle(void) {
     hop_xfer_budget_limits limits={4u,8u,4096u,2048u,2048u,2u,1024u,1024u};
     hop_xfer_budget_snapshot snap;
@@ -776,6 +802,7 @@ int main(void) {
     test_file_end_ack_abort_done_decoders();
     test_update_manifest_validation();
     test_xfer_global_budget();
+    test_xfer_rate_limiter();
     test_xfer_task_identity_and_lifecycle();
 
     if (g_failures) {

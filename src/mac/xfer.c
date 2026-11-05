@@ -1125,6 +1125,17 @@ static int run_job(int fd, uint8_t *tx, xf_job *j) {
                     }
                 }
 
+                if (st == XFER_ACK_TIMEOUT) {
+                    /* No peer result means the file is unresolved. The receiver
+                     * may already have committed it and only the ACK was lost.
+                     * Keep next_i at this file and retry the batch after reconnect. */
+                    hop_log(HOP_LOG_WARN,
+                            "xfer: ACK unconfirmed for %s after %d attempt(s); resume at entry %d",
+                            item->entry->rel,attempts,item->index);
+                    ack_unregister_batch(j->batch);
+                    return JOB_NET_DOWN;
+                }
+
                 if (st == HOP_FILE_ACK_OK) {
                     j->ok++;
                     status_file_phase(HOP_XFER_DIR_SEND,j->batch,item->index,

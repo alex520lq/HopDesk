@@ -1416,7 +1416,10 @@ static int xfer_submit_image_impl(const uint8_t *bgra, uint8_t *owned, int w, in
     if (!bgra || w <= 0 || h <= 0 || stride <= 0) { if (owned) free(owned); return 0; }
     min_stride=(uint64_t)(uint32_t)w*4u;
     if ((uint64_t)(uint32_t)stride<min_stride ||
-        (uint64_t)(uint32_t)stride>UINT64_MAX/(uint64_t)(uint32_t)h) return 0;
+        (uint64_t)(uint32_t)stride>UINT64_MAX/(uint64_t)(uint32_t)h) {
+        if (owned) free(owned);
+        return 0;
+    }
     total64=(uint64_t)(uint32_t)stride*(uint64_t)(uint32_t)h;
     if(total64>(uint64_t)SIZE_MAX||!xfer_connected()){if(owned)free(owned);return 0;}
 

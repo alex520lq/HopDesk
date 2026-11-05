@@ -717,7 +717,18 @@ static void test_xfer_rate_limiter(void) {
 
     hop_xfer_rate_init(&rate,1000,100,2000,100,0);
     for(int i=0;i<8;i++)hop_xfer_rate_note_send_time(&rate,100,250000);
+    CHECK(rate.send_congested==1);
     CHECK(rate.current_rate_bytes_per_sec==900&&rate.rate_decreases==1);
+
+    /* A 4 MiB chunk naturally takes ~32 ms at 128 MiB/s. That is not
+     * congestion when the observed socket write is close to the allowance. */
+    hop_xfer_rate_init(&rate,128ull*1024ull*1024ull,64ull*1024ull*1024ull,
+                       512ull*1024ull*1024ull,8ull*1024ull*1024ull,0);
+    for(int i=0;i<8;i++)hop_xfer_rate_note_send_time(&rate,4ull*1024ull*1024ull,35000);
+    CHECK(rate.send_congested==0);
+    CHECK(rate.current_rate_bytes_per_sec==128ull*1024ull*1024ull);
+    hop_xfer_rate_feedback(&rate,50000,0);
+    CHECK(rate.current_rate_bytes_per_sec>128ull*1024ull*1024ull);
 }
 
 static void test_xfer_task_identity_and_lifecycle(void) {

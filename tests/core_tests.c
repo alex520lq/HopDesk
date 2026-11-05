@@ -626,6 +626,11 @@ static void test_xfer_global_budget(void) {
     CHECK(hop_xfer_budget_reservation_init(&b,1002));
     CHECK(hop_xfer_budget_reservation_init(&c,1003));
     CHECK(hop_xfer_budget_set_limits_for_test(&limits));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.limits.max_jobs==2&&snap.limits.max_entries==3);
+    CHECK(snap.limits.max_pending_bytes==1000&&snap.limits.max_image_bytes==600);
+    CHECK(snap.limits.max_rx_queue_slots==2&&snap.limits.max_rx_queue_bytes==16);
+    CHECK(snap.limits.max_image_temp_bytes==32);
     CHECK(hop_xfer_budget_reserve_job(&a));
     CHECK(hop_xfer_budget_reserve_entry(&a,400));
     CHECK(hop_xfer_budget_reserve_entry(&a,300));

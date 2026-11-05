@@ -12,6 +12,7 @@
 
 #include "hop.h"
 #include "../core/xfer_status.h"
+#include "../core/xfer_budget.h"
 
 void xfer_init(const hop_config *cfg);
 void xfer_kick(void);
@@ -23,6 +24,8 @@ int  xfer_connected(void);
 int  xfer_busy(void);
 /* Thread-safe snapshot for native transfer manager UI; caller owns the copy. */
 void xfer_get_status(hop_xfer_status *out);
+/* Snapshot live resource budgets and high-water/rejection/release counters. */
+void xfer_get_budget_snapshot(hop_xfer_budget_snapshot *out);
 /* Most recent completed batches first; returns number of records copied. */
 int xfer_get_history(hop_xfer_history_entry *out, int capacity);
 /* Snapshot an explicitly identified task; stale snapshots return no files. */

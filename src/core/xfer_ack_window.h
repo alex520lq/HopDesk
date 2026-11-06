@@ -37,8 +37,10 @@ static inline uint32_t hop_xfer_ack_window_count(const hop_xfer_ack_window *wind
 /* Advance only the next contiguous resolved file. This is the reconnect
  * checkpoint (zero-based); an out-of-order ACK must never skip a gap. */
 static inline int hop_xfer_ack_window_advance_checkpoint(int *checkpoint,
-                                                          int resolved_index) {
-    if (!checkpoint || *checkpoint < 0 || resolved_index < 0 ||
+                                                          int resolved_index,
+                                                          int ack_confirmed) {
+    /* A local send/read failure is not a remote file result. Never commit it. */
+    if (!ack_confirmed || !checkpoint || *checkpoint < 0 || resolved_index < 0 ||
         resolved_index != *checkpoint) return 0;
     ++(*checkpoint);
     return 1;

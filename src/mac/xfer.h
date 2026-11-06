@@ -25,6 +25,8 @@ int  xfer_connected(void);
 int  xfer_busy(void);
 /* Thread-safe snapshot for native transfer manager UI; caller owns the copy. */
 void xfer_get_status(hop_xfer_status *out);
+/* Coherent snapshot of current/latest send and receive; queue length is approximate. */
+void xfer_get_status_pair(hop_xfer_status_pair *out);
 /* Snapshot live resource budgets and high-water/rejection/release counters. */
 void xfer_get_budget_snapshot(hop_xfer_budget_snapshot *out);
 /* Most recent completed batches first; returns number of records copied. */

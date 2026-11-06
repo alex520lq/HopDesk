@@ -144,4 +144,17 @@ static inline hop_xfer_tracking *hop_xfer_tracking_visible(hop_xfer_tracking *se
         return send->status.active ? send : receive;
     return send->revision >= receive->revision ? send : receive;
 }
+/* Caller must hold the same lock for both trackers while copying. */
+static inline void hop_xfer_tracking_snapshot_pair(const hop_xfer_tracking *send,
+        const hop_xfer_tracking *receive, uint32_t queued, hop_xfer_status_pair *out) {
+    if (!out || !send || !receive) return;
+    out->send = send->status;
+    out->receive = receive->status;
+    out->send.queued_count = queued;
+    out->receive.queued_count = queued;
+    if (send->status.active != receive->status.active)
+        out->primary_direction = send->status.active ? HOP_XFER_DIR_SEND : HOP_XFER_DIR_RECEIVE;
+    else
+        out->primary_direction = send->revision >= receive->revision ? HOP_XFER_DIR_SEND : HOP_XFER_DIR_RECEIVE;
+}
 #endif

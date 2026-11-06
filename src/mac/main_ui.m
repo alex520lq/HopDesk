@@ -38,7 +38,7 @@ static NSTextField *s_xferTitle, *s_xferDetail, *s_xferCounts;
 static NSTextField *s_xferBudget, *s_xferMemory, *s_xferBudgetStats, *s_xferBudgetLifecycle;
 static NSProgressIndicator *s_xferProgress;
 static NSTextView *s_xferFiles, *s_xferHistory, *s_logView;
-static NSButton *s_retryButton;
+static NSButton *s_retryButton, *s_cancelButton;
 static NSTextField *s_updateVersion, *s_updateSource;
 static NSTimer *s_mainTimer;
 static NSObject *s_uiController;
@@ -261,7 +261,8 @@ static void reset_settings(void) {
 }
 static void refresh_transfer_page(void) {
     if (!s_xferTitle) return;
-    hop_xfer_status st; memset(&st,0,sizeof(st)); xfer_get_status(&st);
+    hop_xfer_status_pair pair; memset(&pair,0,sizeof(pair)); xfer_get_status_pair(&pair);
+    hop_xfer_status st=pair.primary_direction==HOP_XFER_DIR_SEND?pair.send:pair.receive;
     NSString *phase=@"空闲";
     switch(st.phase){
         case HOP_XFER_QUEUED:phase=@"排队中";break; case HOP_XFER_SCANNING:phase=@"扫描中";break;
@@ -281,6 +282,10 @@ static void refresh_transfer_page(void) {
         direction,phase,utf8(st.detail),rate,eta];
     s_xferCounts.stringValue=[NSString stringWithFormat:@"文件 %u / %u    排队 %u    数据 %@ / %@",
         st.files_done,st.files_total,st.queued_count,byte_count(st.bytes_done),byte_count(st.bytes_total)];
+    if(pair.send.active && pair.receive.active)
+        s_xferCounts.stringValue=[NSString stringWithFormat:@"同时进行：发送 %@/%@ · 接收 %@/%@ · 排队 %u",
+            byte_count(pair.send.bytes_done),byte_count(pair.send.bytes_total),
+            byte_count(pair.receive.bytes_done),byte_count(pair.receive.bytes_total),pair.send.queued_count];
     hop_xfer_budget_snapshot budget; memset(&budget,0,sizeof(budget)); xfer_get_budget_snapshot(&budget);
     s_xferBudget.stringValue=[NSString stringWithFormat:@"预算  jobs %u/%u  ·  entries %u/%u  ·  待传输 %@/%@",
         budget.jobs,budget.limits.max_jobs,budget.entries,budget.limits.max_entries,
@@ -306,6 +311,7 @@ static void refresh_transfer_page(void) {
         (unsigned long long)budget.accounting_errors];
     s_xferProgress.doubleValue=st.bytes_total?MIN(100.0,100.0*(double)st.bytes_done/(double)st.bytes_total):(st.phase==HOP_XFER_COMPLETED?100:0);
     s_retryButton.enabled=st.direction==HOP_XFER_DIR_SEND;
+    s_cancelButton.title=(pair.send.active && pair.receive.active)?@"取消双向":@"取消传输";
     if (!s_fileSnapshot) s_fileSnapshot=calloc(HOP_XFER_FILE_LIMIT,sizeof(*s_fileSnapshot));
     int count=s_fileSnapshot?xfer_get_files(st.direction,st.batch,s_fileSnapshot,HOP_XFER_FILE_LIMIT):0;
     if (s_fileBatch!=st.batch || s_fileDirection!=st.direction) {
@@ -513,7 +519,7 @@ static void build_pages(NSView *root) {
     histScroll.documentView=s_xferHistory;[card addSubview:histScroll];
     ui_button(p,@"展开/折叠目录",NSMakeRect(510,0,130,30),s_uiController,@selector(toggleFolder:));
     s_retryButton=ui_button(p,@"重试选中文件",NSMakeRect(650,0,112,30),s_uiController,@selector(retryFile:));
-    ui_button(p,@"取消传输",NSMakeRect(772,0,88,30),s_uiController,@selector(cancelTransfer:));
+    s_cancelButton=ui_button(p,@"取消传输",NSMakeRect(772,0,88,30),s_uiController,@selector(cancelTransfer:));
 
     p=s_pages[4];
     card=ui_card(p,NSMakeRect(20,70,840,570));

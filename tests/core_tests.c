@@ -992,7 +992,7 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     hop_xfer_task a,b,moved;
     memset(&a,0,sizeof(a));memset(&b,0,sizeof(b));memset(&moved,0,sizeof(moved));
     CHECK(hop_xfer_budget_set_limits_for_test(&limits));
-    CHECK(hop_xfer_task_init(&a,UINT64_C(0xABCDEF),UINT32_C(0x80000001),123));
+    CHECK(hop_xfer_task_init_classified(&a,UINT64_C(0xABCDEF),UINT32_C(0x80000001),123,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_UNSPECIFIED));
     CHECK(hop_xfer_task_init(&b,0,0,124));
     CHECK(a.id!=0&&b.id!=0&&a.id!=b.id);
     hop_xfer_task_snapshot as,bs;
@@ -1000,7 +1000,17 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     CHECK(as.offer_id==UINT64_C(0xABCDEF)&&as.request_id==UINT32_C(0x80000001)&&as.transfer_id==123);
     CHECK(bs.offer_id==0&&bs.request_id==0&&bs.transfer_id==124);
     CHECK(as.reservation_handle_id && bs.reservation_handle_id && as.reservation_handle_id!=bs.reservation_handle_id);
-    CHECK(as.state==HOP_XFER_TASK_CREATED);
+    CHECK(as.state==HOP_XFER_TASK_CREATED && as.direction==HOP_XFER_DIR_RECEIVE && as.kind==HOP_TASK_KIND_UNSPECIFIED);
+    uint8_t session[HOP_TASK_SESSION_BYTES]={1}, zero_session[HOP_TASK_SESSION_BYTES]={0};
+    CHECK(!hop_xfer_task_bind_session(&a,zero_session));
+    CHECK(hop_xfer_task_bind_session(&a,session));
+    CHECK(hop_xfer_task_set_kind(&a,HOP_TASK_KIND_FILES));
+    CHECK(hop_xfer_task_set_kind(&a,HOP_TASK_KIND_IMAGE));
+    CHECK(hop_xfer_task_set_kind(&a,HOP_TASK_KIND_FILES));
+    CHECK(!hop_xfer_task_set_kind(&a,HOP_TASK_KIND_IMAGE_WORK));
+    CHECK(hop_xfer_task_get_snapshot(a.id,&as) && as.kind==HOP_TASK_KIND_MIXED && !memcmp(as.session,session,sizeof(session)));
+    session[0]=2; CHECK(hop_xfer_task_bind_session(&a,session));
+    CHECK(hop_xfer_task_get_snapshot(a.id,&as) && !memcmp(as.session,session,sizeof(session)));
     int total=0; hop_xfer_task_snapshot list[2];
     CHECK(hop_xfer_task_list(list,2,&total)==2 && total==2);
     hop_xfer_task copied=a; /* A copied handle must never mutate or release the owner. */
@@ -1029,6 +1039,8 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     CHECK(hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));
     CHECK(!hop_xfer_task_finish(&a,HOP_XFER_TASK_CANCELLED));
     CHECK(!hop_xfer_task_set_state(&a,HOP_XFER_TASK_ACTIVE));
+    CHECK(!hop_xfer_task_bind_session(&a,session));
+    CHECK(!hop_xfer_task_set_kind(&a,HOP_TASK_KIND_IMAGE));
     CHECK(!hop_xfer_task_reserve_entry(&a,1));
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0&&snap.image_bytes==0);
@@ -1049,6 +1061,29 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0&&snap.image_bytes==0);
     hop_xfer_budget_limits defaults={16u,32768u,8ull*1024ull*1024ull*1024ull,256ull*1024ull*1024ull,256ull*1024ull*1024ull,8u,8ull*1024ull*1024ull,512ull*1024ull*1024ull};
     CHECK(hop_xfer_budget_set_limits_for_test(&defaults));
+}
+
+static void test_xfer_task_index_collision(void) {
+    hop_xfer_task first={0}, tmp={0}, last={0};
+    hop_xfer_task_snapshot snap;
+    CHECK(hop_xfer_task_init(&first,0,0,1));
+    const uint64_t first_id=first.id;
+    /* The manager index has 8192 buckets. Keep the first record alive while
+     * cycling enough IDs to force a real collision, then remove both orders. */
+    for (unsigned i=0; i<8191; ++i) {
+        CHECK(hop_xfer_task_init(&tmp,0,0,2));
+        hop_xfer_task_dispose(&tmp);
+    }
+    CHECK(hop_xfer_task_init(&last,0,0,3));
+    const uint64_t last_id=last.id;
+    CHECK(last_id-first_id==8192);
+    CHECK(hop_xfer_task_get_snapshot(first_id,&snap) && snap.transfer_id==1);
+    CHECK(hop_xfer_task_get_snapshot(last_id,&snap) && snap.transfer_id==3);
+    hop_xfer_task_dispose(&first);
+    CHECK(!hop_xfer_task_get_snapshot(first_id,&snap));
+    CHECK(hop_xfer_task_get_snapshot(last_id,&snap) && snap.transfer_id==3);
+    hop_xfer_task_dispose(&last);
+    CHECK(!hop_xfer_task_get_snapshot(last_id,&snap));
 }
 
 #define RUN_TEST(fn) do { \
@@ -1091,6 +1126,7 @@ int main(void) {
     RUN_TEST(test_xfer_tracking_duplex_snapshot);
     RUN_TEST(test_xfer_tracking_speed_and_eta);
     RUN_TEST(test_xfer_task_identity_and_lifecycle);
+    RUN_TEST(test_xfer_task_index_collision);
     RUN_TEST(test_xfer_task_image_buffer_transfer);
 
     if (g_failures) {

@@ -286,7 +286,8 @@ static void refresh_transfer_page(void) {
         s_xferCounts.stringValue=[NSString stringWithFormat:@"同时进行：发送 %@/%@ · 接收 %@/%@ · 排队 %u",
             byte_count(pair.send.bytes_done),byte_count(pair.send.bytes_total),
             byte_count(pair.receive.bytes_done),byte_count(pair.receive.bytes_total),pair.send.queued_count];
-    hop_xfer_budget_snapshot budget; memset(&budget,0,sizeof(budget)); xfer_get_budget_snapshot(&budget);
+    hop_xfer_task_audit audit; memset(&audit,0,sizeof(audit)); hop_xfer_task_reconcile(&audit);
+    hop_xfer_budget_snapshot budget=audit.ledger;
     s_xferBudget.stringValue=[NSString stringWithFormat:@"预算  jobs %u/%u  ·  entries %u/%u  ·  待传输 %@/%@",
         budget.jobs,budget.limits.max_jobs,budget.entries,budget.limits.max_entries,
         byte_count(budget.pending_bytes),byte_count(budget.limits.max_pending_bytes)];
@@ -303,12 +304,13 @@ static void refresh_transfer_page(void) {
         byte_count(budget.pending_bytes_high_water),byte_count(budget.image_bytes_high_water),
         budget.rx_queue_slots_high_water,byte_count(budget.rx_queue_bytes_high_water),
         (unsigned long long)rejected];
-    s_xferBudgetLifecycle.stringValue=[NSString stringWithFormat:@"释放 tasks %llu · RX buffers %llu · image temp %@ · image handoff %@ · 账本异常 %llu",
+    s_xferBudgetLifecycle.stringValue=[NSString stringWithFormat:@"释放 tasks %llu · RX buffers %llu · image temp %@ · image handoff %@ · 账本异常 %llu · 对账 %@ (0x%X)",
         (unsigned long long)budget.released_reservations,
         (unsigned long long)budget.released_rx_buffers,
         byte_count(budget.released_image_temp_bytes),
         byte_count(budget.transferred_image_temp_bytes),
-        (unsigned long long)budget.accounting_errors];
+        (unsigned long long)budget.accounting_errors,
+        audit.mismatches?@"异常":@"正常",(unsigned)audit.mismatches];
     s_xferProgress.doubleValue=st.bytes_total?MIN(100.0,100.0*(double)st.bytes_done/(double)st.bytes_total):(st.phase==HOP_XFER_COMPLETED?100:0);
     s_retryButton.enabled=st.direction==HOP_XFER_DIR_SEND;
     s_cancelButton.title=(pair.send.active && pair.receive.active)?@"取消双向":@"取消传输";

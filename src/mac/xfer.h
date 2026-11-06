@@ -39,6 +39,8 @@ int xfer_retry_file(uint32_t batch, int index);
 /* 取消当前批次：停发、通知对端、删掉接收侧半成品。
  * 发送端每块之后检查一次，所以响应延迟上限是一个分块（默认 256 KB）。 */
 void xfer_cancel(void);
+/* Asynchronous, isolated cancellation by live task ID. */
+int xfer_cancel_task(hop_xfer_task_id id);
 
 /* 提交本机路径（文件或目录，目录递归）。内部深拷贝，返回后调用方可释放。 */
 int  xfer_submit_paths(const char *const *paths, int n);

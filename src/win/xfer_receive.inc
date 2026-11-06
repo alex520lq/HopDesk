@@ -553,7 +553,7 @@ static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
     if (!batch) return;
     if (batch & HOP_XFER_PASTE_BATCH_FLAG)
         clip_complete_remote_paste(batch,NULL,0,0);
-    if (notify_peer) { send_abort_msg(s_x.client,batch,reason); }
+    if (notify_peer) { send_abort_msg(s_x.client,batch,reason,HOP_ABORT_TO_SENDER); }
     if (!s_rx.active || s_rx.batch != batch) return;
     rx_close_file();
     rx_discard_dir();
@@ -586,7 +586,7 @@ static void rx_begin_batch(uint32_t batch) {
     rx_reset();
     if (!hop_xfer_task_init_classified(&s_rx.task,0,(batch & HOP_XFER_PASTE_BATCH_FLAG)?batch:0,batch,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_UNSPECIFIED)) {
         s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_DISK;
-        send_abort_msg(s_x.client,batch,HOP_ABORT_DISK);
+        send_abort_msg(s_x.client,batch,HOP_ABORT_DISK,HOP_ABORT_TO_SENDER);
         return;
     }
     (void)hop_xfer_task_bind_session(&s_rx.task,s_rx_session.bytes);
@@ -594,14 +594,14 @@ static void rx_begin_batch(uint32_t batch) {
         s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_TOO_LARGE;
         hop_xfer_task_finish(&s_rx.task,HOP_XFER_TASK_FAILED);
         hop_xfer_task_dispose(&s_rx.task);
-        send_abort_msg(s_x.client,batch,HOP_ABORT_TOO_LARGE);
+        send_abort_msg(s_x.client,batch,HOP_ABORT_TOO_LARGE,HOP_ABORT_TO_SENDER);
         return;
     }
     if (!hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE)) {
         s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_DISK;
         hop_xfer_task_finish(&s_rx.task,HOP_XFER_TASK_FAILED);
         hop_xfer_task_dispose(&s_rx.task);
-        send_abort_msg(s_x.client,batch,HOP_ABORT_DISK);
+        send_abort_msg(s_x.client,batch,HOP_ABORT_DISK,HOP_ABORT_TO_SENDER);
         return;
     }
     /* Keep the last tombstone: a late old BEGIN must not replace a newer task. */
@@ -660,6 +660,11 @@ static void rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
     if (!s_rx.active || s_rx.batch != batch) {
         hop_log(HOP_LOG_WARN, "xfer: stale DONE for batch %u ignored (active=%u)",
                 batch, s_rx.active ? s_rx.batch : 0);
+        return;
+    }
+    /* Completion and per-task cancellation serialize before clipboard effects. */
+    if (!hop_xfer_task_begin_completion(&s_rx.task)) {
+        rx_terminate(batch,HOP_ABORT_CANCEL,1);
         return;
     }
 
@@ -1092,18 +1097,19 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             uint32_t batch = abort_msg.batch;
             uint8_t reason = abort_msg.reason;
 
-            /* 发送线程可能正卡在等 ACK 里 —— 踢醒它，取消不该等满 10 秒 */
-            EnterCriticalSection(&s_x.lock);
-            s_x.abort_batch = batch;
-            LeaveCriticalSection(&s_x.lock);
-            SetEvent(s_ack.ev);
+            if (abort_msg.target == HOP_ABORT_TO_SENDER) {
+                EnterCriticalSection(&s_x.lock);
+                if (s_x.cur_batch == batch) { s_x.abort_batch = batch; s_x.abort_reason = reason; }
+                LeaveCriticalSection(&s_x.lock);
+                SetEvent(s_ack.ev);
+            }
 
             hop_log(HOP_LOG_ERROR, "xfer: peer aborted batch %u (reason %u)",
                     batch, reason);
 
             /* 对端不要这一批了：关文件、删掉已落盘的半成品、立墓碑。
              * 墓碑必须立 —— 否则对端再发一帧 FILE_BEGIN 就把目录又建回来了。 */
-            rx_terminate(batch,reason,0);
+            if (abort_msg.target == HOP_ABORT_TO_RECEIVER) rx_terminate(batch,reason,0);
             break;
         }
 
@@ -1165,6 +1171,9 @@ static void rx_cancel_local(void) {
     rx_terminate(batch,HOP_ABORT_CANCEL,1);
     hop_log(HOP_LOG_INFO, "xfer: batch %u cancelled locally", batch);
 }
+static void rx_poll_cancel(void) {
+    if (InterlockedExchange(&s_x.cancel_rx, 0) || (s_rx.active && hop_xfer_task_cancel_requested(s_rx.task.id))) rx_cancel_local();
+}
 
 /* A pending handshake is incremental, separate from the active stream. A slow
  * unauthenticated client cannot stop the current peer from receiving data. */
@@ -1214,7 +1223,7 @@ static DWORD WINAPI listen_thread(LPVOID arg) {
         if (pending != INVALID_SOCKET && hop_handshake_expired(now, started)) {
             closesocket(pending); pending = INVALID_SOCKET;
         }
-        if (InterlockedExchange(&s_x.cancel_rx, 0)) rx_cancel_local();
+        rx_poll_cancel();
         fd_set rd; FD_ZERO(&rd);
         if (s_x.listen_s != INVALID_SOCKET) FD_SET(s_x.listen_s, &rd);
         if (active != INVALID_SOCKET) FD_SET(active, &rd);
@@ -1306,12 +1315,17 @@ static DWORD WINAPI data_client_thread(LPVOID unused){
     (void)unused;unsigned delay=500;
     hop_decoder *dec=hop_decoder_new(NULL,on_data_frame);if(!dec)return 1;
     while(WaitForSingleObject(s_x.stop,0)!=WAIT_OBJECT_0){
+        rx_poll_cancel();
         hop_session_id session;
         if(!hop_session_current(&session)){WaitForSingleObject(s_x.stop,200);continue;}
         SOCKET sock=net_connect_timeout_win(s_x.cfg.peer_host,s_x.cfg.data_port,s_x.stop);
         if(sock==INVALID_SOCKET){
             if(s_x.cfg.peer_host[0])hop_log(HOP_LOG_WARN,"xfer: TCP data connection failed: host=%s port=%u; check data port and firewall",s_x.cfg.peer_host,(unsigned)s_x.cfg.data_port);
-            WaitForSingleObject(s_x.stop,delay);delay=delay<8000?delay*2:8000;continue;
+            for(unsigned waited=0;waited<delay;waited+=200){
+                rx_poll_cancel();
+                if(WaitForSingleObject(s_x.stop,200)==WAIT_OBJECT_0)break;
+            }
+            delay=delay<8000?delay*2:8000;continue;
         }
         DWORD snd=5000,rcv=200;net_set_keepalive(sock);
         setsockopt(sock,SOL_SOCKET,SO_SNDTIMEO,(char*)&snd,sizeof(snd));setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,(char*)&rcv,sizeof(rcv));
@@ -1324,13 +1338,17 @@ static DWORD WINAPI data_client_thread(LPVOID unused){
         while(WaitForSingleObject(s_x.stop,0)!=WAIT_OBJECT_0 && hop_session_matches(&session)){
             EnterCriticalSection(&s_x.lock);authed=s_x.peer_ready;LeaveCriticalSection(&s_x.lock);
             if(!authed && hop_handshake_expired(hop_monotonic_ms(),started))break;
-            if(InterlockedExchange(&s_x.cancel_rx,0))rx_cancel_local();
+            rx_poll_cancel();
             uint8_t buf[65536];int n=recv(sock,(char*)buf,sizeof(buf),0);
             if(n==SOCKET_ERROR){int e=WSAGetLastError();if(e==WSAETIMEDOUT||e==WSAEWOULDBLOCK||e==WSAEINTR)continue;break;}
             if(n<=0||!hop_decoder_feed(dec,buf,(uint32_t)n))break;
         }
         retire_data_socket(sock);rx_close_file();
-        delay=authed?500:(delay<8000?delay*2:8000);WaitForSingleObject(s_x.stop,delay);
+        delay=authed?500:(delay<8000?delay*2:8000);
+        for(unsigned waited=0;waited<delay;waited+=200){
+            rx_poll_cancel();
+            if(WaitForSingleObject(s_x.stop,200)==WAIT_OBJECT_0)break;
+        }
     }
     hop_decoder_free(dec);return 0;
 }

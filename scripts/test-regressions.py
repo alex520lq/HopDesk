@@ -389,6 +389,9 @@ static void clipboard_complete_remote_paste(uint32_t batch,const char *const *pa
 '''
         main=r'''
 int main(void){
+    /* Both platform callbacks are linked in each host compiler's fixture. */
+    (void)&clip_complete_remote_paste;
+    (void)&clipboard_complete_remote_paste;
     xf_job j={0};j.batch=10;j.is_image=1;j.ok=1;assert(send_done(0,&j));
     assert(hop_get_be32(wire+4)==1 && hop_get_be32(wire+8)==1);
     uint8_t pixel[4]={0};

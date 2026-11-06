@@ -484,9 +484,10 @@ int main(void){
         receiver=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
         job=extract(sender,'run_job')
         timeout=job.index('if (st == XFER_ACK_TIMEOUT)')
+        unregister=job.index('ack_unregister_batch(j->batch)',timeout)
         kick=job.index('xfer_kick();',timeout)
         net_down=job.index('return JOB_NET_DOWN;',kick)
-        assert timeout < kick < net_down
+        assert timeout < unregister < kick < net_down
         kick_fn=extract(sender,'xfer_kick')
         assert 'peer_ready = 0' in kick_fn or 'peer_ready=0' in kick_fn
 
@@ -494,6 +495,7 @@ int main(void){
         begin=handler[handler.index('case HOP_MSG_FILE_BEGIN:'):handler.index('case HOP_MSG_IMAGE_BEGIN:')]
         end=handler[handler.index('case HOP_MSG_FILE_END:'):handler.index('case HOP_MSG_FILE_ACK:')]
         assert 'rx_remove_top(s_rx.cur_path)' in begin
+        assert '!rx_add_top(path)' in begin or '!rx_add_top(s_rx.cur_path)' in end
         close=end.index('rx_close_file()')
         cleanup=end.index('unlink(' if platform=='mac' else 'DeleteFileW(')
         assert close < cleanup, 'failed receive cleanup must wait for writer close'

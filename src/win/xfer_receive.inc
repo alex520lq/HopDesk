@@ -708,8 +708,9 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 ensure_dirs(path);
                 CreateDirectoryW(path, NULL);
                 /* 顶层目录才进剪贴板清单 */
-                if (!wcschr(path + wcslen(s_rx.dir) + 1, L'\\'))
-                    rx_add_top(path);
+                if (!wcschr(path + wcslen(s_rx.dir) + 1, L'\\') &&
+                    !rx_add_top(path))
+                    s_rx.cur_fail = HOP_FILE_ACK_DISK;
             } else {
                 /* 建父目录 */
                 wchar_t *sep = wcsrchr(path, L'\\');
@@ -931,7 +932,8 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                     /* 落盘成功、校验通过，才登记为可粘贴条目。
                      * 目录条目不在这里登记 —— 它在 BEGIN 时就已建好并登记。 */
                     const wchar_t *tail = s_rx.cur_path + wcslen(s_rx.dir) + 1;
-                    if (!wcschr(tail, L'\\')) rx_add_top(s_rx.cur_path);
+                    if (!wcschr(tail, L'\\') && !rx_add_top(s_rx.cur_path))
+                        ack = HOP_FILE_ACK_DISK;
                 }
             }
 

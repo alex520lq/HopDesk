@@ -16,55 +16,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  prepare-icons:
-    name: Prepare committed app icons (one-time)
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref || github.ref_name }}
-
-      - name: Check committed icon assets
-        id: icons
-        shell: pwsh
-        run: |
-          if ((Test-Path assets/appicon/hopdesk.png) -and (Test-Path assets/appicon/hopdesk.ico)) {
-            "missing=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          } else {
-            "missing=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          }
-
-      - name: Set up Python for one-time icon generation
-        if: steps.icons.outputs.missing == 'true'
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Generate PNG and ICO once
-        if: steps.icons.outputs.missing == 'true'
-        shell: pwsh
-        run: |
-          python -m pip install Pillow
-          python scripts/generate-app-icons.py
-          if (!(Test-Path assets/appicon/hopdesk.png) -or !(Test-Path assets/appicon/hopdesk.ico)) {
-            throw 'Icon generation did not produce both PNG and ICO assets.'
-          }
-
-      - name: Commit generated icon assets
-        if: steps.icons.outputs.missing == 'true'
-        shell: pwsh
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add assets/appicon/hopdesk.png assets/appicon/hopdesk.ico
-          git commit -m "Add pre-generated HopDesk app icons"
-          git push
-
   windows:
     name: Windows build, tests and package (MSVC)
-    needs: [prepare-icons]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -143,7 +96,6 @@ jobs:
 
   macos:
     name: macOS build, tests and package
-    needs: [prepare-icons]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4

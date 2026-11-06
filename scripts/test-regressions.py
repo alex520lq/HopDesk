@@ -286,6 +286,57 @@ int main(void){
 }
 '''
     run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','apply_global_expected','apply_global','clip_retry_pending'])+clip_main)
+    # A cross-device paste batch must never fall through to the ordinary clipboard writer.
+    for platform in ['win','mac']:
+        rx=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        if platform=='win':
+            assert 'clip_complete_remote_paste(batch,(const wchar_t *const *)s_rx.tops,s_rx.ntop,1)' in rx
+            assert 'clip_complete_remote_paste(batch,NULL,0,0)' in rx
+            clip=(ROOT/'src/win/clipboard.c').read_text(encoding='utf-8')
+            assert 'GetClipboardSequenceNumber()!=expected' in clip
+            assert 'GetForegroundWindow()==target' in clip
+            assert 'SendInput(4,in,sizeof(INPUT))' in clip
+        else:
+            assert 'clipboard_complete_remote_paste(batch,(const char *const *)s_rx.tops,s_rx.ntop,1)' in rx
+            assert 'clipboard_complete_remote_paste(batch,NULL,0,0)' in rx
+            clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
+            assert '[pb changeCount] != expected_count' in clip
+            assert 'foreground_pid==target_pid' in clip
+            assert 'inject_paste_shortcut()' in clip
+
+        # Exercise the actual production selector with a small slot before a
+        # later fitting slot. The later slot must be reused without allocation.
+        pool_source=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        pool_preamble=r'''
+#include <stdint.h>
+#include <stdlib.h>
+#include <assert.h>
+#define RX_Q_SLOTS 4
+#define RX_Q_MAX_BYTES 1024
+typedef struct { uint8_t *data; uint32_t capacity; int in_use; } rx_buffer_slot;
+static struct { rx_buffer_slot buffers[RX_Q_SLOTS]; uint64_t pool_capacity; } s_wq;
+static int hop_xfer_budget_set_rx_pool_bytes(uint64_t bytes) { (void)bytes; return 1; }
+'''
+        pool_main=r'''
+int main(void) {
+    uint8_t small[8], large[64], *selected=NULL;
+    int slot=-1;
+    s_wq.buffers[0].data=small; s_wq.buffers[0].capacity=8;
+    s_wq.buffers[1].data=large; s_wq.buffers[1].capacity=64;
+    s_wq.pool_capacity=72;
+    assert(wq_pool_acquire_locked(32,&slot,&selected)==1);
+    assert(slot==1 && selected==large && s_wq.pool_capacity==72);
+    puts("PASS: best-fit RX pool selector reuses later fitting slot");
+    return 0;
+}
+'''
+        run('rx_pool_best_fit_'+platform,pool_preamble+extract(pool_source,'wq_pool_acquire_locked')+pool_main)
+    clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
+    assert 'send_image_data_async(imageType, cc, previous_change)' in clip
+    assert 'budget_deferred = 1' in clip
+    assert 's_last_change = previous_change' in clip
+    assert 'image budget released; same clipboard version will be retried' in clip
+
     for platform in ['win','mac']:
         source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', (ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8'))
         common=r'''

@@ -71,6 +71,7 @@ static int wq_pool_acquire_locked(uint32_t len, int *slot_out, uint8_t **data_ou
             b->data = NULL;
             b->capacity = 0;
         }
+        (void)hop_xfer_budget_set_rx_pool_bytes(s_wq.pool_capacity);
         if (s_wq.pool_capacity - target->capacity + len > RX_Q_MAX_BYTES)
             return 0; /* an in-flight writer owns the remaining pool budget */
         if (target->data) {
@@ -78,11 +79,13 @@ static int wq_pool_acquire_locked(uint32_t len, int *slot_out, uint8_t **data_ou
             s_wq.pool_capacity -= target->capacity;
             target->data = NULL;
             target->capacity = 0;
+            (void)hop_xfer_budget_set_rx_pool_bytes(s_wq.pool_capacity);
         }
         target->data = (uint8_t *)malloc(len);
         if (!target->data) return -1;
         target->capacity = len;
         s_wq.pool_capacity += len;
+        (void)hop_xfer_budget_set_rx_pool_bytes(s_wq.pool_capacity);
     }
     target->in_use = 1;
     *slot_out = chosen;
@@ -310,6 +313,7 @@ static void wq_stop(void) {
         s_wq.buffers[i].in_use = 0;
     }
     s_wq.pool_capacity = 0;
+    (void)hop_xfer_budget_set_rx_pool_bytes(0);
     pthread_mutex_destroy(&s_wq.lock);
     pthread_cond_destroy(&s_wq.cv_work);
     pthread_cond_destroy(&s_wq.cv_space);

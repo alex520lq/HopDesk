@@ -48,14 +48,21 @@ static struct {
  * occupancy, so repeated small/large chunks do not churn malloc/free. */
 static int wq_pool_acquire_locked(uint32_t len, int *slot_out, uint8_t **data_out) {
     int chosen = -1;
+    /* First pass: best-fit among buffers that already satisfy the request.
+     * Only if none fit do we select an undersized idle slot for growth.
+     * Never let an early small slot hide a later reusable large buffer. */
     for (int i = 0; i < RX_Q_SLOTS; ++i) {
         rx_buffer_slot *b = &s_wq.buffers[i];
-        if (b->in_use) continue;
-        if (b->capacity >= len) {
+        if (b->in_use || !b->data || b->capacity < len) continue;
+        if (chosen < 0 || b->capacity < s_wq.buffers[chosen].capacity)
+            chosen = i;
+    }
+    if (chosen < 0) {
+        for (int i = 0; i < RX_Q_SLOTS; ++i) {
+            rx_buffer_slot *b = &s_wq.buffers[i];
+            if (b->in_use) continue;
             if (chosen < 0 || b->capacity < s_wq.buffers[chosen].capacity)
                 chosen = i;
-        } else if (chosen < 0) {
-            chosen = i;
         }
     }
     if (chosen < 0) return 0;

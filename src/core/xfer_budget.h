@@ -25,10 +25,10 @@ typedef struct {
 
 typedef struct {
     uint32_t jobs, entries, rx_queue_slots;
-    uint64_t pending_bytes, image_bytes, rx_queue_bytes, image_temp_bytes;
+    uint64_t pending_bytes, image_bytes, rx_queue_bytes, rx_pool_bytes, image_temp_bytes;
     uint32_t jobs_high_water, entries_high_water, rx_queue_slots_high_water;
     uint64_t pending_bytes_high_water, image_bytes_high_water, rx_queue_bytes_high_water;
-    uint64_t image_temp_bytes_high_water;
+    uint64_t rx_pool_bytes_high_water, image_temp_bytes_high_water;
     uint64_t rejected_jobs, rejected_entries, rejected_bytes, rejected_images;
     uint64_t rejected_rx_buffers, rejected_image_temp_bytes, rejected_image_transfers;
     uint64_t released_reservations, released_rx_buffers, released_image_temp_bytes;
@@ -50,6 +50,7 @@ int hop_xfer_budget_reserve_entry(hop_xfer_reservation_handle*, uint64_t bytes);
 int hop_xfer_budget_reserve_image(hop_xfer_reservation_handle*, uint64_t bytes);
 int hop_xfer_budget_reserve_rx_buffer(hop_xfer_reservation_handle*, uint64_t bytes);
 int hop_xfer_budget_release_rx_buffer(hop_xfer_reservation_handle*, uint64_t bytes);
+int hop_xfer_budget_set_rx_pool_bytes(uint64_t bytes);
 int hop_xfer_budget_reserve_image_temp(hop_xfer_reservation_handle*, uint64_t bytes);
 int hop_xfer_budget_release_image_temp(hop_xfer_reservation_handle*, uint64_t bytes);
 /* Atomically promote an already-accounted temporary pixel buffer to a queued

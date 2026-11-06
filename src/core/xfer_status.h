@@ -33,6 +33,15 @@ typedef struct {
     char detail[HOP_XFER_STATUS_DETAIL];
 } hop_xfer_status;
 
+/* A coherent status-lock snapshot of the two currently tracked directions.
+ * This is not a queue or a Task-ID collection: each direction still tracks
+ * only its current/latest batch. queued_count is an approximate queue snapshot. */
+typedef struct {
+    hop_xfer_status send;
+    hop_xfer_status receive;
+    int primary_direction;
+} hop_xfer_status_pair;
+
 #define HOP_XFER_FILE_LIMIT 8192
 typedef enum {
     HOP_XFER_FILE_QUEUED = 0,

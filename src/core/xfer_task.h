@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include "xfer_budget.h"
+#include "xfer_status.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -23,11 +24,22 @@ typedef struct {
     int initialized;
 } hop_xfer_task;
 
+/* Task classification is independent of the budget reservation. Internal image
+ * conversion jobs are not user-visible transfer transactions. */
+typedef enum {
+    HOP_TASK_KIND_UNSPECIFIED=0, HOP_TASK_KIND_FILES,
+    HOP_TASK_KIND_IMAGE, HOP_TASK_KIND_IMAGE_WORK, HOP_TASK_KIND_MIXED
+} hop_xfer_task_kind;
+#define HOP_TASK_SESSION_BYTES 16u
+
 /* Immutable snapshot. IDs and resource values are diagnostic, never ownership. */
 typedef struct {
     hop_xfer_task_id id;
     uint64_t offer_id, reservation_handle_id;
     uint32_t request_id, transfer_id;
+    int direction;
+    hop_xfer_task_kind kind;
+    uint8_t session[HOP_TASK_SESSION_BYTES]; /* all zero means not yet bound */
     hop_xfer_task_state state;
     uint32_t jobs, entries, rx_queue_slots;
     uint64_t pending_bytes, image_bytes, rx_queue_bytes, image_temp_bytes;
@@ -42,6 +54,13 @@ uint64_t hop_xfer_task_image_temp_bytes(const hop_xfer_task *task);
 
 /* Zero-initialized handle and nonzero transfer_id required. */
 int hop_xfer_task_init(hop_xfer_task *task, uint64_t offer_id, uint32_t request_id, uint32_t transfer_id);
+int hop_xfer_task_init_classified(hop_xfer_task *task, uint64_t offer_id, uint32_t request_id,
+                                 uint32_t transfer_id, int direction, hop_xfer_task_kind kind);
+/* The caller supplies the validated current transport session. On reconnect,
+ * replacing it records the new transport incarnation, not a new Task ID. */
+int hop_xfer_task_bind_session(const hop_xfer_task *task, const uint8_t session[HOP_TASK_SESSION_BYTES]);
+/* Receivers may observe both files and images within a batch; record MIXED. */
+int hop_xfer_task_set_kind(const hop_xfer_task *task, hop_xfer_task_kind kind);
 /* Move updates the manager's owner; copied or stale handles are rejected. */
 int hop_xfer_task_move(hop_xfer_task *dst, hop_xfer_task *src);
 int hop_xfer_task_set_state(hop_xfer_task *task, hop_xfer_task_state state);

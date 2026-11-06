@@ -17,15 +17,20 @@ static pthread_mutex_t s_manager_lock = PTHREAD_MUTEX_INITIALIZER;
 /* Manager lock always precedes the budget lock. No budget operation calls back
  * into this manager. A record owns exactly one reservation and one handle. */
 #define HOP_TASK_MANAGER_MAX_LIVE 4096u
+#define HOP_TASK_INDEX_BUCKETS 8192u
 typedef struct task_record {
-    struct task_record *next;
+    struct task_record *next, *hash_next;
     hop_xfer_task *owner;
     uint64_t id, offer_id;
     uint32_t request_id, transfer_id;
+    int direction;
+    hop_xfer_task_kind kind;
+    uint8_t session[HOP_TASK_SESSION_BYTES];
     hop_xfer_task_state state;
     hop_xfer_reservation_handle reservation;
 } task_record;
 static task_record *s_tasks;
+static task_record *s_task_index[HOP_TASK_INDEX_BUCKETS];
 static uint64_t s_next_task_id;
 static unsigned s_task_count;
 
@@ -35,7 +40,8 @@ static int terminal(hop_xfer_task_state s) {
            s == HOP_XFER_TASK_INTERRUPTED;
 }
 static task_record *find_id(uint64_t id) {
-    for (task_record *r=s_tasks; r; r=r->next) if (r->id == id) return r;
+    for (task_record *r=s_task_index[id % HOP_TASK_INDEX_BUCKETS]; r; r=r->hash_next)
+        if (r->id == id) return r;
     return NULL;
 }
 static task_record *owned(const hop_xfer_task *t) {
@@ -47,6 +53,8 @@ static void snapshot(const task_record *r, hop_xfer_task_snapshot *out) {
     memset(out,0,sizeof(*out));
     out->id=r->id; out->offer_id=r->offer_id; out->request_id=r->request_id;
     out->transfer_id=r->transfer_id; out->state=r->state;
+    out->direction=r->direction; out->kind=r->kind;
+    memcpy(out->session,r->session,sizeof(out->session));
     out->reservation_handle_id=r->reservation.handle_id;
     out->jobs=r->reservation.jobs; out->entries=r->reservation.entries;
     out->pending_bytes=r->reservation.pending_bytes; out->image_bytes=r->reservation.image_bytes;
@@ -76,8 +84,10 @@ uint64_t hop_xfer_task_image_temp_bytes(const hop_xfer_task *task) {
 int hop_xfer_task_is_terminal(const hop_xfer_task *task) {
     LOCK(); task_record *r=owned(task); int result=!r || terminal(r->state); UNLOCK(); return result;
 }
-int hop_xfer_task_init(hop_xfer_task *task, uint64_t offer, uint32_t request, uint32_t transfer) {
-    if (!task || !transfer) return 0;
+int hop_xfer_task_init_classified(hop_xfer_task *task, uint64_t offer, uint32_t request,
+                                  uint32_t transfer, int direction, hop_xfer_task_kind kind) {
+    if (!task || !transfer || direction < HOP_XFER_DIR_NONE || direction > HOP_XFER_DIR_RECEIVE ||
+        kind < HOP_TASK_KIND_UNSPECIFIED || kind > HOP_TASK_KIND_MIXED) return 0;
     task_record *r=(task_record *)calloc(1,sizeof(*r)); if (!r) return 0;
     LOCK();
     if (task->initialized || task->id || s_task_count >= HOP_TASK_MANAGER_MAX_LIVE || s_next_task_id==UINT64_MAX) {
@@ -86,9 +96,38 @@ int hop_xfer_task_init(hop_xfer_task *task, uint64_t offer, uint32_t request, ui
     r->id=++s_next_task_id;
     if (!hop_xfer_budget_reservation_init(&r->reservation,r->id)) { UNLOCK(); free(r); return 0; }
     r->owner=task; r->offer_id=offer; r->request_id=request; r->transfer_id=transfer;
-    r->state=HOP_XFER_TASK_CREATED; r->next=s_tasks; s_tasks=r; ++s_task_count;
+    r->direction=direction; r->kind=kind;
+    r->state=HOP_XFER_TASK_CREATED; r->next=s_tasks; s_tasks=r;
+    unsigned bucket=(unsigned)(r->id % HOP_TASK_INDEX_BUCKETS);
+    r->hash_next=s_task_index[bucket]; s_task_index[bucket]=r; ++s_task_count;
     task->id=r->id; task->initialized=1;
     UNLOCK(); return 1;
+}
+int hop_xfer_task_init(hop_xfer_task *task, uint64_t offer, uint32_t request, uint32_t transfer) {
+    return hop_xfer_task_init_classified(task,offer,request,transfer,HOP_XFER_DIR_NONE,HOP_TASK_KIND_UNSPECIFIED);
+}
+int hop_xfer_task_bind_session(const hop_xfer_task *task, const uint8_t session[HOP_TASK_SESSION_BYTES]) {
+    if (!session) return 0;
+    int valid=0; for (unsigned i=0; i<HOP_TASK_SESSION_BYTES; ++i) valid |= session[i];
+    if (!valid) return 0;
+    LOCK(); task_record *r=owned(task);
+    int ok=r && !terminal(r->state);
+    if (ok) memcpy(r->session,session,HOP_TASK_SESSION_BYTES);
+    UNLOCK(); return ok;
+}
+int hop_xfer_task_set_kind(const hop_xfer_task *task, hop_xfer_task_kind kind) {
+    if (kind < HOP_TASK_KIND_FILES || kind > HOP_TASK_KIND_IMAGE_WORK) return 0;
+    LOCK(); task_record *r=owned(task);
+    int ok=r && !terminal(r->state);
+    if (ok) {
+        if (r->kind==HOP_TASK_KIND_UNSPECIFIED) r->kind=kind;
+        else if (r->kind!=kind) {
+            if ((r->kind==HOP_TASK_KIND_FILES || r->kind==HOP_TASK_KIND_IMAGE || r->kind==HOP_TASK_KIND_MIXED) &&
+                (kind==HOP_TASK_KIND_FILES || kind==HOP_TASK_KIND_IMAGE)) r->kind=HOP_TASK_KIND_MIXED;
+            else ok=0;
+        }
+    }
+    UNLOCK(); return ok;
 }
 int hop_xfer_task_move(hop_xfer_task *dst, hop_xfer_task *src) {
     if (!dst || !src || dst==src) return 0;
@@ -138,6 +177,11 @@ void hop_xfer_task_dispose(hop_xfer_task *task) {
     LOCK(); task_record *r=owned(task);
     if (!r || (!terminal(r->state) && !finish(r,HOP_XFER_TASK_INTERRUPTED))) { UNLOCK(); return; }
     task_record **p=&s_tasks; while (*p && *p!=r) p=&(*p)->next;
-    if (*p) { *p=r->next; --s_task_count; memset(task,0,sizeof(*task)); free(r); }
+    if (*p) {
+        task_record **h=&s_task_index[r->id % HOP_TASK_INDEX_BUCKETS];
+        while (*h && *h!=r) h=&(*h)->hash_next;
+        if (!*h) { UNLOCK(); return; } /* never free a record still in the index */
+        *h=r->hash_next; *p=r->next; --s_task_count; memset(task,0,sizeof(*task)); free(r);
+    }
     UNLOCK();
 }

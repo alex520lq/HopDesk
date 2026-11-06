@@ -56,6 +56,8 @@ static uint32_t s_remote_offer_origin;
 static uint64_t s_remote_offer_generation;
 static uint32_t s_pending_paste_request;
 static DWORD s_pending_paste_sequence;
+static HWND s_pending_paste_target;
+static HWND s_ready_paste_target;
 static uint32_t s_seen_paste_requests[32];
 static unsigned s_seen_paste_next;
 static int s_pending_clear_remote;
@@ -70,7 +72,7 @@ static void clip_send_offer_clear(uint32_t origin,uint64_t generation);
 static void clip_clear_remote_offer_local(void) {
     AcquireSRWLockExclusive(&s_offer_lock);
     s_remote_offer_origin = 0; s_remote_offer_generation = 0;
-    s_pending_paste_request = 0; s_pending_paste_sequence = 0;
+    s_pending_paste_request = 0; s_pending_paste_sequence = 0; s_pending_paste_target = NULL;
     ReleaseSRWLockExclusive(&s_offer_lock);
 }
 static void clip_invalidate_remote_offer(int notify_peer) {
@@ -78,7 +80,7 @@ static void clip_invalidate_remote_offer(int notify_peer) {
     AcquireSRWLockExclusive(&s_offer_lock);
     origin=s_remote_offer_origin; generation=s_remote_offer_generation;
     s_remote_offer_origin=0; s_remote_offer_generation=0;
-    s_pending_paste_request=0; s_pending_paste_sequence=0;
+    s_pending_paste_request=0; s_pending_paste_sequence=0; s_pending_paste_target=NULL;
     ReleaseSRWLockExclusive(&s_offer_lock);
     if(notify_peer&&origin&&generation)clip_send_offer_clear(origin,generation);
 }
@@ -775,7 +777,7 @@ int clip_request_remote_paste(void) {
     if(++s_offer_request_seq==0||s_offer_request_seq>0x7fffffffu)s_offer_request_seq=1;
     id=HOP_XFER_PASTE_BATCH_FLAG|s_offer_request_seq;
     origin=s_remote_offer_origin;generation=s_remote_offer_generation;
-    s_pending_paste_request=id;s_pending_paste_sequence=sequence;
+    s_pending_paste_request=id;s_pending_paste_sequence=sequence;s_pending_paste_target=GetForegroundWindow();
     ReleaseSRWLockExclusive(&s_offer_lock);
     int sent=hop_clip_paste_request_encode(p,id,origin,generation,sequence) &&
              net_server_send(g_app.net,HOP_MSG_CLIP_PASTE_REQUEST,p,sizeof(p));
@@ -851,6 +853,9 @@ void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n
         hop_log(HOP_LOG_WARN,"clip: paste %u finished after clipboard changed; files kept, clipboard not overwritten",batch);
         return;
     }
+    AcquireSRWLockExclusive(&s_offer_lock);
+    s_ready_paste_target=s_pending_paste_target;
+    ReleaseSRWLockExclusive(&s_offer_lock);
     HGLOBAL h=make_drop_global(paths,n);
     int posted=0;
     if(h){
@@ -870,5 +875,24 @@ void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n
     }
 }
 void clip_on_paste_message(HGLOBAL h,DWORD expected_sequence) {
-    (void)apply_global_expected(CF_HDROP,h,expected_sequence,1,1);
+    HWND target;
+    AcquireSRWLockExclusive(&s_offer_lock);
+    target=s_ready_paste_target;
+    s_ready_paste_target=NULL;
+    ReleaseSRWLockExclusive(&s_offer_lock);
+    if (!apply_global_expected(CF_HDROP,h,expected_sequence,1,1)) return;
+    /* The initiating Ctrl+V was intentionally swallowed while files arrived.
+     * Replay it only if focus is still in the same foreground window. */
+    if (target && GetForegroundWindow()==target) {
+        INPUT in[4]; memset(in,0,sizeof(in));
+        in[0].type=INPUT_KEYBOARD; in[0].ki.wVk=VK_CONTROL;
+        in[1].type=INPUT_KEYBOARD; in[1].ki.wVk='V';
+        in[2].type=INPUT_KEYBOARD; in[2].ki.wVk='V'; in[2].ki.dwFlags=KEYEVENTF_KEYUP;
+        in[3].type=INPUT_KEYBOARD; in[3].ki.wVk=VK_CONTROL; in[3].ki.dwFlags=KEYEVENTF_KEYUP;
+        UINT sent=SendInput(4,in,sizeof(INPUT));
+        if(sent==4) hop_log(HOP_LOG_INFO,"clip: replayed intercepted paste into original foreground window");
+        else hop_log(HOP_LOG_WARN,"clip: clipboard updated but paste replay was incomplete (%u/4)",sent);
+    } else {
+        hop_log(HOP_LOG_INFO,"clip: clipboard updated; paste replay skipped because foreground window changed");
+    }
 }

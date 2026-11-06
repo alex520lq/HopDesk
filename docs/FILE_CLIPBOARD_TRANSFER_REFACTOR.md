@@ -215,7 +215,7 @@
 - Windows/macOS 的 ACK wait 增加 peer-ready 检查；连接失效后及时返回网络中断，不必继续等完整 ACK timeout。
 - 新增共享 checkpoint helper，拒绝跳过缺口或倒退索引；核心测试覆盖部分窗口断线、连续 ACK 前缀和未确认尾项。
 - 第六批代码与测试基线：`df99d053d7f7df603a53bbf2f75ab1fbf0c711c3`（后续文档记录另有提交）。第六批仍需在当前 HEAD 上重跑 Windows/macOS 原生 Actions；之前 #42060905387 的 Windows core test stack overflow 已由 `78f2cf8` 将 8 MiB tracking fixture 移到 static storage 修复，旧失败不能代表当前 HEAD。
-- **第七批已提交：ACK timeout 与接收端重试清理。** `9b5061879eb0bc55e23f6a8e679e79482d46ec29`、`f1cf6086159fae8013ce7e8d5fb27b85d655a4b5`、`b95edbc70b0133b0c8a4393bc51196ce6d62ddc0`：ACK timeout 立即 `xfer_kick()` 并返回 `JOB_NET_DOWN`；重连 checkpoint 保持在第一个未确认文件，旧数据通道关闭后才允许复用 batch/id。接收端重试时先从剪贴板顶层清单移除旧文件路径；FILE_END 无论正常或已判失败都会先排空并关闭写句柄，失败文件从暂存目录删除，避免重试截断后仍把半成品放入剪贴板。明确 ACK 状态仍按原逐文件重试策略处理。当前 HEAD 尚无关联 Actions run，不能标记自动化通过。
+- **第七批已提交：ACK timeout、重连队列与接收端重试清理。** `9b5061879eb0bc55e23f6a8e679e79482d46ec29`、`f1cf6086159fae8013ce7e8d5fb27b85d655a4b5`、`b95edbc70b0133b0c8a4393bc51196ce6d62ddc0`、`6268ea2168e3f252c02c351991b42ccc7eb11d81`、`9b770ddf5d3e058d569aa6de3d1eb5d408e0574b`、`2ae23487fca041b95854989b35372fd9c79817bd`、`7a5cf10049b20e1f1c47854b4e38a427064ef37a`、`287dd5c0774ce3a65aa89936ad4e42a2a8837f35`、`a289ae0c0a3a12ffc5f60c1db663e5c33096357b`：ACK timeout 立即 `xfer_kick()` 并返回 `JOB_NET_DOWN`；两端同步清除 peer-ready，重连 checkpoint 保持在第一个未确认文件，旧数据通道关闭后才允许复用 batch/id。macOS 发送队列在 peer 未就绪时等待，不消耗任务级重试次数；Windows 原有队列已按 socket-ready 门控。接收端重试时先从剪贴板顶层清单移除旧文件路径；FILE_END 无论正常或已判失败都会先排空并关闭写句柄，失败文件从暂存目录删除；顶层路径登记失败也返回 DISK ACK，不再假报成功。当前 HEAD 尚无关联 Actions run，不能标记自动化通过。
 - 实机断线注入、ACK 延迟/丢失、10,000 小文件吞吐与双向同时传输仍待测试。
 
 **第五批已提交：按批次记录分阶段耗时。**
@@ -297,7 +297,7 @@
 | 阶段二第四批：speed/ETA、预算 UI 与 ACK window | `e99ef04`, `7f84820`, `02659ea`, `2992810`, `98398b5`, `587484e`, `3b99894`, `7072d1c`, `db37431`, `2738dab`, `48abfec`, `846da91`, `89ec493`, `86dd3f0`, `38c474b`, `3685f3e`, `7b50d28`, `7adfc7b`, `625dcd5`, `f032c7c`, `feb95f4`, `f4f78e6`, `f4f966d` | 单调时钟 speed/ETA、双端资源预算可观测 UI、固定 4 槽 ACK window、逐文件重试、单调 deadline、ACK 后推进重连 checkpoint、恢复 Windows 图片/批次发送 helper | Windows 完整 CI 通过 [Actions #42059765078](https://github.com/alex520lq/HopDesk/actions/runs/42059765078)；macOS runner 未分配，待重跑 | 实机 10,000 小文件、ACK 丢失/超时、断线恢复、双向并发和键鼠延迟待测 |
 | 阶段二第五批：分阶段耗时 | `b8b81e9`, `8447a12`, `5f9925d`, `721ac41`, `6f83067`, `1bab2c5`, `be7f563`, `067c3a8`, `78f2cf8`, `9b8018b`, `3ea71a4`, `485adf8`, `849c390`, `618ffa9`, `742cec0`, `b18b9e9`, `eac5a51` | 批次级 scan/read/CRC/send/receive/write/clipboard dispatch 纳秒累计；终态饱和统计；完成时输出结构化日志；补充计时边界测试；计时与 chunk 进度合并单锁；复核单 sender 固定 TX buffer 复用；清除 Windows cursor resource ANSI/Unicode 编译警告 | 完整实现待 Windows/macOS 新 CI；旧 run 的 stack overflow 已由 static fixture 修复 | clipboard 实际异步完成、实机性能/RSS/键鼠延迟待测 |
 | 阶段二第六批：partial window 断线恢复 | `e05efb0`, `b3a9a1a`, `ef5a8ea`, `0a882d6`, `f130e03`, `5a70054`, `df99d05` | 局部发送游标、连续 ACK checkpoint、部分窗口断线 drain、peer-ready 快速失败、核心测试 | 当前 HEAD 尚无原生 Actions；旧 #420609 的 stack overflow 已由 `78f2cf8` 修复，需验证当前 HEAD | 断线注入、ACK 丢失/延迟、10,000 小文件与真实双机验收待测 |
-| 阶段二第七批：ACK timeout 连接隔离与接收端失败清理 | `9b50618`, `f1cf608`, `b95edbc` | ACK timeout 强制 kick 当前数据通道；未确认文件不推进 checkpoint；旧连接关闭后才复用 batch/id；接收端重试移除旧顶层路径并删除失败半成品 | 当前 HEAD 尚无原生 Actions | ACK 丢失/迟到回执、连接重建与重试幂等性待测 |
+| 阶段二第七批：ACK timeout 连接隔离与接收端失败清理 | `9b50618`, `f1cf608`, `b95edbc`, `6268ea2`, `9b770dd`, `2ae2348`, `7a5cf10`, `287dd5c`, `a289ae0` | ACK timeout 强制 kick 当前数据通道；未确认文件不推进 checkpoint；离线时不消耗重试次数；接收端重试移除旧顶层路径、关闭 writer 后删除失败半成品；顶层登记失败不再 ACK_OK | 当前 HEAD 尚无原生 Actions | ACK 丢失/迟到回执、连接重建与重试幂等性待测 |
 | 阶段三 | 待实施 | Task ID 状态模型、reservation 账本、独立取消/重试、UI/历史与双向验收 | 待执行 | 待执行 |
 
 ## 7. 本轮明确不做的事

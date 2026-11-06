@@ -165,12 +165,13 @@ static DWORD WINAPI writer_thread(LPVOID arg) {
                               HOP_XFER_TIME_WRITE,write_elapsed_ns);
         hop_watchdog_end(disk_guard);
 
-        free(t.data);
         if (t.kind == RX_WRITE && t.budget_owner)
             (void)hop_xfer_task_release_rx_buffer(t.budget_owner, t.len);
         EnterCriticalSection(&s_wq.lock);
-        if (t.kind == RX_WRITE)
+        if (t.kind == RX_WRITE) {
+            wq_pool_release_locked(t.pool_slot);
             s_wq.queued_bytes = t.len > s_wq.queued_bytes ? 0 : s_wq.queued_bytes - t.len;
+        }
         s_wq.busy = 0;
         WakeConditionVariable(&s_wq.cv_space);
         LeaveCriticalSection(&s_wq.lock);

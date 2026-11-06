@@ -1031,6 +1031,7 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
         int index;
         int attempts;
         int pending;
+        int acknowledged;
         uint64_t deadline_ns;
     } window_item;
 
@@ -1094,15 +1095,20 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
                 return JOB_CANCELLED;
             }
 
-            item->attempts = attempts;
-            if (st == XFER_ACK_PENDING) {
-                item->pending = 1;
-                item->deadline_ns = deadline_ns;
-            } else {
+            if (st != XFER_ACK_PENDING) {
+                /* No remote FILE_ACK exists for this entry. Stop filling here;
+                 * drain only earlier in-flight entries, then reconnect from
+                 * this exact checkpoint instead of treating local failure as
+                 * a completed result. */
                 status_file_phase(HOP_XFER_DIR_SEND,j->batch,index,HOP_XFER_FILE_FAILED,(uint32_t)attempts);
-                hop_log(HOP_LOG_ERROR, "xfer: could not send %s after %d attempt(s) (status %d)",
+                hop_log(HOP_LOG_ERROR, "xfer: no ACK for %s after %d attempt(s) (status %d); keep checkpoint",
                         e->rel,attempts,st);
+                fill_result = JOB_NET_DOWN;
+                break;
             }
+            item->attempts = attempts;
+            item->pending = 1;
+            item->deadline_ns = deadline_ns;
             ++window_count;
             ++send_index;
         }
@@ -1115,6 +1121,7 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
             if (item->pending) {
                 uint64_t rtt_us = 0;
                 int st = ack_wait(j->batch,item->id,item->deadline_ns,&rtt_us);
+                if (st >= 0) item->acknowledged = 1;
                 if (rtt_us) rate_feedback(rtt_us);
                 int attempts = item->attempts;
 
@@ -1156,6 +1163,7 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
                     if (st == XFER_ACK_PENDING) {
                         rtt_us = 0;
                         st = ack_wait(j->batch,item->id,retry_deadline_ns,&rtt_us);
+                        if (st >= 0) item->acknowledged = 1;
                         if (rtt_us) rate_feedback(rtt_us);
                     }
                 }
@@ -1172,7 +1180,13 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
                 }
             }
             /* This is the only place that advances the reconnect checkpoint. */
-            if (!hop_xfer_ack_window_advance_checkpoint(&j->next_i,item->index)) {
+            if (!item->acknowledged) {
+                hop_log(HOP_LOG_ERROR, "xfer: entry %d has no remote ACK; checkpoint remains %d",
+                        item->index,j->next_i);
+                ack_unregister_batch(j->batch);
+                return JOB_NET_DOWN;
+            }
+            if (!hop_xfer_ack_window_advance_checkpoint(&j->next_i,item->index,1)) {
                 hop_log(HOP_LOG_ERROR, "xfer: non-contiguous checkpoint batch=%u current=%d resolved=%d",
                         j->batch,j->next_i,item->index);
                 ack_unregister_batch(j->batch);

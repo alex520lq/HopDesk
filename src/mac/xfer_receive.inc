@@ -549,6 +549,11 @@ static void rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
                 batch, s_rx.active ? s_rx.batch : 0);
         return;
     }
+    /* Completion and per-task cancellation serialize before clipboard effects. */
+    if (!hop_xfer_task_begin_completion(&s_rx.task)) {
+        rx_terminate(batch,HOP_ABORT_CANCEL,1);
+        return;
+    }
 
     rx_task t;
     memset(&t, 0, sizeof(t));
@@ -977,19 +982,20 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             uint32_t batch = abort_msg.batch;
             uint8_t reason = abort_msg.reason;
 
-            /* 发送线程可能正卡在等 ACK 里 —— 踢醒它，取消不该等满 10 秒 */
-            pthread_mutex_lock(&s_x.qlock);
-            s_x.abort_batch = batch;
-            pthread_mutex_unlock(&s_x.qlock);
-            pthread_mutex_lock(&s_ack.lock);
-            pthread_cond_broadcast(&s_ack.cond);
-            pthread_mutex_unlock(&s_ack.lock);
+            if (abort_msg.target == HOP_ABORT_TO_SENDER) {
+                pthread_mutex_lock(&s_x.qlock);
+                if (s_x.cur_batch == batch) { s_x.abort_batch = batch; s_x.abort_reason = reason; }
+                pthread_mutex_unlock(&s_x.qlock);
+                pthread_mutex_lock(&s_ack.lock);
+                pthread_cond_broadcast(&s_ack.cond);
+                pthread_mutex_unlock(&s_ack.lock);
+            }
 
             hop_log(HOP_LOG_ERROR, "xfer: peer aborted batch %u (reason %u)",
                     batch, reason);
 
             /* 对端不要这一批了：关文件、删掉已落盘的半成品、立墓碑。 */
-            rx_terminate(batch,reason,0);
+            if (abort_msg.target == HOP_ABORT_TO_RECEIVER) rx_terminate(batch,reason,0);
             break;
         }
 
@@ -1061,6 +1067,9 @@ static void rx_cancel_local(void) {
     rx_terminate(batch,HOP_ABORT_CANCEL,1);
     hop_log(HOP_LOG_INFO, "xfer: batch %u cancelled locally", batch);
 }
+static void rx_poll_cancel(void) {
+    if (__sync_lock_test_and_set(&s_x.cancel_rx, 0) || (s_rx.active && hop_xfer_task_cancel_requested(s_rx.task.id))) rx_cancel_local();
+}
 
 static int s_data_listener=-1;
 static int accept_data(const hop_session_id *expected){
@@ -1075,6 +1084,7 @@ static int accept_data(const hop_session_id *expected){
         hop_log(HOP_LOG_INFO,"xfer: listening on data port %u",(unsigned)g_mac.cfg.data_port);
     }
     while(!s_x.stop && hop_session_matches(expected)){
+        rx_poll_cancel();
         fd_set rd;FD_ZERO(&rd);FD_SET(s_data_listener,&rd);struct timeval tv={0,200000};
         int n=select(s_data_listener+1,&rd,NULL,NULL,&tv);
         if(n>0){
@@ -1093,6 +1103,7 @@ static void *conn_thread(void *arg) {
 
     int backoff = 1;
     while (!s_x.stop) {
+        rx_poll_cancel();
         hop_session_id session;
         if (!hop_session_current(&session)) { usleep(200000); continue; }
         int s = g_mac.cfg.role==HOP_ROLE_SERVER?accept_data(&session):do_connect();
@@ -1102,8 +1113,10 @@ static void *conn_thread(void *arg) {
                 hop_log(HOP_LOG_WARN,"xfer: TCP data connection failed: host=%s port=%u; check data port and firewall",
                         g_mac.cfg.peer_host,(unsigned)g_mac.cfg.data_port);
             /* 退避要能被 stop 打断 —— 否则退出时要等满 10 秒 */
-            for (int i = 0; i < backoff * 10 && !s_x.stop; ++i)
+            for (int i = 0; i < backoff * 10 && !s_x.stop; ++i) {
+                rx_poll_cancel();
                 usleep(100 * 1000);
+            }
             backoff = backoff < 10 ? backoff * 2 : 10;
             continue;
         }
@@ -1171,7 +1184,7 @@ static void *conn_thread(void *arg) {
                 if (errno == EINTR) continue;
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     /* 不是断线，只是这 200 ms 没数据：借这次醒来处理取消请求 */
-                    if (__sync_lock_test_and_set(&s_x.cancel_rx, 0)) rx_cancel_local();
+                    rx_poll_cancel();
                     continue;
                 }
                 break;
@@ -1179,7 +1192,7 @@ static void *conn_thread(void *arg) {
             if (r == 0) break;                 /* 对端正常关闭 */
 
             if (!hop_decoder_feed(dec, (const uint8_t *)buf, (uint32_t)r)) break;
-            if (__sync_lock_test_and_set(&s_x.cancel_rx, 0)) rx_cancel_local();
+            rx_poll_cancel();
         }
 
         pthread_mutex_lock(&s_x.slock);

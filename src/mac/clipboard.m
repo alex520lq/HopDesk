@@ -48,7 +48,6 @@ static uint32_t s_remote_offer_origin;
 static uint64_t s_remote_offer_generation;
 static uint32_t s_pending_paste_request;
 static NSInteger s_pending_paste_change;
-static pid_t s_pending_paste_pid;
 static uint32_t s_seen_paste_requests[32];
 static unsigned s_seen_paste_next;
 
@@ -59,7 +58,7 @@ static void clip_send_offer_clear(uint32_t origin,uint64_t generation);
 static void clip_clear_remote_offer_local(void) {
     pthread_mutex_lock(&s_offer_lock);
     s_remote_offer_origin=0; s_remote_offer_generation=0;
-    s_pending_paste_request=0; s_pending_paste_change=0; s_pending_paste_pid=0;
+    s_pending_paste_request=0; s_pending_paste_change=0;
     pthread_mutex_unlock(&s_offer_lock);
 }
 static void clip_invalidate_remote_offer(int notify_peer) {
@@ -67,7 +66,7 @@ static void clip_invalidate_remote_offer(int notify_peer) {
     pthread_mutex_lock(&s_offer_lock);
     origin=s_remote_offer_origin;generation=s_remote_offer_generation;
     s_remote_offer_origin=0;s_remote_offer_generation=0;
-    s_pending_paste_request=0;s_pending_paste_change=0;s_pending_paste_pid=0;
+    s_pending_paste_request=0;s_pending_paste_change=0;
     pthread_mutex_unlock(&s_offer_lock);
     if(notify_peer&&origin&&generation)clip_send_offer_clear(origin,generation);
 }
@@ -189,6 +188,17 @@ static void image_work_task_finish(hop_xfer_task *task, int success) {
     free(task);
 }
 
+/* Check the task's intrinsic requirement, not the currently available
+ * budget. If it exceeds a ceiling even with all other tasks idle, retrying
+ * the same clipboard version can never succeed. */
+static int image_conversion_fits_budget(uint64_t input, uint64_t conversion,
+                                        const hop_xfer_budget_limits *limits) {
+    return limits && input <= limits->max_image_bytes &&
+        conversion <= limits->max_image_bytes - input &&
+        input <= limits->max_image_temp_bytes &&
+        conversion <= limits->max_image_temp_bytes - input;
+}
+
 /* NSImage -> 自上而下 BGRA。调用方在 NSImage 解码前预留转换额度；
  * 这里按真实像素尺寸收窄额度，再分配 bitmap 与行翻转缓冲区。 */
 static BOOL send_image(NSImage *img, NSInteger expected_change, hop_xfer_task *task,
@@ -215,6 +225,15 @@ static BOOL send_image(NSImage *img, NSInteger expected_change, hop_xfer_task *t
     /* decoded source + CGContext bitmap + flip buffer; queued payload is
      * reserved separately by xfer_submit_image before its copy. */
     uint64_t conversion_bytes = (uint64_t)total * 3u;
+    hop_xfer_budget_snapshot budget;
+    hop_xfer_budget_get_snapshot(&budget);
+    uint64_t input_reserved = task->reservation.image_temp_bytes - *conversion_reserved;
+    if (!image_conversion_fits_budget(input_reserved, conversion_bytes, &budget.limits)) {
+        hop_log(HOP_LOG_WARN, "clip: image conversion exceeds the memory budget; copy a smaller image");
+        if ([[NSPasteboard generalPasteboard] changeCount] == expected_change)
+            statusbar_notify_image_limit();
+        return NO; /* permanent for this clipboard version: do not schedule a retry */
+    }
     if (conversion_bytes > *conversion_reserved) {
         uint64_t extra = conversion_bytes - *conversion_reserved;
         if (!hop_xfer_task_reserve_image_temp(task, extra)) {
@@ -275,7 +294,7 @@ cleanup:
     if (flip) free(flip);
     if (ctx) CGContextRelease(ctx);
     if (cs) CGColorSpaceRelease(cs);
-    if (!ok) hop_log(HOP_LOG_WARN, "clip: image not queued; will retry");
+    if (!ok) hop_log(HOP_LOG_WARN, "clip: image not queued");
     return ok;
 }
 
@@ -510,19 +529,15 @@ static void apply_objects_retry(NSArray *objects, NSString *kind,
     if (ok) {
         pthread_mutex_lock(&s_offer_lock); s_last_change = [pb changeCount]; pthread_mutex_unlock(&s_offer_lock);
         if([kind isEqualToString:@"paths-paste"]) {
-            pid_t target_pid=0;
             pthread_mutex_lock(&s_offer_lock);
             s_remote_offer_origin=0;s_remote_offer_generation=0;
-            target_pid=s_pending_paste_pid;
-            s_pending_paste_request=0;s_pending_paste_change=0;s_pending_paste_pid=0;
+            s_pending_paste_request=0;s_pending_paste_change=0;
             pthread_mutex_unlock(&s_offer_lock);
-            pid_t foreground_pid=[NSWorkspace sharedWorkspace].frontmostApplication.processIdentifier;
-            if(target_pid>0 && foreground_pid==target_pid) {
-                inject_paste_shortcut();
-                hop_log(HOP_LOG_INFO,"clip: replayed intercepted paste into original foreground app");
-            } else {
-                hop_log(HOP_LOG_INFO,"clip: clipboard updated; paste replay skipped because foreground app changed");
-            }
+            /* PID alone cannot prove the original Finder window or folder is
+             * unchanged. Keep the files on the pasteboard and ask the user to
+             * choose the target and paste again rather than injecting input. */
+            statusbar_notify_paste_ready();
+            hop_log(HOP_LOG_INFO,"clip: files ready; choose a target and paste again");
         }
         hop_log(HOP_LOG_INFO, "clip: %s in; write succeeded on attempt %lu",
                 [kind UTF8String], (unsigned long)(attempt + 1));
@@ -642,10 +657,8 @@ void clipboard_on_remote_file_offer_clear(const uint8_t *p,uint32_t len) {
 }
 int clipboard_request_remote_paste(void) {
     __block NSInteger current=0;
-    __block pid_t target_pid=0;
     void (^read_paste_context)(void)=^{
         current=[[NSPasteboard generalPasteboard] changeCount];
-        target_pid=[NSWorkspace sharedWorkspace].frontmostApplication.processIdentifier;
     };
     if([NSThread isMainThread]) read_paste_context();
     else dispatch_sync(dispatch_get_main_queue(),read_paste_context);
@@ -659,13 +672,13 @@ int clipboard_request_remote_paste(void) {
     if(++s_offer_request_seq==0||s_offer_request_seq>0x7fffffffu)s_offer_request_seq=1;
     id=HOP_XFER_PASTE_BATCH_FLAG|s_offer_request_seq;
     origin=s_remote_offer_origin;generation=s_remote_offer_generation;
-    s_pending_paste_request=id;s_pending_paste_change=current;s_pending_paste_pid=target_pid;
+    s_pending_paste_request=id;s_pending_paste_change=current;
     pthread_mutex_unlock(&s_offer_lock);
     int sent=hop_clip_paste_request_encode(p,id,origin,generation,(uint64_t)current) &&
              net_send(HOP_MSG_CLIP_PASTE_REQUEST,p,sizeof(p));
     if(!sent) {
         pthread_mutex_lock(&s_offer_lock);
-        if(s_pending_paste_request==id){s_pending_paste_request=0;s_pending_paste_change=0;s_pending_paste_pid=0;}
+        if(s_pending_paste_request==id){s_pending_paste_request=0;s_pending_paste_change=0;}
         pthread_mutex_unlock(&s_offer_lock);
         hop_log(HOP_LOG_WARN,"clip: paste request %u could not be sent",id);
     } else hop_log(HOP_LOG_INFO,"clip: cross-device paste requested (%u)",id);

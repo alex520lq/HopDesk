@@ -347,7 +347,8 @@ static void save_settings(void) {
 }
 static void refresh_transfers(void) {
     if (!s_xfer_title) return;
-    hop_xfer_status st; memset(&st, 0, sizeof(st)); xfer_get_status(&st);
+    hop_xfer_status_pair pair; memset(&pair, 0, sizeof(pair)); xfer_get_status_pair(&pair);
+    hop_xfer_status st = pair.primary_direction==HOP_XFER_DIR_SEND ? pair.send : pair.receive;
     wchar_t name[HOP_XFER_STATUS_NAME], detail[HOP_XFER_STATUS_DETAIL], row[1800], path[1024];
     utf8_to_wide(st.name, name, HOP_XFER_STATUS_NAME);
     const wchar_t *phase = L"空闲";
@@ -378,6 +379,12 @@ static void refresh_transfers(void) {
              st.files_done, st.files_total, st.queued_count,
              (unsigned long long)(st.bytes_done / 1048576ULL),
              (unsigned long long)(st.bytes_total / 1048576ULL));
+    if (pair.send.active && pair.receive.active)
+        swprintf(row,1800,L"同时进行：发送 %llu/%llu MiB · 接收 %llu/%llu MiB · 排队 %u",
+            (unsigned long long)(pair.send.bytes_done/1048576ULL),
+            (unsigned long long)(pair.send.bytes_total/1048576ULL),
+            (unsigned long long)(pair.receive.bytes_done/1048576ULL),
+            (unsigned long long)(pair.receive.bytes_total/1048576ULL),pair.send.queued_count);
     set_text(s_xfer_counts, row);
     hop_xfer_budget_snapshot budget; memset(&budget,0,sizeof(budget)); xfer_get_budget_snapshot(&budget);
     swprintf(row,1800,L"预算  jobs %u/%u  ·  entries %u/%u  ·  待传输 %llu/%llu MiB",
@@ -415,6 +422,8 @@ static void refresh_transfers(void) {
     int pct = st.bytes_total ? (int)(100ULL * st.bytes_done / st.bytes_total) : (st.phase==HOP_XFER_COMPLETED ? 100 : 0);
     SendMessageW(s_xfer_progress, PBM_SETPOS, pct > 100 ? 100 : pct, 0);
     if (s_xfer_retry_button) EnableWindow(s_xfer_retry_button, st.direction == HOP_XFER_DIR_SEND);
+    SetWindowTextW(GetDlgItem(s_pages[3],UI_ID_XFER_CANCEL),
+                   pair.send.active && pair.receive.active ? L"取消双向" : L"取消传输");
 
     if (!s_file_snapshot) s_file_snapshot = (hop_xfer_file_status *)calloc(HOP_XFER_FILE_LIMIT, sizeof(*s_file_snapshot));
     int n = s_file_snapshot ? xfer_get_files(st.direction, st.batch, s_file_snapshot, HOP_XFER_FILE_LIMIT) : 0;

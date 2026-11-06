@@ -252,13 +252,15 @@ int main(void){
 #include <assert.h>
 typedef void *HGLOBAL;typedef unsigned UINT;typedef int HWND;typedef unsigned DWORD;
 #define IDT_CLIP_RETRY 1
+#define CF_HDROP 15
 #define hop_log(...) ((void)0)
 static struct {HWND hwnd;} g_app={1};
 static HGLOBAL s_pending_global;
 static UINT s_pending_format;
 static DWORD s_pending_sequence,s_remote_sequence,s_last_sequence;
 static int s_pending_clear_remote;
-static int can_open,fail_set,freed,clear_remote_calls;
+static int can_open,fail_set,freed,clear_remote_calls,paste_notices;
+static void ui_notify_paste_ready(void){paste_notices++;}
 static HGLOBAL clipboard;static DWORD sequence=1;
 static int apply_global_expected(UINT,HGLOBAL,DWORD,int,int);
 static void clip_clear_remote_offer_local(void){clear_remote_calls++;}
@@ -281,11 +283,27 @@ int main(void){
     clipboard=VALUE(404);sequence++;can_open=1;
     clip_retry_pending();assert(clipboard==VALUE(404) && !s_pending_global);
     fail_set=1;apply_global(1,VALUE(505));assert(s_pending_global==VALUE(505));
+    assert(s_remote_sequence==sequence && s_last_sequence==sequence);
+    clip_retry_pending();assert(s_pending_global==VALUE(505));
+    assert(s_remote_sequence==sequence && s_last_sequence==sequence);
     fail_set=0;clip_retry_pending();assert(clipboard==VALUE(505) && !s_pending_global);
-    puts("PASS: production Windows clipboard retry preserves newer remote/local content");return 0;
+    /* Completed cross-device paste must not notify until a busy clipboard is
+     * successfully written; a subsequent user clipboard change cancels it. */
+    can_open=0;DWORD expected=sequence;
+    clip_on_paste_message(VALUE(606),expected);
+    assert(s_pending_global==VALUE(606) && paste_notices==0);
+    can_open=1;clip_retry_pending();
+    assert(clipboard==VALUE(606) && !s_pending_global && paste_notices==1);
+    expected=sequence;clip_on_paste_message(VALUE(707),expected);
+    assert(clipboard==VALUE(707) && paste_notices==2);
+    can_open=0;expected=sequence;clip_on_paste_message(VALUE(808),expected);
+    assert(s_pending_global==VALUE(808));clipboard=VALUE(909);sequence++;
+    can_open=1;clip_retry_pending();
+    assert(clipboard==VALUE(909) && !s_pending_global && paste_notices==2);
+    puts("PASS: production Windows retry waits for clipboard, notifies only on successful paste apply and preserves newer content");return 0;
 }
 '''
-    run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','apply_global_expected','apply_global','clip_retry_pending'])+clip_main)
+    run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','apply_global_expected','apply_global','clip_retry_pending','clip_on_paste_message'])+clip_main)
     # A cross-device paste batch must never fall through to the ordinary clipboard writer.
     for platform in ['win','mac']:
         rx=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
@@ -294,15 +312,17 @@ int main(void){
             assert 'clip_complete_remote_paste(batch,NULL,0,0)' in rx
             clip=(ROOT/'src/win/clipboard.c').read_text(encoding='utf-8')
             assert 'GetClipboardSequenceNumber()!=expected' in clip
-            assert 'GetForegroundWindow()==target' in clip
-            assert 'SendInput(4,in,sizeof(INPUT))' in clip
+            paste_message=extract(clip,'clip_on_paste_message')
+            assert 'SendInput(' not in paste_message
+            assert 'apply_global_expected(CF_HDROP,h,expected_sequence,1,1)' in paste_message
         else:
             assert 'clipboard_complete_remote_paste(batch,(const char *const *)s_rx.tops,s_rx.ntop,1)' in rx
             assert 'clipboard_complete_remote_paste(batch,NULL,0,0)' in rx
             clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
             assert '[pb changeCount] != expected_count' in clip
-            assert 'foreground_pid==target_pid' in clip
-            assert 'inject_paste_shortcut()' in clip
+            apply_objects=extract(clip,'apply_objects_retry')
+            assert 'inject_paste_shortcut()' not in apply_objects
+            assert 'statusbar_notify_paste_ready()' in apply_objects
 
         # Exercise the actual production selector with a small slot before a
         # later fitting slot. The later slot must be reused without allocation.
@@ -337,6 +357,30 @@ int main(void) {
     assert 'budget_deferred = 1' in clip
     assert 's_last_change = previous_change' in clip
     assert 'image budget released; same clipboard version will be retried' in clip
+    # Intrinsically oversized decoded images are permanent failures, while
+    # contention for a feasible allocation remains retryable.
+    image_send=extract(clip,'send_image')
+    assert image_send.index('image_conversion_fits_budget(') < image_send.index('budget_deferred = 1')
+    assert 'statusbar_notify_image_limit()' in image_send
+    image_limits_preamble=r'''
+#include "xfer_budget.h"
+#include <assert.h>
+#include <stdio.h>
+'''
+    image_limits_main=r'''
+int main(void){
+    hop_xfer_budget_limits limits={0};limits.max_image_bytes=100;limits.max_image_temp_bytes=80;
+    assert(image_conversion_fits_budget(20,60,&limits));
+    assert(!image_conversion_fits_budget(20,61,&limits));
+    limits.max_image_temp_bytes=200;
+    assert(image_conversion_fits_budget(20,80,&limits));
+    assert(!image_conversion_fits_budget(20,81,&limits));
+    assert(!image_conversion_fits_budget(UINT64_MAX,1,&limits));
+    assert(!image_conversion_fits_budget(1,1,NULL));
+    puts("PASS: intrinsic image budget rejects permanent oversize, retains feasible retries");return 0;
+}
+'''
+    run('image_budget_permanent',image_limits_preamble+extract(clip,'image_conversion_fits_budget')+image_limits_main)
 
     for platform in ['win','mac']:
         source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', (ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8'))

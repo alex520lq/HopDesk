@@ -808,15 +808,16 @@ static int ack_wait(uint32_t batch, uint32_t id, uint64_t deadline_ns, uint64_t 
 static int send_file_entry(int fd, uint8_t *tx, uint32_t batch,
                            uint32_t id, const xf_entry *e, uint64_t *ack_deadline_ns) {
     if (!ack_deadline_ns || !tx) return XFER_LOCAL_IO;
+    *ack_deadline_ns = 0;
     uint32_t nlen = (uint32_t)strlen(e->name);
     uint32_t plen = (uint32_t)strlen(e->rel);
     uint32_t blen = 4 + 4 + 8 + 8 + 1 + 2 + nlen + 2 + plen;
+
     /* FILE_BEGIN is small and send_small is synchronous. Reuse the sender's
      * fixed TX buffer instead of malloc/free once per file (notably 10k-file
      * batches); send_chunk overwrites this region only after FILE_BEGIN ends. */
     if (blen > s_x.chunk) return XFER_LOCAL_IO;
     if (!ack_register(batch,id)) return XFER_LOCAL_IO;
-    *ack_deadline_ns = 0;
     uint8_t *bp = tx + CHUNK_HDR;
     uint32_t o = 0;
     hop_put_be32(bp + o, batch); o += 4;
@@ -830,6 +831,7 @@ static int send_file_entry(int fd, uint8_t *tx, uint32_t batch,
     memcpy(bp + o, e->rel, plen); o += plen;
 
     int ok = send_small(fd, HOP_MSG_FILE_BEGIN, bp, blen, batch);
+    /* TX buffer remains owned by the sender thread. */
     if (!ok) { ack_unregister(batch,id); return XFER_SEND_DEAD; }
 
     uint32_t fcrc = 0;
@@ -849,22 +851,29 @@ static int send_file_entry(int fd, uint8_t *tx, uint32_t batch,
                 uint64_t remaining = e->size - off;
                 size_t request = (size_t)(remaining < s_x.chunk ? remaining : s_x.chunk);
                 ssize_t got;
+                uint64_t read_started_ns=rate_now_ns();
                 do {
                     int read_guard = hop_watchdog_begin("file chunk read", HOP_IO_DEADLINE_MS);
                     got = read(f, tx + CHUNK_HDR, request);
                     hop_watchdog_end(read_guard);
                 } while (got < 0 && errno == EINTR);
+                uint64_t read_elapsed_ns=rate_now_ns()-read_started_ns;
                 if (got < 0) {
+                    status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_READ,read_elapsed_ns);
                     hop_log(HOP_LOG_WARN, "xfer: read failed, %s (%s)", e->rel, strerror(errno));
                     end_status = HOP_FILE_IO_ERROR; local_fail = 1; break;
                 }
                 if (got == 0) {
+                    status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_READ,read_elapsed_ns);
                     hop_log(HOP_LOG_WARN, "xfer: unexpected EOF, %s (%llu/%llu bytes)",
                             e->rel, (unsigned long long)off, (unsigned long long)e->size);
                     end_status = HOP_FILE_IO_ERROR; local_fail = 1; break;
                 }
+                uint64_t crc_started_ns=rate_now_ns();
                 uint32_t ccrc = hop_crc32(0, tx + CHUNK_HDR, (size_t)got);
-                if (!send_chunk(fd, tx, batch, id, off, tx + CHUNK_HDR, (uint32_t)got, ccrc)) {
+                uint64_t crc_elapsed_ns=rate_now_ns()-crc_started_ns;
+                if (!send_chunk(fd,tx,batch,id,off,tx+CHUNK_HDR,(uint32_t)got,ccrc,
+                                read_elapsed_ns,crc_elapsed_ns)) {
                     close(f); ack_unregister(batch,id); return XFER_SEND_DEAD;
                 }
                 fcrc = hop_xfer_file_crc_step(fcrc, off, ccrc);
@@ -895,11 +904,14 @@ static int send_file_entry(int fd, uint8_t *tx, uint32_t batch,
     hop_put_be32(endp, id);
     endp[4] = end_status;
     hop_put_be32(endp + 5, fcrc);
+    /* Mark before FILE_END so an immediate peer ACK cannot race registration. */
     if (!ack_mark_sent(batch,id)) { ack_unregister(batch,id); return XFER_LOCAL_IO; }
     if (!send_small(fd, HOP_MSG_FILE_END, endp, 9, batch)) {
         ack_unregister(batch,id); return XFER_SEND_DEAD;
     }
     (void)local_fail;
+    /* The ACK slot was armed before FILE_END to avoid a fast-ACK race. Set its
+     * independent deadline now that the complete frame has been written. */
     uint64_t deadline_ns = rate_now_ns() +
         (uint64_t)HOP_XFER_ACK_TIMEOUT_MS * 1000000ull;
     *ack_deadline_ns = deadline_ns;

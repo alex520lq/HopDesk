@@ -1149,6 +1149,83 @@ static void test_xfer_task_cancel_isolation_and_completion(void) {
     }
 }
 
+
+/* Exercises shared manager and ledger concurrently, not real network I/O. Each
+ * worker owns its handle; equal transfer IDs on opposite directions must not
+ * alias. Audit while other threads reserve/release, not just after joining. */
+typedef struct { int worker, errors; } task_stress_context;
+static void task_stress_run(task_stress_context *c) {
+    for (int i=0; i<1000; ++i) {
+        hop_xfer_task task={0}; hop_xfer_task_snapshot snapshot;
+        hop_xfer_task_audit audit; int has_rx=0, has_temp=0;
+        int direction=(c->worker & 1)?HOP_XFER_DIR_RECEIVE:HOP_XFER_DIR_SEND;
+        if (!hop_xfer_task_init_classified(&task,0,0,(uint32_t)(i+1),direction,HOP_TASK_KIND_FILES)) {
+            ++c->errors; continue;
+        }
+        if (!hop_xfer_task_reserve_job(&task) || !hop_xfer_task_reserve_entry(&task,128) ||
+            !hop_xfer_task_set_state(&task,HOP_XFER_TASK_ACTIVE)) { ++c->errors; goto cleanup; }
+        if (direction==HOP_XFER_DIR_RECEIVE) {
+            if (!hop_xfer_task_reserve_rx_buffer(&task,64)) { ++c->errors; goto cleanup; }
+            has_rx=1;
+        } else {
+            if (!hop_xfer_task_reserve_image_temp(&task,64)) { ++c->errors; goto cleanup; }
+            has_temp=1;
+        }
+        if (!hop_xfer_task_get_snapshot(task.id,&snapshot) || snapshot.direction!=direction ||
+            snapshot.transfer_id!=(uint32_t)(i+1) || !hop_xfer_task_reconcile(&audit) || audit.mismatches)
+            ++c->errors;
+        if (has_rx) { if (!hop_xfer_task_release_rx_buffer(&task,64)) ++c->errors; else has_rx=0; }
+        if (has_temp) { if (!hop_xfer_task_release_image_temp(&task,64)) ++c->errors; else has_temp=0; }
+        if (i%3==0) {
+            if (!hop_xfer_task_request_cancel(task.id) || hop_xfer_task_begin_completion(&task) ||
+                !hop_xfer_task_finish(&task,HOP_XFER_TASK_CANCELLED)) ++c->errors;
+        } else if (i%3==1) {
+            if (!hop_xfer_task_begin_completion(&task) || hop_xfer_task_request_cancel(task.id) ||
+                !hop_xfer_task_finish(&task,HOP_XFER_TASK_COMPLETED)) ++c->errors;
+        } else if (!hop_xfer_task_finish(&task,HOP_XFER_TASK_FAILED)) ++c->errors;
+cleanup:
+        if (has_rx && !hop_xfer_task_release_rx_buffer(&task,64)) ++c->errors;
+        if (has_temp && !hop_xfer_task_release_image_temp(&task,64)) ++c->errors;
+        hop_xfer_task_dispose(&task);
+        if (task.initialized) ++c->errors;
+    }
+}
+#ifdef _WIN32
+static DWORD WINAPI task_stress_worker(LPVOID p) { task_stress_run((task_stress_context *)p); return 0; }
+#else
+static void *task_stress_worker(void *p) { task_stress_run((task_stress_context *)p); return NULL; }
+#endif
+static void test_xfer_task_concurrent_ledger_stress(void) {
+    enum { WORKERS=6 }; task_stress_context contexts[WORKERS]={0}; int created[WORKERS]={0};
+#ifdef _WIN32
+    HANDLE threads[WORKERS]={0};
+#else
+    pthread_t threads[WORKERS];
+#endif
+    for (int i=0; i<WORKERS; ++i) {
+        contexts[i].worker=i;
+#ifdef _WIN32
+        threads[i]=CreateThread(NULL,0,task_stress_worker,&contexts[i],0,NULL);
+        created[i]=threads[i]!=NULL;
+#else
+        created[i]=pthread_create(&threads[i],NULL,task_stress_worker,&contexts[i])==0;
+#endif
+        CHECK(created[i]);
+    }
+    for (int i=0; i<WORKERS; ++i) if (created[i]) {
+#ifdef _WIN32
+        CHECK(WaitForSingleObject(threads[i],INFINITE)==WAIT_OBJECT_0); CloseHandle(threads[i]);
+#else
+        CHECK(pthread_join(threads[i],NULL)==0);
+#endif
+        CHECK(contexts[i].errors==0);
+    }
+    hop_xfer_task_audit audit;
+    CHECK(hop_xfer_task_reconcile(&audit) && !audit.mismatches && !audit.task_count);
+    CHECK(!audit.jobs && !audit.entries && !audit.pending_bytes && !audit.image_temp_bytes &&
+          !audit.rx_queue_slots && !audit.rx_queue_bytes);
+}
+
 #define RUN_TEST(fn) do { \
     fprintf(stderr, "RUN %s\\n", #fn); \
     fflush(stderr); \
@@ -1191,6 +1268,7 @@ int main(void) {
     RUN_TEST(test_xfer_task_identity_and_lifecycle);
     RUN_TEST(test_xfer_task_index_collision);
     RUN_TEST(test_xfer_task_cancel_isolation_and_completion);
+    RUN_TEST(test_xfer_task_concurrent_ledger_stress);
     RUN_TEST(test_xfer_task_image_buffer_transfer);
 
     if (g_failures) {

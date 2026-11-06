@@ -409,6 +409,7 @@ static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t ba
 static void wq_push(rx_task*t){(void)t;}
 static void wq_drain(void){}
 static void rx_reset(void){s_rx.active=0;hop_xfer_task_dispose(&s_rx.task);}
+static void rx_terminate(uint32_t batch,uint8_t reason,int notify){(void)batch;(void)reason;(void)notify;assert(!"unexpected cancellation in successful fixture");}
 static void status_file_phase(int d,uint32_t b,int i,int p,uint32_t a){assert(d==HOP_XFER_DIR_RECEIVE);hop_xfer_tracking_phase(&s_receive_status,b,i,p,a);}
 static void status_end(int d,uint32_t b,int p,const char*s){assert(d==HOP_XFER_DIR_RECEIVE);hop_xfer_tracking_end(&s_receive_status,b,p,s);}
 static void apply_image(const uint8_t*p,int w,int h,int stride){(void)p;(void)w;(void)h;(void)stride;applied++;}
@@ -678,6 +679,43 @@ int main(void){
         else:
             queue=extract(sender,'send_thread')
             assert 'c != INVALID_SOCKET && cur->retry_at <= now' in queue
+
+    # Exercise the production queue removal helper with manager-owned IDs.
+    for platform in ['win','mac']:
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        common=r"""
+#include "xfer_task.h"
+#include <assert.h>
+#include <stdio.h>
+typedef struct job { struct job *next; hop_xfer_task task; } job;
+typedef job xfer_job; typedef job xf_job;
+static struct { job *q_head,*q_tail; } s_x;
+"""
+        main=r"""
+int main(void){
+    job a={0}, b={0}, c={0};
+    assert(hop_xfer_task_init_classified(&a.task,0,0,1,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+    assert(hop_xfer_task_init_classified(&b.task,0,0,2,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+    assert(hop_xfer_task_init_classified(&c.task,0,0,3,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+    assert(hop_xfer_task_reserve_job(&a.task)); assert(hop_xfer_task_reserve_job(&b.task)); assert(hop_xfer_task_reserve_job(&c.task));
+    a.next=&b; b.next=&c; s_x.q_head=&a; s_x.q_tail=&c;
+    assert(hop_xfer_task_request_cancel(b.task.id));
+    assert(queue_take_cancelled()==&b && !b.next);
+    assert(s_x.q_head==&a && a.next==&c && s_x.q_tail==&c);
+    assert(!hop_xfer_task_cancel_requested(a.task.id) && !hop_xfer_task_cancel_requested(c.task.id));
+    assert(hop_xfer_task_finish(&b.task,HOP_XFER_TASK_CANCELLED)); hop_xfer_task_dispose(&b.task);
+    assert(hop_xfer_task_request_cancel(c.task.id));
+    assert(queue_take_cancelled()==&c && s_x.q_tail==&a && !a.next);
+    assert(hop_xfer_task_finish(&c.task,HOP_XFER_TASK_CANCELLED)); hop_xfer_task_dispose(&c.task);
+    assert(hop_xfer_task_request_cancel(a.task.id));
+    assert(queue_take_cancelled()==&a && !s_x.q_head && !s_x.q_tail);
+    assert(hop_xfer_task_finish(&a.task,HOP_XFER_TASK_CANCELLED)); hop_xfer_task_dispose(&a.task);
+    hop_xfer_budget_snapshot budget;hop_xfer_budget_get_snapshot(&budget);assert(!budget.jobs);
+    puts("PASS: production queue cancels only selected task, preserving links and reservations");return 0;
+}
+"""
+        code=common+extract(sender,'queue_unlink')+'\n'+extract(sender,'queue_take_cancelled')+main
+        run('task_cancel_queue_'+platform,code,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
 
     # hop_xfer_tracking embeds 8192 file records with 1024-byte paths
     # (~8 MiB). Keep these fixtures off Windows' default 1 MiB thread stack.

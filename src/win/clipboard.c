@@ -373,8 +373,8 @@ static int image_work_task_begin(hop_xfer_task *task) {
 
 static void image_work_task_finish(hop_xfer_task *task, int success) {
     if (!task || !task->initialized) return;
-    if (task->reservation.image_temp_bytes &&
-        !hop_xfer_task_release_image_temp(task, task->reservation.image_temp_bytes)) {
+    uint64_t temp_bytes=hop_xfer_task_image_temp_bytes(task);
+    if (temp_bytes && !hop_xfer_task_release_image_temp(task, temp_bytes)) {
         hop_log(HOP_LOG_ERROR, "clip: image temporary budget release failed (task=%llu)",
                 (unsigned long long)task->id);
     }

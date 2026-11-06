@@ -496,6 +496,13 @@ int main(void){
         end=handler[handler.index('case HOP_MSG_FILE_END:'):handler.index('case HOP_MSG_FILE_ACK:')]
         assert 'rx_remove_top(s_rx.cur_path)' in begin
         assert '!rx_add_top(path)' in begin or '!rx_add_top(s_rx.cur_path)' in end
+        if platform=='mac':
+            assert 'if (mkdir_p(path) != 0)' in begin
+            assert 'if (!parent_ok)' in begin
+        else:
+            assert 'create_directory_if_missing(path)' in begin
+            assert 'if (!parent_ok)' in begin
+            assert 'GetFileAttributesW(path)' in extract(receiver,'create_directory_if_missing')
         close=end.index('rx_close_file()')
         cleanup=end.index('unlink(' if platform=='mac' else 'DeleteFileW(')
         assert close < cleanup, 'failed receive cleanup must wait for writer close'

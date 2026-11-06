@@ -607,14 +607,25 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             status_add_received_file(batch,id,rel,size,s_rx.cur_is_dir);
 
             if (s_rx.cur_is_dir) {
-                mkdir_p(path);
+                if (mkdir_p(path) != 0) {
+                    s_rx.cur_fail = HOP_FILE_ACK_DISK;
+                    break;
+                }
                 /* 顶层目录才进剪贴板清单 */
                 if (!strchr(rel, '/') && !rx_add_top(path))
                     s_rx.cur_fail = HOP_FILE_ACK_DISK;
             } else {
-                /* 建父目录 */
+                /* 建父目录；失败时不能把后续文件错误地 ACK 成功。 */
                 char *sep = strrchr(path, '/');
-                if (sep) { *sep = '\0'; mkdir_p(path); *sep = '/'; }
+                if (sep) {
+                    *sep = '\0';
+                    int parent_ok = mkdir_p(path) == 0;
+                    *sep = '/';
+                    if (!parent_ok) {
+                        s_rx.cur_fail = HOP_FILE_ACK_DISK;
+                        break;
+                    }
+                }
 
                 /* 打开交给写线程 —— 描述符归它独占 */
                 rx_task t;

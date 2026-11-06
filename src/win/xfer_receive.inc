@@ -372,19 +372,39 @@ static void rx_discard_dir(void) {
     s_rx.dir[0] = L'\0';
 }
 
-/* 逐级创建目录。从盘符之后开始，避免对 "C:" 本身调 CreateDirectory。 */
-static void ensure_dirs(wchar_t *path) {
+/* Create a directory, accepting ERROR_ALREADY_EXISTS only when the path
+ * is actually a directory (a regular file at a parent path is an error). */
+static int create_directory_if_missing(const wchar_t *path) {
+    if (CreateDirectoryW(path, NULL)) return 1;
+    if (GetLastError() != ERROR_ALREADY_EXISTS) return 0;
+    DWORD attributes = GetFileAttributesW(path);
+    return attributes != INVALID_FILE_ATTRIBUTES &&
+           (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+/* Create parent components without attempting to create a drive/UNC root. */
+static int ensure_dirs(wchar_t *path) {
     wchar_t *p = path;
-    if (((*p >= L'A' && *p <= L'Z') || (*p >= L'a' && *p <= L'z')) && p[1] == L':')
+    if (((*p >= L'A' && *p <= L'Z') || (*p >= L'a' && *p <= L'Z')) && p[1] == L':') {
         p += 2;
+        if (*p == L'\\' || *p == L'/') ++p;
+    } else if (p[0] == L'\\' && p[1] == L'\\') {
+        p += 2;
+        while (*p && *p != L'\\' && *p != L'/') ++p; /* server */
+        if (*p) ++p;
+        while (*p && *p != L'\\' && *p != L'/') ++p; /* share */
+        if (*p) ++p;
+    }
     for (; *p; ++p) {
         if (*p == L'\\' || *p == L'/') {
             wchar_t save = *p;
             *p = L'\0';
-            CreateDirectoryW(path, NULL);
+            int ok = create_directory_if_missing(path);
             *p = save;
+            if (!ok) return 0;
         }
     }
+    return 1;
 }
 
 static int rx_add_top(const wchar_t *p) {
@@ -532,8 +552,7 @@ static void rx_begin_batch(uint32_t batch) {
     wcscat(s_rx.dir, sub);
 
 
-    ensure_dirs(s_rx.dir);
-    if (!CreateDirectoryW(s_rx.dir, NULL) && GetLastError()!=ERROR_ALREADY_EXISTS) {
+    if (!ensure_dirs(s_rx.dir) || !create_directory_if_missing(s_rx.dir)) {
         rx_terminate(batch,HOP_ABORT_DISK,1);
         return;
     }
@@ -705,21 +724,26 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             }
 
             if (s_rx.cur_is_dir) {
-                ensure_dirs(path);
-                CreateDirectoryW(path, NULL);
+                if (!ensure_dirs(path) || !create_directory_if_missing(path)) {
+                    s_rx.cur_fail = HOP_FILE_ACK_DISK;
+                    break;
+                }
                 /* 顶层目录才进剪贴板清单 */
                 if (!wcschr(path + wcslen(s_rx.dir) + 1, L'\\') &&
                     !rx_add_top(path))
                     s_rx.cur_fail = HOP_FILE_ACK_DISK;
             } else {
-                /* 建父目录 */
+                /* 建父目录；失败时不能把后续文件错误地 ACK 成功。 */
                 wchar_t *sep = wcsrchr(path, L'\\');
                 if (sep) {
                     wchar_t save = *sep;
                     *sep = L'\0';
-                    ensure_dirs(path);
-                    CreateDirectoryW(path, NULL);
+                    int parent_ok = ensure_dirs(path) && create_directory_if_missing(path);
                     *sep = save;
+                    if (!parent_ok) {
+                        s_rx.cur_fail = HOP_FILE_ACK_DISK;
+                        break;
+                    }
                 }
                 /* 打开交给写线程 —— 句柄归它独占 */
                 rx_task t;

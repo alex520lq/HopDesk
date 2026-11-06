@@ -513,7 +513,7 @@ int main(void){
     core_tests=(ROOT/'tests/core_tests.c').read_text(encoding='utf-8')
     for name in ['test_xfer_tracking_stage_timing','test_xfer_tracking_speed_and_eta']:
         body=extract(core_tests,name)
-        assert not re.search(r'(?m)^\\s*(?:const\\s+)?hop_xfer_tracking\\s+\\w+\\s*;',body), (
+        assert not re.search(r'(?m)^\s*(?:const\s+)?hop_xfer_tracking\s+\w+\s*;',body), (
             name+' must not place the multi-megabyte tracking object on the stack'
         )
 

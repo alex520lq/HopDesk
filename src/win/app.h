@@ -94,5 +94,6 @@ void main_ui_show_page(int page);
 void main_ui_refresh(void);
 void main_ui_shutdown(void);
 void ui_transfer_poll(void);
+void ui_notify_paste_ready(void);
 
 #endif

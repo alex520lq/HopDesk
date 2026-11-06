@@ -69,6 +69,8 @@ void statusbar_update(int connected, int sharing);
 void statusbar_show_transfers(void);
 void statusbar_show_main(void);
 void statusbar_check_updates(void);
+void statusbar_notify_paste_ready(void);
+void statusbar_notify_image_limit(void);
 void main_ui_show_page(int page);
 void main_ui_set_status(int connected, int sharing);
 void main_ui_refresh(void);

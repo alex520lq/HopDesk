@@ -791,15 +791,17 @@ static void test_xfer_ack_window(void) {
 
     /* Reconnect checkpoint advances only through a contiguous resolved prefix. */
     int checkpoint = 0;
-    CHECK(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,1));
+    CHECK(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,0,0));
     CHECK(checkpoint==0);
-    CHECK(hop_xfer_ack_window_advance_checkpoint(&checkpoint,0));
+    CHECK(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,1,1));
+    CHECK(checkpoint==0);
+    CHECK(hop_xfer_ack_window_advance_checkpoint(&checkpoint,0,1));
     CHECK(checkpoint==1);
-    CHECK(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,3));
+    CHECK(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,3,1));
     CHECK(checkpoint==1);
-    CHECK(hop_xfer_ack_window_advance_checkpoint(&checkpoint,1));
+    CHECK(hop_xfer_ack_window_advance_checkpoint(&checkpoint,1,1));
     CHECK(checkpoint==2);
-    CHECK(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,-1));
+    CHECK(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,-1,1));
 
     /* Simulate a disconnect while filling a four-file window: only ACKed
      * contiguous entries may move the reconnect checkpoint. */
@@ -814,10 +816,10 @@ static void test_xfer_ack_window(void) {
     checkpoint=0;
     CHECK(hop_xfer_ack_window_take(&window,13,1,&status,&rtt_ns));
     CHECK(status==HOP_FILE_ACK_OK);
-    CHECK(hop_xfer_ack_window_advance_checkpoint(&checkpoint,0));
+    CHECK(hop_xfer_ack_window_advance_checkpoint(&checkpoint,0,1));
     CHECK(hop_xfer_ack_window_take(&window,13,2,&status,&rtt_ns));
     CHECK(status==HOP_FILE_ACK_OK);
-    CHECK(hop_xfer_ack_window_advance_checkpoint(&checkpoint,1));
+    CHECK(hop_xfer_ack_window_advance_checkpoint(&checkpoint,1,1));
     CHECK(!hop_xfer_ack_window_take(&window,13,3,&status,&rtt_ns));
     CHECK(checkpoint==2);
     hop_xfer_ack_window_unregister_batch(&window,13);

@@ -535,7 +535,7 @@ static void test_image_begin_decode(void) {
 }
 
 static void test_file_end_ack_abort_done_decoders(void) {
-    uint8_t end[9] = {0}, ack[9] = {0}, abortp[5] = {0}, donep[20] = {0};
+    uint8_t end[9] = {0}, ack[9] = {0}, abortp[6] = {0}, donep[20] = {0};
     hop_put_be32(end, 17); end[4] = HOP_FILE_OK; hop_put_be32(end+5, 0xAABBCCDDu);
     hop_xfer_file_end_msg e;
     CHECK(hop_xfer_decode_file_end(end,sizeof(end),&e));
@@ -549,11 +549,14 @@ static void test_file_end_ack_abort_done_decoders(void) {
     CHECK(a.batch==21 && a.id==17 && a.status==HOP_FILE_ACK_CRC);
     CHECK(!hop_xfer_decode_file_ack(ack,8,&a));
 
-    hop_put_be32(abortp, 21); abortp[4]=HOP_ABORT_CANCEL;
+    hop_put_be32(abortp, 21); abortp[4]=HOP_ABORT_CANCEL; abortp[5]=HOP_ABORT_TO_RECEIVER;
     hop_xfer_abort_msg ab;
     CHECK(hop_xfer_decode_abort(abortp,sizeof(abortp),&ab));
-    CHECK(ab.batch==21 && ab.reason==HOP_ABORT_CANCEL);
-    CHECK(!hop_xfer_decode_abort(abortp,6,&ab));
+    CHECK(ab.batch==21 && ab.reason==HOP_ABORT_CANCEL && ab.target==HOP_ABORT_TO_RECEIVER);
+    CHECK(!hop_xfer_decode_abort(abortp,5,&ab));
+    abortp[5]=HOP_ABORT_TO_SENDER; CHECK(hop_xfer_decode_abort(abortp,sizeof(abortp),&ab) && ab.target==HOP_ABORT_TO_SENDER);
+    abortp[5]=0; CHECK(!hop_xfer_decode_abort(abortp,sizeof(abortp),&ab));
+    abortp[5]=3; CHECK(!hop_xfer_decode_abort(abortp,sizeof(abortp),&ab));
 
     hop_put_be32(donep,21); hop_put_be32(donep+4,2); hop_put_be32(donep+8,3);
     hop_put_be64(donep+12,123456);
@@ -1032,6 +1035,10 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     CHECK(snap.jobs==1&&snap.entries==2&&snap.pending_bytes==500&&snap.image_bytes==656);
     CHECK(snap.rx_queue_slots==1&&snap.rx_queue_bytes==128);
     CHECK(snap.image_temp_bytes==256);
+    hop_xfer_task_audit audit;
+    CHECK(hop_xfer_task_reconcile(&audit) && !audit.mismatches && audit.task_count==2);
+    CHECK(audit.jobs==1 && audit.entries==2 && audit.pending_bytes==500 && audit.image_bytes==656);
+    CHECK(audit.rx_queue_slots==1 && audit.rx_queue_bytes==128 && audit.image_temp_bytes==256);
     CHECK(!hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));
     CHECK(hop_xfer_task_release_rx_buffer(&a,128));
     CHECK(!hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));
@@ -1059,6 +1066,13 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     CHECK(hop_xfer_task_list(NULL,0,&total)==0 && total==0);
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0&&snap.image_bytes==0);
+    CHECK(hop_xfer_task_reconcile(&audit) && !audit.mismatches && audit.task_count==0);
+    /* A rogue reservation is visible as a discrepancy, never silently repaired. */
+    hop_xfer_reservation_handle rogue={0};
+    CHECK(hop_xfer_budget_reservation_init(&rogue,999)); CHECK(hop_xfer_budget_reserve_job(&rogue));
+    CHECK(hop_xfer_task_reconcile(&audit) && (audit.mismatches&HOP_TASK_AUDIT_USAGE));
+    hop_xfer_budget_release(&rogue);
+    CHECK(hop_xfer_task_reconcile(&audit) && !audit.mismatches);
     hop_xfer_budget_limits defaults={16u,32768u,8ull*1024ull*1024ull*1024ull,256ull*1024ull*1024ull,256ull*1024ull*1024ull,8u,8ull*1024ull*1024ull,512ull*1024ull*1024ull};
     CHECK(hop_xfer_budget_set_limits_for_test(&defaults));
 }
@@ -1084,6 +1098,55 @@ static void test_xfer_task_index_collision(void) {
     CHECK(hop_xfer_task_get_snapshot(last_id,&snap) && snap.transfer_id==3);
     hop_xfer_task_dispose(&last);
     CHECK(!hop_xfer_task_get_snapshot(last_id,&snap));
+}
+
+typedef struct { hop_xfer_task_id id; int result; } cancel_race_context;
+#ifdef _WIN32
+static DWORD WINAPI cancel_race_worker(LPVOID p) {
+    cancel_race_context *c=(cancel_race_context *)p; c->result=hop_xfer_task_request_cancel(c->id); return 0;
+}
+#else
+static void *cancel_race_worker(void *p) {
+    cancel_race_context *c=(cancel_race_context *)p; c->result=hop_xfer_task_request_cancel(c->id); return NULL;
+}
+#endif
+static void test_xfer_task_cancel_isolation_and_completion(void) {
+    hop_xfer_task send={0},receive={0},internal={0}; hop_xfer_task_snapshot snap;
+    CHECK(hop_xfer_task_init_classified(&send,0,0,100,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+    CHECK(hop_xfer_task_init_classified(&receive,0,0,100,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_IMAGE));
+    CHECK(hop_xfer_task_init_classified(&internal,0,0,100,HOP_XFER_DIR_NONE,HOP_TASK_KIND_IMAGE_WORK));
+    CHECK(hop_xfer_task_reserve_job(&send)); CHECK(hop_xfer_task_reserve_job(&receive));
+    CHECK(!hop_xfer_task_request_cancel(internal.id));
+    CHECK(hop_xfer_task_request_cancel(send.id)); CHECK(hop_xfer_task_request_cancel(send.id));
+    CHECK(hop_xfer_task_cancel_requested(send.id) && !hop_xfer_task_cancel_requested(receive.id));
+    CHECK(!hop_xfer_task_begin_completion(&send)); CHECK(hop_xfer_task_begin_completion(&receive));
+    CHECK(!hop_xfer_task_request_cancel(receive.id));
+    CHECK(hop_xfer_task_get_snapshot(receive.id,&snap) && snap.completing && !snap.cancel_requested);
+    CHECK(hop_xfer_task_finish(&send,HOP_XFER_TASK_CANCELLED));
+    CHECK(hop_xfer_task_finish(&receive,HOP_XFER_TASK_COMPLETED));
+    CHECK(!hop_xfer_task_request_cancel(send.id));
+    hop_xfer_task_dispose(&send);hop_xfer_task_dispose(&receive);hop_xfer_task_dispose(&internal);
+    hop_xfer_budget_snapshot budget;hop_xfer_budget_get_snapshot(&budget);
+    CHECK(budget.jobs==0 && budget.entries==0 && budget.pending_bytes==0);
+    for (int i=0;i<128;i++) {
+        hop_xfer_task task={0}; cancel_race_context ctx={0};
+        CHECK(hop_xfer_task_init_classified(&task,0,0,101,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+        ctx.id=task.id;
+#ifdef _WIN32
+        HANDLE th=CreateThread(NULL,0,cancel_race_worker,&ctx,0,NULL);
+        CHECK(th!=NULL); if(!th){hop_xfer_task_dispose(&task);continue;}
+        int completed=hop_xfer_task_begin_completion(&task);
+        CHECK(WaitForSingleObject(th,INFINITE)==WAIT_OBJECT_0); CloseHandle(th);
+#else
+        pthread_t th; int created=pthread_create(&th,NULL,cancel_race_worker,&ctx)==0;
+        CHECK(created); if(!created){hop_xfer_task_dispose(&task);continue;}
+        int completed=hop_xfer_task_begin_completion(&task);
+        CHECK(pthread_join(th,NULL)==0);
+#endif
+        CHECK((completed!=0) != (ctx.result!=0));
+        CHECK(hop_xfer_task_finish(&task,completed?HOP_XFER_TASK_COMPLETED:HOP_XFER_TASK_CANCELLED));
+        hop_xfer_task_dispose(&task);
+    }
 }
 
 #define RUN_TEST(fn) do { \
@@ -1127,6 +1190,7 @@ int main(void) {
     RUN_TEST(test_xfer_tracking_speed_and_eta);
     RUN_TEST(test_xfer_task_identity_and_lifecycle);
     RUN_TEST(test_xfer_task_index_collision);
+    RUN_TEST(test_xfer_task_cancel_isolation_and_completion);
     RUN_TEST(test_xfer_task_image_buffer_transfer);
 
     if (g_failures) {

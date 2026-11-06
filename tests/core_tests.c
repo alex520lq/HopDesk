@@ -919,6 +919,36 @@ static void test_xfer_tracking_stage_timing(void) {
     CHECK(t.stage_ns[HOP_XFER_TIME_SEND]==0); /* terminal tasks cannot accrue time */
 }
 
+static void test_xfer_tracking_duplex_snapshot(void) {
+    /* Each tracker includes 8192 file records; never place them on the stack. */
+    static hop_xfer_tracking tx, rx;
+    hop_xfer_status_pair pair;
+    memset(&tx,0,sizeof(tx)); memset(&rx,0,sizeof(rx));
+    hop_xfer_tracking_snapshot_pair(&tx,&rx,0,&pair);
+    CHECK(!pair.send.active && !pair.receive.active);
+    hop_xfer_tracking_begin(&tx,77,HOP_XFER_DIR_SEND,1,0,"send",HOP_XFER_SENDING);
+    hop_xfer_tracking_file(&tx,77,1,"send",100,0,HOP_XFER_FILE_SENDING);
+    hop_xfer_tracking_chunk(&tx,77,1,0,30,1000);
+    /* Batch IDs can collide across directions without aliasing their state. */
+    hop_xfer_tracking_begin(&rx,77,HOP_XFER_DIR_RECEIVE,1,0,"receive",HOP_XFER_RECEIVING);
+    hop_xfer_tracking_file(&rx,77,1,"receive",200,0,HOP_XFER_FILE_RECEIVING);
+    hop_xfer_tracking_chunk(&rx,77,1,0,40,1000);
+    tx.revision=1; rx.revision=2;
+    hop_xfer_tracking_snapshot_pair(&tx,&rx,3,&pair);
+    CHECK(pair.send.active && pair.receive.active && pair.primary_direction==HOP_XFER_DIR_RECEIVE);
+    CHECK(pair.send.batch==77 && pair.receive.batch==77);
+    CHECK(pair.send.bytes_done==30 && pair.send.bytes_total==100);
+    CHECK(pair.receive.bytes_done==40 && pair.receive.bytes_total==200);
+    CHECK(pair.send.queued_count==3 && pair.receive.queued_count==3);
+    CHECK(hop_xfer_tracking_end(&rx,77,HOP_XFER_COMPLETED,"ok"));
+    hop_xfer_tracking_snapshot_pair(&tx,&rx,0,&pair);
+    CHECK(pair.primary_direction==HOP_XFER_DIR_SEND && pair.send.active && !pair.receive.active);
+    CHECK(pair.receive.phase==HOP_XFER_COMPLETED && pair.send.bytes_done==30);
+    /* Copies must not change retroactively when trackers advance. */
+    hop_xfer_tracking_chunk(&tx,77,1,30,20,1200);
+    CHECK(pair.send.bytes_done==30 && tx.status.bytes_done==50);
+}
+
 static void test_xfer_tracking_speed_and_eta(void) {
     static hop_xfer_tracking tracking;
     memset(&tracking,0,sizeof(tracking));
@@ -1040,6 +1070,7 @@ int main(void) {
     RUN_TEST(test_xfer_ack_window);
     RUN_TEST(test_xfer_rate_limiter);
     RUN_TEST(test_xfer_tracking_stage_timing);
+    RUN_TEST(test_xfer_tracking_duplex_snapshot);
     RUN_TEST(test_xfer_tracking_speed_and_eta);
     RUN_TEST(test_xfer_task_identity_and_lifecycle);
     RUN_TEST(test_xfer_task_image_buffer_transfer);

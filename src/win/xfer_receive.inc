@@ -676,10 +676,17 @@ static void rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
                     (unsigned long long)s_rx.img_len, (unsigned long long)s_rx.img_expected);
     } else if (s_rx.ntop > 0) {
         uint64_t clipboard_started_ns=rate_now_ns();
-        clip_apply_remote_paths((const wchar_t *const *)s_rx.tops, s_rx.ntop);
+        if (batch & HOP_XFER_PASTE_BATCH_FLAG) {
+            /* Requested cross-device paste must pass request/version validation. */
+            clip_complete_remote_paste(batch,(const wchar_t *const *)s_rx.tops,s_rx.ntop,1);
+        } else {
+            clip_apply_remote_paths((const wchar_t *const *)s_rx.tops, s_rx.ntop);
+        }
         status_stage_time(HOP_XFER_DIR_RECEIVE,batch,HOP_XFER_TIME_CLIPBOARD_DISPATCH,
                           rate_now_ns()-clipboard_started_ns);
     }
+    if ((batch & HOP_XFER_PASTE_BATCH_FLAG) && ok != total)
+        clip_complete_remote_paste(batch,NULL,0,0);
     hop_log(HOP_LOG_INFO, "xfer: batch %u done (%d items, %u/%u ACKed)",
             batch, s_rx.ntop, ok, total);
     AcquireSRWLockExclusive(&s_status_lock);

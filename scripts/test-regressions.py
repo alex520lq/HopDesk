@@ -310,6 +310,7 @@ int main(void){
         pool_preamble=r'''
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <assert.h>
 #define RX_Q_SLOTS 4
 #define RX_Q_MAX_BYTES 1024

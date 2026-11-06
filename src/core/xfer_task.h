@@ -41,6 +41,7 @@ typedef struct {
     hop_xfer_task_kind kind;
     uint8_t session[HOP_TASK_SESSION_BYTES]; /* all zero means not yet bound */
     hop_xfer_task_state state;
+    int cancel_requested, completing;
     uint32_t jobs, entries, rx_queue_slots;
     uint64_t pending_bytes, image_bytes, rx_queue_bytes, image_temp_bytes;
 } hop_xfer_task_snapshot;
@@ -48,6 +49,28 @@ typedef struct {
 /* A task stays in the manager until dispose, even after it reaches a terminal
  * state. Snapshots contain only tasks that have not yet been disposed; durable
  * history and UI/progress integration are separate, not implemented here. */
+/* Request is asynchronous. Returns 0 for missing, terminal, internal, or a
+ * task already committing its result; never changes another task. */
+int hop_xfer_task_request_cancel(hop_xfer_task_id id);
+int hop_xfer_task_cancel_requested(hop_xfer_task_id id);
+/* Linearization point: completion wins only if cancellation was not requested.
+ * After this succeeds cancellation requests are rejected, before side effects. */
+int hop_xfer_task_begin_completion(const hop_xfer_task *task);
+/* Diagnostic only: sums manager-owned reservations under the manager lock,
+ * then reads the ledger under its lock. RX pool capacity is shared infrastructure
+ * and is reported in ledger but intentionally excluded from task ownership. */
+#define HOP_TASK_AUDIT_OWNER   1u
+#define HOP_TASK_AUDIT_USAGE   2u
+#define HOP_TASK_AUDIT_OVERFLOW 4u
+#define HOP_TASK_AUDIT_TERMINAL 8u
+typedef struct {
+    uint32_t mismatches, task_count;
+    uint64_t jobs, entries, rx_queue_slots;
+    uint64_t pending_bytes, image_bytes, rx_queue_bytes, image_temp_bytes;
+    hop_xfer_budget_snapshot ledger;
+} hop_xfer_task_audit;
+int hop_xfer_task_reconcile(hop_xfer_task_audit *out);
+
 int hop_xfer_task_get_snapshot(hop_xfer_task_id id, hop_xfer_task_snapshot *out);
 int hop_xfer_task_list(hop_xfer_task_snapshot *out, int capacity, int *total);
 uint64_t hop_xfer_task_image_temp_bytes(const hop_xfer_task *task);

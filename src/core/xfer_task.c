@@ -27,6 +27,7 @@ typedef struct task_record {
     hop_xfer_task_kind kind;
     uint8_t session[HOP_TASK_SESSION_BYTES];
     hop_xfer_task_state state;
+    int cancel_requested, completing;
     hop_xfer_reservation_handle reservation;
 } task_record;
 static task_record *s_tasks;
@@ -53,6 +54,7 @@ static void snapshot(const task_record *r, hop_xfer_task_snapshot *out) {
     memset(out,0,sizeof(*out));
     out->id=r->id; out->offer_id=r->offer_id; out->request_id=r->request_id;
     out->transfer_id=r->transfer_id; out->state=r->state;
+    out->cancel_requested=r->cancel_requested; out->completing=r->completing;
     out->direction=r->direction; out->kind=r->kind;
     memcpy(out->session,r->session,sizeof(out->session));
     out->reservation_handle_id=r->reservation.handle_id;
@@ -60,6 +62,56 @@ static void snapshot(const task_record *r, hop_xfer_task_snapshot *out) {
     out->pending_bytes=r->reservation.pending_bytes; out->image_bytes=r->reservation.image_bytes;
     out->rx_queue_slots=r->reservation.rx_queue_slots; out->rx_queue_bytes=r->reservation.rx_queue_bytes;
     out->image_temp_bytes=r->reservation.image_temp_bytes;
+}
+int hop_xfer_task_request_cancel(hop_xfer_task_id id) {
+    if (!id) return 0;
+    LOCK(); task_record *r=find_id(id);
+    int ok=r && !terminal(r->state) && !r->completing &&
+        (r->direction==HOP_XFER_DIR_SEND || r->direction==HOP_XFER_DIR_RECEIVE);
+    if (ok) r->cancel_requested=1;
+    UNLOCK(); return ok;
+}
+int hop_xfer_task_cancel_requested(hop_xfer_task_id id) {
+    if (!id) return 0;
+    LOCK(); task_record *r=find_id(id); int requested=r && r->cancel_requested;
+    UNLOCK(); return requested;
+}
+int hop_xfer_task_begin_completion(const hop_xfer_task *task) {
+    LOCK(); task_record *r=owned(task);
+    int ok=r && !terminal(r->state) && !r->cancel_requested && !r->completing;
+    if (ok) r->completing=1;
+    UNLOCK(); return ok;
+}
+static void audit_add(uint64_t *total, uint64_t value, uint32_t *mismatches) {
+    if (value > UINT64_MAX - *total) { *mismatches |= HOP_TASK_AUDIT_OVERFLOW; *total=UINT64_MAX; }
+    else *total += value;
+}
+int hop_xfer_task_reconcile(hop_xfer_task_audit *out) {
+    if (!out) return 0;
+    memset(out,0,sizeof(*out));
+    LOCK();
+    for (task_record *r=s_tasks; r; r=r->next) {
+        hop_xfer_reservation_handle *h=&r->reservation;
+        ++out->task_count;
+        if (h->task_id!=r->id || !h->handle_id || !r->owner || (h->active ? h->jobs!=1 : h->jobs!=0))
+            out->mismatches |= HOP_TASK_AUDIT_OWNER;
+        if (terminal(r->state) && (h->active || h->jobs || h->entries || h->pending_bytes ||
+            h->image_bytes || h->image_temp_bytes || h->rx_queue_slots || h->rx_queue_bytes))
+            out->mismatches |= HOP_TASK_AUDIT_TERMINAL;
+        audit_add(&out->jobs,h->jobs,&out->mismatches);
+        audit_add(&out->entries,h->entries,&out->mismatches);
+        audit_add(&out->pending_bytes,h->pending_bytes,&out->mismatches);
+        audit_add(&out->image_bytes,h->image_bytes,&out->mismatches);
+        audit_add(&out->image_temp_bytes,h->image_temp_bytes,&out->mismatches);
+        audit_add(&out->rx_queue_slots,h->rx_queue_slots,&out->mismatches);
+        audit_add(&out->rx_queue_bytes,h->rx_queue_bytes,&out->mismatches);
+    }
+    hop_xfer_budget_get_snapshot(&out->ledger);
+    if (out->jobs!=out->ledger.jobs || out->entries!=out->ledger.entries ||
+        out->pending_bytes!=out->ledger.pending_bytes || out->image_bytes!=out->ledger.image_bytes ||
+        out->image_temp_bytes!=out->ledger.image_temp_bytes || out->rx_queue_slots!=out->ledger.rx_queue_slots ||
+        out->rx_queue_bytes!=out->ledger.rx_queue_bytes) out->mismatches |= HOP_TASK_AUDIT_USAGE;
+    UNLOCK(); return 1;
 }
 int hop_xfer_task_get_snapshot(hop_xfer_task_id id, hop_xfer_task_snapshot *out) {
     if (!id || !out) return 0;

@@ -170,9 +170,12 @@ static DWORD WINAPI writer_thread(LPVOID arg) {
         uint64_t write_started_ns=rate_now_ns();
         wq_task_run(&t);
         uint64_t write_elapsed_ns=rate_now_ns()-write_started_ns;
-        if(t.kind==RX_WRITE && t.budget_owner)
-            status_stage_time(HOP_XFER_DIR_RECEIVE,t.budget_owner->transfer_id,
-                              HOP_XFER_TIME_WRITE,write_elapsed_ns);
+        if(t.kind==RX_WRITE && t.budget_owner) {
+            hop_xfer_task_snapshot task_snapshot;
+            if (hop_xfer_task_get_snapshot(t.budget_owner->id,&task_snapshot))
+                status_stage_time(HOP_XFER_DIR_RECEIVE,task_snapshot.transfer_id,
+                                  HOP_XFER_TIME_WRITE,write_elapsed_ns);
+        }
         hop_watchdog_end(disk_guard);
 
         if (t.kind == RX_WRITE && t.budget_owner)

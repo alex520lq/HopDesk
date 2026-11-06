@@ -4,7 +4,7 @@
 #include <assert.h>
 #include <string.h>
 #include <stdio.h>
-#define HOP_XFER_DIR_SEND 1
+#include "xfer_tracking.h"
 #define SD_BOTH 2
 #define SHUT_RDWR 2
 #define INVALID_SOCKET -1
@@ -31,7 +31,8 @@ static int rate_wait_for_chunk(uint32_t bytes){(void)bytes;return 1;}
 static void rate_feedback(uint64_t ack_rtt_us){(void)ack_rtt_us;}
 static int send_session_current(int fd){return fd==7 && hop_session_matches(&s_x.session);}
 static int send_all(int fd,const void *p,size_t n){assert(fd==7);assert(captured_len+n<=sizeof(captured));memcpy(captured+captured_len,p,n);captured_len+=n;return 1;}
-static void status_chunk(int d,uint32_t batch,uint32_t id,uint64_t off,uint32_t len){(void)d;(void)batch;(void)id;(void)off;(void)len;}
+static void status_stage_time(int d,uint32_t batch,int stage,uint64_t ns){(void)d;(void)batch;(void)stage;(void)ns;}
+static void status_chunk_timed(int d,uint32_t batch,uint32_t id,uint64_t off,uint32_t len,uint64_t rd,uint64_t crc,uint64_t send,uint64_t rx){(void)d;(void)batch;(void)id;(void)off;(void)len;(void)rd;(void)crc;(void)send;(void)rx;}
 static int shutdown(int fd,int how){(void)fd;(void)how;closed++;return 0;}
 static void xfer_kick(void){closed++;}
 static void on_data_msg(void *user,uint8_t type,const uint8_t *p,uint32_t len){(void)user;(void)type;(void)p;(void)len;delivered++;}
@@ -62,7 +63,7 @@ int main(void){
  s_rx.batch=42;on_data_frame(NULL,HOP_MSG_FILE_END,captured+HOP_HEADER_SIZE,(uint32_t)captured_len-HOP_HEADER_SIZE);
  assert(delivered==1 && !closed);
  captured_len=0;uint8_t tx[CHUNK_HDR+2],pixels[2]={4,5};
- assert(send_chunk(7,tx,42,3,9,pixels,2,123));
+ assert(send_chunk(7,tx,42,3,9,pixels,2,123,0,0));
  assert(captured_len==CHUNK_HDR+2 && hop_get_be32(captured+1)==40+2);
  assert(hop_data_unwrap(HOP_MSG_FILE_CHUNK,captured+5,(uint32_t)captured_len-5,&s_x.session,&batch,&body,&n));
  assert(batch==42 && n==22 && hop_get_be32(body)==3 && hop_get_be64(body+4)==9 && !memcmp(body+20,pixels,2));

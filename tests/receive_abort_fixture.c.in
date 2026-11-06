@@ -12,6 +12,7 @@
 #include <string.h>
 #include <time.h>
 #include <wchar.h>
+#include <errno.h>
 uint64_t hop_monotonic_ms(void){static uint64_t now=1000;return ++now;}
 #define hop_log(...) ((void)0)
 #define MAX_PATH 260
@@ -57,11 +58,15 @@ static void history_save(void){assert(closed && !s_rx.img && !s_rx.cur_path && !
 #define XFER_RX_ROOT L"HopDesk"
 #define ERROR_ALREADY_EXISTS 183
 static DWORD GetTempPathW(DWORD n,wchar_t*p){(void)n;wcscpy(p,L"tmp\\");return 4;}
-static void ensure_dirs(wchar_t*p){(void)p;}
-static int CreateDirectoryW(const wchar_t*p,void*q){(void)p;(void)q;return !fail_directory;}
+static int ensure_dirs(wchar_t*p){(void)p;return !fail_directory;}
+static int create_directory_if_missing(const wchar_t*p){(void)p;return !fail_directory;}
+#define ERROR_FILE_NOT_FOUND 2
+#define ERROR_PATH_NOT_FOUND 3
+static int DeleteFileW(const wchar_t*p){(void)p;return 1;}
 static DWORD GetLastError(void){return 5;}
 static DWORD GetLongPathNameW(const wchar_t*p,wchar_t*q,DWORD n){(void)p;(void)q;(void)n;return 0;}
 #else
+static int unlink(const char*p){(void)p;return 0;}
 static const char*temp_root(void){return "/tmp";}
 static int mkdir_p(const char*p){(void)p;return fail_directory?-1:0;}
 #endif
@@ -88,7 +93,13 @@ static void clipboard_complete_remote_paste(uint32_t batch,const char *const *pa
 static void status_image(uint32_t batch,int d,uint64_t size){
     hop_xfer_tracking *t=status_for(d);hop_xfer_tracking_file(t,batch,1,"Image",size,0,HOP_XFER_FILE_RECEIVING);
 }
-static void status_chunk(int d,uint32_t b,uint32_t id,uint64_t off,uint32_t n){hop_xfer_tracking_chunk(status_for(d),b,id,off,n,1);}
+static uint64_t rate_now_ns(void){static uint64_t now;return ++now;}
+static void status_stage_time(int d,uint32_t b,int stage,uint64_t elapsed){hop_xfer_tracking_add_time(status_for(d),b,stage,elapsed);}
+static void status_chunk_timed(int d,uint32_t b,uint32_t id,uint64_t off,uint32_t n,uint64_t read_ns,uint64_t crc_ns,uint64_t send_ns,uint64_t receive_ns){
+    hop_xfer_tracking_chunk(status_for(d),b,id,off,n,1);
+    status_stage_time(d,b,HOP_XFER_TIME_READ,read_ns);status_stage_time(d,b,HOP_XFER_TIME_CRC,crc_ns);
+    status_stage_time(d,b,HOP_XFER_TIME_SEND,send_ns);status_stage_time(d,b,HOP_XFER_TIME_RECEIVE,receive_ns);
+}
 static void status_file_phase(int d,uint32_t b,int i,int p,uint32_t a){hop_xfer_tracking_phase(status_for(d),b,i,p,a);}
 static void apply_image(const uint8_t*p,int w,int h,int stride){(void)p;(void)w;(void)h;(void)stride;applied++;}
 static void apply_paths(const void*p,int n){(void)p;(void)n;applied++;}

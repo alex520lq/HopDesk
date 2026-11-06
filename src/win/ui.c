@@ -74,6 +74,15 @@ void ui_refresh(win_app *app) {
     }
     main_ui_refresh();
 }
+void ui_notify_paste_ready(void) {
+    if (!g_app.tray_added) return;
+    NOTIFYICONDATAW nid=g_app.nid;
+    nid.uFlags=NIF_INFO;
+    wcscpy_s(nid.szInfoTitle,ARRAYSIZE(nid.szInfoTitle),L"文件已准备好");
+    wcscpy_s(nid.szInfo,ARRAYSIZE(nid.szInfo),L"请选择目标文件夹，然后再次按 Ctrl+V 粘贴。");
+    nid.dwInfoFlags=NIIF_INFO;
+    Shell_NotifyIconW(NIM_MODIFY,&nid);
+}
 void ui_transfer_poll(void) {
     hop_xfer_status st; memset(&st,0,sizeof(st)); xfer_get_status(&st);
     if (st.active || !st.batch) return;

@@ -123,6 +123,27 @@ static void transfer_notify_if_terminal(const hop_xfer_status *st) {
     [[NSUserNotificationCenter defaultUserNotificationCenter] deliverNotification:note];
 }
 
+void statusbar_notify_paste_ready(void) {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ statusbar_notify_paste_ready(); });
+        return;
+    }
+    NSUserNotification *note = [[NSUserNotification alloc] init];
+    note.title = @"文件已准备好";
+    note.informativeText = @"请选择目标文件夹，然后再次按 Command+V 粘贴。";
+    [[NSUserNotificationCenter defaultUserNotificationCenter] deliverNotification:note];
+}
+void statusbar_notify_image_limit(void) {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ statusbar_notify_image_limit(); });
+        return;
+    }
+    NSUserNotification *note = [[NSUserNotification alloc] init];
+    note.title = @"图片未同步";
+    note.informativeText = @"图片解码所需内存超过上限，请缩小图片后重试。";
+    [[NSUserNotificationCenter defaultUserNotificationCenter] deliverNotification:note];
+}
+
 static void set_appearance(int connected, int sharing) {
     NSString *sym;
     NSColor  *color;

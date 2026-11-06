@@ -508,11 +508,12 @@ static void rx_begin_batch(uint32_t batch) {
     __sync_lock_test_and_set(&s_x.cancel_rx, 0);
 
     rx_reset();
-    if (!hop_xfer_task_init(&s_rx.task,0,(batch & HOP_XFER_PASTE_BATCH_FLAG)?batch:0,batch)) {
+    if (!hop_xfer_task_init_classified(&s_rx.task,0,(batch & HOP_XFER_PASTE_BATCH_FLAG)?batch:0,batch,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_UNSPECIFIED)) {
         s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_DISK;
         send_abort(batch,HOP_ABORT_DISK);
         return;
     }
+    (void)hop_xfer_task_bind_session(&s_rx.task,s_rx_session.bytes);
     if (!hop_xfer_task_reserve_job(&s_rx.task)) {
         s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_TOO_LARGE;
         hop_xfer_task_finish(&s_rx.task,HOP_XFER_TASK_FAILED);
@@ -657,6 +658,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
             rx_begin_batch(batch);
             if (!s_rx.active || s_rx.batch != batch) return;
+            (void)hop_xfer_task_set_kind(&s_rx.task,HOP_TASK_KIND_FILES);
             if (id == 0 || id > HOP_XFER_FILE_LIMIT) {
                 rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
                 return;
@@ -750,6 +752,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             uint32_t batch = msg.batch;
             rx_begin_batch(batch);
             if (!s_rx.active || s_rx.batch != batch) return;
+            (void)hop_xfer_task_set_kind(&s_rx.task,HOP_TASK_KIND_IMAGE);
 
             int w = (int)msg.width;
             int h = (int)msg.height;

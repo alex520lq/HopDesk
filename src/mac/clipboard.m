@@ -163,7 +163,7 @@ static int image_work_can_start(void) {
 static hop_xfer_task *image_work_task_create(void) {
     hop_xfer_task *task = (hop_xfer_task *)calloc(1, sizeof(*task));
     if (!task) return NULL;
-    if (!hop_xfer_task_init(task, 0, 0, image_work_transfer_id()) ||
+    if (!hop_xfer_task_init_classified(task, 0, 0, image_work_transfer_id(), HOP_XFER_DIR_NONE, HOP_TASK_KIND_IMAGE_WORK) ||
         !hop_xfer_task_reserve_job(task) ||
         !hop_xfer_task_set_state(task, HOP_XFER_TASK_ACTIVE)) {
         if (task->initialized) {

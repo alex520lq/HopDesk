@@ -34,6 +34,26 @@ with tempfile.TemporaryDirectory(prefix='hopdesk-regression-') as directory:
 
     run('tracking_config',(ROOT/'tests/regression_tests.c').read_text(encoding='utf-8'),['src/core/config.c'])
     assert not list(work.glob('*.tmp.*')), 'failed migration leaked temporary files'
+    run('ack_window_checkpoint',r'''
+#include "xfer_ack_window.h"
+#include <assert.h>
+#include <stdio.h>
+int main(void) {
+    int checkpoint=0;
+    assert(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,0,0));
+    assert(checkpoint==0);
+    assert(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,1,1));
+    assert(checkpoint==0);
+    assert(hop_xfer_ack_window_advance_checkpoint(&checkpoint,0,1));
+    assert(checkpoint==1);
+    assert(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,1,0));
+    assert(checkpoint==1);
+    assert(hop_xfer_ack_window_advance_checkpoint(&checkpoint,1,1));
+    assert(checkpoint==2);
+    puts("PASS: only contiguous ACK-confirmed entries advance resume checkpoint");
+    return 0;
+}
+''')
 
     # Cards are painted by the page, never sibling HWNDs obscuring its controls.
     ui=(ROOT/'src/win/main_ui.c').read_text(encoding='utf-8')
@@ -486,6 +506,12 @@ int main(void){
         assert 'tx + CHUNK_HDR' in entry
         assert 'malloc(blen)' not in entry and 'free(bp)' not in entry
         job=extract(sender,'run_job')
+        assert 'int acknowledged;' in job
+        assert 'if (st >= 0) item->acknowledged = 1;' in job
+        assert 'if (st != XFER_ACK_PENDING)' in job
+        assert 'fill_result = JOB_NET_DOWN;' in job
+        assert 'if (!item->acknowledged)' in job
+        assert 'hop_xfer_ack_window_advance_checkpoint(&j->next_i,item->index,1)' in job
         timeout=job.index('if (st == XFER_ACK_TIMEOUT)')
         unregister=job.index('ack_unregister_batch(j->batch)',timeout)
         kick=job.index('xfer_kick();',timeout)

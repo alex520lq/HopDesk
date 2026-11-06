@@ -1003,43 +1003,49 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     CHECK(hop_xfer_budget_set_limits_for_test(&defaults));
 }
 
+#define RUN_TEST(fn) do { \
+    fprintf(stderr, "RUN %s\\n", #fn); \
+    fflush(stderr); \
+    fn(); \
+} while (0)
+
 int main(void) {
     hop_crc32_init();
 
-    test_endian_and_frame_encoding();
-    test_decoder_fragmentation_and_coalescing();
-    test_decoder_rejects_oversized_frame();
-    test_crc32();
-    test_token_authentication();
-    test_config_defaults_and_loading();
-    test_dual_roles();
-    test_keymap();
-    test_keymap_ranges();
-    test_decoder_reset_mid_frame();
-    test_decoder_all_split_points();
-    test_xfer_hello_validation();
-    test_xfer_relative_path_validation();
-    test_xfer_image_bounds();
-    test_xfer_chunk_bounds();
-    test_xfer_retry_policy();
-    test_clipboard_origin_routing();
-    test_lazy_clipboard_protocol();
-    test_file_crc_fold();
-    test_relative_path_wire_bytes();
-    test_file_begin_decode();
-    test_image_begin_decode();
-    test_file_end_ack_abort_done_decoders();
-    test_update_manifest_validation();
-    test_xfer_global_budget();
-    test_xfer_ack_window();
-    test_xfer_rate_limiter();
-    test_xfer_tracking_stage_timing();
-    test_xfer_tracking_speed_and_eta();
-    test_xfer_task_identity_and_lifecycle();
-    test_xfer_task_image_buffer_transfer();
+    RUN_TEST(test_endian_and_frame_encoding);
+    RUN_TEST(test_decoder_fragmentation_and_coalescing);
+    RUN_TEST(test_decoder_rejects_oversized_frame);
+    RUN_TEST(test_crc32);
+    RUN_TEST(test_token_authentication);
+    RUN_TEST(test_config_defaults_and_loading);
+    RUN_TEST(test_dual_roles);
+    RUN_TEST(test_keymap);
+    RUN_TEST(test_keymap_ranges);
+    RUN_TEST(test_decoder_reset_mid_frame);
+    RUN_TEST(test_decoder_all_split_points);
+    RUN_TEST(test_xfer_hello_validation);
+    RUN_TEST(test_xfer_relative_path_validation);
+    RUN_TEST(test_xfer_image_bounds);
+    RUN_TEST(test_xfer_chunk_bounds);
+    RUN_TEST(test_xfer_retry_policy);
+    RUN_TEST(test_clipboard_origin_routing);
+    RUN_TEST(test_lazy_clipboard_protocol);
+    RUN_TEST(test_file_crc_fold);
+    RUN_TEST(test_relative_path_wire_bytes);
+    RUN_TEST(test_file_begin_decode);
+    RUN_TEST(test_image_begin_decode);
+    RUN_TEST(test_file_end_ack_abort_done_decoders);
+    RUN_TEST(test_update_manifest_validation);
+    RUN_TEST(test_xfer_global_budget);
+    RUN_TEST(test_xfer_ack_window);
+    RUN_TEST(test_xfer_rate_limiter);
+    RUN_TEST(test_xfer_tracking_stage_timing);
+    RUN_TEST(test_xfer_tracking_speed_and_eta);
+    RUN_TEST(test_xfer_task_identity_and_lifecycle);
+    RUN_TEST(test_xfer_task_image_buffer_transfer);
 
     if (g_failures) {
-        fprintf(stderr, "HopDesk core tests: %d failure(s)\n", g_failures);
+        fprintf(stderr, "HopDesk core tests: %d failure(s)\\n", g_failures);
         return 1;
     }
     puts("HopDesk core tests: all tests passed");

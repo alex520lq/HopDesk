@@ -369,6 +369,19 @@ static void status_file_phase(int d,uint32_t b,int i,int p,uint32_t a){assert(d=
 static void status_end(int d,uint32_t b,int p,const char*s){assert(d==HOP_XFER_DIR_RECEIVE);hop_xfer_tracking_end(&s_receive_status,b,p,s);}
 static void apply_image(const uint8_t*p,int w,int h,int stride){(void)p;(void)w;(void)h;(void)stride;applied++;}
 static void apply_paths(const void*p,int n){(void)p;(void)n;}
+static uint64_t rate_now_ns(void){static uint64_t now=100;return ++now;}
+static void status_stage_time(int direction,uint32_t batch,int stage,uint64_t elapsed_ns){
+    (void)batch;(void)stage;(void)elapsed_ns;assert(direction==HOP_XFER_DIR_RECEIVE);
+}
+static int paste_success_calls,paste_failure_calls;
+#ifdef _WIN32
+static void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n,int success){
+#else
+static void clipboard_complete_remote_paste(uint32_t batch,const char *const *paths,int n,int success){
+#endif
+    (void)batch;(void)paths;(void)n;
+    if(success)paste_success_calls++;else paste_failure_calls++;
+}
 #define clip_apply_remote_image apply_image
 #define clipboard_apply_image apply_image
 #define clip_apply_remote_paths apply_paths
@@ -396,7 +409,27 @@ int main(void){
     s_rx.active=1;s_rx.batch=11;s_rx.cur_is_image=1;s_rx.img_len=3;s_rx.img_expected=4;
     hop_xfer_tracking_begin(&s_receive_status,11,HOP_XFER_DIR_RECEIVE,1,4,"Image",HOP_XFER_RECEIVING);
     rx_finish_batch(11,1,1);assert(applied==1 && s_receive_status.status.phase==HOP_XFER_FAILED);
-    puts("PASS: production IMAGE DONE and clipboard completion path");return 0;
+
+    /* Requested file paste must use the validated callback, not generic paths. */
+    const char *one_path="received.txt";void *tops[1]={(void *)one_path};
+    uint32_t paste_batch=HOP_XFER_PASTE_BATCH_FLAG|12u;
+    assert(hop_xfer_task_init(&s_rx.task,0,0,paste_batch));
+    assert(hop_xfer_task_reserve_job(&s_rx.task));
+    assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
+    s_rx.active=1;s_rx.batch=paste_batch;s_rx.cur_is_image=0;s_rx.ntop=1;s_rx.tops=tops;
+    hop_xfer_tracking_begin(&s_receive_status,paste_batch,HOP_XFER_DIR_RECEIVE,1,0,"File",HOP_XFER_RECEIVING);
+    rx_finish_batch(paste_batch,1,1);
+    assert(paste_success_calls==1 && paste_failure_calls==0);
+
+    paste_batch=HOP_XFER_PASTE_BATCH_FLAG|13u;
+    assert(hop_xfer_task_init(&s_rx.task,0,0,paste_batch));
+    assert(hop_xfer_task_reserve_job(&s_rx.task));
+    assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
+    s_rx.active=1;s_rx.batch=paste_batch;s_rx.cur_is_image=0;s_rx.ntop=1;s_rx.tops=tops;
+    hop_xfer_tracking_begin(&s_receive_status,paste_batch,HOP_XFER_DIR_RECEIVE,1,0,"File",HOP_XFER_RECEIVING);
+    rx_finish_batch(paste_batch,0,1);
+    assert(paste_success_calls==1 && paste_failure_calls==1);
+    puts("PASS: production IMAGE DONE and validated file-paste completion paths");return 0;
 }
 '''
         run('image_'+platform,common+extract(source,'send_done')+'\n'+extract(source,'rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)

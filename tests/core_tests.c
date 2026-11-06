@@ -669,6 +669,12 @@ static void test_xfer_global_budget(void) {
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.rx_queue_slots==0&&snap.rx_queue_bytes==0&&snap.released_rx_buffers==2);
     CHECK(snap.accounting_errors==1);
+    CHECK(hop_xfer_budget_set_rx_pool_bytes(16));
+    CHECK(!hop_xfer_budget_set_rx_pool_bytes(17));
+    CHECK(hop_xfer_budget_set_rx_pool_bytes(0));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.rx_pool_bytes==0&&snap.rx_pool_bytes_high_water==16);
+    CHECK(snap.rejected_rx_buffers==2);
     CHECK(hop_xfer_budget_reserve_image_temp(&a,16));
     CHECK(hop_xfer_budget_reserve_image_temp(&a,16));
     CHECK(!hop_xfer_budget_reserve_image_temp(&a,1));

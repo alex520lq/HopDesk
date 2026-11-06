@@ -14,6 +14,8 @@
 #include "../core/xfer_rate.h"
 #include "../core/xfer_ack_window.h"
 
+_Static_assert(HOP_TASK_SESSION_BYTES == HOP_SESSION_BYTES, "task and protocol session sizes differ");
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1317,6 +1319,7 @@ static DWORD WINAPI send_thread(LPVOID arg) {
 
             if (!j) break;
             job_bind_session(j, &transport_session);
+            if (hop_session_id_valid(&j->session)) (void)hop_xfer_task_bind_session(&j->task,j->session.bytes);
             if(!hop_xfer_task_set_state(&j->task,HOP_XFER_TASK_ACTIVE)){
                 hop_xfer_task_finish(&j->task,HOP_XFER_TASK_FAILED);job_free(j);continue;
             }
@@ -1571,7 +1574,7 @@ static int xfer_submit_paths_impl(const wchar_t *const *paths, int n, uint32_t r
 
     elist l;
     memset(&l, 0, sizeof(l));
-    if (!hop_xfer_task_init(&l.task,offer_id,requested_batch,batch)) return 0;
+    if (!hop_xfer_task_init_classified(&l.task,offer_id,requested_batch,batch,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES)) return 0;
     if (!hop_xfer_task_reserve_job(&l.task)) {
         uint64_t task_id=l.task.id;
         hop_xfer_task_finish(&l.task, HOP_XFER_TASK_FAILED);
@@ -1683,7 +1686,7 @@ static int xfer_submit_image_impl(const uint8_t *bgra, uint8_t *owned, int w, in
     do { batch = InterlockedIncrement((LONG *)&s_x.batch_seq); } while (!batch);
     hop_xfer_task task;
     memset(&task,0,sizeof(task));
-    if(!hop_xfer_task_init(&task,0,0,batch)){
+    if(!hop_xfer_task_init_classified(&task,0,0,batch,HOP_XFER_DIR_SEND,HOP_TASK_KIND_IMAGE)){
         if(owned)free(owned);
         release_image_source_reservation(source_task, source_reserved_bytes);
         return 0;

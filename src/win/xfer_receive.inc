@@ -385,7 +385,7 @@ static int create_directory_if_missing(const wchar_t *path) {
 /* Create parent components without attempting to create a drive/UNC root. */
 static int ensure_dirs(wchar_t *path) {
     wchar_t *p = path;
-    if (((*p >= L'A' && *p <= L'Z') || (*p >= L'a' && *p <= L'Z')) && p[1] == L':') {
+    if (((*p >= L'A' && *p <= L'Z') || (*p >= L'a' && *p <= L'z')) && p[1] == L':') {
         p += 2;
         if (*p == L'\\' || *p == L'/') ++p;
     } else if (p[0] == L'\\' && p[1] == L'\\') {

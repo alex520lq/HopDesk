@@ -191,7 +191,7 @@ static void image_work_task_finish(hop_xfer_task *task, int success) {
 /* NSImage -> 自上而下 BGRA。调用方在 NSImage 解码前预留转换额度；
  * 这里按真实像素尺寸收窄额度，再分配 bitmap 与行翻转缓冲区。 */
 static BOOL send_image(NSImage *img, NSInteger expected_change, hop_xfer_task *task,
-                       uint64_t *conversion_reserved) {
+                       uint64_t *conversion_reserved, int *budget_deferred) {
     if (!img || !task || !conversion_reserved || !*conversion_reserved) return NO;
 
     /* CGImage 创建期间可能触发解码；调用方已提前预留最大可用转换内存。 */
@@ -217,6 +217,7 @@ static BOOL send_image(NSImage *img, NSInteger expected_change, hop_xfer_task *t
     if (conversion_bytes > *conversion_reserved) {
         uint64_t extra = conversion_bytes - *conversion_reserved;
         if (!hop_xfer_task_reserve_image_temp(task, extra)) {
+            if (budget_deferred) *budget_deferred = 1;
             hop_log(HOP_LOG_WARN, "clip: image conversion memory budget exhausted (task=%llu)",
                     (unsigned long long)task->id);
             return NO;
@@ -280,18 +281,19 @@ cleanup:
 /* Pasteboard image materialization, decoding and BGRA conversion all run on
  * one utility worker. Reserve a bounded upper estimate before dataForType so
  * the main queue never materializes a full image NSData snapshot. */
-static void send_image_data_async(NSPasteboardType imageType, NSInteger expected_change) {
-    if (!imageType) return;
+static BOOL send_image_data_async(NSPasteboardType imageType, NSInteger expected_change, NSInteger previous_change) {
+    if (!imageType) return NO;
     hop_xfer_task *task = image_work_task_create();
     if (!task) {
-        hop_log(HOP_LOG_WARN, "clip: image conversion task budget exhausted");
-        return;
+        hop_log(HOP_LOG_WARN, "clip: image conversion task budget exhausted; clipboard change will be retried");
+        return NO;
     }
     if (!hop_xfer_task_reserve_image_temp(task, CLIP_IMG_MAX_BYTES)) {
         hop_log(HOP_LOG_WARN, "clip: image input memory budget exhausted (task=%llu)",
                 (unsigned long long)task->id);
         image_work_task_finish(task, 0);
-        return;
+        hop_log(HOP_LOG_WARN, "clip: image input budget unavailable; clipboard change will be retried");
+        return NO;
     }
 
     dispatch_group_t group = nil;
@@ -299,8 +301,8 @@ static void send_image_data_async(NSPasteboardType imageType, NSInteger expected
     if (s_clip_stopping || s_image_work_active || !s_paste_group) {
         pthread_mutex_unlock(&s_offer_lock);
         image_work_task_finish(task, 0);
-        hop_log(HOP_LOG_WARN, "clip: image conversion busy; snapshot skipped");
-        return;
+        hop_log(HOP_LOG_WARN, "clip: image conversion busy; snapshot deferred");
+        return NO;
     }
     s_image_work_active = 1;
     group = s_paste_group;
@@ -309,6 +311,7 @@ static void send_image_data_async(NSPasteboardType imageType, NSInteger expected
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         int success = 0;
+        int budget_deferred = 0;
         uint64_t conversion_reserved = 0;
         @autoreleasepool {
             NSPasteboard *pb = [NSPasteboard generalPasteboard];
@@ -327,12 +330,13 @@ static void send_image_data_async(NSPasteboardType imageType, NSInteger expected
                                 NSImage *img = [[NSImage alloc] initWithData:snapshot];
                                 if (img)
                                     success = send_image(img, expected_change, task,
-                                                         &conversion_reserved) ? 1 : 0;
+                                                         &conversion_reserved, &budget_deferred) ? 1 : 0;
                                 else
                                     hop_log(HOP_LOG_WARN, "clip: image decode failed");
                             } else {
                                 conversion_reserved = 0;
-                                hop_log(HOP_LOG_WARN, "clip: image decode memory budget exhausted");
+                                budget_deferred = 1;
+                                hop_log(HOP_LOG_WARN, "clip: image decode memory budget exhausted; retry deferred");
                             }
                         } else {
                             hop_log(HOP_LOG_WARN, "clip: no image memory remains after encoded snapshot");
@@ -350,11 +354,21 @@ static void send_image_data_async(NSPasteboardType imageType, NSInteger expected
         /* Task finish runs after the autorelease pool drains, so NSData/NSImage
          * backing memory stays reserved until those objects have released it. */
         image_work_task_finish(task, success);
+        if (budget_deferred) {
+            NSPasteboard *pb = [NSPasteboard generalPasteboard];
+            pthread_mutex_lock(&s_offer_lock);
+            if (!s_clip_stopping && s_last_change == expected_change &&
+                [pb changeCount] == expected_change)
+                s_last_change = previous_change;
+            pthread_mutex_unlock(&s_offer_lock);
+            hop_log(HOP_LOG_INFO, "clip: image budget released; same clipboard version will be retried");
+        }
         pthread_mutex_lock(&s_offer_lock);
         s_image_work_active = 0;
         pthread_mutex_unlock(&s_offer_lock);
         dispatch_group_leave(group);
     });
+    return YES;
 }
 
 static BOOL send_text(NSString *s) {
@@ -416,7 +430,11 @@ static void poll_pasteboard(void) {
                 return;
             }
             clip_clear_remote_offer_local(); clip_clear_local_offer(1);
-            send_image_data_async(imageType, cc);
+            if (!send_image_data_async(imageType, cc, previous_change)) {
+                pthread_mutex_lock(&s_offer_lock);
+                if (s_last_change == cc) s_last_change = previous_change;
+                pthread_mutex_unlock(&s_offer_lock);
+            }
             return;
         }
 

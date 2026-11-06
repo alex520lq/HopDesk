@@ -19,10 +19,19 @@ typedef struct {
     uint64_t off;
     uint32_t len;
     uint8_t *data;
+    int      pool_slot;
     hop_xfer_task *budget_owner;
 } rx_task;
 
+typedef struct {
+    uint8_t *data;
+    uint32_t capacity;
+    int in_use;
+} rx_buffer_slot;
+
 static struct {
+    rx_buffer_slot buffers[RX_Q_SLOTS];
+    uint64_t pool_capacity;
     rx_task         ring[RX_Q_SLOTS];
     int             head, tail, count, busy, reserved_slots;
     uint64_t        queued_bytes;
@@ -33,6 +42,60 @@ static struct {
     int             err;        /* 写盘失败标记，主路径读 */
     int             stop;
 } s_wq;
+
+/* Reusable bounded RX payload pool. Called with s_wq.lock held.
+ * Retained capacity is capped by RX_Q_MAX_BYTES, independently of queue
+ * occupancy, so repeated small/large chunks do not churn malloc/free. */
+static int wq_pool_acquire_locked(uint32_t len, int *slot_out, uint8_t **data_out) {
+    int chosen = -1;
+    for (int i = 0; i < RX_Q_SLOTS; ++i) {
+        rx_buffer_slot *b = &s_wq.buffers[i];
+        if (b->in_use) continue;
+        if (b->capacity >= len) {
+            if (chosen < 0 || b->capacity < s_wq.buffers[chosen].capacity)
+                chosen = i;
+        } else if (chosen < 0) {
+            chosen = i;
+        }
+    }
+    if (chosen < 0) return 0;
+
+    rx_buffer_slot *target = &s_wq.buffers[chosen];
+    if (target->capacity < len) {
+        /* Drop every other idle block first; busy writer blocks stay pinned. */
+        for (int i = 0; i < RX_Q_SLOTS; ++i) {
+            rx_buffer_slot *b = &s_wq.buffers[i];
+            if (i == chosen || b->in_use || !b->data) continue;
+            free(b->data);
+            s_wq.pool_capacity -= b->capacity;
+            b->data = NULL;
+            b->capacity = 0;
+        }
+        if (s_wq.pool_capacity - target->capacity + len > RX_Q_MAX_BYTES)
+            return 0; /* an in-flight writer owns the remaining pool budget */
+        if (target->data) {
+            free(target->data);
+            s_wq.pool_capacity -= target->capacity;
+            target->data = NULL;
+            target->capacity = 0;
+        }
+        target->data = (uint8_t *)malloc(len);
+        if (!target->data) return -1;
+        target->capacity = len;
+        s_wq.pool_capacity += len;
+    }
+    target->in_use = 1;
+    *slot_out = chosen;
+    *data_out = target->data;
+    return 1;
+}
+
+static void wq_pool_release_locked(int slot) {
+    if (slot < 0 || slot >= RX_Q_SLOTS) return;
+    rx_buffer_slot *b = &s_wq.buffers[slot];
+    if (!b->in_use) return;
+    b->in_use = 0;
+}
 
 static void wq_task_run(rx_task *t) {
     switch (t->kind) {
@@ -97,12 +160,13 @@ static void *writer_thread(void *arg) {
                               HOP_XFER_TIME_WRITE,write_elapsed_ns);
         hop_watchdog_end(disk_guard);
 
-        free(t.data);
         if (t.kind == RX_WRITE && t.budget_owner)
             (void)hop_xfer_task_release_rx_buffer(t.budget_owner, t.len);
         pthread_mutex_lock(&s_wq.lock);
-        if (t.kind == RX_WRITE)
+        if (t.kind == RX_WRITE) {
+            wq_pool_release_locked(t.pool_slot);
             s_wq.queued_bytes = t.len > s_wq.queued_bytes ? 0 : s_wq.queued_bytes - t.len;
+        }
         s_wq.busy = 0;
         pthread_cond_broadcast(&s_wq.cv_space);
         pthread_mutex_unlock(&s_wq.lock);
@@ -167,26 +231,31 @@ static int wq_push_data(hop_xfer_task *owner, uint64_t off, const uint8_t *data,
     t.off = off;
     t.len = len;
     t.budget_owner = owner;
-    t.data = (uint8_t *)malloc(len);
-    if (!t.data) {
-        (void)hop_xfer_task_release_rx_buffer(owner, len);
-        pthread_mutex_lock(&s_wq.lock);
+    t.pool_slot = -1;
+
+    pthread_mutex_lock(&s_wq.lock);
+    int pool_result = 0;
+    while (!s_wq.stop && (pool_result = wq_pool_acquire_locked(len, &t.pool_slot, &t.data)) == 0)
+        pthread_cond_wait(&s_wq.cv_space, &s_wq.lock);
+    if (s_wq.stop || pool_result != 1) {
         s_wq.reserved_slots--;
         s_wq.queued_bytes -= len;
         pthread_cond_broadcast(&s_wq.cv_space);
         pthread_mutex_unlock(&s_wq.lock);
+        (void)hop_xfer_task_release_rx_buffer(owner, len);
         hop_watchdog_end(queue_guard);
         return 0;
     }
+    pthread_mutex_unlock(&s_wq.lock);
     memcpy(t.data, data, len);
 
     pthread_mutex_lock(&s_wq.lock);
     if (s_wq.stop) {
         s_wq.reserved_slots--;
         s_wq.queued_bytes -= len;
+        wq_pool_release_locked(t.pool_slot);
         pthread_cond_broadcast(&s_wq.cv_space);
         pthread_mutex_unlock(&s_wq.lock);
-        free(t.data);
         (void)hop_xfer_task_release_rx_buffer(owner, len);
         hop_watchdog_end(queue_guard);
         return 0;
@@ -234,6 +303,13 @@ static void wq_stop(void) {
 
     pthread_join(s_wq.th, NULL);
     s_wq.th = 0;
+    for (int i = 0; i < RX_Q_SLOTS; ++i) {
+        free(s_wq.buffers[i].data);
+        s_wq.buffers[i].data = NULL;
+        s_wq.buffers[i].capacity = 0;
+        s_wq.buffers[i].in_use = 0;
+    }
+    s_wq.pool_capacity = 0;
     pthread_mutex_destroy(&s_wq.lock);
     pthread_cond_destroy(&s_wq.cv_work);
     pthread_cond_destroy(&s_wq.cv_space);

@@ -457,13 +457,16 @@ static hop_xfer_tracking s_send_status,s_receive_status;
 static void *s_retry_paths[HOP_XFER_FILE_LIMIT];
 static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];static int s_history_count;
 static void history_save(void){saves++;}
+void hop_log(hop_log_level lvl,const char *fmt,...){(void)lvl;(void)fmt;}
 '''
         main=r'''
 int main(void){
     status_begin(1,HOP_XFER_DIR_SEND,1,100,"out",HOP_XFER_SENDING);
     status_begin(1,HOP_XFER_DIR_RECEIVE,0,0,"in",HOP_XFER_RECEIVING);
     status_add_received_file(1,1,"in",4,0);
-    status_chunk(HOP_XFER_DIR_RECEIVE,1,1,0,4);
+    status_chunk_timed(HOP_XFER_DIR_RECEIVE,1,1,0,4,0,2,0,3);
+    assert(s_receive_status.stage_ns[HOP_XFER_TIME_CRC]==2);
+    assert(s_receive_status.stage_ns[HOP_XFER_TIME_RECEIVE]==3);
     assert(s_receive_status.status.bytes_done==4 && s_receive_status.status.bytes_total==4);
     assert(s_send_status.status.active && s_send_status.status.bytes_done==0);
     status_end(HOP_XFER_DIR_SEND,1,HOP_XFER_FAILED,"retries exhausted");
@@ -475,7 +478,7 @@ int main(void){
     puts("PASS: production per-direction state wrappers and exactly-once history");return 0;
 }
 '''
-        names=['status_for','status_begin','status_chunk','status_file_phase','status_end','status_add_received_file']
+        names=['status_for','status_begin','status_chunk_timed','status_file_phase','status_end','status_add_received_file']
         run('wrappers_'+platform,preamble+'\n'.join(extract(source,n) for n in names)+main)
 
     if os.name!='nt':

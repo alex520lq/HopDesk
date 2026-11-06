@@ -386,7 +386,8 @@ static void refresh_transfers(void) {
             (unsigned long long)(pair.receive.bytes_done/1048576ULL),
             (unsigned long long)(pair.receive.bytes_total/1048576ULL),pair.send.queued_count);
     set_text(s_xfer_counts, row);
-    hop_xfer_budget_snapshot budget; memset(&budget,0,sizeof(budget)); xfer_get_budget_snapshot(&budget);
+    hop_xfer_task_audit audit; memset(&audit,0,sizeof(audit)); hop_xfer_task_reconcile(&audit);
+    hop_xfer_budget_snapshot budget=audit.ledger;
     swprintf(row,1800,L"预算  jobs %u/%u  ·  entries %u/%u  ·  待传输 %llu/%llu MiB",
         budget.jobs,budget.limits.max_jobs,budget.entries,budget.limits.max_entries,
         (unsigned long long)(budget.pending_bytes/1048576ULL),
@@ -412,12 +413,13 @@ static void refresh_transfers(void) {
         (unsigned long long)(budget.rx_queue_bytes_high_water/1048576ULL),
         (unsigned long long)rejected);
     set_text(s_xfer_budget_stats,row);
-    swprintf(row,1800,L"释放 tasks %llu · RX buffers %llu · image temp %llu MiB · image handoff %llu MiB · 账本异常 %llu",
+    swprintf(row,1800,L"释放 tasks %llu · RX buffers %llu · image temp %llu MiB · image handoff %llu MiB · 账本异常 %llu · 对账 %ls (0x%X)",
         (unsigned long long)budget.released_reservations,
         (unsigned long long)budget.released_rx_buffers,
         (unsigned long long)(budget.released_image_temp_bytes/1048576ULL),
         (unsigned long long)(budget.transferred_image_temp_bytes/1048576ULL),
-        (unsigned long long)budget.accounting_errors);
+        (unsigned long long)budget.accounting_errors,
+        audit.mismatches?L"异常":L"正常", (unsigned)audit.mismatches);
     set_text(s_xfer_budget_lifecycle,row);
     int pct = st.bytes_total ? (int)(100ULL * st.bytes_done / st.bytes_total) : (st.phase==HOP_XFER_COMPLETED ? 100 : 0);
     SendMessageW(s_xfer_progress, PBM_SETPOS, pct > 100 ? 100 : pct, 0);

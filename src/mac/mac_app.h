@@ -40,6 +40,7 @@ void inject_button(int button, int down);
 void inject_wheel(int dx, int dy);
 void inject_reset(void);
 void inject_key(uint16_t kc, int down);   /* 阶段 2：映射后的 Mac 键码 */
+void inject_paste_shortcut(void); /* replay validated intercepted cross-device paste */
 void inject_release_all(void);            /* 断线时松开所有修饰键 */
 
 /* clipboard.m */

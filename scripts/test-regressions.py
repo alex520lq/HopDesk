@@ -374,11 +374,11 @@ static void status_stage_time(int direction,uint32_t batch,int stage,uint64_t el
     (void)batch;(void)stage;(void)elapsed_ns;assert(direction==HOP_XFER_DIR_RECEIVE);
 }
 static int paste_success_calls,paste_failure_calls;
-#ifdef _WIN32
 static void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n,int success){
-#else
+    (void)batch;(void)paths;(void)n;
+    if(success)paste_success_calls++;else paste_failure_calls++;
+}
 static void clipboard_complete_remote_paste(uint32_t batch,const char *const *paths,int n,int success){
-#endif
     (void)batch;(void)paths;(void)n;
     if(success)paste_success_calls++;else paste_failure_calls++;
 }

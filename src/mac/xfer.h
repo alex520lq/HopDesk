@@ -12,6 +12,8 @@
 
 #include "hop.h"
 #include "../core/xfer_status.h"
+#include "../core/xfer_budget.h"
+#include "../core/xfer_task.h"
 
 void xfer_init(const hop_config *cfg);
 void xfer_kick(void);
@@ -23,6 +25,8 @@ int  xfer_connected(void);
 int  xfer_busy(void);
 /* Thread-safe snapshot for native transfer manager UI; caller owns the copy. */
 void xfer_get_status(hop_xfer_status *out);
+/* Snapshot live resource budgets and high-water/rejection/release counters. */
+void xfer_get_budget_snapshot(hop_xfer_budget_snapshot *out);
 /* Most recent completed batches first; returns number of records copied. */
 int xfer_get_history(hop_xfer_history_entry *out, int capacity);
 /* Snapshot an explicitly identified task; stale snapshots return no files. */
@@ -36,8 +40,16 @@ void xfer_cancel(void);
 
 /* 提交本机路径（文件或目录，目录递归）。内部深拷贝，返回后调用方可释放。 */
 int  xfer_submit_paths(const char *const *paths, int n);
+int  xfer_submit_paths_for_paste(const char *const *paths, int n, uint32_t request_id, uint64_t offer_id);
 
 /* 提交图片：裸 BGRA、自上而下、行距 stride 字节。内部拷贝像素。 */
 int  xfer_submit_image(const uint8_t *bgra, int w, int h, int stride);
+/* 消费调用方的 BGRA 缓冲区（成功/失败都会释放）；避免整张图片再次复制。 */
+int  xfer_submit_image_owned(uint8_t *bgra, int w, int h, int stride);
+/* Transfer an already-budgeted temporary pixel buffer into the queued image
+ * task without double-counting the same allocation. Always consumes bgra and
+ * the source task's 'reserved_bytes' reservation, whether accepted or rejected. */
+int  xfer_submit_image_owned_from_task(uint8_t *bgra, int w, int h, int stride,
+                                       hop_xfer_task *source_task, uint64_t reserved_bytes);
 
 #endif

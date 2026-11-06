@@ -43,5 +43,6 @@ void        net_server_drop(net_server *s);
  * 作业级重连也拉不起来，只能重启进程。keepalive 让内核约 90 秒内判定
  * 连接死亡，上层才有机会走既有的重连逻辑。 */
 void        net_set_keepalive(SOCKET s);
+SOCKET net_connect_timeout_win(const char *host, uint16_t port, HANDLE stop);
 
 #endif

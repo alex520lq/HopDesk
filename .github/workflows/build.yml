@@ -99,6 +99,10 @@ jobs:
         shell: pwsh
         run: ./scripts/test-network.ps1
 
+      - name: Run native control/data role and reconnect integration tests
+        shell: pwsh
+        run: ./scripts/test-ha.ps1
+
       - name: Validate Windows updater script syntax
         shell: pwsh
         run: |
@@ -165,6 +169,9 @@ jobs:
 
       - name: Run TCP loopback tests
         run: sh scripts/test-network.sh
+
+      - name: Run macOS control and listener loopback tests
+        run: python3 scripts/test-mac-connection.py
 
       - name: Verify macOS app and shared branding
         run: |

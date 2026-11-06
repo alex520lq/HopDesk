@@ -4,12 +4,15 @@
  * OS/network/filesystem doubles isolate lifecycle, not real desktop integration. */
 #include "hop.h"
 #include "xfer_tracking.h"
+#include "xfer_budget.h"
+#include "xfer_task.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 #include <wchar.h>
+uint64_t hop_monotonic_ms(void){static uint64_t now=1000;return ++now;}
 #define hop_log(...) ((void)0)
 #define MAX_PATH 260
 #define RX_CLOSE 1
@@ -43,6 +46,11 @@ typedef struct {int kind;uint64_t off;uint32_t len;uint8_t*data;} rx_task;
 static struct {int err;} s_wq;
 static void wq_drain(void){}
 static int wq_push(rx_task*t){if(t->kind==RX_CLOSE){closed=1;closes++;}else free(t->data);return 1;}
+static int wq_push_data(hop_xfer_task *owner,uint64_t off,const uint8_t *data,uint32_t len){
+    (void)off;(void)data;
+    if(!hop_xfer_task_reserve_rx_buffer(owner,len))return 0;
+    return hop_xfer_task_release_rx_buffer(owner,len);
+}
 @RX_STATE@
 static void history_save(void){assert(closed && !s_rx.img && !s_rx.cur_path && !s_rx.tops && !s_rx.active);saved++;}
 #ifdef FIXTURE_WINDOWS
@@ -66,12 +74,21 @@ static void checked_free(void*p){if(p)assert(closed);free(p);}
 #undef free
 @RESET_STATE@
 static void rx_discard_dir(void){assert(closed);discarded++;s_rx.dir[0]=0;}
+#ifdef FIXTURE_WINDOWS
+static void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n,int success){
+    (void)batch;(void)paths;(void)n;(void)success;
+}
+#else
+static void clipboard_complete_remote_paste(uint32_t batch,const char *const *paths,int n,int success){
+    (void)batch;(void)paths;(void)n;(void)success;
+}
+#endif
 @TERMINATE@
 @BEGIN_BATCH@
 static void status_image(uint32_t batch,int d,uint64_t size){
     hop_xfer_tracking *t=status_for(d);hop_xfer_tracking_file(t,batch,1,"Image",size,0,HOP_XFER_FILE_RECEIVING);
 }
-static void status_chunk(int d,uint32_t b,uint32_t id,uint64_t off,uint32_t n){hop_xfer_tracking_chunk(status_for(d),b,id,off,n);}
+static void status_chunk(int d,uint32_t b,uint32_t id,uint64_t off,uint32_t n){hop_xfer_tracking_chunk(status_for(d),b,id,off,n,1);}
 static void status_file_phase(int d,uint32_t b,int i,int p,uint32_t a){hop_xfer_tracking_phase(status_for(d),b,i,p,a);}
 static void apply_image(const uint8_t*p,int w,int h,int stride){(void)p;(void)w;(void)h;(void)stride;applied++;}
 static void apply_paths(const void*p,int n){(void)p;(void)n;applied++;}
@@ -116,6 +133,11 @@ static void assert_terminal(uint32_t batch,uint8_t reason,int before){
     assert(!s_rx.active && !s_rx.batch && s_rx.dead_batch==batch && s_rx.dead_reason==reason);
     assert(!s_rx.cur_path && !s_rx.img && !s_rx.tops && !s_rx.ntop && !s_rx.img_cap && !s_rx.img_expected);
     assert(!s_rx.cur_is_image && !s_rx.cur_id && !s_rx.cur_size && !s_rx.dir[0]);
+    assert(!s_rx.task.initialized);
+    hop_xfer_budget_snapshot budget_snapshot;
+    hop_xfer_budget_get_snapshot(&budget_snapshot);
+    assert(budget_snapshot.jobs==0 && budget_snapshot.entries==0 &&
+           budget_snapshot.pending_bytes==0 && budget_snapshot.image_bytes==0);
     assert(xfer_busy() && !s_receive_status.status.active && closed); /* outgoing state still owns admission */
     assert(saved==before+1 && s_history[0].batch==batch);
     assert(s_history[0].phase==(reason==HOP_ABORT_CANCEL?HOP_XFER_CANCELLED:HOP_XFER_FAILED));
@@ -128,7 +150,10 @@ int main(void){
         image_begin(batch,1);assert(xfer_busy());seed_resources();
         int old_closes=closes,old_discarded=discarded;
         /* Allocate an actual partial image before CRC, overlap and bounds failures. */
-        if(scenario==1 || scenario==3 || scenario==4)chunk(1,0,0);
+        if(scenario==1 || scenario==3 || scenario==4){
+            chunk(1,0,0);
+            assert(s_rx.img && s_rx.img_cap==s_rx.img_expected);
+        }
         uint8_t reason=HOP_ABORT_TOO_LARGE;fail_send=1; /* failed wire send must still clean up */
         switch(scenario){
             case 0:image_begin(batch,0);break;

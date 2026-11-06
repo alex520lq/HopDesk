@@ -1,0 +1,146 @@
+/* Production macOS control loop with a simulated Windows server over TCP.
+ * macOS UI, dispatch and SO_NOSIGPIPE are replaced; this is not native QA. */
+#define _DEFAULT_SOURCE 1
+#if defined(__APPLE__)
+/* Expose Darwin TCP keepalive options while the fixture is compiled in POSIX mode. */
+#define _DARWIN_C_SOURCE 1
+#endif
+#include "hop.h"
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <stdatomic.h>
+#include <pthread.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#ifndef INADDR_LOOPBACK
+#define INADDR_LOOPBACK 0x7f000001UL
+#endif
+#ifndef SO_NOSIGPIPE
+#define SO_NOSIGPIPE SO_KEEPALIVE
+#endif
+#ifndef TCP_KEEPALIVE
+#define TCP_KEEPALIVE TCP_KEEPIDLE
+#endif
+typedef struct {hop_config cfg;int screen_w,screen_h;} mac_app;
+static _Atomic int status_connected;
+int net_send(uint8_t,const void*,uint32_t);
+void net_request_reconnect(void);
+void hop_log(hop_log_level level,const char *fmt,...){(void)level;(void)fmt;}
+int hop_watchdog_begin(const char *name,unsigned timeout){(void)name;(void)timeout;return 0;}
+void hop_watchdog_end(int ticket){(void)ticket;}
+static void mac_capture_peer_geometry(uint32_t w,uint32_t h){(void)w;(void)h;}
+static void mac_capture_return(void){}
+static void inject_set_peer_geometry(uint32_t w,uint32_t h){(void)w;(void)h;}
+static void inject_enter(int n){(void)n;}
+static void inject_move(int x,int y){(void)x;(void)y;}
+static void inject_button(int b,int d){(void)b;(void)d;}
+static void inject_wheel(int x,int y){(void)x;(void)y;}
+static void inject_key(uint16_t k,int d){(void)k;(void)d;}
+static void inject_reset(void){}
+static void clipboard_apply(const char *s){(void)s;}
+static void clipboard_on_link(int connected){(void)connected;}
+static void clipboard_on_remote_file_offer(const uint8_t *p,uint32_t len){(void)p;(void)len;}
+static void clipboard_on_remote_file_offer_clear(const uint8_t *p,uint32_t len){(void)p;(void)len;}
+static void clipboard_on_paste_request(const uint8_t *p,uint32_t len){(void)p;(void)len;}
+static void clipboard_on_paste_failed(const uint8_t *p,uint32_t len){(void)p;(void)len;}
+static void disp_wake(int s){(void)s;}
+static void disp_set_input(uint16_t n){(void)n;}
+static void disp_sleep(void){}
+static void xfer_kick(void){}
+static void statusbar_update(int on,int sharing){(void)sharing;atomic_store(&status_connected,on);}
+@PRODUCTION@
+static int read_exact(int fd,uint8_t *p,size_t n){
+    while(n){ssize_t r=read(fd,p,n);if(r<=0)return 0;p+=r;n-=(size_t)r;}return 1;
+}
+static void send_exact(int fd,const uint8_t *p,size_t n){
+    while(n){ssize_t r=write(fd,p,n);assert(r>0);p+=r;n-=(size_t)r;}
+}
+static int accept_bounded(int listener){
+    fd_set rd;FD_ZERO(&rd);FD_SET(listener,&rd);struct timeval tv={6,0};
+    assert(select(listener+1,&rd,NULL,NULL,&tv)>0);
+    int peer=accept(listener,NULL,NULL);assert(peer>=0);
+    struct timeval timeout={3,0};assert(!setsockopt(peer,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout)));return peer;
+}
+static void exchange(int peer){
+    uint8_t header[HOP_HEADER_SIZE],body[512];assert(read_exact(peer,header,sizeof(header)));
+    uint32_t len=hop_get_be32(header+1);assert(header[0]==HOP_MSG_HELLO && len<=sizeof(body));
+    assert(read_exact(peer,body,len));hop_hello_msg hello;assert(hop_hello_decode(body,len,&hello));
+    assert(hop_token_matches("test-secret",hello.token,hello.token_len));assert(hello.width==1440 && hello.height==900);
+    hop_session_id session;assert(hop_session_generate(&session));uint8_t ack[12+HOP_SESSION_BYTES];
+    ack[0]=1;ack[1]=1;ack[2]='W';hop_put_be32(ack+3,1920);hop_put_be32(ack+7,1080);ack[11]=HOP_CTRL_PROTO_VER;
+    memcpy(ack+12,session.bytes,HOP_SESSION_BYTES);hop_encode_header(header,HOP_MSG_HELLO_ACK,sizeof(ack));
+    send_exact(peer,header,sizeof(header));send_exact(peer,ack,sizeof(ack));
+    for(int i=0;i<150&&!atomic_load(&status_connected);++i)usleep(20000);
+    assert(atomic_load(&status_connected) && hop_session_matches(&session));
+}
+static void test_client(void){
+    alarm(20);int listener=socket(AF_INET,SOCK_STREAM,0);assert(listener>=0);
+    struct sockaddr_in a;memset(&a,0,sizeof(a));a.sin_family=AF_INET;a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+    assert(!bind(listener,(struct sockaddr*)&a,sizeof(a)));socklen_t n=sizeof(a);assert(!getsockname(listener,(struct sockaddr*)&a,&n));assert(!listen(listener,4));
+    memset(&g_mac,0,sizeof(g_mac));g_mac.cfg.role=HOP_ROLE_CLIENT;g_mac.cfg.port=ntohs(a.sin_port);
+    strcpy(g_mac.cfg.peer_host,"127.0.0.1");strcpy(g_mac.cfg.token,"test-secret");strcpy(g_mac.cfg.device_name,"Mac");g_mac.screen_w=1440;g_mac.screen_h=900;
+    net_loop_run();int peer=accept_bounded(listener);exchange(peer);shutdown(peer,SHUT_RDWR);close(peer);
+    for(int i=0;i<150&&atomic_load(&status_connected);++i) usleep(20000);
+    assert(!atomic_load(&status_connected));
+    peer=accept_bounded(listener);exchange(peer);net_request_stop();shutdown(peer,SHUT_RDWR);close(peer);close(listener);
+    usleep(100000);alarm(0);puts("PASS: production macOS client HELLO/ACK and reconnect over TCP (simulated Windows server)");
+}
+static int connect_bounded(uint16_t port){
+    for(int i=0;i<150;++i){
+        int fd=socket(AF_INET,SOCK_STREAM,0);assert(fd>=0);struct sockaddr_in a;
+        memset(&a,0,sizeof(a));a.sin_family=AF_INET;a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);a.sin_port=htons(port);
+        if(!connect(fd,(struct sockaddr*)&a,sizeof(a))){struct timeval tv={4,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof(tv));return fd;}
+        close(fd);usleep(20000);
+    }return -1;
+}
+static uint16_t reserve_port(void){
+    int fd=socket(AF_INET,SOCK_STREAM,0);assert(fd>=0);struct sockaddr_in a;
+    memset(&a,0,sizeof(a));a.sin_family=AF_INET;a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+    assert(!bind(fd,(struct sockaddr*)&a,sizeof(a)));socklen_t n=sizeof(a);
+    assert(!getsockname(fd,(struct sockaddr*)&a,&n));close(fd);return ntohs(a.sin_port);
+}
+static void send_client_hello(int fd,const char *token){
+    uint8_t header[HOP_HEADER_SIZE],body[128];size_t tl=strlen(token);uint32_t n=0;
+    body[n++]=(uint8_t)tl;memcpy(body+n,token,tl);n+=(uint32_t)tl;
+    body[n++]=1;body[n++]='W';hop_put_be32(body+n,1920);n+=4;hop_put_be32(body+n,1080);n+=4;body[n++]=HOP_CTRL_PROTO_VER;
+    hop_encode_header(header,HOP_MSG_HELLO,n);send_exact(fd,header,sizeof(header));send_exact(fd,body,n);
+}
+static void server_exchange(int peer){
+    uint8_t header[HOP_HEADER_SIZE],body[256];send_client_hello(peer,"test-secret");
+    assert(read_exact(peer,header,sizeof(header)));uint32_t n=hop_get_be32(header+1);
+    assert(header[0]==HOP_MSG_HELLO_ACK && n<=sizeof(body) && read_exact(peer,body,n));
+    hop_session_id session;uint32_t w,h;int ok;
+    assert(hop_hello_ack_decode(body,n,&ok,&w,&h,&session) && ok && w==1440 && h==900);
+    for(int i=0;i<150&&!atomic_load(&status_connected);++i)usleep(20000);
+    assert(atomic_load(&status_connected) && hop_session_matches(&session));
+}
+static void test_server(void){
+    alarm(20);memset(&g_mac,0,sizeof(g_mac));g_mac.cfg.role=HOP_ROLE_SERVER;g_mac.cfg.port=reserve_port();
+    strcpy(g_mac.cfg.token,"test-secret");strcpy(g_mac.cfg.device_name,"Mac");g_mac.screen_w=1440;g_mac.screen_h=900;
+    net_loop_run();int peer=connect_bounded(g_mac.cfg.port);assert(peer>=0);
+    send_client_hello(peer,"wrong");uint8_t byte;assert(read(peer,&byte,1)<=0);close(peer);
+    peer=connect_bounded(g_mac.cfg.port);assert(peer>=0);server_exchange(peer);shutdown(peer,SHUT_RDWR);close(peer);
+    for(int i=0;i<150&&atomic_load(&status_connected);++i)usleep(20000);
+    assert(!atomic_load(&status_connected));
+    peer=connect_bounded(g_mac.cfg.port);assert(peer>=0);server_exchange(peer);
+    net_request_stop();shutdown(peer,SHUT_RDWR);close(peer);usleep(100000);alarm(0);
+    puts("PASS: production macOS server rejects bad token, accepts and reconnects (simulated Windows client)");
+}
+int main(void){
+    alarm(45);
+    for(int mode=0;mode<2;++mode){pid_t pid=fork();assert(pid>=0);
+        if(pid==0){if(mode==0)test_client();else test_server();fflush(stdout);_exit(0);}
+        int status=0;assert(waitpid(pid,&status,0)==pid && WIFEXITED(status) && WEXITSTATUS(status)==0);
+    }
+    alarm(0);return 0;
+}

@@ -5,6 +5,7 @@
 #include "app.h"
 #include "xfer.h"
 #include "update.h"
+#include "main_ui.h"
 #include "../core/update_state.h"
 
 #include <stdio.h>
@@ -41,10 +42,12 @@ static void beside(wchar_t *out, int n, const wchar_t *name) {
 }
 
 static void on_link(int up) {
+    clip_on_link(up != 0);
     if (up) {
         if (up == 2 && g_app.state == HOP_LINK_SHARING) capture_set_sharing(0);
         if (g_app.state == HOP_LINK_DOWN) g_app.state = HOP_LINK_LOCAL;
     } else {
+        win_inject_reset();
         if (g_app.state == HOP_LINK_SHARING) capture_set_sharing(0);
         g_app.state = HOP_LINK_DOWN;
         xfer_kick();
@@ -64,6 +67,11 @@ static void on_hello(const uint8_t *p, uint32_t len) {
 }
 
 static void on_recv(hop_recv *r) {
+    if(g_app.cfg.role==HOP_ROLE_CLIENT){
+        if(r->type==HOP_MSG_HELLO_ACK){int ok;uint32_t w,h;hop_session_id id;
+            if(hop_hello_ack_decode(r->data,r->len,&ok,&w,&h,&id)){g_app.peer_w=(int)w;g_app.peer_h=(int)h;}}
+        win_inject_message(r->type,r->data,r->len);
+    }
     switch (r->type) {
         case HOP_MSG_HELLO:
             on_hello(r->data, r->len);
@@ -73,6 +81,18 @@ static void on_recv(hop_recv *r) {
             break;
         case HOP_MSG_CLIP_TEXT:
             clip_apply_remote(r->data, r->len);
+            break;
+        case HOP_MSG_CLIP_FILE_OFFER:
+            clip_on_remote_file_offer(r->data, r->len);
+            break;
+        case HOP_MSG_CLIP_FILE_OFFER_CLEAR:
+            clip_on_remote_file_offer_clear(r->data, r->len);
+            break;
+        case HOP_MSG_CLIP_PASTE_REQUEST:
+            clip_on_paste_request(r->data, r->len);
+            break;
+        case HOP_MSG_CLIP_PASTE_FAILED:
+            clip_on_paste_failed(r->data, r->len);
             break;
         default:
             break;
@@ -135,6 +155,9 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_APP_CLIP:
             clip_on_worker_message((UINT)wp, (HGLOBAL)lp);
             return 0;
+        case WM_APP_CLIP_PASTE:
+            clip_on_paste_message((HGLOBAL)lp, (DWORD)wp);
+            return 0;
         case WM_APP_TRAY:
             if (LOWORD(lp) == WM_LBUTTONUP || LOWORD(lp) == NIN_SELECT ||
                 LOWORD(lp) == NIN_KEYSELECT) {
@@ -147,7 +170,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             clip_on_update();
             return 0;
         case WM_TIMER:
-            if (wp == IDT_HOOK) { hop_update_report_ready(HOP_VERSION); hop_watchdog_ping(s_ui_guard); capture_check_hooks(); ui_refresh(&g_app); return 0; }
+            if (wp == IDT_HOOK) { hop_update_report_ready(HOP_VERSION); hop_watchdog_ping(s_ui_guard); if(g_app.cfg.role==HOP_ROLE_SERVER)capture_check_hooks(); ui_refresh(&g_app); return 0; }
             if (wp == IDT_XFER_NOTIFY) { ui_transfer_poll(); return 0; }
             if (wp == IDT_CLIP_RETRY) {
                 clip_retry_pending();
@@ -257,20 +280,21 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
         return 1; /* supervisor may restart; do not call failed subsystem locks */
     }
     clip_init(g_app.hwnd);
-    capture_init(&g_app);
-    kbd_init(&g_app);
+    if(g_app.cfg.role==HOP_ROLE_SERVER){capture_init(&g_app);kbd_init(&g_app);}
     hop_watchdog_end(startup_guard);
     s_ui_guard = hop_watchdog_begin("Windows message loop", 30000);
     SetTimer(g_app.hwnd, IDT_HOOK, 3000, NULL);
 
     MSG m;
     while (GetMessageW(&m, NULL, 0, 0) > 0) {
+        if(main_ui_translate(&m))continue;
         TranslateMessage(&m);
         DispatchMessageW(&m);
     }
 
     hop_watchdog_end(s_ui_guard);
     KillTimer(g_app.hwnd, IDT_HOOK);
+    win_inject_reset();
     kbd_shutdown();
     capture_shutdown();
     clip_shutdown(g_app.hwnd);

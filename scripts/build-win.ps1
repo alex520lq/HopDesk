@@ -31,7 +31,7 @@ if ($version -notmatch '^[0-9]+[.][0-9]+[.][0-9]+$') { throw "Invalid HOPDESK_VE
 $versionHeader = Join-Path $build 'hop_version.h'
 $headerContent = '#define HOP_VERSION "' + $version + '"'
 Set-Content -LiteralPath $versionHeader -Value $headerContent -Encoding ascii
-$libs = 'ws2_32', 'dxva2', 'gdi32', 'shell32', 'user32', 'comctl32', 'winhttp', 'bcrypt'
+$libs = 'ws2_32', 'dxva2', 'gdi32', 'shell32', 'user32', 'comctl32', 'winhttp', 'bcrypt', 'iphlpapi'
 $iconPng = Join-Path $root 'assets/appicon/hopdesk.png'
 $iconIco = Join-Path $root 'assets/appicon/hopdesk.ico'
 $resource = Join-Path $root 'assets/appicon/hopdesk.rc'

@@ -3,4 +3,5 @@
 void main_ui_show_page(int page);
 void main_ui_refresh(void);
 void main_ui_shutdown(void);
+int main_ui_translate(MSG *message);
 #endif

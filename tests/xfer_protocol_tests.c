@@ -42,6 +42,7 @@ static void rx_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
         uint32_t n=hop_get_be32(p+12),crc=hop_get_be32(p+16);
         if(hop_crc32(0,p+20,n)!=crc){r->ack=HOP_FILE_ACK_CRC;return;}
         if(r->bad_path)return;
+        if(off!=r->received){r->ack=HOP_FILE_ACK_CRC;return;}
         memcpy(r->bytes+off,p+20,n);
         r->file_crc=hop_xfer_file_crc_step(r->file_crc,off,crc);
         r->received+=n;
@@ -52,7 +53,8 @@ static void rx_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
         if(!hop_xfer_decode_file_end(p,len,&m)){r->protocol_error=1;return;}
         if(!r->active || m.id!=r->id){r->protocol_error=1;return;}
         if(r->bad_path)r->ack=HOP_FILE_ACK_BADPATH;
-        else if(r->ack==HOP_FILE_ACK_CRC || m.status!=HOP_FILE_OK || m.file_crc!=r->file_crc)
+        else if(r->ack==HOP_FILE_ACK_CRC || m.status!=HOP_FILE_OK ||
+                r->received!=r->size || m.file_crc!=r->file_crc)
             r->ack=HOP_FILE_ACK_CRC;
         else r->ack=HOP_FILE_ACK_OK;
         r->done=1;
@@ -92,13 +94,14 @@ static void run_file_case(int mode,uint64_t size,uint32_t chunk_size,const char*
         if(!source){++failures;hop_decoder_free(d);free(r.bytes);return;}
         for(uint64_t i=0;i<size;i++)source[i]=(uint8_t)((i*31u+17u)&0xFFu);
         uint32_t chunks=(uint32_t)((size+chunk_size-1)/chunk_size);
+        uint32_t send_chunks = mode==5 && chunks>0 ? chunks-1 : chunks;
         uint32_t whole=0;
         for(uint64_t pos=0;pos<size;pos+=chunk_size){
             uint32_t count=(uint32_t)((size-pos)<chunk_size?(size-pos):chunk_size);
             uint32_t crc=hop_crc32(0,source+pos,count);
             whole=hop_xfer_file_crc_step(whole,pos,crc);
         }
-        for(uint32_t step=0;step<chunks;step++){
+        for(uint32_t step=0;step<send_chunks;step++){
             uint32_t index=(mode==3)?(chunks-1-step):step;
             uint64_t off=(uint64_t)index*chunk_size;
             uint32_t n=(uint32_t)((size-off)<chunk_size?(size-off):chunk_size);
@@ -131,6 +134,45 @@ static void run_file_case(int mode,uint64_t size,uint32_t chunk_size,const char*
     hop_decoder_free(d);free(r.bytes);
 }
 
+static void test_lazy_file_clipboard_protocol(void) {
+    uint8_t payload[HOP_CLIP_OFFER_MAX_PAYLOAD];
+    const char *names[] = {"assets", "report.txt"};
+    uint32_t len = hop_clip_file_offer_encode(payload,sizeof(payload),HOP_DEV_SERVER,17,names,2);
+    CHECK(len > HOP_CLIP_OFFER_HEADER_BYTES);
+    hop_clip_file_offer_msg offer;
+    CHECK(hop_clip_file_offer_decode(payload,len,&offer));
+    CHECK(offer.origin==HOP_DEV_SERVER && offer.generation==17 && offer.count==2);
+    CHECK(offer.name_lens[0]==6 && memcmp(offer.names[0],"assets",6)==0);
+    CHECK(offer.name_lens[1]==10 && memcmp(offer.names[1],"report.txt",10)==0);
+    uint8_t malformed[HOP_CLIP_OFFER_MAX_PAYLOAD];
+    memcpy(malformed,payload,len);
+    malformed[HOP_CLIP_OFFER_HEADER_BYTES+2]='/';
+    CHECK(!hop_clip_file_offer_decode(malformed,len,&offer));
+    const char *dot_names[] = {".."};
+    CHECK(hop_clip_file_offer_encode(payload,sizeof(payload),HOP_DEV_SERVER,18,dot_names,1)==0);
+    uint8_t clear[HOP_CLIP_OFFER_CLEAR_BYTES];
+    hop_put_be32(clear,HOP_DEV_SERVER);hop_put_be64(clear+4,17);
+    uint32_t origin=0;uint64_t generation=0;
+    CHECK(hop_clip_file_offer_clear_decode(clear,sizeof(clear),&origin,&generation));
+    CHECK(origin==HOP_DEV_SERVER && generation==17);
+    CHECK(!hop_clip_file_offer_clear_decode(clear,sizeof(clear)-1,&origin,&generation));
+    uint8_t request[HOP_CLIP_PASTE_REQUEST_BYTES];
+    uint32_t request_id=HOP_XFER_PASTE_BATCH_FLAG|23u;
+    CHECK(hop_clip_paste_request_encode(request,request_id,HOP_DEV_SERVER,17,99)==sizeof(request));
+    hop_clip_paste_request_msg decoded;
+    CHECK(hop_clip_paste_request_decode(request,sizeof(request),&decoded));
+    CHECK(decoded.request_id==request_id && decoded.origin==HOP_DEV_SERVER);
+    CHECK(decoded.generation==17 && decoded.clipboard_version==99);
+    request[0]=0;request[1]=0;request[2]=0;request[3]=23;
+    CHECK(!hop_clip_paste_request_decode(request,sizeof(request),&decoded));
+    uint8_t failed[HOP_CLIP_PASTE_FAILED_BYTES];
+    CHECK(hop_clip_paste_failed_encode(failed,request_id,HOP_CLIP_PASTE_FAIL_STALE)==sizeof(failed));
+    uint32_t failed_id=0;uint8_t reason=0;
+    CHECK(hop_clip_paste_failed_decode(failed,sizeof(failed),&failed_id,&reason));
+    CHECK(failed_id==request_id && reason==HOP_CLIP_PASTE_FAIL_STALE);
+    CHECK(!hop_clip_paste_failed_decode(failed,sizeof(failed)-1,&failed_id,&reason));
+}
+
 static void test_file_transfer_wire_roundtrip(void){
     run_file_case(0,0,4096,"empty.bin",HOP_FILE_ACK_OK);
     run_file_case(0,1,4096,"one.bin",HOP_FILE_ACK_OK);
@@ -142,6 +184,7 @@ static void test_file_transfer_wire_roundtrip(void){
     run_file_case(2,8192,4096,"offset.bin",HOP_FILE_ACK_CRC);
     run_file_case(3,8192,4096,"order.bin",HOP_FILE_ACK_CRC);
     run_file_case(4,1024,512,"../escape.bin",HOP_FILE_ACK_BADPATH);
+    run_file_case(5,8192,4096,"truncated.bin",HOP_FILE_ACK_CRC);
 }
 
 static void test_directory_entry(void){
@@ -228,6 +271,7 @@ static void test_image_transfer_protocol(void){
 
 int main(void){
     hop_crc32_init();
+    test_lazy_file_clipboard_protocol();
     test_file_transfer_wire_roundtrip();
     test_directory_entry();
     test_image_transfer_protocol();

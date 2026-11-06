@@ -8,7 +8,8 @@
  * 这就是显式背压：内存上界 = RX_Q_SLOTS × chunk，不随传输时长增长。
  * 文件句柄由写线程独占，避免"网络线程关文件、写线程还在写"的竞态。
  */
-#define RX_Q_SLOTS 8
+#define RX_Q_SLOTS HOP_XFER_DEFAULT_RX_QUEUE_SLOTS
+#define RX_Q_MAX_BYTES HOP_XFER_DEFAULT_RX_QUEUE_BYTES
 
 enum { RX_OPEN = 1, RX_WRITE, RX_CLOSE };
 
@@ -18,11 +19,22 @@ typedef struct {
     uint64_t off;
     uint32_t len;
     uint8_t *data;
+    int      pool_slot;
+    hop_xfer_task *budget_owner;
 } rx_task;
 
+typedef struct {
+    uint8_t *data;
+    uint32_t capacity;
+    int in_use;
+} rx_buffer_slot;
+
 static struct {
+    rx_buffer_slot buffers[RX_Q_SLOTS];
+    uint64_t pool_capacity;
     rx_task            ring[RX_Q_SLOTS];
-    int                head, tail, count, busy;
+    int                head, tail, count, busy, reserved_slots;
+    uint64_t           queued_bytes;
     CRITICAL_SECTION   lock;
     CONDITION_VARIABLE cv_work, cv_space;
     HANDLE             th;
@@ -30,6 +42,70 @@ static struct {
     volatile LONG      err;      /* 写盘失败标记，主路径读 */
     int                stop;
 } s_wq;
+
+/* Reusable bounded RX payload pool. Called with s_wq.lock held.
+ * Retained capacity is capped by RX_Q_MAX_BYTES, independently of queue
+ * occupancy, so repeated small/large chunks do not churn malloc/free. */
+static int wq_pool_acquire_locked(uint32_t len, int *slot_out, uint8_t **data_out) {
+    int chosen = -1;
+    /* First pass: best-fit among buffers that already satisfy the request.
+     * Only if none fit do we select an undersized idle slot for growth.
+     * Never let an early small slot hide a later reusable large buffer. */
+    for (int i = 0; i < RX_Q_SLOTS; ++i) {
+        rx_buffer_slot *b = &s_wq.buffers[i];
+        if (b->in_use || !b->data || b->capacity < len) continue;
+        if (chosen < 0 || b->capacity < s_wq.buffers[chosen].capacity)
+            chosen = i;
+    }
+    if (chosen < 0) {
+        for (int i = 0; i < RX_Q_SLOTS; ++i) {
+            rx_buffer_slot *b = &s_wq.buffers[i];
+            if (b->in_use) continue;
+            if (chosen < 0 || b->capacity < s_wq.buffers[chosen].capacity)
+                chosen = i;
+        }
+    }
+    if (chosen < 0) return 0;
+
+    rx_buffer_slot *target = &s_wq.buffers[chosen];
+    if (target->capacity < len) {
+        /* Drop every other idle block first; busy writer blocks stay pinned. */
+        for (int i = 0; i < RX_Q_SLOTS; ++i) {
+            rx_buffer_slot *b = &s_wq.buffers[i];
+            if (i == chosen || b->in_use || !b->data) continue;
+            free(b->data);
+            s_wq.pool_capacity -= b->capacity;
+            b->data = NULL;
+            b->capacity = 0;
+        }
+        (void)hop_xfer_budget_set_rx_pool_bytes(s_wq.pool_capacity);
+        if (s_wq.pool_capacity - target->capacity + len > RX_Q_MAX_BYTES)
+            return 0; /* an in-flight writer owns the remaining pool budget */
+        if (target->data) {
+            free(target->data);
+            s_wq.pool_capacity -= target->capacity;
+            target->data = NULL;
+            target->capacity = 0;
+            (void)hop_xfer_budget_set_rx_pool_bytes(s_wq.pool_capacity);
+        }
+        target->data = (uint8_t *)malloc(len);
+        if (!target->data) return -1;
+        target->capacity = len;
+        s_wq.pool_capacity += len;
+        (void)hop_xfer_budget_set_rx_pool_bytes(s_wq.pool_capacity);
+    }
+    target->in_use = 1;
+    *slot_out = chosen;
+    *data_out = target->data;
+    return 1;
+}
+
+static void wq_pool_release_locked(int slot) {
+    if (slot < 0 || slot >= RX_Q_SLOTS) return;
+    rx_buffer_slot *b = &s_wq.buffers[slot];
+    if (!b->in_use) return;
+    b->in_use = 0;
+}
 
 static void wq_error_set(int value) { InterlockedExchange(&s_wq.err, value); }
 static int wq_error_get(void) { return InterlockedCompareExchange(&s_wq.err, 0, 0); }
@@ -91,14 +167,24 @@ static DWORD WINAPI writer_thread(LPVOID arg) {
         LeaveCriticalSection(&s_wq.lock);
 
         int disk_guard = hop_watchdog_begin("disk writer task", HOP_IO_DEADLINE_MS);
+        uint64_t write_started_ns=rate_now_ns();
         wq_task_run(&t);
+        uint64_t write_elapsed_ns=rate_now_ns()-write_started_ns;
+        if(t.kind==RX_WRITE && t.budget_owner)
+            status_stage_time(HOP_XFER_DIR_RECEIVE,t.budget_owner->transfer_id,
+                              HOP_XFER_TIME_WRITE,write_elapsed_ns);
         hop_watchdog_end(disk_guard);
 
+        if (t.kind == RX_WRITE && t.budget_owner)
+            (void)hop_xfer_task_release_rx_buffer(t.budget_owner, t.len);
         EnterCriticalSection(&s_wq.lock);
+        if (t.kind == RX_WRITE) {
+            wq_pool_release_locked(t.pool_slot);
+            s_wq.queued_bytes = t.len > s_wq.queued_bytes ? 0 : s_wq.queued_bytes - t.len;
+        }
         s_wq.busy = 0;
         WakeConditionVariable(&s_wq.cv_space);
         LeaveCriticalSection(&s_wq.lock);
-        free(t.data);
     }
     if (s_wq.f && s_wq.f != INVALID_HANDLE_VALUE) {
         CloseHandle(s_wq.f);
@@ -109,9 +195,12 @@ static DWORD WINAPI writer_thread(LPVOID arg) {
 
 /* 入队。队列满时阻塞 —— 这就是背压的着力点。 */
 static int wq_push(const rx_task *t) {
+    uint64_t add_bytes = t && t->kind == RX_WRITE ? t->len : 0;
+    if (!t || add_bytes > RX_Q_MAX_BYTES) return 0;
     int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
     EnterCriticalSection(&s_wq.lock);
-    while (s_wq.count >= RX_Q_SLOTS && !s_wq.stop)
+    while ((s_wq.count + s_wq.busy + s_wq.reserved_slots >= RX_Q_SLOTS ||
+             s_wq.queued_bytes > RX_Q_MAX_BYTES - add_bytes) && !s_wq.stop)
         SleepConditionVariableCS(&s_wq.cv_space, &s_wq.lock, INFINITE);
     if (s_wq.stop) {
         LeaveCriticalSection(&s_wq.lock);
@@ -119,6 +208,78 @@ static int wq_push(const rx_task *t) {
         return 0;
     }
     s_wq.ring[s_wq.tail] = *t;
+    s_wq.tail = (s_wq.tail + 1) % RX_Q_SLOTS;
+    s_wq.count++;
+    s_wq.queued_bytes += add_bytes;
+    WakeConditionVariable(&s_wq.cv_work);
+    LeaveCriticalSection(&s_wq.lock);
+    hop_watchdog_end(queue_guard);
+    return 1;
+}
+
+static int wq_push_data(hop_xfer_task *owner, uint64_t off, const uint8_t *data, uint32_t len) {
+    if (!owner || !data || !len || len > RX_Q_MAX_BYTES) return 0;
+    int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
+    EnterCriticalSection(&s_wq.lock);
+    while ((s_wq.count + s_wq.busy + s_wq.reserved_slots >= RX_Q_SLOTS ||
+            s_wq.queued_bytes > RX_Q_MAX_BYTES - len) && !s_wq.stop)
+        SleepConditionVariableCS(&s_wq.cv_space, &s_wq.lock, INFINITE);
+    if (s_wq.stop) {
+        LeaveCriticalSection(&s_wq.lock);
+        hop_watchdog_end(queue_guard);
+        return 0;
+    }
+    s_wq.reserved_slots++;
+    s_wq.queued_bytes += len;
+    LeaveCriticalSection(&s_wq.lock);
+
+    if (!hop_xfer_task_reserve_rx_buffer(owner, len)) {
+        EnterCriticalSection(&s_wq.lock);
+        s_wq.reserved_slots--;
+        s_wq.queued_bytes -= len;
+        WakeAllConditionVariable(&s_wq.cv_space);
+        LeaveCriticalSection(&s_wq.lock);
+        hop_watchdog_end(queue_guard);
+        return 0;
+    }
+
+    rx_task t;
+    memset(&t, 0, sizeof(t));
+    t.kind = RX_WRITE;
+    t.off = off;
+    t.len = len;
+    t.budget_owner = owner;
+    t.pool_slot = -1;
+
+    EnterCriticalSection(&s_wq.lock);
+    int pool_result = 0;
+    while (!s_wq.stop && (pool_result = wq_pool_acquire_locked(len, &t.pool_slot, &t.data)) == 0)
+        SleepConditionVariableCS(&s_wq.cv_space, &s_wq.lock, INFINITE);
+    if (s_wq.stop || pool_result != 1) {
+        s_wq.reserved_slots--;
+        s_wq.queued_bytes -= len;
+        WakeAllConditionVariable(&s_wq.cv_space);
+        LeaveCriticalSection(&s_wq.lock);
+        (void)hop_xfer_task_release_rx_buffer(owner, len);
+        hop_watchdog_end(queue_guard);
+        return 0;
+    }
+    LeaveCriticalSection(&s_wq.lock);
+    memcpy(t.data, data, len);
+
+    EnterCriticalSection(&s_wq.lock);
+    if (s_wq.stop) {
+        s_wq.reserved_slots--;
+        s_wq.queued_bytes -= len;
+        wq_pool_release_locked(t.pool_slot);
+        WakeAllConditionVariable(&s_wq.cv_space);
+        LeaveCriticalSection(&s_wq.lock);
+        (void)hop_xfer_task_release_rx_buffer(owner, len);
+        hop_watchdog_end(queue_guard);
+        return 0;
+    }
+    s_wq.reserved_slots--;
+    s_wq.ring[s_wq.tail] = t;
     s_wq.tail = (s_wq.tail + 1) % RX_Q_SLOTS;
     s_wq.count++;
     WakeConditionVariable(&s_wq.cv_work);
@@ -131,7 +292,7 @@ static int wq_push(const rx_task *t) {
 static void wq_drain(void) {
     int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
     EnterCriticalSection(&s_wq.lock);
-    while ((s_wq.count > 0 || s_wq.busy) && !s_wq.stop)
+    while (s_wq.count > 0 || s_wq.busy || s_wq.reserved_slots > 0)
         SleepConditionVariableCS(&s_wq.cv_space, &s_wq.lock, INFINITE);
     LeaveCriticalSection(&s_wq.lock);
     hop_watchdog_end(queue_guard);
@@ -165,6 +326,14 @@ static void wq_stop(void) {
     if (WaitForSingleObject(s_wq.th, 3000) == WAIT_OBJECT_0) {
         CloseHandle(s_wq.th);
         s_wq.th = NULL;
+        for (int i = 0; i < RX_Q_SLOTS; ++i) {
+            free(s_wq.buffers[i].data);
+            s_wq.buffers[i].data = NULL;
+            s_wq.buffers[i].capacity = 0;
+            s_wq.buffers[i].in_use = 0;
+        }
+        s_wq.pool_capacity = 0;
+        (void)hop_xfer_budget_set_rx_pool_bytes(0);
         DeleteCriticalSection(&s_wq.lock);
     } else {
         hop_log(HOP_LOG_WARN, "xfer: writer thread did not exit, keep lock");
@@ -178,6 +347,9 @@ static void wq_stop(void) {
 typedef struct {
     uint32_t  batch;
     int       active;
+    hop_xfer_task task;
+    uint8_t   reserved_entries[HOP_XFER_FILE_LIMIT];
+    uint64_t  reserved_entry_sizes[HOP_XFER_FILE_LIMIT];
     uint32_t  dead_batch;    /* 已作废的批次（本地取消 / 对端中止）。
                               * 它之后的帧一律忽略，且不再为它建目录 ——
                               * 否则取消之后对端再发一帧就把目录又建回来了。 */
@@ -190,6 +362,7 @@ typedef struct {
     int       cur_fail;      /* 本条目已判死：-1 = 正常，否则是 FILE_END 要回的 ACK 状态。
                               * 坏路径和坏数据都在这里落定，FILE_END 只负责回执。 */
     uint64_t  cur_size;      /* 声明的大小：超出就拒收，防止被灌成无限大 */
+    uint64_t  cur_received; /* 已按连续偏移成功入队的文件字节数 */
     /* 当前文件的校验累加：每块 CRC 折进来，FILE_END 时与发送端比对 */
     uint32_t  fcrc;
     /* 图片累积 */
@@ -229,9 +402,13 @@ static void rx_clear_state(void) {
     s_rx.fcrc = 0;
     s_rx.cur_id = 0;
     s_rx.cur_size = 0;
+    s_rx.cur_received = 0;
     s_rx.cur_is_image = s_rx.cur_is_dir = 0;
     s_rx.img_w = s_rx.img_h = s_rx.img_stride = 0;
     s_rx.cur_fail = -1;
+    memset(s_rx.reserved_entries,0,sizeof(s_rx.reserved_entries));
+    memset(s_rx.reserved_entry_sizes,0,sizeof(s_rx.reserved_entry_sizes));
+    hop_xfer_task_dispose(&s_rx.task);
     s_rx.dir[0] = L'\0';
 }
 
@@ -282,19 +459,39 @@ static void rx_discard_dir(void) {
     s_rx.dir[0] = L'\0';
 }
 
-/* 逐级创建目录。从盘符之后开始，避免对 "C:" 本身调 CreateDirectory。 */
-static void ensure_dirs(wchar_t *path) {
+/* Create a directory, accepting ERROR_ALREADY_EXISTS only when the path
+ * is actually a directory (a regular file at a parent path is an error). */
+static int create_directory_if_missing(const wchar_t *path) {
+    if (CreateDirectoryW(path, NULL)) return 1;
+    if (GetLastError() != ERROR_ALREADY_EXISTS) return 0;
+    DWORD attributes = GetFileAttributesW(path);
+    return attributes != INVALID_FILE_ATTRIBUTES &&
+           (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+/* Create parent components without attempting to create a drive/UNC root. */
+static int ensure_dirs(wchar_t *path) {
     wchar_t *p = path;
-    if (((*p >= L'A' && *p <= L'Z') || (*p >= L'a' && *p <= L'z')) && p[1] == L':')
+    if (((*p >= L'A' && *p <= L'Z') || (*p >= L'a' && *p <= L'z')) && p[1] == L':') {
         p += 2;
+        if (*p == L'\\' || *p == L'/') ++p;
+    } else if (p[0] == L'\\' && p[1] == L'\\') {
+        p += 2;
+        while (*p && *p != L'\\' && *p != L'/') ++p; /* server */
+        if (*p) ++p;
+        while (*p && *p != L'\\' && *p != L'/') ++p; /* share */
+        if (*p) ++p;
+    }
     for (; *p; ++p) {
         if (*p == L'\\' || *p == L'/') {
             wchar_t save = *p;
             *p = L'\0';
-            CreateDirectoryW(path, NULL);
+            int ok = create_directory_if_missing(path);
             *p = save;
+            if (!ok) return 0;
         }
     }
+    return 1;
 }
 
 static int rx_add_top(const wchar_t *p) {
@@ -312,6 +509,23 @@ static int rx_add_top(const wchar_t *p) {
     s_rx.ntop++;
     return 1;
 }
+
+/* Remove a previously successful top-level file before retrying it.
+ * A retry opens with CREATE_ALWAYS; if it later fails, stale clipboard paths
+ * must not continue advertising the now-incomplete file. */
+static void rx_remove_top(const wchar_t *p) {
+    if (!p) return;
+    for (int i = 0; i < s_rx.ntop; ++i) {
+        if (wcscmp(s_rx.tops[i], p) != 0) continue;
+        free(s_rx.tops[i]);
+        if (i + 1 < s_rx.ntop)
+            memmove(&s_rx.tops[i], &s_rx.tops[i + 1],
+                    (size_t)(s_rx.ntop - i - 1) * sizeof(*s_rx.tops));
+        s_rx.ntop--;
+        return;
+    }
+}
+
 
 /* 把 UTF-8 相对路径拼到本批目录下，返回 malloc 的宽路径 */
 static wchar_t *rx_path_for(const char *rel) {
@@ -334,12 +548,16 @@ static wchar_t *rx_path_for(const char *rel) {
  * is idempotent; repeated/stale ABORTs cannot end an unrelated active batch. */
 static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
     if (!batch) return;
+    if (batch & HOP_XFER_PASTE_BATCH_FLAG)
+        clip_complete_remote_paste(batch,NULL,0,0);
     if (notify_peer) { send_abort_msg(s_x.client,batch,reason); }
     if (!s_rx.active || s_rx.batch != batch) return;
     rx_close_file();
     rx_discard_dir();
     s_rx.dead_batch = batch;
     s_rx.dead_reason = reason;
+    hop_xfer_task_finish(&s_rx.task,reason==HOP_ABORT_CANCEL?
+                         HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
     rx_clear_state();
     status_end(HOP_XFER_DIR_RECEIVE,batch,
                reason==HOP_ABORT_CANCEL?HOP_XFER_CANCELLED:HOP_XFER_FAILED,
@@ -363,9 +581,30 @@ static void rx_begin_batch(uint32_t batch) {
     InterlockedExchange(&s_x.cancel_rx, 0);
 
     rx_reset();
+    if (!hop_xfer_task_init(&s_rx.task,0,(batch & HOP_XFER_PASTE_BATCH_FLAG)?batch:0,batch)) {
+        s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_DISK;
+        send_abort_msg(s_x.client,batch,HOP_ABORT_DISK);
+        return;
+    }
+    if (!hop_xfer_task_reserve_job(&s_rx.task)) {
+        s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_TOO_LARGE;
+        hop_xfer_task_finish(&s_rx.task,HOP_XFER_TASK_FAILED);
+        hop_xfer_task_dispose(&s_rx.task);
+        send_abort_msg(s_x.client,batch,HOP_ABORT_TOO_LARGE);
+        return;
+    }
+    if (!hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE)) {
+        s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_DISK;
+        hop_xfer_task_finish(&s_rx.task,HOP_XFER_TASK_FAILED);
+        hop_xfer_task_dispose(&s_rx.task);
+        send_abort_msg(s_x.client,batch,HOP_ABORT_DISK);
+        return;
+    }
     /* Keep the last tombstone: a late old BEGIN must not replace a newer task. */
     s_rx.active = 1;
     s_rx.batch = batch;
+    hop_log(HOP_LOG_INFO,"xfer: receive batch %u task=%llu",
+            batch,(unsigned long long)s_rx.task.id);
     status_begin(batch,HOP_XFER_DIR_RECEIVE,0,0,"Incoming files",HOP_XFER_RECEIVING);
 
     wchar_t tmp[MAX_PATH];
@@ -400,8 +639,7 @@ static void rx_begin_batch(uint32_t batch) {
     wcscat(s_rx.dir, sub);
 
 
-    ensure_dirs(s_rx.dir);
-    if (!CreateDirectoryW(s_rx.dir, NULL) && GetLastError()!=ERROR_ALREADY_EXISTS) {
+    if (!ensure_dirs(s_rx.dir) || !create_directory_if_missing(s_rx.dir)) {
         rx_terminate(batch,HOP_ABORT_DISK,1);
         return;
     }
@@ -435,14 +673,27 @@ static void rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
                 "xfer: batch %u incomplete (%u/%u entries); staged data kept at %ls; clipboard not updated",
                 batch, ok, total, s_rx.dir);
     } else if (s_rx.cur_is_image) {
-        if (s_rx.img && s_rx.img_len == s_rx.img_expected)
+        if (s_rx.img && s_rx.img_len == s_rx.img_expected) {
+            uint64_t clipboard_started_ns=rate_now_ns();
             clip_apply_remote_image(s_rx.img, s_rx.img_w, s_rx.img_h, s_rx.img_stride);
-        else
+            status_stage_time(HOP_XFER_DIR_RECEIVE,batch,HOP_XFER_TIME_CLIPBOARD_DISPATCH,
+                              rate_now_ns()-clipboard_started_ns);
+        } else
             hop_log(HOP_LOG_ERROR, "xfer: incomplete image rejected (%llu/%llu bytes)",
                     (unsigned long long)s_rx.img_len, (unsigned long long)s_rx.img_expected);
     } else if (s_rx.ntop > 0) {
-        clip_apply_remote_paths((const wchar_t *const *)s_rx.tops, s_rx.ntop);
+        uint64_t clipboard_started_ns=rate_now_ns();
+        if (batch & HOP_XFER_PASTE_BATCH_FLAG) {
+            /* Requested cross-device paste must pass request/version validation. */
+            clip_complete_remote_paste(batch,(const wchar_t *const *)s_rx.tops,s_rx.ntop,1);
+        } else {
+            clip_apply_remote_paths((const wchar_t *const *)s_rx.tops, s_rx.ntop);
+        }
+        status_stage_time(HOP_XFER_DIR_RECEIVE,batch,HOP_XFER_TIME_CLIPBOARD_DISPATCH,
+                          rate_now_ns()-clipboard_started_ns);
     }
+    if ((batch & HOP_XFER_PASTE_BATCH_FLAG) && ok != total)
+        clip_complete_remote_paste(batch,NULL,0,0);
     hop_log(HOP_LOG_INFO, "xfer: batch %u done (%d items, %u/%u ACKed)",
             batch, s_rx.ntop, ok, total);
     AcquireSRWLockExclusive(&s_status_lock);
@@ -452,6 +703,7 @@ static void rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
         status_file_phase(HOP_XFER_DIR_RECEIVE,batch,0,HOP_XFER_FILE_COMPLETED,1);
     int complete=(ok==total) && (!s_rx.cur_is_image ||
         (s_rx.img && s_rx.img_len==s_rx.img_expected));
+    hop_xfer_task_finish(&s_rx.task,complete?HOP_XFER_TASK_COMPLETED:(s_rx.cur_is_image?HOP_XFER_TASK_FAILED:HOP_XFER_TASK_PARTIAL));
     status_end(HOP_XFER_DIR_RECEIVE,batch,complete?HOP_XFER_COMPLETED:
                (s_rx.cur_is_image?HOP_XFER_FAILED:HOP_XFER_PARTIAL),
                complete?"Receive completed":"Receive incomplete; clipboard not updated");
@@ -516,6 +768,10 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
             rx_begin_batch(batch);
             if (!s_rx.active || s_rx.batch != batch) return;
+            if (id == 0 || id > HOP_XFER_FILE_LIMIT) {
+                rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
+                return;
+            }
 
             /* 先把"当前条目"登记好，哪怕它是坏的：FILE_END 要靠 cur_id 回 ACK，
              * 漏回一次，发送端就要白等 10 秒超时再重试。 */
@@ -526,6 +782,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             s_rx.cur_is_dir   = (flags & HOP_FILE_FLAG_DIR) ? 1 : 0;
             s_rx.cur_fail     = -1;
             s_rx.cur_size     = 0;   /* 0 = 任何分块都越界被拒，坏条目不落盘 */
+            s_rx.cur_received = 0;
             s_rx.fcrc         = 0;
             wq_error_set(0);
 
@@ -546,30 +803,48 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             if (!path) { s_rx.cur_fail = HOP_FILE_ACK_BADPATH; break; }
 
             s_rx.cur_path = path;
+            rx_remove_top(s_rx.cur_path);
             s_rx.cur_size = size;
+            if (!s_rx.reserved_entries[id - 1]) {
+                if (!hop_xfer_task_reserve_entry(&s_rx.task,size)) {
+                    rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
+                    return;
+                }
+                s_rx.reserved_entries[id - 1] = 1;
+                s_rx.reserved_entry_sizes[id - 1] = size;
+            } else if (s_rx.reserved_entry_sizes[id - 1] != size) {
+                rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
+                return;
+            }
 
             if (s_rx.cur_is_dir) {
-                ensure_dirs(path);
-                CreateDirectoryW(path, NULL);
+                if (!ensure_dirs(path) || !create_directory_if_missing(path)) {
+                    s_rx.cur_fail = HOP_FILE_ACK_DISK;
+                    break;
+                }
                 /* 顶层目录才进剪贴板清单 */
-                if (!wcschr(path + wcslen(s_rx.dir) + 1, L'\\'))
-                    rx_add_top(path);
+                if (!wcschr(path + wcslen(s_rx.dir) + 1, L'\\') &&
+                    !rx_add_top(path))
+                    s_rx.cur_fail = HOP_FILE_ACK_DISK;
             } else {
-                /* 建父目录 */
+                /* 建父目录；失败时不能把后续文件错误地 ACK 成功。 */
                 wchar_t *sep = wcsrchr(path, L'\\');
                 if (sep) {
                     wchar_t save = *sep;
                     *sep = L'\0';
-                    ensure_dirs(path);
-                    CreateDirectoryW(path, NULL);
+                    int parent_ok = ensure_dirs(path) && create_directory_if_missing(path);
                     *sep = save;
+                    if (!parent_ok) {
+                        s_rx.cur_fail = HOP_FILE_ACK_DISK;
+                        break;
+                    }
                 }
                 /* 打开交给写线程 —— 句柄归它独占 */
                 rx_task t;
                 memset(&t, 0, sizeof(t));
                 t.kind = RX_OPEN;
                 wcsncpy(t.path, path, MAX_PATH - 1);
-                wq_push(&t);
+                if (!wq_push(&t)) s_rx.cur_fail = HOP_FILE_ACK_DISK;
 
                 /* 不在这里进剪贴板清单 —— 此刻文件还没写成功。
                  * 写盘失败 / 校验失败的文件绝不能出现在剪贴板里，
@@ -603,12 +878,22 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 return;
             }
 
+            size_t expected = (size_t)stride * (size_t)h;
+            if (!s_rx.cur_is_image) {
+                if (!hop_xfer_task_reserve_image(&s_rx.task,(uint64_t)expected)) {
+                    rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
+                    return;
+                }
+            } else if (s_rx.img_expected != expected) {
+                rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
+                return;
+            }
             s_rx.cur_is_image = 1;
             s_rx.cur_id = msg.id;
             s_rx.img_w = w;
             s_rx.img_h = h;
             s_rx.img_stride = stride;
-            s_rx.img_expected = (size_t)stride * (size_t)h;
+            s_rx.img_expected = expected;
             status_image(batch,HOP_XFER_DIR_RECEIVE,s_rx.img_expected);
             s_rx.img_len = 0;
             break;
@@ -616,6 +901,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
         case HOP_MSG_FILE_CHUNK: {
             if (!s_rx.active) return; /* late data after termination */
+            uint64_t receive_started_ns=rate_now_ns();
             if (len < 20) { rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1); return; }
             uint64_t off = hop_get_be64(p + 4);
             uint32_t n   = hop_get_be32(p + 12);
@@ -639,7 +925,13 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
              *
              * 坏一块只作废这一个文件，不再 ABORT 整批：
              * 发送端收到 ACK_CRC 会单独重发它，其余文件照常落地。 */
-            if (hop_crc32(0, data, n) != crc) {
+            uint64_t crc_started_ns=rate_now_ns();
+            int crc_ok=(hop_crc32(0, data, n) == crc);
+            uint64_t crc_elapsed_ns=rate_now_ns()-crc_started_ns;
+            if (!crc_ok) {
+                status_stage_time(HOP_XFER_DIR_RECEIVE,s_rx.batch,HOP_XFER_TIME_CRC,crc_elapsed_ns);
+                status_stage_time(HOP_XFER_DIR_RECEIVE,s_rx.batch,HOP_XFER_TIME_RECEIVE,
+                                  rate_now_ns()-receive_started_ns);
                 hop_log(HOP_LOG_ERROR,
                         "xfer: CHUNK CRC MISMATCH off=%llu len=%u (expect %08x)",
                         (unsigned long long)off, n, crc);
@@ -658,21 +950,39 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                     rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
                     return;
                 }
+                /* IMAGE_BEGIN already reserved img_expected bytes in the
+                 * task ledger. Allocate that exact amount once: geometric growth
+                 * would make the real capacity exceed the reservation and may
+                 * transiently keep both old and new buffers alive during realloc. */
+                if (!s_rx.img) {
+                    s_rx.img = (uint8_t *)realloc(NULL, s_rx.img_expected);
+                    if (!s_rx.img) { rx_terminate(s_rx.batch,HOP_ABORT_DISK,1); return; }
+                    s_rx.img_cap = s_rx.img_expected;
+                }
                 if (need > s_rx.img_cap) {
-                    size_t nc = s_rx.img_cap ? s_rx.img_cap : (size_t)1024 * 1024;
-                    while (nc < need) nc *= 2;
-                    if (nc > HOP_IMG_MAX_BYTES) nc = (size_t)HOP_IMG_MAX_BYTES;
-                    uint8_t *nv = (uint8_t *)realloc(s_rx.img, nc);
-                    if (!nv) { rx_terminate(s_rx.batch,HOP_ABORT_DISK,1); return; }
-                    s_rx.img = nv;
-                    s_rx.img_cap = nc;
+                    hop_log(HOP_LOG_ERROR, "xfer: image buffer capacity exceeded");
+                    rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
+                    return;
                 }
                 memcpy(s_rx.img + off, data, n);
                 if (need > s_rx.img_len) s_rx.img_len = need;
-                status_chunk(HOP_XFER_DIR_RECEIVE,s_rx.batch,s_rx.cur_id,off,n);
+                uint64_t receive_elapsed_ns=rate_now_ns()-receive_started_ns;
+                status_chunk_timed(HOP_XFER_DIR_RECEIVE,s_rx.batch,s_rx.cur_id,off,n,
+                                   0,crc_elapsed_ns,0,receive_elapsed_ns);
                 break;
             }
 
+            /* TCP is ordered: reject gaps, overlaps and chunks after a prior
+             * file failure instead of creating sparse or truncated files. */
+            if (s_rx.cur_fail >= 0) break;
+            if (off != s_rx.cur_received || off > s_rx.cur_size ||
+                (uint64_t)n > s_rx.cur_size - off) {
+                hop_log(HOP_LOG_ERROR, "xfer: non-contiguous file chunk rejected (off=%llu received=%llu size=%llu)",
+                        (unsigned long long)off, (unsigned long long)s_rx.cur_received,
+                        (unsigned long long)s_rx.cur_size);
+                s_rx.cur_fail = HOP_FILE_ACK_CRC;
+                break;
+            }
             /* 不许超出声明的大小：否则对端能一直灌，把磁盘写爆 */
             if (off + n > s_rx.cur_size) {
                 hop_log(HOP_LOG_ERROR, "xfer: chunk beyond declared size (%llu+%u > %llu)",
@@ -682,20 +992,17 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
             /* 校验通过才入队。拷贝一份交给写线程 —— 解码器的缓冲
              * 在回调返回后就被释放了，不能把指针递出去。 */
-            rx_task t;
-            memset(&t, 0, sizeof(t));
-            t.kind = RX_WRITE;
-            t.off = off;
-            t.len = n;
-            t.data = (uint8_t *)malloc(n);
-            if (!t.data) return;
-            memcpy(t.data, data, n);
-            if (!wq_push(&t)) free(t.data);
-            else status_chunk(HOP_XFER_DIR_RECEIVE,s_rx.batch,s_rx.cur_id,off,n);
-
+            if (!wq_push_data(&s_rx.task, off, data, n)) {
+                s_rx.cur_fail = HOP_FILE_ACK_DISK;
+                break;
+            }
+            s_rx.cur_received += n;
             /* 文件 CRC 折入本块 CRC：既覆盖数据（块 CRC 已验证），
              * 也覆盖顺序与偏移，且不需要把整份文件重算一遍 */
             s_rx.fcrc = hop_xfer_file_crc_step(s_rx.fcrc, off, crc);
+            uint64_t receive_elapsed_ns=rate_now_ns()-receive_started_ns;
+            status_chunk_timed(HOP_XFER_DIR_RECEIVE,s_rx.batch,s_rx.cur_id,off,n,
+                               0,crc_elapsed_ns,0,receive_elapsed_ns);
             break;
         }
 
@@ -713,11 +1020,14 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             status_file_phase(HOP_XFER_DIR_RECEIVE,s_rx.batch,(int)id-1,HOP_XFER_FILE_VERIFYING,0);
             int ack = HOP_FILE_ACK_OK;
 
+            /* Always drain and close, including a file already marked bad by
+             * a chunk CRC or queue error. Failure cleanup must never race the
+             * writer's still-open handle. */
+            if (!s_rx.cur_is_dir) rx_close_file();
+
             if (s_rx.cur_fail >= 0) {
                 ack = s_rx.cur_fail;
             } else {
-                rx_close_file();     /* 关文件、比 CRC 之前必须排空写队列 */
-
                 if (wq_error_get()) {
                     hop_log(HOP_LOG_ERROR, "xfer: disk error, %ls incomplete",
                             s_rx.cur_path ? s_rx.cur_path : L"?");
@@ -726,7 +1036,12 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                     hop_log(HOP_LOG_ERROR, "xfer: peer reported status %u for %ls",
                             (unsigned)status, s_rx.cur_path ? s_rx.cur_path : L"?");
                     ack = HOP_FILE_ACK_DISK;
-                } else if (s_rx.cur_size > 0 && want != s_rx.fcrc) {
+                } else if (s_rx.cur_received != s_rx.cur_size) {
+                    hop_log(HOP_LOG_ERROR, "xfer: incomplete file rejected (%llu/%llu bytes)",
+                            (unsigned long long)s_rx.cur_received,
+                            (unsigned long long)s_rx.cur_size);
+                    ack = HOP_FILE_ACK_CRC;
+                } else if (want != s_rx.fcrc) {
                     hop_log(HOP_LOG_ERROR,
                             "xfer: FILE CRC MISMATCH %ls (expect %08x got %08x)",
                             s_rx.cur_path ? s_rx.cur_path : L"?", want, s_rx.fcrc);
@@ -735,10 +1050,20 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                     /* 落盘成功、校验通过，才登记为可粘贴条目。
                      * 目录条目不在这里登记 —— 它在 BEGIN 时就已建好并登记。 */
                     const wchar_t *tail = s_rx.cur_path + wcslen(s_rx.dir) + 1;
-                    if (!wcschr(tail, L'\\')) rx_add_top(s_rx.cur_path);
+                    if (!wcschr(tail, L'\\') && !rx_add_top(s_rx.cur_path))
+                        ack = HOP_FILE_ACK_DISK;
                 }
             }
 
+
+            if (ack != HOP_FILE_ACK_OK && !s_rx.cur_is_dir && s_rx.cur_path) {
+                if (!DeleteFileW(s_rx.cur_path)) {
+                    DWORD error = GetLastError();
+                    if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+                        hop_log(HOP_LOG_WARN, "xfer: failed to remove incomplete file %ls (err %lu)",
+                                s_rx.cur_path, error);
+                }
+            }
 
             status_file_phase(HOP_XFER_DIR_RECEIVE,s_rx.batch,(int)id-1,ack==HOP_FILE_ACK_OK?HOP_XFER_FILE_COMPLETED:HOP_XFER_FILE_FAILED,0);
 
@@ -922,6 +1247,7 @@ static DWORD WINAPI listen_thread(LPVOID arg) {
                 hop_session_id session;
                 bad = !hop_session_current(&session) ||
                       !hop_xfer_hello_bound(hello + HOP_HEADER_SIZE, need - HOP_HEADER_SIZE, s_x.cfg.token, &session);
+                if (bad) hop_log(HOP_LOG_WARN,"xfer: data handshake rejected: protocol, token or control session mismatch");
                 if (!bad) {
                     uint8_t reply[2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES];
                     uint32_t reply_len = hop_xfer_hello_encode(reply, s_x.cfg.token, &session);
@@ -968,4 +1294,37 @@ static DWORD WINAPI listen_thread(LPVOID arg) {
     s_x.listen_s = INVALID_SOCKET; InterlockedExchange(&s_x.listening, 0);
     hop_decoder_free(dec);
     return 0;
+}
+
+static DWORD WINAPI data_client_thread(LPVOID unused){
+    (void)unused;unsigned delay=500;
+    hop_decoder *dec=hop_decoder_new(NULL,on_data_frame);if(!dec)return 1;
+    while(WaitForSingleObject(s_x.stop,0)!=WAIT_OBJECT_0){
+        hop_session_id session;
+        if(!hop_session_current(&session)){WaitForSingleObject(s_x.stop,200);continue;}
+        SOCKET sock=net_connect_timeout_win(s_x.cfg.peer_host,s_x.cfg.data_port,s_x.stop);
+        if(sock==INVALID_SOCKET){
+            if(s_x.cfg.peer_host[0])hop_log(HOP_LOG_WARN,"xfer: TCP data connection failed: host=%s port=%u; check data port and firewall",s_x.cfg.peer_host,(unsigned)s_x.cfg.data_port);
+            WaitForSingleObject(s_x.stop,delay);delay=delay<8000?delay*2:8000;continue;
+        }
+        DWORD snd=5000,rcv=200;net_set_keepalive(sock);
+        setsockopt(sock,SOL_SOCKET,SO_SNDTIMEO,(char*)&snd,sizeof(snd));setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,(char*)&rcv,sizeof(rcv));
+        rx_bind_session(&session);hop_decoder_reset(dec);
+        EnterCriticalSection(&s_x.lock);s_x.session=session;s_x.client=sock;s_x.peer_ready=0;++s_x.epoch;s_x.abort_batch=0;LeaveCriticalSection(&s_x.lock);
+        uint8_t hello[2+HOP_TOKEN_MAX+HOP_SESSION_BYTES],header[HOP_HEADER_SIZE];
+        uint32_t len=hop_xfer_hello_encode(hello,s_x.cfg.token,&session);hop_encode_header(header,HOP_MSG_XFER_HELLO,len);
+        if(!send_all(sock,(const char*)header,sizeof(header)) || !send_all(sock,(const char*)hello,(int)len))shutdown(sock,SD_BOTH);
+        uint64_t started=hop_monotonic_ms();int authed=0;
+        while(WaitForSingleObject(s_x.stop,0)!=WAIT_OBJECT_0 && hop_session_matches(&session)){
+            EnterCriticalSection(&s_x.lock);authed=s_x.peer_ready;LeaveCriticalSection(&s_x.lock);
+            if(!authed && hop_handshake_expired(hop_monotonic_ms(),started))break;
+            if(InterlockedExchange(&s_x.cancel_rx,0))rx_cancel_local();
+            uint8_t buf[65536];int n=recv(sock,(char*)buf,sizeof(buf),0);
+            if(n==SOCKET_ERROR){int e=WSAGetLastError();if(e==WSAETIMEDOUT||e==WSAEWOULDBLOCK||e==WSAEINTR)continue;break;}
+            if(n<=0||!hop_decoder_feed(dec,buf,(uint32_t)n))break;
+        }
+        retire_data_socket(sock);rx_close_file();
+        delay=authed?500:(delay<8000?delay*2:8000);WaitForSingleObject(s_x.stop,delay);
+    }
+    hop_decoder_free(dec);return 0;
 }

@@ -1,0 +1,87 @@
+/* Exercise extracted production accept loops with real loopback sockets.
+ * SO_NOSIGPIPE is a checked test double on Linux; native on macOS. */
+#define _DEFAULT_SOURCE 1
+#if defined(__APPLE__)
+/* Expose Darwin socket extensions while the test is compiled in POSIX mode. */
+#define _DARWIN_C_SOURCE 1
+#endif
+#include "hop.h"
+#include <assert.h>
+#include <errno.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#ifndef INADDR_LOOPBACK
+#define INADDR_LOOPBACK 0x7f000001UL
+#endif
+#include <sys/socket.h>
+#include <sys/select.h>
+
+static struct { hop_config cfg; } g_mac;
+static _Atomic int s_stop, valid=1, suppressed;
+static struct { _Atomic int stop; } s_x;
+static int s_listener=-1,s_data_listener=-1;
+void hop_log(hop_log_level level,const char *fmt,...){(void)level;(void)fmt;}
+int hop_session_matches(const hop_session_id *s){(void)s;return atomic_load(&valid);}
+/* Linux has no SO_NOSIGPIPE; emulate it in the fixture only.
+ * On macOS, exercise the native socket option directly and verify it with
+ * getsockopt() below. */
+#if !defined(__APPLE__)
+#ifndef SO_NOSIGPIPE
+#define SO_NOSIGPIPE 0x7f01
+#endif
+static int safe_setsockopt(int fd,int level,int opt,const void *value,socklen_t len){
+    if(level==SOL_SOCKET && opt==SO_NOSIGPIPE){
+        assert(*(const int*)value==1);
+        atomic_fetch_add(&suppressed,1);return 0;
+    }
+    return setsockopt(fd,level,opt,value,len);
+}
+#define setsockopt safe_setsockopt
+#endif
+static void assert_no_sigpipe(int fd){
+#if defined(__APPLE__)
+    int enabled=0;socklen_t size=sizeof(enabled);
+    assert(getsockopt(fd,SOL_SOCKET,SO_NOSIGPIPE,&enabled,&size)==0 && enabled==1);
+#else
+    (void)fd;
+    assert(atomic_load(&suppressed)>0);
+#endif
+}
+@CONTROL_ACCEPT@
+@DATA_ACCEPT@
+static hop_session_id test_session;
+static void *control_thread(void *unused){(void)unused;return (void *)(intptr_t)(accept_control()+1);}
+static void *data_thread(void *unused){(void)unused;return (void *)(intptr_t)(accept_data(&test_session)+1);}
+static uint16_t free_port(void){
+    int s=socket(AF_INET,SOCK_STREAM,0);assert(s>=0);
+    struct sockaddr_in a;memset(&a,0,sizeof(a));a.sin_family=AF_INET;a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+    assert(!bind(s,(struct sockaddr *)&a,sizeof(a)));socklen_t n=sizeof(a);assert(!getsockname(s,(struct sockaddr*)&a,&n));
+    uint16_t port=ntohs(a.sin_port);close(s);return port;
+}
+static int connect_eventually(uint16_t port){
+    for(int i=0;i<100;++i){
+        int s=socket(AF_INET,SOCK_STREAM,0);assert(s>=0);
+        struct sockaddr_in a;memset(&a,0,sizeof(a));a.sin_family=AF_INET;a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);a.sin_port=htons(port);
+        if(!connect(s,(struct sockaddr *)&a,sizeof(a)))return s;
+        close(s);usleep(20000);
+    }return -1;
+}
+int main(void){
+    alarm(8);pthread_t t;void *result;
+    g_mac.cfg.port=free_port();assert(!pthread_create(&t,NULL,control_thread,NULL));
+    int client=connect_eventually(g_mac.cfg.port);assert(client>=0);assert(!pthread_join(t,&result));
+    int peer=(int)(intptr_t)result-1;assert(peer>=0);assert_no_sigpipe(peer);close(peer);close(client);close(s_listener);
+    g_mac.cfg.data_port=free_port();assert(!pthread_create(&t,NULL,data_thread,NULL));
+    usleep(300000);atomic_store(&valid,0);assert(!pthread_join(t,&result));assert((intptr_t)result==0);
+    atomic_store(&valid,1);assert(!pthread_create(&t,NULL,data_thread,NULL));
+    client=connect_eventually(g_mac.cfg.data_port);assert(client>=0);assert(!pthread_join(t,&result));
+    peer=(int)(intptr_t)result-1;assert(peer>=0);assert_no_sigpipe(peer);
+    close(peer);close(client);close(s_data_listener);alarm(0);
+    puts("PASS: production macOS accept loops, stale-session exit and SIGPIPE setup (loopback with OS doubles)");return 0;
+}

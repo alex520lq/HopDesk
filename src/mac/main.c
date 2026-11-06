@@ -61,9 +61,8 @@ int main(int argc, char **argv) {
     memset(&g_mac, 0, sizeof(g_mac));
 
     hop_config_defaults(&g_mac.cfg);
-    snprintf(g_mac.cfg.device_name, HOP_NAME_MAX, "%s", "Alex67deMac");
-    snprintf(g_mac.cfg.peer_host, sizeof(g_mac.cfg.peer_host),
-             "%s", "192.168.31.8");
+    snprintf(g_mac.cfg.device_name, HOP_NAME_MAX, "%s", "Mac");
+    g_mac.cfg.peer_host[0]=0;
 
     /* Finder launches apps with an arbitrary working directory.
      * Keep the canonical config in Application Support, but migrate legacy
@@ -113,11 +112,12 @@ int main(int argc, char **argv) {
     hop_log(HOP_LOG_INFO, "HopDesk %s starting", HOP_VERSION);
     hop_log(HOP_LOG_INFO, "config: %s (%s), host=%s port=%u data_port=%u token_len=%u",
             loaded_from, config_loaded ? "loaded" : "defaults",
-            g_mac.cfg.peer_host[0] ? g_mac.cfg.peer_host : "192.168.31.8",
+            g_mac.cfg.peer_host[0] ? g_mac.cfg.peer_host : "(not configured)",
             (unsigned)g_mac.cfg.port, (unsigned)g_mac.cfg.data_port,
             (unsigned)strlen(g_mac.cfg.token));
 
     inject_init();
+    if(g_mac.cfg.role==HOP_ROLE_SERVER)mac_capture_init();
     xfer_init(&g_mac.cfg);
     statusbar_init();
     clipboard_init();

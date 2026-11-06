@@ -10,7 +10,10 @@ $sources = @(
     (Join-Path $root 'src/core/config.c'),
     (Join-Path $root 'src/core/keymap.c'),
     (Join-Path $root 'src/core/xfer_validate.c'),
-    (Join-Path $root 'src/core/update_manifest.c')
+    (Join-Path $root 'src/core/update_manifest.c'),
+    (Join-Path $root 'src/core/xfer_budget.c'),
+    (Join-Path $root 'src/core/xfer_task.c'),
+    (Join-Path $root 'src/core/xfer_rate.c')
 )
 $inc = Join-Path $root 'src/core'
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {

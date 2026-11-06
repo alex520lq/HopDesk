@@ -4,10 +4,20 @@
  */
 #include "hop.h"
 #include "update_manifest.h"
+#include "xfer_budget.h"
+#include "xfer_task.h"
+#include "xfer_tracking.h"
+#include "xfer_rate.h"
+#include "xfer_ack_window.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <pthread.h>
+#endif
 
 static int g_failures;
 static int g_messages;
@@ -120,6 +130,16 @@ static void test_decoder_rejects_oversized_frame(void) {
     hop_decoder_free(d);
 }
 
+static void test_token_authentication(void) {
+    static const uint8_t good[] = "shared-secret";
+    static const uint8_t bad[] = "shared-secrex";
+    CHECK(hop_token_matches("shared-secret", good, sizeof(good) - 1));
+    CHECK(!hop_token_matches("shared-secret", bad, sizeof(bad) - 1));
+    CHECK(!hop_token_matches("", good, sizeof(good) - 1));
+    CHECK(!hop_token_matches("", (const uint8_t *)"", 0));
+    CHECK(!hop_token_matches("shared-secret", NULL, 0));
+}
+
 static void test_crc32(void) {
     static const char input[] = "123456789";
     uint32_t whole = hop_crc32(0, input, 9);
@@ -137,6 +157,7 @@ static void test_config_defaults_and_loading(void) {
     CHECK(c.port == HOP_DEFAULT_PORT);
     CHECK(c.data_port == HOP_DATA_PORT);
     CHECK(c.xfer_chunk_kb == HOP_CHUNK_KB_DEFAULT);
+    CHECK(c.xfer_rate_limit_mib == 128);
     CHECK(c.token[0] == '\0');
 
     const char *path = "hopdesk-core-test.conf";
@@ -150,6 +171,7 @@ static void test_config_defaults_and_loading(void) {
           "token=test-secret\n"
           "host=127.0.0.1\n"
           "xfer_chunk_kb=512\n"
+          "xfer_rate_limit_mib=256\n"
           "disp_win_input=0x0F\n"
           "switch_push_ms=175\n", f);
     fclose(f);
@@ -161,6 +183,7 @@ static void test_config_defaults_and_loading(void) {
     CHECK(strcmp(c.token, "test-secret") == 0);
     CHECK(strcmp(c.peer_host, "127.0.0.1") == 0);
     CHECK(c.xfer_chunk_kb == 512);
+    CHECK(c.xfer_rate_limit_mib == 256);
     CHECK(c.disp_win_input == 0x0F);
     CHECK(c.switch_delay_ms == 175);
 
@@ -178,7 +201,37 @@ static void test_config_defaults_and_loading(void) {
     CHECK(c.switch_delay_ms == 175 && c.switch_cooldown_ms == 425);
     CHECK(c.edge_margin_px == 48 && c.disp_win_input == 0x0F);
     CHECK(c.xfer_chunk_kb == 512);
+    CHECK(c.xfer_rate_limit_mib == 256);
+    f = fopen(path, "w");
+    CHECK(f != NULL);
+    if (f) { fputs("xfer_rate_limit_mib=8\n", f); fclose(f); }
+    hop_config before_invalid = c;
+    CHECK(hop_config_load(&c, path) == 0);
+    CHECK(c.xfer_rate_limit_mib == before_invalid.xfer_rate_limit_mib);
     remove(path);
+}
+
+static void test_dual_roles(void) {
+    const char *path="hopdesk-role-test.conf";
+    hop_config c,loaded;
+    for(int role=HOP_ROLE_SERVER;role<=HOP_ROLE_CLIENT;++role){
+        hop_config_defaults(&c);c.role=(hop_role)role;
+        snprintf(c.peer_host,sizeof(c.peer_host),"127.0.0.1");
+        CHECK(hop_config_save_atomic(&c,path));
+        hop_config_defaults(&loaded);CHECK(hop_config_load(&loaded,path));
+        CHECK(loaded.role==c.role);CHECK(!strcmp(loaded.peer_host,c.peer_host));
+    }
+    FILE *f=fopen(path,"w");CHECK(f!=NULL);
+    if(f){fputs("role=invalid\nport=9999\n",f);fclose(f);
+        loaded=c;CHECK(!hop_config_load(&loaded,path));CHECK(loaded.port==c.port);}
+    remove(path);
+    CHECK(hop_mac_to_vk(0x00)=='A');
+    CHECK(hop_mac_to_vk(0x37)==0xA2); /* Cmd -> Windows Ctrl */
+    CHECK(hop_mac_to_vk(0x3B)==0x5B); /* Control -> Windows key */
+    CHECK(hop_mac_to_vk(0xFFFF)==HOP_KEY_NONE);
+    const unsigned keys[]={'A','Z','1',0x70,0x25,0xA0,0xA1,0xA2,0xA3,0x5B,0x5C};
+    for(unsigned n=0;n<sizeof(keys)/sizeof(keys[0]);++n)
+        CHECK(hop_mac_to_vk(hop_vk_to_mac((uint16_t)keys[n]))==keys[n]);
 }
 
 static void test_keymap(void) {
@@ -208,13 +261,17 @@ static void test_xfer_hello_validation(void) {
     CHECK(!hop_xfer_hello_valid(hello, n, "test"));
     CHECK(!hop_xfer_hello_valid(NULL, n, "test"));
     CHECK(!hop_xfer_hello_valid(hello, n, NULL));
+    uint32_t valid_n = n;
     n = hop_xfer_hello_encode(hello, "", &session);
-    CHECK(hop_xfer_hello_valid(hello, n, ""));
-    CHECK(!hop_xfer_hello_valid(hello, n, "x"));
+    CHECK(n == 0);
+    uint8_t empty_hello[2 + HOP_SESSION_BYTES] = {HOP_XFER_PROTO_VER, 0};
+    memcpy(empty_hello + 2, session.bytes, HOP_SESSION_BYTES);
+    CHECK(!hop_xfer_hello_valid(empty_hello, sizeof(empty_hello), ""));
+    CHECK(!hop_xfer_hello_valid(empty_hello, sizeof(empty_hello), "x"));
     CHECK(!hop_xfer_hello_valid(hello, 2, "")); /* v5 is not a session handshake */
     char too_long[HOP_TOKEN_MAX + 2];
     memset(too_long, 'x', sizeof(too_long)); too_long[sizeof(too_long)-1] = 0;
-    CHECK(!hop_xfer_hello_valid(hello, n, too_long));
+    CHECK(!hop_xfer_hello_valid(hello, valid_n, too_long));
 }
 
 static void test_xfer_relative_path_validation(void) {
@@ -347,6 +404,59 @@ static void test_decoder_all_split_points(void) {
     }
 }
 
+
+
+static void test_lazy_clipboard_protocol(void) {
+    const char *names[] = {"report.txt", "资料", "empty-folder"};
+    uint8_t offer[HOP_CLIP_OFFER_MAX_PAYLOAD];
+    uint32_t n = hop_clip_file_offer_encode(offer, sizeof(offer),
+                                            HOP_DEV_SERVER, 42, names, 3);
+    CHECK(n > HOP_CLIP_OFFER_HEADER_BYTES);
+    hop_clip_file_offer_msg decoded;
+    CHECK(hop_clip_file_offer_decode(offer, n, &decoded));
+    CHECK(decoded.origin == HOP_DEV_SERVER && decoded.generation == 42 && decoded.count == 3);
+    CHECK(decoded.name_lens[0] == strlen(names[0]));
+    CHECK(memcmp(decoded.names[0], names[0], decoded.name_lens[0]) == 0);
+    CHECK(decoded.name_lens[1] == strlen(names[1]));
+    CHECK(memcmp(decoded.names[1], names[1], decoded.name_lens[1]) == 0);
+    CHECK(!hop_clip_file_offer_decode(offer, n - 1, &decoded));
+    offer[n] = 0xEE;
+    CHECK(!hop_clip_file_offer_decode(offer, n + 1, &decoded));
+
+    const char *bad_names[] = {"../escape"};
+    CHECK(hop_clip_file_offer_encode(offer, sizeof(offer), HOP_DEV_SERVER, 43,
+                                     bad_names, 1) == 0);
+    CHECK(hop_clip_file_offer_encode(offer, sizeof(offer), HOP_DEV_SERVER, 0,
+                                     names, 3) == 0);
+
+    uint8_t clear[HOP_CLIP_OFFER_CLEAR_BYTES];
+    hop_put_be32(clear, HOP_DEV_CLIENT);
+    hop_put_be64(clear + 4, 77);
+    uint32_t origin = 0; uint64_t generation = 0;
+    CHECK(hop_clip_file_offer_clear_decode(clear, sizeof(clear), &origin, &generation));
+    CHECK(origin == HOP_DEV_CLIENT && generation == 77);
+    CHECK(!hop_clip_file_offer_clear_decode(clear, sizeof(clear)-1, &origin, &generation));
+
+    uint8_t request[HOP_CLIP_PASTE_REQUEST_BYTES];
+    uint32_t request_id = HOP_XFER_PASTE_BATCH_FLAG | 9u;
+    CHECK(hop_clip_paste_request_encode(request, request_id, HOP_DEV_SERVER, 42, 1234) ==
+          HOP_CLIP_PASTE_REQUEST_BYTES);
+    hop_clip_paste_request_msg req;
+    CHECK(hop_clip_paste_request_decode(request, sizeof(request), &req));
+    CHECK(req.request_id == request_id && req.origin == HOP_DEV_SERVER &&
+          req.generation == 42 && req.clipboard_version == 1234);
+    CHECK(!hop_clip_paste_request_decode(request, sizeof(request)-1, &req));
+    hop_put_be32(request, 9);
+    CHECK(!hop_clip_paste_request_decode(request, sizeof(request), &req));
+
+    uint8_t failed[HOP_CLIP_PASTE_FAILED_BYTES];
+    CHECK(hop_clip_paste_failed_encode(failed, request_id, HOP_CLIP_PASTE_FAIL_STALE) ==
+          HOP_CLIP_PASTE_FAILED_BYTES);
+    uint32_t failed_id = 0; uint8_t reason = 0;
+    CHECK(hop_clip_paste_failed_decode(failed, sizeof(failed), &failed_id, &reason));
+    CHECK(failed_id == request_id && reason == HOP_CLIP_PASTE_FAIL_STALE);
+    CHECK(!hop_clip_paste_failed_decode(failed, sizeof(failed)-1, &failed_id, &reason));
+}
 
 static void test_clipboard_origin_routing(void) {
     CHECK(hop_clip_should_apply_remote(HOP_DEV_CLIENT, HOP_DEV_SERVER));
@@ -492,6 +602,407 @@ static void test_update_manifest_validation(void) {
     CHECK(!hop_update_manifest_parse(duplicate, sizeof(duplicate) - 1, &parsed));
 }
 
+
+
+typedef struct { hop_xfer_task task; uint32_t transfer_id; int acquired; } budget_thread_context;
+#ifdef _WIN32
+static DWORD WINAPI budget_reserve_worker(LPVOID value) {
+    budget_thread_context *ctx=(budget_thread_context*)value;
+    ctx->acquired=hop_xfer_task_init(&ctx->task,0,0,ctx->transfer_id) && hop_xfer_task_reserve_job(&ctx->task);
+    return 0;
+}
+#else
+static void *budget_reserve_worker(void *value) {
+    budget_thread_context *ctx=(budget_thread_context*)value;
+    ctx->acquired=hop_xfer_task_init(&ctx->task,0,0,ctx->transfer_id) && hop_xfer_task_reserve_job(&ctx->task);
+    return NULL;
+}
+#endif
+
+static void test_xfer_global_budget(void) {
+    hop_xfer_budget_limits limits={2u,3u,1000u,600u,500u,2u,16u,32u};
+    hop_xfer_budget_snapshot snap;
+    hop_xfer_reservation_handle a,b,c;
+    memset(&a,0,sizeof(a));memset(&b,0,sizeof(b));memset(&c,0,sizeof(c));
+    CHECK(hop_xfer_budget_reservation_init(&a,1001));
+    CHECK(hop_xfer_budget_reservation_init(&b,1002));
+    CHECK(hop_xfer_budget_reservation_init(&c,1003));
+    CHECK(hop_xfer_budget_set_limits_for_test(&limits));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.limits.max_jobs==2&&snap.limits.max_entries==3);
+    CHECK(snap.limits.max_pending_bytes==1000&&snap.limits.max_image_bytes==600);
+    CHECK(snap.limits.max_rx_queue_slots==2&&snap.limits.max_rx_queue_bytes==16);
+    CHECK(snap.limits.max_image_temp_bytes==32);
+    CHECK(hop_xfer_budget_reserve_job(&a));
+    CHECK(hop_xfer_budget_reserve_entry(&a,400));
+    CHECK(hop_xfer_budget_reserve_entry(&a,300));
+    CHECK(!hop_xfer_budget_reserve_entry(&a,301));
+    CHECK(hop_xfer_budget_reserve_job(&b));
+    CHECK(!hop_xfer_budget_reserve_job(&c));
+    CHECK(hop_xfer_budget_reserve_entry(&b,1));
+    CHECK(!hop_xfer_budget_reserve_entry(&b,0));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==2&&snap.entries==3&&snap.pending_bytes==701);
+    CHECK(snap.jobs_high_water==2&&snap.entries_high_water==3);
+    hop_xfer_budget_release(&a);
+    hop_xfer_budget_release(&a);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==1&&snap.entries==1&&snap.pending_bytes==1);
+    hop_xfer_budget_release(&b);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0);
+    CHECK(hop_xfer_budget_reserve_job(&a));
+    CHECK(hop_xfer_budget_reserve_image(&a,500));
+    CHECK(!hop_xfer_budget_reserve_image(&a,501));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==1&&snap.entries==1&&snap.pending_bytes==500&&snap.image_bytes==500);
+    CHECK(hop_xfer_budget_reserve_rx_buffer(&a,8));
+    CHECK(hop_xfer_budget_reserve_rx_buffer(&a,8));
+    CHECK(!hop_xfer_budget_reserve_rx_buffer(&a,1));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.rx_queue_slots==2&&snap.rx_queue_bytes==16);
+    CHECK(snap.rx_queue_slots_high_water==2&&snap.rx_queue_bytes_high_water==16);
+    CHECK(snap.rejected_rx_buffers==1);
+    CHECK(hop_xfer_budget_release_rx_buffer(&a,8));
+    CHECK(hop_xfer_budget_release_rx_buffer(&a,8));
+    CHECK(!hop_xfer_budget_release_rx_buffer(&a,8));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.rx_queue_slots==0&&snap.rx_queue_bytes==0&&snap.released_rx_buffers==2);
+    CHECK(snap.accounting_errors==1);
+    CHECK(hop_xfer_budget_set_rx_pool_bytes(16));
+    CHECK(!hop_xfer_budget_set_rx_pool_bytes(17));
+    CHECK(hop_xfer_budget_set_rx_pool_bytes(0));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.rx_pool_bytes==0&&snap.rx_pool_bytes_high_water==16);
+    CHECK(snap.rejected_rx_buffers==2);
+    CHECK(hop_xfer_budget_reserve_image_temp(&a,16));
+    CHECK(hop_xfer_budget_reserve_image_temp(&a,16));
+    CHECK(!hop_xfer_budget_reserve_image_temp(&a,1));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.image_temp_bytes==32&&snap.image_temp_bytes_high_water==32);
+    CHECK(snap.image_bytes==532); /* 500-byte payload reservation + 32 temp bytes */
+    CHECK(snap.rejected_image_temp_bytes==1);
+    CHECK(hop_xfer_budget_release_image_temp(&a,16));
+    CHECK(hop_xfer_budget_release_image_temp(&a,16));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.image_temp_bytes==0&&snap.released_image_temp_bytes==32);
+    CHECK(snap.image_bytes==500);
+    hop_xfer_budget_release(&a);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0&&snap.image_bytes==0);
+
+    /* Promote an already-reserved conversion buffer without double-counting
+     * its physical allocation against the combined image-memory ceiling. */
+    CHECK(hop_xfer_budget_reserve_job(&a));
+    CHECK(hop_xfer_budget_reserve_job(&b));
+    CHECK(hop_xfer_budget_reserve_image_temp(&a,16));
+    CHECK(hop_xfer_budget_transfer_image_temp(&a,&b,8));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.image_bytes==16&&snap.image_temp_bytes==8);
+    CHECK(snap.entries==1&&snap.pending_bytes==8);
+    CHECK(snap.transferred_image_temp_bytes==8);
+    CHECK(hop_xfer_budget_release_image_temp(&a,8));
+    hop_xfer_budget_release(&a);
+    hop_xfer_budget_release(&b);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0);
+    CHECK(snap.image_bytes==0&&snap.image_temp_bytes==0);
+
+    hop_xfer_budget_limits concurrent_limits={4u,64u,1024u,512u,512u,2u,1024u,1024u};
+    CHECK(hop_xfer_budget_set_limits_for_test(&concurrent_limits));
+    budget_thread_context contexts[32];
+    memset(contexts,0,sizeof(contexts));
+    for(int i=0;i<32;i++)contexts[i].transfer_id=(uint32_t)i+1;
+#ifdef _WIN32
+    HANDLE threads[32]={0};
+    int created=0;
+    for(int i=0;i<32;i++){threads[i]=CreateThread(NULL,0,budget_reserve_worker,&contexts[i],0,NULL);if(threads[i])created++;else CHECK(0);}
+    for(int i=0;i<32;i++)if(threads[i]){CHECK(WaitForSingleObject(threads[i],INFINITE)==WAIT_OBJECT_0);CloseHandle(threads[i]);}
+#else
+    pthread_t threads[32];
+    int created=0,started[32]={0};
+    for(int i=0;i<32;i++){if(pthread_create(&threads[i],NULL,budget_reserve_worker,&contexts[i])==0){created++;started[i]=1;}else CHECK(0);}
+    for(int i=0;i<32;i++)if(started[i])CHECK(pthread_join(threads[i],NULL)==0);
+#endif
+    int acquired=0;
+    for(int i=0;i<32;i++)if(contexts[i].acquired)acquired++;
+    CHECK(created==32&&acquired==4);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==4&&snap.jobs_high_water==4);
+    for(int i=0;i<32;i++)hop_xfer_task_dispose(&contexts[i].task);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==0);
+    hop_xfer_budget_limits defaults={16u,32768u,8ull*1024ull*1024ull*1024ull,256ull*1024ull*1024ull,256ull*1024ull*1024ull,8u,8ull*1024ull*1024ull,512ull*1024ull*1024ull};
+    CHECK(hop_xfer_budget_set_limits_for_test(&defaults));
+}
+
+
+static void test_xfer_ack_window(void) {
+    hop_xfer_ack_window window;
+    int status=0;
+    uint64_t rtt_ns=0;
+    hop_xfer_ack_window_reset(&window);
+    for(uint32_t id=1;id<=HOP_XFER_ACK_WINDOW_CAPACITY;id++)
+        CHECK(hop_xfer_ack_window_register(&window,10,id));
+    CHECK(hop_xfer_ack_window_count(&window)==HOP_XFER_ACK_WINDOW_CAPACITY);
+    CHECK(!hop_xfer_ack_window_register(&window,10,5));
+    for(uint32_t id=1;id<=HOP_XFER_ACK_WINDOW_CAPACITY;id++)
+        CHECK(hop_xfer_ack_window_mark_sent(&window,10,id,1000000000ull+id*1000000ull));
+
+    /* ACKs can arrive out of order and must not overwrite each other. */
+    CHECK(hop_xfer_ack_window_deliver(&window,10,3,2,1500000000ull));
+    CHECK(!hop_xfer_ack_window_deliver(&window,10,3,0,1501000000ull));
+    CHECK(!hop_xfer_ack_window_take(&window,10,1,&status,&rtt_ns));
+    CHECK(hop_xfer_ack_window_take(&window,10,3,&status,&rtt_ns));
+    CHECK(status==2&&rtt_ns==497000000ull);
+    CHECK(hop_xfer_ack_window_count(&window)==3);
+    CHECK(!hop_xfer_ack_window_deliver(&window,10,3,0,1600000000ull));
+
+    CHECK(hop_xfer_ack_window_deliver(&window,10,1,0,1600000000ull));
+    CHECK(hop_xfer_ack_window_take(&window,10,1,&status,&rtt_ns));
+    CHECK(status==0&&rtt_ns==599000000ull);
+    CHECK(hop_xfer_ack_window_register(&window,10,5));
+    CHECK(hop_xfer_ack_window_count(&window)==3);
+    hop_xfer_ack_window_unregister(&window,10,2);
+    CHECK(hop_xfer_ack_window_count(&window)==2);
+    hop_xfer_ack_window_unregister_batch(&window,10);
+    CHECK(hop_xfer_ack_window_count(&window)==0);
+
+    CHECK(hop_xfer_ack_window_register(&window,11,1));
+    CHECK(hop_xfer_ack_window_mark_sent(&window,11,1,2000000000ull));
+    CHECK(hop_xfer_ack_window_deliver(&window,11,1,1,2100000000ull));
+    CHECK(hop_xfer_ack_window_take(&window,11,1,&status,&rtt_ns));
+    CHECK(status==1&&rtt_ns==100000000ull);
+    CHECK(hop_xfer_ack_window_count(&window)==0);
+
+    /* Deadline starts after FILE_END is fully written, not when the ACK slot
+     * is armed. This also covers an ACK racing ahead of deadline publication. */
+    CHECK(hop_xfer_ack_window_register(&window,12,1));
+    CHECK(!hop_xfer_ack_window_set_deadline(&window,12,1,5000));
+    CHECK(hop_xfer_ack_window_mark_sent(&window,12,1,1000));
+    CHECK(hop_xfer_ack_window_deliver(&window,12,1,0,4500));
+    CHECK(hop_xfer_ack_window_set_deadline(&window,12,1,5000));
+    int expired=1;
+    CHECK(hop_xfer_ack_window_take_ex(&window,12,1,&status,&rtt_ns,&expired));
+    CHECK(status==0&&!expired);
+
+    CHECK(hop_xfer_ack_window_register(&window,12,2));
+    CHECK(hop_xfer_ack_window_mark_sent(&window,12,2,6000));
+    CHECK(hop_xfer_ack_window_set_deadline(&window,12,2,7000));
+    CHECK(hop_xfer_ack_window_deliver(&window,12,2,0,7000));
+    expired=0;
+    CHECK(hop_xfer_ack_window_take_ex(&window,12,2,&status,&rtt_ns,&expired));
+    CHECK(expired); /* deadline equality is expired, matching ack_wait's >= */
+    CHECK(hop_xfer_ack_window_count(&window)==0);
+
+    /* Reconnect checkpoint advances only through a contiguous resolved prefix. */
+    int checkpoint = 0;
+    CHECK(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,0,0));
+    CHECK(checkpoint==0);
+    CHECK(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,1,1));
+    CHECK(checkpoint==0);
+    CHECK(hop_xfer_ack_window_advance_checkpoint(&checkpoint,0,1));
+    CHECK(checkpoint==1);
+    CHECK(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,3,1));
+    CHECK(checkpoint==1);
+    CHECK(hop_xfer_ack_window_advance_checkpoint(&checkpoint,1,1));
+    CHECK(checkpoint==2);
+    CHECK(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,-1,1));
+
+    /* Simulate a disconnect while filling a four-file window: only ACKed
+     * contiguous entries may move the reconnect checkpoint. */
+    hop_xfer_ack_window_reset(&window);
+    for(uint32_t id=1;id<=HOP_XFER_ACK_WINDOW_CAPACITY;id++) {
+        CHECK(hop_xfer_ack_window_register(&window,13,id));
+        CHECK(hop_xfer_ack_window_mark_sent(&window,13,id,10000u+id));
+        CHECK(hop_xfer_ack_window_set_deadline(&window,13,id,20000u+id));
+    }
+    CHECK(hop_xfer_ack_window_deliver(&window,13,1,HOP_FILE_ACK_OK,11000));
+    CHECK(hop_xfer_ack_window_deliver(&window,13,2,HOP_FILE_ACK_OK,12000));
+    checkpoint=0;
+    CHECK(hop_xfer_ack_window_take(&window,13,1,&status,&rtt_ns));
+    CHECK(status==HOP_FILE_ACK_OK);
+    CHECK(hop_xfer_ack_window_advance_checkpoint(&checkpoint,0,1));
+    CHECK(hop_xfer_ack_window_take(&window,13,2,&status,&rtt_ns));
+    CHECK(status==HOP_FILE_ACK_OK);
+    CHECK(hop_xfer_ack_window_advance_checkpoint(&checkpoint,1,1));
+    CHECK(!hop_xfer_ack_window_take(&window,13,3,&status,&rtt_ns));
+    CHECK(checkpoint==2);
+    hop_xfer_ack_window_unregister_batch(&window,13);
+    CHECK(hop_xfer_ack_window_count(&window)==0);
+}
+
+static void test_xfer_rate_limiter(void) {
+    hop_xfer_rate_limiter rate;
+    hop_xfer_rate_init(&rate,1000,100,2000,100,0);
+    CHECK(rate.current_rate_bytes_per_sec==1000&&rate.tokens_bytes==100);
+    CHECK(hop_xfer_rate_wait_ns(&rate,50,0)==0);
+    CHECK(rate.tokens_bytes==50);
+    CHECK(hop_xfer_rate_wait_ns(&rate,100,0)==50000000ull);
+    CHECK(hop_xfer_rate_wait_ns(&rate,100,50000000ull)==50000000ull);
+    CHECK(hop_xfer_rate_wait_ns(&rate,50,100000000ull)==0);
+    CHECK(hop_xfer_rate_wait_ns(&rate,101,100000000ull)==UINT64_MAX);
+
+    hop_xfer_rate_init(&rate,1000,100,2000,100,0);
+    hop_xfer_rate_note_send_time(&rate,100,1000);
+    hop_xfer_rate_feedback(&rate,50000,0);
+    CHECK(rate.current_rate_bytes_per_sec==1020&&rate.rate_increases==1);
+    uint64_t healthy_rate=rate.current_rate_bytes_per_sec;
+    hop_xfer_rate_feedback(&rate,1000000,900);
+    CHECK(rate.current_rate_bytes_per_sec<healthy_rate&&rate.rate_decreases==1);
+
+    hop_xfer_rate_init(&rate,1000,100,2000,100,0);
+    for(int i=0;i<8;i++)hop_xfer_rate_note_send_time(&rate,100,250000);
+    CHECK(rate.send_congested==1);
+    CHECK(rate.current_rate_bytes_per_sec==1000&&rate.rate_decreases==0);
+    hop_xfer_rate_feedback(&rate,0,0);
+    CHECK(rate.current_rate_bytes_per_sec==800&&rate.rate_decreases==1);
+
+    /* A 4 MiB chunk naturally takes ~32 ms at 128 MiB/s. That is not
+     * congestion when the observed socket write is close to the allowance. */
+    hop_xfer_rate_init(&rate,128ull*1024ull*1024ull,64ull*1024ull*1024ull,
+                       512ull*1024ull*1024ull,8ull*1024ull*1024ull,0);
+    for(int i=0;i<8;i++)hop_xfer_rate_note_send_time(&rate,4ull*1024ull*1024ull,35000);
+    CHECK(rate.send_congested==0);
+    CHECK(rate.current_rate_bytes_per_sec==128ull*1024ull*1024ull);
+    hop_xfer_rate_feedback(&rate,50000,0);
+    CHECK(rate.current_rate_bytes_per_sec==128ull*1024ull*1024ull+
+          (512ull*1024ull*1024ull)/100ull);
+}
+
+static void test_xfer_task_image_buffer_transfer(void) {
+    hop_xfer_budget_limits limits={4u,8u,4096u,2048u,2048u,2u,1024u,1024u};
+    hop_xfer_budget_snapshot snap;
+    hop_xfer_task source,target;
+    memset(&source,0,sizeof(source));
+    memset(&target,0,sizeof(target));
+    CHECK(hop_xfer_budget_set_limits_for_test(&limits));
+    CHECK(hop_xfer_task_init(&source,0,0,201));
+    CHECK(hop_xfer_task_init(&target,0,0,202));
+    CHECK(hop_xfer_task_reserve_job(&source));
+    CHECK(hop_xfer_task_reserve_job(&target));
+    CHECK(hop_xfer_task_set_state(&source,HOP_XFER_TASK_ACTIVE));
+    CHECK(hop_xfer_task_reserve_image_temp(&source,512));
+    CHECK(hop_xfer_task_transfer_image_temp(&source,&target,256));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==2&&snap.entries==1&&snap.pending_bytes==256);
+    CHECK(snap.image_bytes==512&&snap.image_temp_bytes==256);
+    CHECK(snap.transferred_image_temp_bytes==256);
+    CHECK(hop_xfer_task_release_image_temp(&source,256));
+    CHECK(hop_xfer_task_finish(&source,HOP_XFER_TASK_COMPLETED));
+    CHECK(hop_xfer_task_set_state(&target,HOP_XFER_TASK_QUEUED));
+    CHECK(hop_xfer_task_finish(&target,HOP_XFER_TASK_COMPLETED));
+    hop_xfer_task_dispose(&source);
+    hop_xfer_task_dispose(&target);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0);
+    CHECK(snap.image_bytes==0&&snap.image_temp_bytes==0);
+    hop_xfer_budget_limits defaults={16u,32768u,8ull*1024ull*1024ull*1024ull,256ull*1024ull*1024ull,256ull*1024ull*1024ull,8u,8ull*1024ull*1024ull,512ull*1024ull*1024ull};
+    CHECK(hop_xfer_budget_set_limits_for_test(&defaults));
+}
+
+static void test_xfer_tracking_stage_timing(void) {
+    static hop_xfer_tracking t;
+    memset(&t,0,sizeof(t));
+    hop_xfer_tracking_begin(&t,77,HOP_XFER_DIR_SEND,1,100,"timing",HOP_XFER_SENDING);
+    hop_xfer_tracking_add_time(&t,77,HOP_XFER_TIME_SCAN,1500000ull);
+    hop_xfer_tracking_add_time(&t,77,HOP_XFER_TIME_SCAN,2500000ull);
+    hop_xfer_tracking_add_time(&t,77,HOP_XFER_TIME_WRITE,7000000ull);
+    CHECK(t.stage_ns[HOP_XFER_TIME_SCAN]==4000000ull);
+    CHECK(t.stage_ns[HOP_XFER_TIME_WRITE]==7000000ull);
+    hop_xfer_tracking_add_time(&t,77,-1,999);
+    hop_xfer_tracking_add_time(&t,77,HOP_XFER_TIME_COUNT,999);
+    hop_xfer_tracking_add_time(&t,77,HOP_XFER_TIME_SCAN,UINT64_MAX);
+    CHECK(t.stage_ns[HOP_XFER_TIME_SCAN]==UINT64_MAX);
+    CHECK(hop_xfer_tracking_end(&t,77,HOP_XFER_COMPLETED,"done"));
+    hop_xfer_tracking_add_time(&t,77,HOP_XFER_TIME_SEND,1000);
+    CHECK(t.stage_ns[HOP_XFER_TIME_SEND]==0); /* terminal tasks cannot accrue time */
+}
+
+static void test_xfer_tracking_speed_and_eta(void) {
+    static hop_xfer_tracking tracking;
+    memset(&tracking,0,sizeof(tracking));
+    hop_xfer_tracking_begin(&tracking,7,HOP_XFER_DIR_SEND,1,0,"large.bin",HOP_XFER_SENDING);
+    hop_xfer_tracking_file(&tracking,7,1,"large.bin",1000000,0,HOP_XFER_FILE_SENDING);
+    hop_xfer_tracking_chunk(&tracking,7,1,0,100000,1000);
+    CHECK(tracking.status.bytes_done==100000);
+    CHECK(tracking.status.speed_bytes_per_sec==0);
+    CHECK(tracking.status.last_progress_ms==1000);
+    hop_xfer_tracking_chunk(&tracking,7,1,100000,100000,2000);
+    CHECK(tracking.status.bytes_done==200000);
+    CHECK(tracking.status.speed_bytes_per_sec==100000);
+    CHECK(tracking.status.eta_seconds==8);
+    CHECK(tracking.status.last_progress_ms==2000);
+
+    /* A long pause must not be averaged into the next active throughput sample. */
+    hop_xfer_tracking_chunk(&tracking,7,1,200000,100000,5000);
+    CHECK(tracking.status.speed_bytes_per_sec==0&&tracking.status.eta_seconds==0);
+    hop_xfer_tracking_chunk(&tracking,7,1,300000,100000,6000);
+    CHECK(tracking.status.speed_bytes_per_sec==100000);
+    CHECK(tracking.status.eta_seconds==6);
+
+    /* Re-registering a retry rolls progress and its rate sample back. */
+    hop_xfer_tracking_file(&tracking,7,1,"large.bin",1000000,0,HOP_XFER_FILE_SENDING);
+    CHECK(tracking.status.bytes_done==0);
+    CHECK(tracking.status.speed_bytes_per_sec==0);
+    CHECK(tracking.status.last_progress_ms==0);
+    CHECK(hop_xfer_tracking_end(&tracking,7,HOP_XFER_COMPLETED,"done"));
+    CHECK(tracking.status.speed_bytes_per_sec==0&&tracking.status.eta_seconds==0);
+}
+
+static void test_xfer_task_identity_and_lifecycle(void) {
+    hop_xfer_budget_limits limits={4u,8u,4096u,2048u,2048u,2u,1024u,1024u};
+    hop_xfer_budget_snapshot snap;
+    hop_xfer_task a,b,moved;
+    memset(&a,0,sizeof(a));memset(&b,0,sizeof(b));memset(&moved,0,sizeof(moved));
+    CHECK(hop_xfer_budget_set_limits_for_test(&limits));
+    CHECK(hop_xfer_task_init(&a,UINT64_C(0xABCDEF),UINT32_C(0x80000001),123));
+    CHECK(hop_xfer_task_init(&b,0,0,124));
+    CHECK(a.id!=0&&b.id!=0&&a.id!=b.id);
+    CHECK(a.reservation.task_id==a.id&&b.reservation.task_id==b.id);
+    CHECK(a.offer_id==UINT64_C(0xABCDEF)&&a.request_id==UINT32_C(0x80000001)&&a.transfer_id==123);
+    CHECK(b.offer_id==0&&b.request_id==0&&b.transfer_id==124);
+    CHECK(a.reservation.handle_id!=0&&b.reservation.handle_id!=0);
+    CHECK(a.reservation.handle_id!=b.reservation.handle_id);
+    CHECK(a.state==HOP_XFER_TASK_CREATED);
+    CHECK(hop_xfer_task_reserve_job(&a));
+    CHECK(hop_xfer_task_reserve_entry(&a,100));
+    CHECK(hop_xfer_task_reserve_image(&a,400));
+    CHECK(hop_xfer_task_reserve_rx_buffer(&a,128));
+    CHECK(hop_xfer_task_reserve_image_temp(&a,256));
+    CHECK(hop_xfer_task_set_state(&a,HOP_XFER_TASK_SCANNING));
+    CHECK(hop_xfer_task_set_state(&a,HOP_XFER_TASK_QUEUED));
+    CHECK(hop_xfer_task_set_state(&a,HOP_XFER_TASK_ACTIVE));
+    CHECK(hop_xfer_task_set_state(&a,HOP_XFER_TASK_QUEUED)); /* retry */
+    CHECK(hop_xfer_task_set_state(&a,HOP_XFER_TASK_ACTIVE));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==1&&snap.entries==2&&snap.pending_bytes==500&&snap.image_bytes==656);
+    CHECK(snap.rx_queue_slots==1&&snap.rx_queue_bytes==128);
+    CHECK(snap.image_temp_bytes==256);
+    CHECK(!hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));
+    CHECK(hop_xfer_task_release_rx_buffer(&a,128));
+    CHECK(!hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));
+    CHECK(hop_xfer_task_release_image_temp(&a,256));
+    CHECK(hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));
+    CHECK(!hop_xfer_task_finish(&a,HOP_XFER_TASK_CANCELLED));
+    CHECK(!hop_xfer_task_set_state(&a,HOP_XFER_TASK_ACTIVE));
+    CHECK(!hop_xfer_task_reserve_entry(&a,1));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0&&snap.image_bytes==0);
+    CHECK(hop_xfer_task_move(&moved,&b));
+    CHECK(!b.initialized&&moved.initialized&&moved.id!=0);
+    CHECK(hop_xfer_task_reserve_job(&moved));
+    CHECK(hop_xfer_task_set_state(&moved,HOP_XFER_TASK_ACTIVE));
+    CHECK(hop_xfer_task_finish(&moved,HOP_XFER_TASK_CANCELLED));
+    hop_xfer_task_dispose(&a);
+    hop_xfer_task_dispose(&b);
+    hop_xfer_task_dispose(&moved);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0&&snap.image_bytes==0);
+    hop_xfer_budget_limits defaults={16u,32768u,8ull*1024ull*1024ull*1024ull,256ull*1024ull*1024ull,256ull*1024ull*1024ull,8u,8ull*1024ull*1024ull,512ull*1024ull*1024ull};
+    CHECK(hop_xfer_budget_set_limits_for_test(&defaults));
+}
+
 int main(void) {
     hop_crc32_init();
 
@@ -499,7 +1010,9 @@ int main(void) {
     test_decoder_fragmentation_and_coalescing();
     test_decoder_rejects_oversized_frame();
     test_crc32();
+    test_token_authentication();
     test_config_defaults_and_loading();
+    test_dual_roles();
     test_keymap();
     test_keymap_ranges();
     test_decoder_reset_mid_frame();
@@ -510,12 +1023,20 @@ int main(void) {
     test_xfer_chunk_bounds();
     test_xfer_retry_policy();
     test_clipboard_origin_routing();
+    test_lazy_clipboard_protocol();
     test_file_crc_fold();
     test_relative_path_wire_bytes();
     test_file_begin_decode();
     test_image_begin_decode();
     test_file_end_ack_abort_done_decoders();
     test_update_manifest_validation();
+    test_xfer_global_budget();
+    test_xfer_ack_window();
+    test_xfer_rate_limiter();
+    test_xfer_tracking_stage_timing();
+    test_xfer_tracking_speed_and_eta();
+    test_xfer_task_identity_and_lifecycle();
+    test_xfer_task_image_buffer_transfer();
 
     if (g_failures) {
         fprintf(stderr, "HopDesk core tests: %d failure(s)\n", g_failures);

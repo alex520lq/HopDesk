@@ -22,6 +22,7 @@ static struct {
 void inject_set_peer_geometry(uint32_t w, uint32_t h) { s_input.peer_w = w; s_input.peer_h = h; }
 static double s_w, s_h;
 static int    s_inited;
+static int    s_permission_guidance_requested;
 
 /* 越过出口边缘的累计量，回到屏内立即清零。
  * 必须累计而不是看单次位移：慢推时每次事件只有几个像素，
@@ -74,9 +75,12 @@ static double scale_y(void) {
 /* 死区宽度：配置项以 Windows 物理像素为单位，换算到本端坐标空间。
  * 至少 1 个单位，且不超过半屏 —— 否则会变成"永远出不去"。 */
 static double margin(void) {
-    double m = (double)g_mac.cfg.edge_margin_px * scale_x();
+    int vertical = g_mac.cfg.client_edge >= HOP_EDGE_TOP;
+    double extent = vertical ? s_h : s_w;
+    double scale = vertical ? scale_y() : scale_x();
+    double m = (double)g_mac.cfg.edge_margin_px * scale;
     if (m < 1.0) m = 1.0;
-    if (m > s_w / 2) m = s_w / 2;
+    if (m > extent / 2) m = extent / 2;
     return m;
 }
 
@@ -88,8 +92,8 @@ static double enter_x(void) {
 
 void inject_init(void) {
     CGDirectDisplayID d = CGMainDisplayID();
-    s_w = CGDisplayPixelsWide(d);
-    s_h = CGDisplayPixelsHigh(d);
+    CGRect bounds=CGDisplayBounds(d);
+    s_w=bounds.size.width;s_h=bounds.size.height;
     g_mac.screen_w = s_w;
     g_mac.screen_h = s_h;
     s_inited = 1;
@@ -102,16 +106,21 @@ void inject_init(void) {
      *
      * CGPreflightPostEventAccess 只查询、不弹窗（10.15+），适合放在初始化里。
      * 真缺权限时必须把话说清楚，否则用户根本不知道该去勾哪个开关。 */
-    if (CGPreflightPostEventAccess())
-        hop_log(HOP_LOG_INFO, "inject: 辅助功能权限已授予");
-    else
+    if (CGPreflightPostEventAccess()) {
+        hop_log(HOP_LOG_INFO, "inject: 辅助功能 / 事件投递权限已授予");
+    } else {
         hop_log(HOP_LOG_ERROR,
-                "inject: 缺少「辅助功能」权限，键鼠注入会被系统静默丢弃 —— "
-                "到 系统设置 > 隐私与安全性 > 辅助功能 勾选 hopdesk 后重启本程序");
+                "inject: 缺少 macOS 辅助功能 / 事件投递权限，CGEventPost 会被系统静默丢弃");
+        if (!s_permission_guidance_requested) {
+            s_permission_guidance_requested = 1;
+            mac_request_accessibility_permission();
+        }
+    }
 }
 
 /* 把仍按着的修饰键全部松开：断线时不能让 Mac 卡住 Cmd */
 static uint8_t s_held_keys[65536 / 8];
+static uint8_t s_paste_suppressed[65536 / 8];
 void inject_release_all(void) {
     static const uint16_t pair[4][2] = {
         { 0x38, 0x3C },   /* shift L/R   */
@@ -155,6 +164,7 @@ void inject_reset(void) {
     s_modn[0] = s_modn[1] = s_modn[2] = s_modn[3] = 0;
     s_caps = 0;
     recompute_flags();
+    memset(s_paste_suppressed,0,sizeof(s_paste_suppressed));
     s_input.sharing = 0;
     s_inited = 0;
     s_over = 0;
@@ -183,6 +193,9 @@ void inject_enter(int y) {
     s_over = 0;
     s_input.mouse_x = enter_x();
     s_input.mouse_y = y;
+    if(g_mac.cfg.client_edge>=HOP_EDGE_TOP){s_input.mouse_x=y;s_input.mouse_y=g_mac.cfg.client_edge==HOP_EDGE_TOP?margin():s_h-1-margin();}
+    if (s_input.mouse_x < 0) s_input.mouse_x = 0;
+    if (s_input.mouse_x > s_w - 1) s_input.mouse_x = s_w - 1;
     if (s_input.mouse_y < 0) s_input.mouse_y = 0;
     if (s_input.mouse_y > s_h - 1) s_input.mouse_y = s_h - 1;
     s_input.sharing = 1;
@@ -221,24 +234,10 @@ void inject_move(int dx, int dy) {
      * 这是 Deskflow switchDelay 的等价物 —— 那边用"停留时长"，
      * 这边用"越界距离"，因为本端坐标由我们自己维护，距离是确定量，
      * 不需要引入定时器。两者效果一致：贴边不会误触发，必须真的推出去。 */
-    if (g_mac.cfg.client_edge == HOP_EDGE_LEFT) {
-        if (nx < 0) {
-            s_over += -nx;
-            nx = 0;
-            if (s_over >= m) { leave_edge(); return; }
-        } else {
-            s_over = 0;
-        }
-    } else {
-        if (nx > s_w - 1) {
-            s_over += nx - (s_w - 1);
-            nx = s_w - 1;
-            if (s_over >= m) { leave_edge(); return; }
-        } else {
-            s_over = 0;
-        }
-    }
-
+    int edge=g_mac.cfg.client_edge;
+    double beyond=edge==0?-nx:edge==1?nx-s_w+1:edge==2?-ny:ny-s_h+1;
+    if(beyond>0){s_over+=beyond;if(s_over>=m){leave_edge();return;}}else s_over=0;
+    if(nx<0)nx=0;if(nx>s_w-1)nx=s_w-1;
     s_input.mouse_x = nx;
     s_input.mouse_y = ny;
     if (s_input.mouse_y < 0) s_input.mouse_y = 0;
@@ -284,11 +283,46 @@ void inject_wheel(int dx, int dy) {
 }
 
 /* ---- 阶段 2：键盘 ---- */
+void inject_paste_shortcut(void) {
+    if (!s_inited) inject_init();
+    /* The Windows server maps physical Ctrl to Mac Command. */
+    CGEventRef down = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)0x37, true);
+    if (down) { CGEventSetFlags(down, kCGEventFlagMaskCommand); CGEventPost(kCGHIDEventTap, down); CFRelease(down); }
+    CGEventRef paste_down = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)0x09, true);
+    if (paste_down) { CGEventSetFlags(paste_down, kCGEventFlagMaskCommand); CGEventPost(kCGHIDEventTap, paste_down); CFRelease(paste_down); }
+    CGEventRef paste_up = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)0x09, false);
+    if (paste_up) { CGEventSetFlags(paste_up, kCGEventFlagMaskCommand); CGEventPost(kCGHIDEventTap, paste_up); CFRelease(paste_up); }
+    CGEventRef up = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)0x37, false);
+    if (up) { CGEventSetFlags(up, 0); CGEventPost(kCGHIDEventTap, up); CFRelease(up); }
+}
+
 void inject_key(uint16_t kc, int down) {
     CGEventRef e;
     int bit, i;
 
     if (!s_inited) inject_init();
+    uint8_t mask=(uint8_t)(1u<<(kc%8));
+    if(!down && (s_paste_suppressed[kc/8]&mask)) {
+        s_paste_suppressed[kc/8]&=(uint8_t)~mask;
+        return;
+    }
+    if(down && kc==0x09 && (s_modn[1]||s_modn[3]) && clipboard_request_remote_paste()) {
+        const uint16_t mods[]={0x37,0x36,0x3B,0x3E};
+        s_paste_suppressed[kc/8]|=mask;
+        for(unsigned mi=0;mi<sizeof(mods)/sizeof(mods[0]);++mi) {
+            uint16_t mk=mods[mi];uint8_t mm=(uint8_t)(1u<<(mk%8));
+            if(s_held_keys[mk/8]&mm) {
+                int mb=hop_mac_key_is_mod(mk),ix=mod_index(mb);
+                s_held_keys[mk/8]&=(uint8_t)~mm;
+                if(ix>=0&&s_modn[ix])s_modn[ix]--;
+                recompute_flags();
+                CGEventRef up=CGEventCreateKeyboardEvent(NULL,(CGKeyCode)mk,0);
+                if(up){CGEventSetType(up,kCGEventFlagsChanged);post(up);}
+                s_paste_suppressed[mk/8]|=mm;
+            }
+        }
+        return;
+    }
     bit = hop_mac_key_is_mod(kc);
     int was_held = (s_held_keys[kc / 8] & (1u << (kc % 8))) != 0;
     if (down) s_held_keys[kc / 8] |= (uint8_t)(1u << (kc % 8));

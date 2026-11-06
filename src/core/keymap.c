@@ -148,3 +148,15 @@ int hop_mac_key_is_mod(uint16_t kc) {
         default:          return 0;
     }
 }
+
+/* Mac key codes remain the v6 wire representation in either direction.
+ * Prefer side-specific modifiers instead of ambiguous generic VK aliases. */
+uint16_t hop_mac_to_vk(uint16_t kc) {
+    if(kc==HOP_KEY_NONE)return HOP_KEY_NONE;
+    if(kc==0x4C)return 0x0D; /* keypad Enter */
+    for(int vk=0;vk<256;++vk) {
+        if(vk==0x10||vk==0x11||vk==0x12)continue;
+        if(hop_vk_to_mac(vk)==kc)return (uint16_t)vk;
+    }
+    return HOP_KEY_NONE;
+}

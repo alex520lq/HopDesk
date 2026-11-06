@@ -3,7 +3,7 @@ set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/build"
 mkdir -p "$BUILD"
-clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -I "$ROOT/src/core" \
+clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer -I "$ROOT/src/core" \
   -o "$BUILD/hopdesk-core-tests" \
   "$ROOT/tests/core_tests.c" \
   "$ROOT/src/core/protocol.c" \
@@ -11,7 +11,10 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
   "$ROOT/src/core/config.c" \
   "$ROOT/src/core/keymap.c" \
   "$ROOT/src/core/xfer_validate.c" \
-  "$ROOT/src/core/update_manifest.c"
+  "$ROOT/src/core/update_manifest.c" \
+  "$ROOT/src/core/xfer_budget.c" \
+  "$ROOT/src/core/xfer_task.c" \
+  "$ROOT/src/core/xfer_rate.c"
 "$BUILD/hopdesk-core-tests"
 python3 "$ROOT/scripts/test-regressions.py"
 clang -std=c11 -Wall -Wextra -Werror -pthread -I "$ROOT/src/core" \

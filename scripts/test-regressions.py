@@ -34,6 +34,215 @@ with tempfile.TemporaryDirectory(prefix='hopdesk-regression-') as directory:
 
     run('tracking_config',(ROOT/'tests/regression_tests.c').read_text(encoding='utf-8'),['src/core/config.c'])
     assert not list(work.glob('*.tmp.*')), 'failed migration leaked temporary files'
+    run('ack_window_checkpoint',r'''
+#include "xfer_ack_window.h"
+#include <assert.h>
+#include <stdio.h>
+int main(void) {
+    int checkpoint=0;
+    assert(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,0,0));
+    assert(checkpoint==0);
+    assert(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,1,1));
+    assert(checkpoint==0);
+    assert(hop_xfer_ack_window_advance_checkpoint(&checkpoint,0,1));
+    assert(checkpoint==1);
+    assert(!hop_xfer_ack_window_advance_checkpoint(&checkpoint,1,0));
+    assert(checkpoint==1);
+    assert(hop_xfer_ack_window_advance_checkpoint(&checkpoint,1,1));
+    assert(checkpoint==2);
+    puts("PASS: only contiguous ACK-confirmed entries advance resume checkpoint");
+    return 0;
+}
+''')
+
+    # Cards are painted by the page, never sibling HWNDs obscuring its controls.
+    ui=(ROOT/'src/win/main_ui.c').read_text(encoding='utf-8')
+    group_fn=extract(ui,'group')
+    page_fn=extract(ui,'page_proc')
+    page_create_fn=extract(ui,'page_create')
+    assert 'HopDeskCard' not in ui and 'CreateWindow' not in group_fn
+    assert 'WS_CLIPCHILDREN' in page_create_fn and 'paint_cards(h,dc,GetScrollPos(h,SB_VERT))' in page_fn
+    ui_preamble=r'''
+#include <assert.h>
+#include <stddef.h>
+#include <wchar.h>
+#include <stdio.h>
+typedef int HWND;typedef int HDC;typedef int HPEN;typedef int HGDIOBJ;
+typedef struct {int left,top,right,bottom;} RECT;
+typedef struct {HWND page;const wchar_t *title;int x,y,w,h;} ui_card;
+static ui_card s_cards[32];static int s_card_count;static int s_font=3,scale=1;
+static int dip(int n){return n*scale;}
+#define PS_SOLID 0
+#define NULL_BRUSH 0
+#define TRANSPARENT 1
+#define DT_SINGLELINE 1
+#define DT_LEFT 0
+#define RGB(r,g,b) 0
+static int boxes,titles,last_top,last_left,last_right,last_bottom,text_top;
+static HPEN CreatePen(int style,int width,int color){(void)style;(void)width;(void)color;return 1;}
+static HGDIOBJ SelectObject(HDC dc,HGDIOBJ o){(void)dc;return o;}
+static HGDIOBJ GetStockObject(int n){return n;}
+static int SetBkMode(HDC dc,int mode){(void)dc;return mode;}
+static int SetTextColor(HDC dc,int color){(void)dc;return color;}
+static int RoundRect(HDC dc,int l,int t,int r,int b,int x,int y){(void)dc;(void)x;(void)y;boxes++;last_left=l;last_top=t;last_right=r;last_bottom=b;return 1;}
+static int DrawTextW(HDC dc,const wchar_t *s,int n,RECT *r,int flags){(void)dc;(void)n;(void)flags;assert(s && *s);titles++;text_top=r->top;return 1;}
+static int DeleteObject(HGDIOBJ o){(void)o;return 1;}
+'''
+    ui_main=r'''
+int main(void){
+    group(1,L"first",20,18,800,145);group(2,L"other page",10,20,30,40);
+    paint_cards(1,0,30);assert(boxes==1 && titles==1);
+    assert(last_left==20 && last_top==-12 && last_right==819 && last_bottom==132 && text_top==-2);
+    boxes=titles=0;scale=2;paint_cards(2,0,10);assert(boxes==1 && titles==1);
+    assert(last_left==20 && last_top==30 && last_right==79 && last_bottom==109 && text_top==50);
+    puts("PASS: Windows page card painting and scroll offsets (API doubles)");return 0;
+}
+'''
+    run('win_ui_cards',ui_preamble+group_fn+'\n'+extract(ui,'paint_cards')+ui_main)
+
+    # Mac edge entry must keep tracking drag events before sharing starts.
+    capture=(ROOT/'src/mac/capture.c').read_text(encoding='utf-8')
+    edge_helper=extract(capture,'is_edge_motion_event')
+    assert 'if(is_edge_motion_event(type))' in extract(capture,'capture_event')
+    edge_preamble=r'''
+#include <assert.h>
+#include <stdio.h>
+typedef int CGEventType;
+enum {kCGEventMouseMoved=1,kCGEventLeftMouseDragged=2,kCGEventRightMouseDragged=3,
+      kCGEventOtherMouseDragged=4,kCGEventLeftMouseDown=5};
+'''
+    edge_main=r'''
+int main(void){
+    assert(is_edge_motion_event(kCGEventMouseMoved));
+    assert(is_edge_motion_event(kCGEventLeftMouseDragged));
+    assert(is_edge_motion_event(kCGEventRightMouseDragged));
+    assert(is_edge_motion_event(kCGEventOtherMouseDragged));
+    assert(!is_edge_motion_event(kCGEventLeftMouseDown));
+    puts("PASS: macOS edge entry includes held-button drag events");return 0;
+}
+'''
+    run('mac_edge_motion',edge_preamble+edge_helper+edge_main)
+
+    # Windows server queues ENTER before transferring held keys/buttons, and
+    # leaves local input untouched if ENTER could not be queued.
+    mouse=(ROOT/'src/win/mouse_capture.c').read_text(encoding='utf-8')
+    handoff_preamble=r'''
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <assert.h>
+typedef uint8_t BYTE;typedef uint32_t DWORD;typedef struct {int x,y;} POINT;
+typedef struct {int server_edge,edge_margin_px,switch_cooldown_ms,screen_w,screen_h;} cfg_t;
+typedef struct {cfg_t cfg;int peer_w,peer_h,state;void *net;} app_t;
+static app_t g_app;
+enum {HOP_EDGE_LEFT=0,HOP_EDGE_RIGHT=1,HOP_EDGE_TOP=2,HOP_EDGE_BOTTOM=3,
+      HOP_LINK_LOCAL=1,HOP_LINK_SHARING=2,HOP_BTN_LEFT=0,
+      HOP_MSG_MOUSE_BUTTON=11,HOP_MSG_MOUSE_ENTER=14,HOP_MSG_KEY_DOWN=20};
+enum {SM_CYVIRTUALSCREEN=1,SM_CXVIRTUALSCREEN=2,SM_CYSCREEN=3,SM_CXSCREEN=4};
+static int s_sharing,s_have_last,s_physical_buttons[3],s_buttons[3],event_count,fail_enter,local_releases;
+static POINT s_anchor,s_last;static DWORD s_cooldown_until;static uint8_t events[16];
+static int net_server_send(void *net,uint8_t type,const void *p,uint32_t len){
+    (void)net;(void)p;(void)len;events[event_count++]=type;
+    return !(fail_enter&&type==HOP_MSG_MOUSE_ENTER);
+}
+static void hop_put_be16(uint8_t *p,uint16_t v){p[0]=(uint8_t)(v>>8);p[1]=(uint8_t)v;}
+static int edge_boundary(int *edge_x,int *is_left){*edge_x=0;*is_left=1;return 1;}
+static int GetSystemMetrics(int what){return (what==SM_CYVIRTUALSCREEN||what==SM_CYSCREEN)?1080:1920;}
+static DWORD GetTickCount(void){return 100;}
+static void kbd_begin_sharing(void){uint8_t p[2]={0};net_server_send(g_app.net,HOP_MSG_KEY_DOWN,p,2);}
+static void inject_local_button(int b,int down){(void)b;if(!down)local_releases++;}
+static int SetCursorPos(int x,int y){(void)x;(void)y;return 1;}
+static void ui_refresh(app_t *app){(void)app;}
+#define hop_log(...) ((void)0)
+'''
+    handoff_main=r'''
+int main(void){
+    POINT trigger={0,540};
+    memset(&g_app,0,sizeof(g_app));g_app.cfg.server_edge=HOP_EDGE_LEFT;
+    g_app.cfg.edge_margin_px=40;g_app.cfg.switch_cooldown_ms=300;
+    g_app.cfg.screen_w=1920;g_app.cfg.screen_h=1080;g_app.peer_w=1440;g_app.peer_h=900;
+    g_app.state=HOP_LINK_LOCAL;s_physical_buttons[HOP_BTN_LEFT]=1;
+    enter_sharing(trigger);
+    assert(event_count==3 && events[0]==HOP_MSG_MOUSE_ENTER &&
+           events[1]==HOP_MSG_KEY_DOWN && events[2]==HOP_MSG_MOUSE_BUTTON);
+    assert(s_sharing && g_app.state==HOP_LINK_SHARING && local_releases==1);
+
+    memset(&g_app,0,sizeof(g_app));g_app.cfg.server_edge=HOP_EDGE_LEFT;
+    g_app.cfg.edge_margin_px=40;g_app.cfg.screen_w=1920;g_app.cfg.screen_h=1080;
+    g_app.peer_w=1440;g_app.peer_h=900;g_app.state=HOP_LINK_LOCAL;
+    memset(s_physical_buttons,0,sizeof(s_physical_buttons));s_physical_buttons[0]=1;
+    s_sharing=0;s_have_last=0;event_count=0;local_releases=0;fail_enter=1;
+    enter_sharing(trigger);
+    assert(event_count==1 && events[0]==HOP_MSG_MOUSE_ENTER);
+    assert(!s_sharing && g_app.state==HOP_LINK_LOCAL && local_releases==0);
+    puts("PASS: Windows ENTER ordering and failed-handoff rollback");return 0;
+}
+'''
+    run('win_handoff_order',handoff_preamble+extract(mouse,'send_enter')+'\n'+
+        extract(mouse,'send_button')+'\n'+extract(mouse,'enter_sharing')+handoff_main)
+
+    # Both platform clients clear remote key/button state on server return.
+    win_inject=(ROOT/'src/win/inject.c').read_text(encoding='utf-8')
+    win_leave_preamble=r'''
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <assert.h>
+typedef uint8_t BYTE;typedef uint16_t WORD;typedef uint32_t DWORD;typedef int32_t LONG;
+typedef struct {int role,client_edge,edge_margin_px;} cfg_t;
+typedef struct {cfg_t cfg;int peer_w,peer_h,state;void *net;} app_t;
+static app_t g_app;static BYTE held[256],buttons[3],paste_suppressed[256];static double px,py,over;static int sharing,clip_request_result,injected_key_events;
+static int released_keys,released_buttons,refreshes;
+enum {HOP_ROLE_CLIENT=1,HOP_EDGE_TOP=2,HOP_LINK_LOCAL=1,HOP_LINK_SHARING=2,
+ HOP_KEY_NONE=0xffff,HOP_MSG_EDGE_LEAVE=13,HOP_MSG_MOUSE_ENTER=14,HOP_MSG_MOUSE_MOVE=10,
+ HOP_MSG_MOUSE_BUTTON=11,HOP_MSG_MOUSE_WHEEL=12,HOP_MSG_KEY_DOWN=20,HOP_MSG_KEY_UP=21,
+ SM_CXSCREEN=1,SM_CYSCREEN=2,MOUSEEVENTF_HWHEEL=4,MOUSEEVENTF_WHEEL=8,
+ VK_LCONTROL=0xA2,VK_RCONTROL=0xA3,VK_LWIN=0x5B,VK_RWIN=0x5C};
+static void key(WORD vk,int down){held[vk]=(BYTE)down;injected_key_events++;if(!down)released_keys++;}
+static void button(int b,int down){buttons[b]=(BYTE)down;if(!down)released_buttons++;}
+static void mouse(DWORD flags,LONG dx,LONG dy,DWORD data){(void)flags;(void)dx;(void)dy;(void)data;}
+static void enter(int along){(void)along;sharing=1;}
+static double edge_margin(double w,double h){(void)w;(void)h;return 40;}
+static int GetSystemMetrics(int what){return what==SM_CYSCREEN?1080:1920;}
+static int SetCursorPos(int x,int y){(void)x;(void)y;return 1;}
+static uint16_t hop_get_be16(const uint8_t *p){return (uint16_t)(((uint16_t)p[0]<<8)|p[1]);}
+static WORD hop_mac_to_vk(uint16_t keycode){return keycode==0x09?'V':(keycode==0x3B?VK_LCONTROL:65);}
+static int clip_request_remote_paste(void){return clip_request_result;}
+static int net_server_send(void *net,uint8_t type,const void *p,uint32_t len){(void)net;(void)type;(void)p;(void)len;return 1;}
+static void ui_refresh(app_t *app){(void)app;refreshes++;}
+'''
+    win_leave_main=r'''
+int main(void){
+    g_app.cfg.role=HOP_ROLE_CLIENT;g_app.state=HOP_LINK_SHARING;
+    sharing=1;held[65]=1;buttons[0]=1;
+    win_inject_message(HOP_MSG_EDGE_LEAVE,NULL,0);
+    assert(!sharing && !held[65] && !buttons[0]);
+    assert(g_app.state==HOP_LINK_LOCAL && released_keys==1 && released_buttons==1 && refreshes==1);
+    /* A remote file Offer consumes the first Ctrl+V and releases the modifier;
+       the physical key-up frames must not leak to the foreground application. */
+    sharing=1;held[VK_LCONTROL]=1;clip_request_result=1;injected_key_events=0;
+    uint8_t paste_key[2]={0,0x09};
+    win_inject_message(HOP_MSG_KEY_DOWN,paste_key,sizeof(paste_key));
+    assert(!held[VK_LCONTROL] && paste_suppressed['V'] && paste_suppressed[VK_LCONTROL]);
+    win_inject_message(HOP_MSG_KEY_UP,paste_key,sizeof(paste_key));
+    uint8_t ctrl_key[2]={0,0x3B};
+    win_inject_message(HOP_MSG_KEY_UP,ctrl_key,sizeof(ctrl_key));
+    assert(!paste_suppressed['V'] && !paste_suppressed[VK_LCONTROL]);
+    assert(injected_key_events==1);
+    puts("PASS: Windows client releases stuck input and consumes lazy-paste key sequence");return 0;
+}
+'''
+    run('win_client_server_return',win_leave_preamble+
+        extract(win_inject,'win_inject_reset')+'\n'+extract(win_inject,'win_inject_message')+win_leave_main)
+
+    # Server return must follow all remote release frames.
+    mac_return=extract(capture,'mac_capture_return')
+    assert mac_return.index('send_key(k, 0)') < mac_return.index('net_send(HOP_MSG_EDGE_LEAVE, NULL, 0)')
+    assert mac_return.index('send_button(b, 0)') < mac_return.index('net_send(HOP_MSG_EDGE_LEAVE, NULL, 0)')
+    win_return=extract(mouse,'enter_local')
+    assert win_return.index('kbd_end_sharing()') < win_return.index('net_server_send(g_app.net, HOP_MSG_EDGE_LEAVE, NULL, 0)')
+    assert win_return.index('send_button(i, 0)') < win_return.index('net_server_send(g_app.net, HOP_MSG_EDGE_LEAVE, NULL, 0)')
+
 
     clip=(ROOT/'src/win/clipboard.c').read_text(encoding='utf-8')
     clip_preamble=r'''
@@ -43,17 +252,20 @@ with tempfile.TemporaryDirectory(prefix='hopdesk-regression-') as directory:
 #include <assert.h>
 typedef void *HGLOBAL;typedef unsigned UINT;typedef int HWND;typedef unsigned DWORD;
 #define IDT_CLIP_RETRY 1
-#define CLIP_SUPPRESS_MS 400
 #define hop_log(...) ((void)0)
 static struct {HWND hwnd;} g_app={1};
-static int s_suppress;static DWORD s_suppress_until;
-static HGLOBAL s_pending_global;static UINT s_pending_format;static DWORD s_pending_sequence,s_remote_sequence;
-static int can_open,fail_set,freed;static HGLOBAL clipboard;static DWORD sequence=1;
+static HGLOBAL s_pending_global;
+static UINT s_pending_format;
+static DWORD s_pending_sequence,s_remote_sequence,s_last_sequence;
+static int s_pending_clear_remote;
+static int can_open,fail_set,freed,clear_remote_calls;
+static HGLOBAL clipboard;static DWORD sequence=1;
+static int apply_global_expected(UINT,HGLOBAL,DWORD,int,int);
+static void clip_clear_remote_offer_local(void){clear_remote_calls++;}
 static int open_retry(HWND h){(void)h;return can_open;}
 static int EmptyClipboard(void){clipboard=NULL;sequence++;return 1;}
 static HGLOBAL SetClipboardData(UINT f,HGLOBAL h){(void)f;if(fail_set)return NULL;clipboard=h;sequence++;return h;}
 static void CloseClipboard(void){}
-static DWORD GetTickCount(void){return 1;}
 static DWORD GetClipboardSequenceNumber(void){return sequence;}
 static void GlobalFree(HGLOBAL h){(void)h;freed++;}
 static void SetTimer(HWND h,int i,int t,void*p){(void)h;(void)i;(void)t;(void)p;}
@@ -73,12 +285,66 @@ int main(void){
     puts("PASS: production Windows clipboard retry preserves newer remote/local content");return 0;
 }
 '''
-    run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','apply_global','clip_retry_pending'])+clip_main)
+    run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','apply_global_expected','apply_global','clip_retry_pending'])+clip_main)
+    # A cross-device paste batch must never fall through to the ordinary clipboard writer.
+    for platform in ['win','mac']:
+        rx=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        if platform=='win':
+            assert 'clip_complete_remote_paste(batch,(const wchar_t *const *)s_rx.tops,s_rx.ntop,1)' in rx
+            assert 'clip_complete_remote_paste(batch,NULL,0,0)' in rx
+            clip=(ROOT/'src/win/clipboard.c').read_text(encoding='utf-8')
+            assert 'GetClipboardSequenceNumber()!=expected' in clip
+            assert 'GetForegroundWindow()==target' in clip
+            assert 'SendInput(4,in,sizeof(INPUT))' in clip
+        else:
+            assert 'clipboard_complete_remote_paste(batch,(const char *const *)s_rx.tops,s_rx.ntop,1)' in rx
+            assert 'clipboard_complete_remote_paste(batch,NULL,0,0)' in rx
+            clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
+            assert '[pb changeCount] != expected_count' in clip
+            assert 'foreground_pid==target_pid' in clip
+            assert 'inject_paste_shortcut()' in clip
+
+        # Exercise the actual production selector with a small slot before a
+        # later fitting slot. The later slot must be reused without allocation.
+        pool_source=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        pool_preamble=r'''
+#include <stdint.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <assert.h>
+#define RX_Q_SLOTS 4
+#define RX_Q_MAX_BYTES 1024
+typedef struct { uint8_t *data; uint32_t capacity; int in_use; } rx_buffer_slot;
+static struct { rx_buffer_slot buffers[RX_Q_SLOTS]; uint64_t pool_capacity; } s_wq;
+static int hop_xfer_budget_set_rx_pool_bytes(uint64_t bytes) { (void)bytes; return 1; }
+'''
+        pool_main=r'''
+int main(void) {
+    uint8_t small[8], large[64], *selected=NULL;
+    int slot=-1;
+    s_wq.buffers[0].data=small; s_wq.buffers[0].capacity=8;
+    s_wq.buffers[1].data=large; s_wq.buffers[1].capacity=64;
+    s_wq.pool_capacity=72;
+    assert(wq_pool_acquire_locked(32,&slot,&selected)==1);
+    assert(slot==1 && selected==large && s_wq.pool_capacity==72);
+    puts("PASS: best-fit RX pool selector reuses later fitting slot");
+    return 0;
+}
+'''
+        run('rx_pool_best_fit_'+platform,pool_preamble+extract(pool_source,'wq_pool_acquire_locked')+pool_main)
+    clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
+    assert 'send_image_data_async(imageType, cc, previous_change)' in clip
+    assert 'budget_deferred = 1' in clip
+    assert 's_last_change = previous_change' in clip
+    assert 'image budget released; same clipboard version will be retried' in clip
+
     for platform in ['win','mac']:
         source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', (ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8'))
         common=r'''
 #include "hop.h"
 #include "xfer_tracking.h"
+#include "xfer_budget.h"
+#include "xfer_task.h"
 #include <assert.h>
 #include <wchar.h>
 #define hop_log(...) ((void)0)
@@ -94,11 +360,11 @@ typedef xf_job xfer_job;
 typedef struct {int kind;} rx_task;
 static int s_status_lock,applied;static uint8_t wire[20];
 static hop_xfer_tracking s_receive_status;
-static struct {int active,cur_is_image,ntop;uint32_t batch;char *dir;uint8_t *img;size_t img_len,img_expected;int img_w,img_h,img_stride;void **tops;} s_rx;
+static struct {int active,cur_is_image,ntop;uint32_t batch;char *dir;uint8_t *img;size_t img_len,img_expected;int img_w,img_h,img_stride;void **tops;hop_xfer_task task;} s_rx;
 static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t batch){(void)batch;(void)fd;(void)type;assert(n==20);memcpy(wire,p,n);return 1;}
 static void wq_push(rx_task*t){(void)t;}
 static void wq_drain(void){}
-static void rx_reset(void){s_rx.active=0;}
+static void rx_reset(void){s_rx.active=0;hop_xfer_task_dispose(&s_rx.task);}
 static void status_file_phase(int d,uint32_t b,int i,int p,uint32_t a){assert(d==HOP_XFER_DIR_RECEIVE);hop_xfer_tracking_phase(&s_receive_status,b,i,p,a);}
 static void status_end(int d,uint32_t b,int p,const char*s){assert(d==HOP_XFER_DIR_RECEIVE);hop_xfer_tracking_end(&s_receive_status,b,p,s);}
 static void apply_image(const uint8_t*p,int w,int h,int stride){(void)p;(void)w;(void)h;(void)stride;applied++;}
@@ -112,7 +378,11 @@ static void apply_paths(const void*p,int n){(void)p;(void)n;}
 int main(void){
     xf_job j={0};j.batch=10;j.is_image=1;j.ok=1;assert(send_done(0,&j));
     assert(hop_get_be32(wire+4)==1 && hop_get_be32(wire+8)==1);
-    uint8_t pixel[4]={0};s_rx.active=1;s_rx.batch=j.batch;s_rx.cur_is_image=1;
+    uint8_t pixel[4]={0};
+    assert(hop_xfer_task_init(&s_rx.task,0,0,j.batch));
+    assert(hop_xfer_task_reserve_job(&s_rx.task));
+    assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
+    s_rx.active=1;s_rx.batch=j.batch;s_rx.cur_is_image=1;
     s_rx.img=pixel;s_rx.img_len=4;s_rx.img_expected=4;
     hop_xfer_tracking_begin(&s_receive_status,j.batch,HOP_XFER_DIR_RECEIVE,0,0,"Image",HOP_XFER_RECEIVING);
     hop_xfer_tracking_file(&s_receive_status,j.batch,1,"Image",4,0,HOP_XFER_FILE_RECEIVING);
@@ -120,13 +390,16 @@ int main(void){
     assert(applied==1 && !s_receive_status.status.active && s_receive_status.status.phase==HOP_XFER_COMPLETED);
     assert(s_receive_status.status.files_done==1);
     rx_finish_batch(j.batch,1,1);assert(applied==1);
-    s_rx.active=1;s_rx.batch=11;s_rx.img_len=3;
+    assert(hop_xfer_task_init(&s_rx.task,0,0,11));
+    assert(hop_xfer_task_reserve_job(&s_rx.task));
+    assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
+    s_rx.active=1;s_rx.batch=11;s_rx.cur_is_image=1;s_rx.img_len=3;s_rx.img_expected=4;
     hop_xfer_tracking_begin(&s_receive_status,11,HOP_XFER_DIR_RECEIVE,1,4,"Image",HOP_XFER_RECEIVING);
     rx_finish_batch(11,1,1);assert(applied==1 && s_receive_status.status.phase==HOP_XFER_FAILED);
     puts("PASS: production IMAGE DONE and clipboard completion path");return 0;
 }
 '''
-        run('image_'+platform,common+extract(source,'send_done')+'\n'+extract(source,'rx_finish_batch')+main,['src/core/protocol.c'])
+        run('image_'+platform,common+extract(source,'send_done')+'\n'+extract(source,'rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
     # Run the actual per-platform state wrappers, not only a reimplemented model.
     for platform in ['win','mac']:
         source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', (ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8'))
@@ -142,6 +415,8 @@ int main(void){
 #define pthread_mutex_unlock(p) ((void)(p))
 static int s_status_lock, saves;
 static uint64_t s_status_revision;
+static uint64_t s_test_monotonic_ms=1000;
+uint64_t hop_monotonic_ms(void){return ++s_test_monotonic_ms;}
 static hop_xfer_tracking s_send_status,s_receive_status;
 static void *s_retry_paths[HOP_XFER_FILE_LIMIT];
 static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];static int s_history_count;
@@ -250,7 +525,7 @@ int main(void){
         assert 'if (!s_rx.active || s_rx.batch != batch) return;' in cases('HOP_MSG_FILE_BEGIN','HOP_MSG_IMAGE_BEGIN')
         assert 'if (!s_rx.active || s_rx.batch != batch) return;' in cases('HOP_MSG_IMAGE_BEGIN','HOP_MSG_FILE_CHUNK')
         if platform=='win':fixture='#define FIXTURE_WINDOWS 1\n'+fixture
-        run('abort_'+platform,fixture,['src/core/protocol.c','src/core/crc32.c','src/core/xfer_validate.c'])
+        run('abort_'+platform,fixture,['src/core/protocol.c','src/core/crc32.c','src/core/xfer_validate.c','src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
 
     inject=(ROOT/'src/mac/inject.c').read_text(encoding='utf-8')
     fixture=(ROOT/'tests/inject_release_fixture.c.in').read_text(encoding='utf-8')
@@ -264,6 +539,70 @@ int main(void){
         fixture=(ROOT/'tests/session_transport_fixture.c.in').read_text(encoding='utf-8')
         functions='\n'.join([extract(sender,'job_bind_session'),extract(sender,'send_small'),extract(sender,'send_chunk'),extract(receiver,'rx_bind_session'),extract(receiver,'on_data_frame_checked'),extract(receiver,'on_data_frame')])
         fixture=fixture.replace('@FUNCTIONS@',functions)
-        run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c'],threads=True)
+        run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c'],threads=True)
+
+    control=(ROOT/'src/mac/net_client.c').read_text(encoding='utf-8')
+    dispatch=extract(control,'dispatch_message')
+    dispatch=dispatch.replace('dispatch_async(dispatch_get_main_queue(),^{mac_capture_peer_geometry(pw,ph);});','mac_capture_peer_geometry(pw,ph);')
+    dispatch=dispatch.replace('dispatch_async(dispatch_get_main_queue(),^{mac_capture_return();});','mac_capture_return();')
+    assert 'dispatch_async' not in dispatch
+    fixture=(ROOT/'tests/dual_role_control_fixture.c.in').read_text(encoding='utf-8').replace('@DISPATCH@',dispatch)
+    run('dual_role_control',fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/xfer_validate.c','src/core/crc32.c'],threads=True)
+
+    # An unconfirmed ACK must force a fresh data channel before the same
+    # batch/file ID is reused; the unresolved file remains the resume point.
+    for platform in ['mac','win']:
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        receiver=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        entry=extract(sender,'send_file_entry')
+        assert 'tx + CHUNK_HDR' in entry
+        assert 'malloc(blen)' not in entry and 'free(bp)' not in entry
+        job=extract(sender,'run_job')
+        assert 'int acknowledged;' in job
+        assert 'if (st >= 0) item->acknowledged = 1;' in job
+        assert 'if (st != XFER_ACK_PENDING)' in job
+        assert 'fill_result = JOB_NET_DOWN;' in job
+        assert 'if (!item->acknowledged)' in job
+        assert 'hop_xfer_ack_window_advance_checkpoint(&j->next_i,item->index,1)' in job
+        timeout=job.index('if (st == XFER_ACK_TIMEOUT)')
+        unregister=job.index('ack_unregister_batch(j->batch)',timeout)
+        kick=job.index('xfer_kick();',timeout)
+        net_down=job.index('return JOB_NET_DOWN;',kick)
+        assert timeout < unregister < kick < net_down
+        kick_fn=extract(sender,'xfer_kick')
+        assert 'peer_ready = 0' in kick_fn or 'peer_ready=0' in kick_fn
+
+        handler=extract(receiver,'on_data_msg')
+        begin=handler[handler.index('case HOP_MSG_FILE_BEGIN:'):handler.index('case HOP_MSG_IMAGE_BEGIN:')]
+        end=handler[handler.index('case HOP_MSG_FILE_END:'):handler.index('case HOP_MSG_FILE_ACK:')]
+        assert 'rx_remove_top(s_rx.cur_path)' in begin
+        assert '!rx_add_top(path)' in begin or '!rx_add_top(s_rx.cur_path)' in end
+        if platform=='mac':
+            assert 'if (mkdir_p(path) != 0)' in begin
+            assert 'if (!parent_ok)' in begin
+        else:
+            assert 'create_directory_if_missing(path)' in begin
+            assert 'if (!parent_ok)' in begin
+            assert 'GetFileAttributesW(path)' in extract(receiver,'create_directory_if_missing')
+        close=end.index('rx_close_file()')
+        cleanup=end.index('unlink(' if platform=='mac' else 'DeleteFileW(')
+        assert close < cleanup, 'failed receive cleanup must wait for writer close'
+
+        if platform=='mac':
+            queue=extract(sender,'send_thread')
+            assert 'peer_ready_snapshot' in queue and 'waited_for_queue' in queue
+            assert '!waited_for_queue && peer_ready_snapshot' in queue
+        else:
+            queue=extract(sender,'send_thread')
+            assert 'c != INVALID_SOCKET && cur->retry_at <= now' in queue
+
+    # hop_xfer_tracking embeds 8192 file records with 1024-byte paths
+    # (~8 MiB). Keep these fixtures off Windows' default 1 MiB thread stack.
+    core_tests=(ROOT/'tests/core_tests.c').read_text(encoding='utf-8')
+    for name in ['test_xfer_tracking_stage_timing','test_xfer_tracking_speed_and_eta']:
+        body=extract(core_tests,name)
+        assert not re.search(r'(?m)^\s*(?:const\s+)?hop_xfer_tracking\s+\w+\s*;',body), (
+            name+' must not place the multi-megabyte tracking object on the stack'
+        )
 
     print('All targeted regressions passed.',flush=True)

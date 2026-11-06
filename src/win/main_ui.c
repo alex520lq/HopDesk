@@ -7,6 +7,7 @@
 #include "update.h"
 #include "main_ui.h"
 #include "../core/xfer_status.h"
+#include "../core/hop.h"
 
 #include <commctrl.h>
 #include <stdio.h>
@@ -37,7 +38,7 @@ enum {
     CFG_NAME, CFG_HOST, CFG_PORT, CFG_DATA_PORT, CFG_TOKEN,
     CFG_SERVER_EDGE, CFG_CLIENT_EDGE, CFG_SWITCH_DELAY, CFG_COOLDOWN,
     CFG_MARGIN, CFG_DISP_WIN, CFG_DISP_MAC, CFG_WAKE, CFG_CHUNK,
-    CFG_MAC_INPUT, CFG_MAC_SLEEP, CFG_COUNT
+    CFG_MAC_INPUT, CFG_MAC_SLEEP, CFG_ROLE, CFG_COUNT
 };
 
 static HWND s_main;
@@ -47,11 +48,29 @@ static HWND s_title, s_header_status, s_footer;
 static HWND s_overview_status, s_overview_peer, s_overview_channels, s_overview_sharing;
 static HWND s_connection_role, s_connection_status, s_connection_peer, s_connection_ports;
 static HWND s_cfg[CFG_COUNT], s_cfg_note;
-static HWND s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_progress, s_xfer_files, s_xfer_history, s_xfer_retry_button;
+static HWND s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_budget, s_xfer_memory, s_xfer_budget_stats, s_xfer_budget_lifecycle;
+static HWND s_xfer_progress, s_xfer_files, s_xfer_history, s_xfer_retry_button;
 static HWND s_log_edit;
 static HWND s_update_version, s_update_source;
 static HFONT s_font, s_font_title, s_font_small;
 static int s_page;
+static hop_config s_draft;
+static int s_pending_restart,s_save_busy,s_log_busy;
+static UINT s_dpi=96;
+static HBRUSH s_canvas,s_sidebar;
+static wchar_t s_addresses[512];
+#define UI_ROLE_ID 5150
+#define UI_SAVE_RESULT (WM_APP+61)
+#define UI_LOG_RESULT (WM_APP+62)
+typedef struct {HWND hwnd;int x,y,w,h,font;} ui_node;
+static ui_node s_nodes[160];static int s_node_count;
+/* Cards are page decoration, not sibling windows: child windows must remain
+ * visible and clickable above their backgrounds, regardless of Z order. */
+typedef struct {HWND page;const wchar_t *title;int x,y,w,h;} ui_card;
+static ui_card s_cards[32];static int s_card_count;
+static int dip(int v){return MulDiv(v,(int)s_dpi,96);}
+static void layout_main(HWND h);
+static void layout_nodes(void);
 static hop_xfer_file_status *s_file_snapshot;
 static int s_collapsed[HOP_XFER_FILE_LIMIT];
 static int s_visible_indices[HOP_XFER_FILE_LIMIT];
@@ -68,9 +87,10 @@ static const wchar_t *const kPageNames[UI_PAGE_COUNT] = {
 
 static HWND child(HWND parent, const wchar_t *klass, const wchar_t *text,
                   DWORD style, int x, int y, int w, int h, int id) {
-    HWND c = CreateWindowExW(0, klass, text, WS_CHILD | WS_VISIBLE | style,
-                             x, y, w, h, parent, (HMENU)(INT_PTR)id,
+    HWND c = CreateWindowExW(0, klass, text, WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | style,
+                             dip(x), dip(y), dip(w), dip(h), parent, (HMENU)(INT_PTR)id,
                              g_app.inst, NULL);
+    if(c && s_node_count<160)s_nodes[s_node_count++]=(ui_node){c,x,y,w,h,0};
     if (c && s_font) SendMessageW(c, WM_SETFONT, (WPARAM)s_font, TRUE);
     return c;
 }
@@ -84,34 +104,56 @@ static HWND edit(HWND p, const wchar_t *text, int x, int y, int w, int h, int id
     return child(p, L"EDIT", text, WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP |
                  (password ? ES_PASSWORD : 0), x, y, w, h, id);
 }
-static HWND group(HWND p, const wchar_t *text, int x, int y, int w, int h) {
-    return child(p, L"BUTTON", text, BS_GROUPBOX, x, y, w, h, 0);
+static void group(HWND p, const wchar_t *text, int x, int y, int w, int h) {
+    if (s_card_count < (int)(sizeof(s_cards) / sizeof(s_cards[0])))
+        s_cards[s_card_count++] = (ui_card){p,text,x,y,w,h};
 }
 static HWND page_create(HWND parent, int index) {
     wchar_t cls[32];
     (void)index;
     wcscpy(cls, L"HopDeskMainPage");
     return CreateWindowExW(WS_EX_CONTROLPARENT, cls, L"",
-        WS_CHILD | WS_CLIPCHILDREN, 228, 88, 860, 620,
+        WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VSCROLL, dip(228), dip(88), dip(860), dip(620),
         parent, NULL, g_app.inst, NULL);
 }
+static void paint_cards(HWND page,HDC dc,int scroll) {
+    HPEN pen=CreatePen(PS_SOLID,1,RGB(223,228,235));
+    HGDIOBJ old_pen=SelectObject(dc,pen);
+    HGDIOBJ old_brush=SelectObject(dc,GetStockObject(NULL_BRUSH));
+    HGDIOBJ old_font=SelectObject(dc,s_font);
+    SetBkMode(dc,TRANSPARENT);SetTextColor(dc,RGB(88,99,116));
+    for(int i=0;i<s_card_count;++i){
+        ui_card *c=&s_cards[i];if(c->page!=page)continue;
+        int left=dip(c->x),top=dip(c->y)-scroll,right=dip(c->x+c->w),bottom=dip(c->y+c->h)-scroll;
+        RoundRect(dc,left,top,right-1,bottom-1,dip(10),dip(10));
+        RECT text={left+dip(16),top+dip(10),right-dip(16),top+dip(32)};
+        DrawTextW(dc,c->title,-1,&text,DT_SINGLELINE|DT_LEFT);
+    }
+    SelectObject(dc,old_font);SelectObject(dc,old_brush);SelectObject(dc,old_pen);DeleteObject(pen);
+}
 static LRESULT CALLBACK page_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    if (m == WM_COMMAND) {
-        SendMessageW(GetParent(h), WM_COMMAND, w, l);
-        return 0;
+    if(m==WM_COMMAND){SendMessageW(GetParent(h),m,w,l);return 0;}
+    if(m==WM_CTLCOLORSTATIC){SetTextColor((HDC)w,RGB(39,45,56));SetBkColor((HDC)w,RGB(255,255,255));return (LRESULT)s_canvas;}
+    if(m==WM_SIZE){RECT r;GetClientRect(h,&r);SCROLLINFO si={sizeof(si),SIF_RANGE|SIF_PAGE,0,dip(624),r.bottom,0,0};SetScrollInfo(h,SB_VERT,&si,TRUE);layout_nodes();return 0;}
+    if(m==WM_VSCROLL || m==WM_MOUSEWHEEL){
+        SCROLLINFO si={sizeof(si),SIF_ALL,0,0,0,0,0};GetScrollInfo(h,SB_VERT,&si);int pos=si.nPos;
+        if(m==WM_MOUSEWHEEL)pos-=GET_WHEEL_DELTA_WPARAM(w)/WHEEL_DELTA*dip(48);
+        else switch(LOWORD(w)){case SB_LINEUP:pos-=dip(24);break;case SB_LINEDOWN:pos+=dip(24);break;case SB_PAGEUP:pos-=(int)si.nPage;break;case SB_PAGEDOWN:pos+=(int)si.nPage;break;case SB_THUMBTRACK:pos=si.nTrackPos;break;}
+        si.fMask=SIF_POS;si.nPos=pos;SetScrollInfo(h,SB_VERT,&si,TRUE);layout_nodes();InvalidateRect(h,NULL,TRUE);return 0;
     }
-    if (m == WM_ERASEBKGND) {
-        RECT r; GetClientRect(h, &r);
-        FillRect((HDC)w, &r, GetSysColorBrush(COLOR_WINDOW));
-        return 1;
+    if(m==WM_ERASEBKGND){RECT r;GetClientRect(h,&r);FillRect((HDC)w,&r,s_canvas);return 1;}
+    if(m==WM_PAINT){
+        PAINTSTRUCT ps;HDC dc=BeginPaint(h,&ps);
+        paint_cards(h,dc,GetScrollPos(h,SB_VERT));
+        EndPaint(h,&ps);return 0;
     }
-    return DefWindowProcW(h, m, w, l);
+    return DefWindowProcW(h,m,w,l);
 }
 static void set_text(HWND h, const wchar_t *s) {
     if (h) SetWindowTextW(h, s ? s : L"");
 }
 static void set_font(HWND h, HFONT f) {
-    if (h && f) SendMessageW(h, WM_SETFONT, (WPARAM)f, TRUE);
+    if (h && f) {SendMessageW(h, WM_SETFONT, (WPARAM)f, TRUE);for(int i=0;i<s_node_count;++i)if(s_nodes[i].hwnd==h)s_nodes[i].font=f==s_font_title?1:f==s_font_small?2:0;}
 }
 static void utf8_to_wide(const char *src, wchar_t *dst, int cap) {
     if (!cap) return;
@@ -129,101 +171,112 @@ static void set_int(HWND h, int v) {
 }
 static unsigned long parse_number(HWND h, unsigned long fallback) {
     wchar_t b[64], *end = NULL;
-    if (!h) return fallback;
+    (void)fallback;
+    if (!h || GetWindowTextLengthW(h)>=64) return 0xFFFFFFFFUL;
     GetWindowTextW(h, b, 64);
-    if (!b[0]) return fallback;
+    if (!b[0]) return 0xFFFFFFFFUL;
     unsigned long v = wcstoul(b, &end, (b[0] == L'0' && (b[1] == L'x' || b[1] == L'X')) ? 16 : 10);
-    return end == b || *end ? fallback : v;
+    return end == b || *end || b[0]==L'-' ? 0xFFFFFFFFUL : v;
 }
 static void show_page(int page) {
     if (page < 0 || page >= UI_PAGE_COUNT) page = 0;
     s_page = page;
-    for (int i = 0; i < UI_PAGE_COUNT; ++i) {
-        if (s_pages[i]) ShowWindow(s_pages[i], i == page ? SW_SHOW : SW_HIDE);
-        if (s_nav[i]) {
-            EnableWindow(s_nav[i], i != page);
-            SetWindowTextW(s_nav[i], i == page ? L"●  " : L"    ");
-            wchar_t text[48];
-            swprintf(text, 48, L"%ls%ls", i == page ? L"●  " : L"    ", kPageNames[i]);
-            SetWindowTextW(s_nav[i], text);
-        }
-    }
+    /* Hide every host first: no old page may repaint over the selected one. */
+    for(int i=0;i<UI_PAGE_COUNT;++i)if(s_pages[i])ShowWindow(s_pages[i],SW_HIDE);
+    if(s_pages[page])SetWindowPos(s_pages[page],HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_SHOWWINDOW);
+    for(int i=0;i<UI_PAGE_COUNT;++i)if(s_nav[i])InvalidateRect(s_nav[i],NULL,TRUE);
+    RedrawWindow(s_main,NULL,NULL,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);
     set_text(s_title, kPageNames[page]);
     if (page == 3) refresh_transfers();
     if (page == 4) refresh_logs();
 }
 static const wchar_t *link_state(void) {
     if (!g_app.net) return L"网络服务未启动";
-    if (!net_server_listening(g_app.net) || !xfer_listening()) return L"端口不可用，正在重试";
-    if (g_app.state == HOP_LINK_SHARING) return L"键鼠正在 Mac";
+    if (g_app.cfg.role==HOP_ROLE_SERVER && (!net_server_listening(g_app.net) || !xfer_listening())) return L"端口不可用，正在重试";
+    if (g_app.state == HOP_LINK_SHARING) return g_app.cfg.role==HOP_ROLE_SERVER?L"键鼠已移交客户端":L"正在接收服务器键鼠";
     if (g_app.state == HOP_LINK_LOCAL) return L"已连接";
-    return L"等待连接";
+    return g_app.cfg.role==HOP_ROLE_SERVER?L"等待客户端连接":g_app.cfg.peer_host[0]?L"正在连接服务器":L"请先填写服务器 IP";
 }
 static void refresh_connection(void) {
     wchar_t b[512];
     set_text(s_header_status, link_state());
     set_text(s_overview_status, link_state());
-    swprintf(b, 512, L"Windows 服务端  ·  控制端口 %u  ·  数据端口 %u",
-             (unsigned)g_app.cfg.port, (unsigned)g_app.cfg.data_port);
+    swprintf(b, 512, L"%ls  ·  控制端口 %u  ·  数据端口 %u",
+             g_app.cfg.role==HOP_ROLE_SERVER?L"服务器 · 提供键鼠":L"客户端 · 接收键鼠",(unsigned)g_app.cfg.port, (unsigned)g_app.cfg.data_port);
     set_text(s_overview_peer, b);
     swprintf(b, 512, L"控制通道：%ls    数据通道：%ls",
              g_app.state == HOP_LINK_DOWN ? L"等待连接" : L"已连接",
              xfer_connected() ? L"已连接" : L"等待连接");
     set_text(s_overview_channels, b);
-    set_text(s_overview_sharing, g_app.state == HOP_LINK_SHARING ? L"键鼠共享：已切换到 Mac" :
-             g_app.state == HOP_LINK_LOCAL ? L"键鼠共享：可切换到 Mac" : L"键鼠共享：等待连接");
-    set_text(s_connection_role, L"本机角色：Windows 服务端");
+    set_text(s_overview_sharing, g_app.state == HOP_LINK_SHARING ? g_app.cfg.role==HOP_ROLE_SERVER?L"键鼠共享：已移交客户端":L"键鼠共享：正在接收服务器输入" :
+             g_app.state == HOP_LINK_LOCAL ? L"键鼠共享：已就绪 · 从配置边缘移交" : L"键鼠共享：等待连接");
+    set_text(s_connection_role,g_app.cfg.role==HOP_ROLE_SERVER?L"本机角色：服务器 · 提供键鼠":L"本机角色：客户端 · 接收键鼠");
     set_text(s_connection_status, link_state());
-    if (g_app.peer_w > 0 && g_app.peer_h > 0)
-        swprintf(b, 512, L"对端设备：Mac  ·  屏幕 %d × %d", g_app.peer_w, g_app.peer_h);
-    else wcscpy(b, L"对端设备：Mac  ·  尚未取得设备信息");
+    if(g_app.cfg.role==HOP_ROLE_SERVER)swprintf(b,512,L"本机 IP：%ls",s_addresses);
+    else {wchar_t host[128];utf8_to_wide(g_app.cfg.peer_host,host,128);swprintf(b,512,L"服务器 IP：%ls",host[0]?host:L"未配置 · 请前往设置");}
     set_text(s_connection_peer, b);
     swprintf(b, 512, L"控制端口：%u    数据端口：%u",
              (unsigned)g_app.cfg.port, (unsigned)g_app.cfg.data_port);
     set_text(s_connection_ports, b);
     swprintf(b, 512, L"HopDesk  v%hs    ·    %ls", HOP_VERSION, link_state());
+    if(s_pending_restart)wcscat(b,L" · 设置已保存，重启生效");
     set_text(s_footer, b);
 }
-static void refresh_logs(void) {
-    if (!s_log_edit) return;
-    if (!g_app.log_path[0]) { set_text(s_log_edit, L"日志路径尚未初始化。"); return; }
+static wchar_t *load_logs(void) {
+    if (!g_app.log_path[0]) { return _wcsdup(L"日志路径尚未初始化。"); }
     wchar_t path[1024];
     if (!MultiByteToWideChar(CP_UTF8, 0, g_app.log_path, -1, path, 1024)) {
-        set_text(s_log_edit, L"日志路径无法转换。"); return;
+        return _wcsdup(L"日志路径无法转换。");
     }
     HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (f == INVALID_HANDLE_VALUE) { set_text(s_log_edit, L"暂无日志记录。"); return; }
-    LARGE_INTEGER size, zero; zero.QuadPart = 0;
-    if (!GetFileSizeEx(f, &size)) { CloseHandle(f); set_text(s_log_edit, L"无法读取日志大小。"); return; }
+    if (f == INVALID_HANDLE_VALUE) { return _wcsdup(L"暂无日志记录。"); }
+    LARGE_INTEGER size;
+    if (!GetFileSizeEx(f, &size)) { CloseHandle(f); return _wcsdup(L"无法读取日志大小。"); }
     const DWORD maxBytes = 256u * 1024u;
     DWORD take = (DWORD)(size.QuadPart > maxBytes ? maxBytes : size.QuadPart);
     LARGE_INTEGER pos; pos.QuadPart = size.QuadPart - take;
     SetFilePointerEx(f, pos, NULL, FILE_BEGIN);
     char *bytes = (char *)malloc((size_t)take + 1);
-    if (!bytes) { CloseHandle(f); set_text(s_log_edit, L"内存不足，无法读取日志。"); return; }
+    if (!bytes) { CloseHandle(f); return _wcsdup(L"内存不足，无法读取日志。"); }
     DWORD got = 0;
     BOOL ok = ReadFile(f, bytes, take, &got, NULL);
     CloseHandle(f);
-    if (!ok) { free(bytes); set_text(s_log_edit, L"读取日志失败。"); return; }
+    if (!ok) { free(bytes); return _wcsdup(L"读取日志失败。"); }
     bytes[got] = 0;
     if (pos.QuadPart > 0) {
         char *nl = memchr(bytes, '\n', got);
         if (nl) { size_t skip = (size_t)(nl - bytes) + 1; memmove(bytes, bytes + skip, got - skip + 1); got -= (DWORD)skip; }
     }
     int needed = MultiByteToWideChar(CP_UTF8, 0, bytes, (int)got, NULL, 0);
-    if (needed <= 0) { free(bytes); set_text(s_log_edit, L"日志编码无法识别。"); return; }
+    if (needed <= 0) { free(bytes); return _wcsdup(L"日志编码无法识别。"); }
     wchar_t *wide = (wchar_t *)calloc((size_t)needed + 1, sizeof(wchar_t));
-    if (!wide) { free(bytes); set_text(s_log_edit, L"内存不足，无法显示日志。"); return; }
+    if (!wide) { free(bytes); return _wcsdup(L"内存不足，无法显示日志。"); }
     MultiByteToWideChar(CP_UTF8, 0, bytes, (int)got, wide, needed);
-    set_text(s_log_edit, wide);
-    SendMessageW(s_log_edit, EM_SETSEL, (WPARAM)-1, (LPARAM)-1);
-    SendMessageW(s_log_edit, EM_SCROLLCARET, 0, 0);
-    free(wide); free(bytes);
+    free(bytes);return wide;
+}
+typedef struct {hop_config config;int ok;} save_result;
+static DWORD WINAPI log_worker(void *arg){
+    HWND target=(HWND)arg;wchar_t *text=load_logs();
+    if(!PostMessageW(target,UI_LOG_RESULT,0,(LPARAM)text))free(text);
+    return 0;
+}
+static DWORD WINAPI save_worker(void *arg){
+    save_result *result=(save_result*)arg;
+    result->ok=hop_config_save_atomic(&result->config,g_app.config_path);
+    if(!PostMessageW(s_main,UI_SAVE_RESULT,0,(LPARAM)result))free(result);
+    return 0;
+}
+static void refresh_logs(void){
+    if(s_log_busy||!s_log_edit)return;
+    s_log_busy=1;HANDLE t=CreateThread(NULL,0,log_worker,s_main,0,NULL);
+    if(t)CloseHandle(t);else{s_log_busy=0;set_text(s_log_edit,L"无法启动日志读取。");}
 }
 static void populate_settings(void) {
-    hop_config *c = &g_app.cfg;
+    hop_config *c = &s_draft;
     wchar_t b[128];
+    SendMessageW(s_cfg[CFG_ROLE],CB_SETCURSEL,c->role==HOP_ROLE_CLIENT?1:0,0);
+    EnableWindow(s_cfg[CFG_HOST],c->role==HOP_ROLE_CLIENT);
     utf8_to_wide(c->device_name, b, 128); set_text(s_cfg[CFG_NAME], b);
     if (c->peer_host[0]) { utf8_to_wide(c->peer_host, b, 128); set_text(s_cfg[CFG_HOST], b); }
     else set_text(s_cfg[CFG_HOST], L"");
@@ -243,23 +296,27 @@ static void populate_settings(void) {
     utf8_to_wide(c->mac_sleep_cmd, b, 128); set_text(s_cfg[CFG_MAC_SLEEP], b);
 }
 static void reset_settings(void) {
-    hop_config_defaults(&g_app.cfg);
-    snprintf(g_app.cfg.device_name, sizeof(g_app.cfg.device_name), "%s", "Windows");
+    if(s_save_busy)return;
+    hop_config_defaults(&s_draft);
+    snprintf(s_draft.device_name, sizeof(s_draft.device_name), "%s", "Windows");
     populate_settings();
     set_text(s_cfg_note, L"已恢复默认值；点击“保存设置”写入配置文件。");
 }
 static void save_settings(void) {
-    hop_config next = g_app.cfg;
-    wchar_t b[256];
+    hop_config next = s_draft;
+    if(s_save_busy)return;
+    next.role=SendMessageW(s_cfg[CFG_ROLE],CB_GETCURSEL,0,0)==1?HOP_ROLE_CLIENT:HOP_ROLE_SERVER;
     char utf8[256];
+    if(!wide_to_utf8(s_cfg[CFG_HOST],utf8,sizeof(utf8)) || strlen(utf8)>=sizeof(next.peer_host) || (next.role==HOP_ROLE_CLIENT&&!utf8[0])){MessageBoxW(s_main,L"客户端需要填写服务器 IP 或主机名。",L"连接设置",MB_OK|MB_ICONWARNING);return;}
+    memcpy(next.peer_host,utf8,strlen(utf8)+1);
     if (!wide_to_utf8(s_cfg[CFG_NAME], utf8, sizeof(utf8)) || !utf8[0] || strlen(utf8) >= sizeof(next.device_name)) {
         MessageBoxW(s_main, L"设备名称不能为空，且长度不能超过 31 个字节。", L"HopDesk 设置", MB_OK | MB_ICONWARNING); return;
     }
-    snprintf(next.device_name, sizeof(next.device_name), "%s", utf8);
-    if (!wide_to_utf8(s_cfg[CFG_TOKEN], utf8, sizeof(utf8)) || strlen(utf8) >= sizeof(next.token)) {
-        MessageBoxW(s_main, L"Token 长度不能超过 128 个字节。", L"HopDesk 设置", MB_OK | MB_ICONWARNING); return;
+    memcpy(next.device_name,utf8,strlen(utf8)+1);
+    if (!wide_to_utf8(s_cfg[CFG_TOKEN], utf8, sizeof(utf8)) || !utf8[0] || strlen(utf8) >= sizeof(next.token)) {
+        MessageBoxW(s_main, L"共享 Token 不能为空，且不能超过 128 个字节；两端必须设置相同 Token。", L"HopDesk 设置", MB_OK | MB_ICONWARNING); return;
     }
-    snprintf(next.token, sizeof(next.token), "%s", utf8);
+    memcpy(next.token,utf8,strlen(utf8)+1);
     unsigned long port = parse_number(s_cfg[CFG_PORT], 0), data_port = parse_number(s_cfg[CFG_DATA_PORT], 0);
     unsigned long delay = parse_number(s_cfg[CFG_SWITCH_DELAY], 250), cooldown = parse_number(s_cfg[CFG_COOLDOWN], 300);
     unsigned long margin = parse_number(s_cfg[CFG_MARGIN], 40), win_input = parse_number(s_cfg[CFG_DISP_WIN], 0x0F);
@@ -277,16 +334,16 @@ static void save_settings(void) {
     next.disp_win_input=(uint16_t)win_input; next.disp_mac_input=(uint16_t)mac_input;
     next.disp_wake_sec=(int)wake; next.xfer_chunk_kb=(int)chunk;
     if (!wide_to_utf8(s_cfg[CFG_MAC_INPUT], utf8, sizeof(utf8))) utf8[0]=0;
-    snprintf(next.mac_input_cmd,sizeof(next.mac_input_cmd),"%s",utf8);
+    if(strlen(utf8)>=sizeof(next.mac_input_cmd)){MessageBoxW(s_main,L"Mac 切源命令过长。",L"设置",MB_OK|MB_ICONWARNING);return;}
+    memcpy(next.mac_input_cmd,utf8,strlen(utf8)+1);
     if (!wide_to_utf8(s_cfg[CFG_MAC_SLEEP], utf8, sizeof(utf8))) utf8[0]=0;
-    snprintf(next.mac_sleep_cmd,sizeof(next.mac_sleep_cmd),"%s",utf8);
-    if (!hop_config_save_atomic(&next, g_app.config_path)) {
-        MessageBoxW(s_main, L"配置保存失败。原有配置文件保持不变，请检查目录权限和磁盘空间。", L"HopDesk 设置", MB_OK | MB_ICONERROR); return;
-    }
-    g_app.cfg = next;
-    set_text(s_cfg_note, L"设置已保存。连接、认证和显示器参数将在重启 HopDesk 后完整生效。");
-    hop_log(HOP_LOG_INFO, "ui: configuration saved; restart required for network settings");
-    refresh_connection();
+    if(strlen(utf8)>=sizeof(next.mac_sleep_cmd)){MessageBoxW(s_main,L"Mac 睡眠命令过长。",L"设置",MB_OK|MB_ICONWARNING);return;}
+    memcpy(next.mac_sleep_cmd,utf8,strlen(utf8)+1);
+    save_result *result=calloc(1,sizeof(*result));
+    if(!result){set_text(s_cfg_note,L"内存不足。");return;}
+    result->config=next;s_save_busy=1;set_text(s_cfg_note,L"正在保存…");
+    HANDLE t=CreateThread(NULL,0,save_worker,result,0,NULL);
+    if(t)CloseHandle(t);else{free(result);s_save_busy=0;set_text(s_cfg_note,L"无法启动配置保存。");}
 }
 static void refresh_transfers(void) {
     if (!s_xfer_title) return;
@@ -307,15 +364,55 @@ static void refresh_transfers(void) {
     }
     swprintf(row, 1800, L"%ls", name[0] ? name : L"暂无传输任务"); set_text(s_xfer_title, row);
     utf8_to_wide(st.detail, detail, HOP_XFER_STATUS_DETAIL);
-    swprintf(row, 1800, L"%ls  ·  %ls  ·  %ls", st.direction == HOP_XFER_DIR_SEND ? L"发送" :
-             st.direction == HOP_XFER_DIR_RECEIVE ? L"接收" : L"待机", phase, detail);
+    uint64_t now_ms=hop_monotonic_ms();
+    uint64_t speed=st.speed_bytes_per_sec;
+    if(!st.last_progress_ms || now_ms<st.last_progress_ms || now_ms-st.last_progress_ms>2000) speed=0;
+    if(speed) swprintf(row,1800,L"%ls  ·  %ls  ·  %ls  ·  %.1f MiB/s  ·  ETA %llus",
+        st.direction==HOP_XFER_DIR_SEND?L"发送":st.direction==HOP_XFER_DIR_RECEIVE?L"接收":L"待机",
+        phase,detail,(double)speed/1048576.0,(unsigned long long)st.eta_seconds);
+    else swprintf(row,1800,L"%ls  ·  %ls  ·  %ls  ·  速率 --  ·  ETA --",
+        st.direction==HOP_XFER_DIR_SEND?L"发送":st.direction==HOP_XFER_DIR_RECEIVE?L"接收":L"待机",
+        phase,detail);
     set_text(s_xfer_detail, row);
     swprintf(row, 1800, L"文件 %u / %u    排队 %u    数据 %llu / %llu MB",
              st.files_done, st.files_total, st.queued_count,
              (unsigned long long)(st.bytes_done / 1048576ULL),
              (unsigned long long)(st.bytes_total / 1048576ULL));
     set_text(s_xfer_counts, row);
-    int pct = st.bytes_total ? (int)(100ULL * st.bytes_done / st.bytes_total) : (st.active ? 0 : 100);
+    hop_xfer_budget_snapshot budget; memset(&budget,0,sizeof(budget)); xfer_get_budget_snapshot(&budget);
+    swprintf(row,1800,L"预算  jobs %u/%u  ·  entries %u/%u  ·  待传输 %llu/%llu MiB",
+        budget.jobs,budget.limits.max_jobs,budget.entries,budget.limits.max_entries,
+        (unsigned long long)(budget.pending_bytes/1048576ULL),
+        (unsigned long long)(budget.limits.max_pending_bytes/1048576ULL));
+    set_text(s_xfer_budget,row);
+    swprintf(row,1800,L"内存  image %llu/%llu MiB (temp %llu/%llu MiB)  ·  RX %u/%u slots  ·  %llu/%llu MiB",
+        (unsigned long long)(budget.image_bytes/1048576ULL),
+        (unsigned long long)(budget.limits.max_image_bytes/1048576ULL),
+        (unsigned long long)(budget.image_temp_bytes/1048576ULL),
+        (unsigned long long)(budget.limits.max_image_temp_bytes/1048576ULL),
+        budget.rx_queue_slots,budget.limits.max_rx_queue_slots,
+        (unsigned long long)(budget.rx_queue_bytes/1048576ULL),
+        (unsigned long long)(budget.limits.max_rx_queue_bytes/1048576ULL));
+    set_text(s_xfer_memory,row);
+    uint64_t rejected=budget.rejected_jobs+budget.rejected_entries+budget.rejected_bytes+
+        budget.rejected_images+budget.rejected_rx_buffers+budget.rejected_image_temp_bytes+
+        budget.rejected_image_transfers;
+    swprintf(row,1800,L"峰值 jobs %u · entries %u · pending %llu MiB · image %llu MiB · RX %u slots/%llu MiB · 拒绝 %llu",
+        budget.jobs_high_water,budget.entries_high_water,
+        (unsigned long long)(budget.pending_bytes_high_water/1048576ULL),
+        (unsigned long long)(budget.image_bytes_high_water/1048576ULL),
+        budget.rx_queue_slots_high_water,
+        (unsigned long long)(budget.rx_queue_bytes_high_water/1048576ULL),
+        (unsigned long long)rejected);
+    set_text(s_xfer_budget_stats,row);
+    swprintf(row,1800,L"释放 tasks %llu · RX buffers %llu · image temp %llu MiB · image handoff %llu MiB · 账本异常 %llu",
+        (unsigned long long)budget.released_reservations,
+        (unsigned long long)budget.released_rx_buffers,
+        (unsigned long long)(budget.released_image_temp_bytes/1048576ULL),
+        (unsigned long long)(budget.transferred_image_temp_bytes/1048576ULL),
+        (unsigned long long)budget.accounting_errors);
+    set_text(s_xfer_budget_lifecycle,row);
+    int pct = st.bytes_total ? (int)(100ULL * st.bytes_done / st.bytes_total) : (st.phase==HOP_XFER_COMPLETED ? 100 : 0);
     SendMessageW(s_xfer_progress, PBM_SETPOS, pct > 100 ? 100 : pct, 0);
     if (s_xfer_retry_button) EnableWindow(s_xfer_retry_button, st.direction == HOP_XFER_DIR_SEND);
 
@@ -340,7 +437,8 @@ static void refresh_transfers(void) {
         utf8_to_wide(s_file_snapshot[i].relative_path, path, 1024);
         int depth=0; for (const char *p=s_file_snapshot[i].relative_path; *p; ++p) if (*p=='/') ++depth;
         wchar_t indent[64]; int spaces=depth*2; if(spaces>24)spaces=24;
-        for(int j=0;j<spaces;++j)indent[j]=L' '; indent[spaces]=0;
+        for(int j=0;j<spaces;++j)indent[j]=L' ';
+        indent[spaces]=0;
         const wchar_t *state = s_file_snapshot[i].phase==HOP_XFER_FILE_COMPLETED?L"完成":
             s_file_snapshot[i].phase==HOP_XFER_FILE_FAILED?L"失败":
             s_file_snapshot[i].phase==HOP_XFER_FILE_SENDING?L"发送中":
@@ -392,8 +490,14 @@ static void create_settings_page(HWND p) {
     label(p,L"Mac 切源命令",448,294,170,20); s_cfg[CFG_MAC_INPUT]=edit(p,L"",448,318,352,26,0,0);
     label(p,L"Mac 睡眠命令",448,354,170,20); s_cfg[CFG_MAC_SLEEP]=edit(p,L"",448,378,352,26,0,0);
     label(p,L"输入源支持十六进制（例如 0x0F）。保存后，连接和认证参数将在重启后完整生效。",448,416,350,34);
-    label(p,L"Windows 为服务端，此处的服务端地址由 Mac 客户端填写。",38,288,370,28);
-    EnableWindow(s_cfg[CFG_HOST],FALSE);
+    label(p,L"服务器显示本机 IP；客户端填写对方地址。两端 Token 与端口需一致。",38,288,370,28);
+
+    group(p,L"运行角色",20,330,390,138);
+    label(p,L"本机角色",38,369,120,22);
+    s_cfg[CFG_ROLE]=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,160,363,225,120,UI_ROLE_ID);
+    SendMessageW(s_cfg[CFG_ROLE],CB_ADDSTRING,0,(LPARAM)L"服务器 · 提供键鼠");
+    SendMessageW(s_cfg[CFG_ROLE],CB_ADDSTRING,0,(LPARAM)L"客户端 · 接收键鼠");
+    label(p,L"角色与连接参数保存后重启生效。当前会话不受未保存的修改影响。",38,408,350,42);
     button(p,L"保存设置",448,500,130,34,UI_ID_SAVE);
     button(p,L"恢复默认",590,500,130,34,UI_ID_RESET);
     s_cfg_note=label(p,L"修改后点击保存；网络参数将在重启后生效。",38,548,760,28);
@@ -408,8 +512,8 @@ static void create_pages(HWND h) {
     s_overview_channels=label(p,L"控制通道：等待连接    数据通道：等待连接",42,124,740,24);
     group(p,L"常用操作",20,185,800,145);
     s_overview_sharing=label(p,L"键鼠共享：等待连接",42,218,740,24);
-    button(p,L"切换到 Mac 显示",42,260,150,34,UI_ID_SWITCH_MAC);
-    button(p,L"切回 Windows 显示",210,260,160,34,UI_ID_SWITCH_WIN);
+    button(p,L"显示器切至 Mac",42,260,150,34,UI_ID_SWITCH_MAC);
+    button(p,L"显示器切至 Windows",210,260,160,34,UI_ID_SWITCH_WIN);
     button(p,L"唤醒显示",388,260,120,34,UI_ID_WAKE);
     button(p,L"显示睡眠",526,260,120,34,UI_ID_SLEEP);
     group(p,L"快速入口",20,352,800,125);
@@ -428,13 +532,17 @@ static void create_pages(HWND h) {
     p=s_pages[2]; create_settings_page(p);
 
     p=s_pages[3];
-    group(p,L"当前任务",20,14,800,145);
-    s_xfer_title=label(p,L"暂无传输任务",40,42,740,24); set_font(s_xfer_title,s_font_title);
-    s_xfer_detail=label(p,L"等待文件传输",40,72,740,22);
-    s_xfer_counts=label(p,L"文件 0 / 0    排队 0    数据 0 / 0 MB",40,100,740,22);
-    s_xfer_progress=child(p,PROGRESS_CLASSW,L"",PBS_SMOOTH,40,128,740,14,0);
-    group(p,L"文件明细",20,174,800,195);
-    s_xfer_files=child(p,L"LISTBOX",L"",WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS|WS_TABSTOP,40,198,760,155,UI_ID_FILES);
+    group(p,L"当前任务",20,14,800,194);
+    s_xfer_title=label(p,L"暂无传输任务",40,40,740,24); set_font(s_xfer_title,s_font_title);
+    s_xfer_detail=label(p,L"等待文件传输",40,68,740,18);
+    s_xfer_counts=label(p,L"文件 0 / 0    排队 0    数据 0 / 0 MB",40,92,740,18);
+    s_xfer_budget=label(p,L"预算 jobs 0/16 · entries 0/32768 · pending 0/8192 MiB",40,116,740,16);
+    s_xfer_memory=label(p,L"内存 image 0/256 MiB · RX 0/8 slots",40,136,740,16);
+    s_xfer_budget_stats=label(p,L"峰值与拒绝计数等待采样",40,156,740,16);
+    s_xfer_budget_lifecycle=label(p,L"资源释放与图片缓冲转移等待采样",40,174,740,16);
+    s_xfer_progress=child(p,PROGRESS_CLASSW,L"",PBS_SMOOTH,40,194,740,10,0);
+    group(p,L"文件明细",20,210,800,159);
+    s_xfer_files=child(p,L"LISTBOX",L"",LBS_NOTIFY|WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS|WS_TABSTOP,40,232,760,119,UI_ID_FILES);
     group(p,L"传输历史",20,386,800,175);
     s_xfer_history=child(p,L"LISTBOX",L"",WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS,40,410,760,135,0);
     s_xfer_retry_button=button(p,L"重试选中文件",500,572,140,34,UI_ID_XFER_RETRY);
@@ -449,40 +557,46 @@ static void create_pages(HWND h) {
 
     p=s_pages[5];
     group(p,L"软件更新",20,18,800,260);
-    s_update_version=label(p,L"当前版本",42,58,740,28); set_font(s_update_version,s_font_title);
+    wchar_t version[80];swprintf(version,80,L"当前版本：v%hs",HOP_VERSION);
+    s_update_version=label(p,version,42,58,740,28); set_font(s_update_version,s_font_title);
     s_update_source=label(p,L"更新源：GitHub Releases",42,104,740,24);
     label(p,L"检查更新会读取公开更新清单。发现新版本后，可下载、校验并自动安装。",42,152,740,44);
     button(p,L"检查更新",42,220,140,36,UI_ID_UPDATE);
     label(p,L"如果更新源尚未发布 latest.txt，检查会明确提示读取失败，不会将其误报为“已是最新版本”。",42,300,740,48);
 
-    for(int i=0;i<UI_PAGE_COUNT;++i) ShowWindow(s_pages[i],i==0?SW_SHOW:SW_HIDE);
+    for(int i=0;i<UI_PAGE_COUNT;++i) ShowWindow(s_pages[i],SW_HIDE);
     populate_settings();
 }
+static void layout_nodes(void){
+    for(int i=0;i<s_node_count;++i){ui_node *n=&s_nodes[i];if(!IsWindow(n->hwnd))continue;
+        HWND parent=GetParent(n->hwnd);int scroll=parent==s_main?0:GetScrollPos(parent,SB_VERT);
+        MoveWindow(n->hwnd,dip(n->x),dip(n->y)-scroll,dip(n->w),dip(n->h),TRUE);
+    }
+}
 static void layout_main(HWND h) {
-    RECT r; GetClientRect(h,&r);
-    int w=r.right-r.left, height=r.bottom-r.top;
-    /* Sidebar and page host remain aligned at every DPI scale. */
-    for(int i=0;i<UI_PAGE_COUNT;++i)
-        if(s_pages[i]) MoveWindow(s_pages[i],228,88,w-248,height-118,TRUE);
-    if(s_footer) MoveWindow(s_footer,228,height-26,w-250,22,TRUE);
+    RECT r; GetClientRect(h,&r);int w=r.right,height=r.bottom;
+    for(int i=0;i<UI_PAGE_COUNT;++i)if(s_pages[i])MoveWindow(s_pages[i],dip(228),dip(88),w-dip(248),height-dip(124),TRUE);
+    layout_nodes();
+    if(s_footer)MoveWindow(s_footer,dip(250),height-dip(28),w-dip(270),dip(22),TRUE);
+    if(s_header_status)MoveWindow(s_header_status,w-dip(320),dip(30),dip(290),dip(26),TRUE);
 }
 static void create_main_controls(HWND h) {
     INITCOMMONCONTROLSEX ic={sizeof(ic),ICC_PROGRESS_CLASS|ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&ic);
-    s_font=CreateFontW(-15,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
+    s_font=CreateFontW(-dip(15),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH|FF_DONTCARE,L"Segoe UI");
-    s_font_title=CreateFontW(-23,0,0,0,FW_SEMIBOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
+    s_font_title=CreateFontW(-dip(23),0,0,0,FW_SEMIBOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH|FF_DONTCARE,L"Segoe UI");
-    s_font_small=CreateFontW(-12,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
+    s_font_small=CreateFontW(-dip(12),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH|FF_DONTCARE,L"Segoe UI");
     HWND brand=label(h,L"HopDesk",24,22,170,36); set_font(brand,s_font_title);
     label(h,L"跨设备协作",26,58,160,20);
     for(int i=0;i<UI_PAGE_COUNT;++i){
-        s_nav[i]=button(h,kPageNames[i],20,112+i*48,180,38,UI_NAV_BASE+i);
+        s_nav[i]=child(h,L"BUTTON",kPageNames[i],BS_OWNERDRAW|WS_TABSTOP,20,112+i*48,180,40,UI_NAV_BASE+i);
         set_font(s_nav[i],s_font);
     }
     s_title=label(h,L"概览",250,22,400,40); set_font(s_title,s_font_title);
-    s_header_status=label(h,L"等待 Mac 连接",790,30,300,26);
+    s_header_status=label(h,L"等待连接",790,30,300,26);
     s_footer=label(h,L"HopDesk",228,0,850,22); set_font(s_footer,s_font_small);
     create_pages(h);
     layout_main(h);
@@ -495,9 +609,29 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_SIZE:
             layout_main(h); return 0;
+        case WM_CTLCOLORSTATIC:
+            SetTextColor((HDC)wp,RGB(39,45,56));SetBkColor((HDC)wp,RGB(255,255,255));return (LRESULT)s_canvas;
+        case WM_DRAWITEM:{
+            DRAWITEMSTRUCT *d=(DRAWITEMSTRUCT*)lp;int index=(int)d->CtlID-UI_NAV_BASE;
+            if(index<0||index>=UI_PAGE_COUNT)break;
+            HBRUSH brush=CreateSolidBrush(index==s_page?RGB(229,242,252):RGB(247,249,252));FillRect(d->hDC,&d->rcItem,brush);DeleteObject(brush);
+            RECT r=d->rcItem;r.left+=dip(18);SetBkMode(d->hDC,TRANSPARENT);SetTextColor(d->hDC,index==s_page?RGB(30,105,181):RGB(65,76,92));SelectObject(d->hDC,s_font);DrawTextW(d->hDC,kPageNames[index],-1,&r,DT_LEFT|DT_SINGLELINE|DT_VCENTER);
+            if(d->itemState&ODS_FOCUS)DrawFocusRect(d->hDC,&d->rcItem);
+            return TRUE;
+        }
+        case WM_ERASEBKGND:{RECT r;GetClientRect(h,&r);FillRect((HDC)wp,&r,s_canvas);r.right=dip(216);FillRect((HDC)wp,&r,s_sidebar);return 1;}
+        case WM_DPICHANGED:{
+            UINT old_dpi=s_dpi;s_dpi=HIWORD(wp);HFONT old[3]={s_font,s_font_title,s_font_small};
+            s_font=CreateFontW(-dip(15),0,0,0,FW_NORMAL,0,0,0,DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");
+            s_font_title=CreateFontW(-dip(23),0,0,0,FW_SEMIBOLD,0,0,0,DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");
+            s_font_small=CreateFontW(-dip(12),0,0,0,FW_NORMAL,0,0,0,DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");
+            HFONT fonts[3]={s_font,s_font_title,s_font_small};for(int i=0;i<s_node_count;++i)SendMessageW(s_nodes[i].hwnd,WM_SETFONT,(WPARAM)fonts[s_nodes[i].font],TRUE);
+            RECT *r=(RECT*)lp;SetWindowPos(h,NULL,r->left,r->top,r->right-r->left,r->bottom-r->top,SWP_NOZORDER|SWP_NOACTIVATE);
+            layout_main(h);for(int i=0;i<3;++i)DeleteObject(old[i]);(void)old_dpi;return 0;
+        }
         case WM_GETMINMAXINFO:{
             MINMAXINFO *m=(MINMAXINFO *)lp;
-            m->ptMinTrackSize.x=1120; m->ptMinTrackSize.y=760;
+            m->ptMinTrackSize.x=dip(1120); m->ptMinTrackSize.y=dip(600);
             return 0;
         }
         case WM_TIMER:
@@ -505,6 +639,7 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         case WM_COMMAND:{
             int id=LOWORD(wp);
+            if(id==UI_ROLE_ID && HIWORD(wp)==CBN_SELCHANGE){EnableWindow(s_cfg[CFG_HOST],SendMessageW(s_cfg[CFG_ROLE],CB_GETCURSEL,0,0)==1);return 0;}
             if(id>=UI_NAV_BASE && id<UI_NAV_BASE+UI_PAGE_COUNT){show_page(id-UI_NAV_BASE);return 0;}
             switch(id){
                 case UI_ID_SAVE: save_settings(); return 0;
@@ -542,6 +677,14 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         }
+        case UI_LOG_RESULT:
+            s_log_busy=0;set_text(s_log_edit,lp?(wchar_t*)lp:L"读取日志失败。");free((void*)lp);return 0;
+        case UI_SAVE_RESULT:{
+            save_result *result=(save_result*)lp;s_save_busy=0;
+            if(result->ok){s_draft=result->config;s_pending_restart=1;set_text(s_cfg_note,L"设置已保存；重启 HopDesk 后生效。");}
+            else set_text(s_cfg_note,L"保存失败；原配置未改变，请检查权限和磁盘空间。");
+            free(result);refresh_connection();return 0;
+        }
         case WM_CLOSE:
             ShowWindow(h,SW_HIDE);
             KillTimer(h,UI_TIMER);
@@ -560,22 +703,28 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 
 void main_ui_show_page(int page) {
     if(!s_main){
+        s_node_count=0;s_card_count=0;
+        s_draft=g_app.cfg;s_canvas=CreateSolidBrush(RGB(255,255,255));s_sidebar=CreateSolidBrush(RGB(247,249,252));
+        HDC dc=GetDC(NULL);s_dpi=(UINT)GetDeviceCaps(dc,LOGPIXELSX);ReleaseDC(NULL,dc);
+        char addresses[512];local_addresses(addresses,sizeof(addresses));utf8_to_wide(addresses,s_addresses,512);
         WNDCLASSW wc; memset(&wc,0,sizeof(wc));
         wc.lpfnWndProc=main_wnd_proc; wc.hInstance=g_app.inst;
-        wc.hCursor=LoadCursorW(NULL,IDC_ARROW); wc.hbrBackground=GetSysColorBrush(COLOR_WINDOW);
+        wc.hCursor=LoadCursorW(NULL,MAKEINTRESOURCEW(32512)); wc.hbrBackground=GetSysColorBrush(COLOR_WINDOW);
         wc.lpszClassName=L"HopDeskMainWindow";
         RegisterClassW(&wc);
         WNDCLASSW pc; memset(&pc,0,sizeof(pc));
         pc.lpfnWndProc=page_proc; pc.hInstance=g_app.inst;
-        pc.hCursor=LoadCursorW(NULL,IDC_ARROW); pc.hbrBackground=GetSysColorBrush(COLOR_WINDOW);
+        pc.hCursor=LoadCursorW(NULL,MAKEINTRESOURCEW(32512)); pc.hbrBackground=GetSysColorBrush(COLOR_WINDOW);
         pc.lpszClassName=L"HopDeskMainPage";
         RegisterClassW(&pc);
         s_main=CreateWindowExW(WS_EX_APPWINDOW,L"HopDeskMainWindow",L"HopDesk",
-            WS_OVERLAPPEDWINDOW|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,1140,800,
+            WS_OVERLAPPEDWINDOW|WS_CLIPCHILDREN|WS_CLIPSIBLINGS,CW_USEDEFAULT,CW_USEDEFAULT,dip(1140),dip(800),
             NULL,NULL,g_app.inst,NULL);
     }
     if(!s_main)return;
     show_page(page);
+    RECT work,wr;SystemParametersInfoW(SPI_GETWORKAREA,0,&work,0);GetWindowRect(s_main,&wr);
+    if(wr.bottom-wr.top>work.bottom-work.top)SetWindowPos(s_main,NULL,work.left,work.top,wr.right-wr.left,work.bottom-work.top,SWP_NOZORDER);
     ShowWindow(s_main,SW_SHOWNORMAL);
     SetForegroundWindow(s_main);
     SetTimer(s_main,UI_TIMER,500,NULL);
@@ -588,3 +737,5 @@ void main_ui_shutdown(void) {
     if(s_main) DestroyWindow(s_main);
     s_main=NULL;
 }
+
+int main_ui_translate(MSG *message){return s_main&&IsWindowVisible(s_main)&&IsDialogMessageW(s_main,message);}

@@ -40,7 +40,7 @@ int main(void){
     hop_xfer_tracking_begin(&receive_state,7,HOP_XFER_DIR_RECEIVE,0,0,"in",HOP_XFER_RECEIVING);
     hop_xfer_tracking_file(&send_state,7,1,"out",100,0,HOP_XFER_FILE_SENDING);
     hop_xfer_tracking_file(&receive_state,7,1,"in",1048576,0,HOP_XFER_FILE_RECEIVING);
-    hop_xfer_tracking_chunk(&receive_state,7,1,0,1048576);
+    hop_xfer_tracking_chunk(&receive_state,7,1,0,1048576,1000);
     assert(receive_state.status.bytes_total==1048576 && receive_state.status.bytes_done==1048576);
     assert(send_state.status.bytes_done==0);
     assert(hop_xfer_tracking_end(&send_state,7,HOP_XFER_COMPLETED,"done"));
@@ -54,10 +54,10 @@ int main(void){
     hop_xfer_tracking_file(&receive_state,7,1,"in",1048576,0,HOP_XFER_FILE_RECEIVING);
     assert(receive_state.status.bytes_total==1048576 && receive_state.status.bytes_done==0);
     assert(receive_state.status.files_done==0);
-    hop_xfer_tracking_chunk(&receive_state,7,1,0,128);
-    hop_xfer_tracking_chunk(&receive_state,7,1,0,128);
+    hop_xfer_tracking_chunk(&receive_state,7,1,0,128,2000);
+    hop_xfer_tracking_chunk(&receive_state,7,1,0,128,2000);
     assert(receive_state.status.bytes_done==128);
-    hop_xfer_tracking_chunk(&receive_state,8,1,128,128);
+    hop_xfer_tracking_chunk(&receive_state,8,1,128,128,3000);
     assert(receive_state.status.bytes_done==128);
     assert(hop_xfer_tracking_end(&receive_state,7,HOP_XFER_CANCELLED,"cancel"));
     for(int phase=HOP_XFER_COMPLETED;phase<=HOP_XFER_CANCELLED;phase++){

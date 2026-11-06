@@ -7,6 +7,7 @@
 #include "net_server.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 #define MAX_CONNECTIONS 8
 struct connection;
@@ -90,10 +91,28 @@ static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
     connection *c = (connection *)user;
     net_server *s = c->server;
     if (c->rejected) return;
+    if (!c->authed && s->cfg.role==HOP_ROLE_CLIENT) {
+        int ok;uint32_t w,h;hop_session_id session;
+        if(type!=HOP_MSG_HELLO_ACK || !hop_hello_ack_decode(p,len,&ok,&w,&h,&session)||!ok){
+            hop_log(HOP_LOG_WARN,"net: control handshake rejected: invalid ACK or incompatible protocol");
+            c->rejected=1;shutdown(c->sock,SD_BOTH);return;
+        }
+        EnterCriticalSection(&s->lock);
+        queue_clear(s);s->client=c->sock;c->epoch=++s->epoch;c->authed=1;
+        c->session=session;hop_session_publish(&session);
+        c->last_rx=s->last_ping=hop_monotonic_ms();
+        PostMessageW(s->hwnd,WM_APP_LINK,1,(LPARAM)c->epoch);
+        if(!post_message(c,type,p,len))c->rejected=1;
+        LeaveCriticalSection(&s->lock);return;
+    }
     if (!c->authed) {
         hop_hello_msg hello;
-        if (type != HOP_MSG_HELLO || !hop_hello_decode(p, len, &hello) ||
-            !hop_token_matches(s->cfg.token, hello.token, hello.token_len)) {
+        if (type != HOP_MSG_HELLO || !hop_hello_decode(p, len, &hello)) {
+            hop_log(HOP_LOG_WARN,"net: control handshake rejected: invalid HELLO or incompatible protocol");
+            c->rejected = 1; shutdown(c->sock, SD_BOTH); return;
+        }
+        if (!hop_token_matches(s->cfg.token, hello.token, hello.token_len)) {
+            hop_log(HOP_LOG_WARN,"net: control handshake rejected: token mismatch");
             c->rejected = 1; shutdown(c->sock, SD_BOTH); return;
         }
         if (!hop_session_generate(&c->session)) { c->rejected = 1; shutdown(c->sock, SD_BOTH); return; }
@@ -147,8 +166,10 @@ static DWORD WINAPI reader_thread(LPVOID arg) {
     c->decoder = hop_decoder_new(c, on_message);
     while (c->decoder && !c->rejected && WaitForSingleObject(s->stop, 0) != WAIT_OBJECT_0) {
         uint64_t now = hop_monotonic_ms();
-        if ((!c->authed && hop_handshake_expired(now, c->started)) ||
-            (c->authed && hop_peer_silent(now, c->last_rx))) break;
+        if (!c->authed && hop_handshake_expired(now, c->started)) {
+            hop_log(HOP_LOG_WARN,"net: control handshake timed out");break;
+        }
+        if (c->authed && hop_peer_silent(now, c->last_rx)) break;
         int n = recv(c->sock, buf, sizeof(buf), 0);
         if (n == 0) break;
         if (n < 0) {
@@ -293,6 +314,62 @@ static DWORD WINAPI server_thread(LPVOID arg) {
     }
     return 0;
 }
+
+SOCKET net_connect_timeout_win(const char *host,uint16_t port,HANDLE stop) {
+    if(!host || !*host)return INVALID_SOCKET;
+    struct addrinfo hints,*res=NULL;memset(&hints,0,sizeof(hints));
+    hints.ai_family=AF_UNSPEC;hints.ai_socktype=SOCK_STREAM;
+    char service[16];snprintf(service,sizeof(service),"%u",(unsigned)port);
+    int guard=hop_watchdog_begin("DNS resolution",5000);
+    int rc=getaddrinfo(host,service,&hints,&res);hop_watchdog_end(guard);
+    if(rc)return INVALID_SOCKET;
+    SOCKET sock=INVALID_SOCKET;
+    uint64_t deadline=hop_monotonic_ms()+HOP_CONNECT_TIMEOUT_MS;
+    for(struct addrinfo *a=res;a && hop_monotonic_ms()<deadline;a=a->ai_next){
+        if(WaitForSingleObject(stop,0)==WAIT_OBJECT_0)break;
+        sock=socket(a->ai_family,a->ai_socktype,a->ai_protocol);
+        if(sock==INVALID_SOCKET)continue;
+        u_long mode=1;ioctlsocket(sock,FIONBIO,&mode);
+        rc=connect(sock,a->ai_addr,(int)a->ai_addrlen);
+        if(rc==SOCKET_ERROR && WSAGetLastError()!=WSAEWOULDBLOCK)goto next;
+        while(rc==SOCKET_ERROR && hop_monotonic_ms()<deadline && WaitForSingleObject(stop,0)!=WAIT_OBJECT_0){
+            fd_set wr,err;FD_ZERO(&wr);FD_ZERO(&err);FD_SET(sock,&wr);FD_SET(sock,&err);
+            struct timeval tv={0,200000};int n=select(0,NULL,&wr,&err,&tv);
+            if(n<0 || (n>0 && FD_ISSET(sock,&err)))goto next;
+            if(n>0){int e=0;int size=sizeof(e);if(getsockopt(sock,SOL_SOCKET,SO_ERROR,(char*)&e,&size)||e)goto next;rc=0;}
+        }
+        if(rc==0){mode=0;ioctlsocket(sock,FIONBIO,&mode);break;}
+next:  closesocket(sock);sock=INVALID_SOCKET;
+    }
+    freeaddrinfo(res);return sock;
+}
+static DWORD WINAPI client_thread(LPVOID arg){
+    net_server *s=(net_server*)arg;unsigned delay=500;
+    while(WaitForSingleObject(s->stop,0)!=WAIT_OBJECT_0){
+        SOCKET sock=net_connect_timeout_win(s->cfg.peer_host,s->cfg.port,s->stop);
+        if(sock==INVALID_SOCKET){
+            if(s->cfg.peer_host[0])hop_log(HOP_LOG_WARN,"net: TCP control connection failed: host=%s port=%u; check address, network and firewall",s->cfg.peer_host,(unsigned)s->cfg.port);
+            WaitForSingleObject(s->stop,delay);delay=delay<8000?delay*2:8000;continue;
+        }
+        hop_log(HOP_LOG_INFO,"net: control TCP connected; awaiting handshake");
+        connection *c=&s->peers[0];memset(c,0,sizeof(*c));c->server=s;c->sock=sock;c->started=hop_monotonic_ms();
+        DWORD rcv=500,snd=HOP_CTRL_SEND_TIMEOUT_MS;
+        setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,(char*)&rcv,sizeof(rcv));
+        setsockopt(sock,SOL_SOCKET,SO_SNDTIMEO,(char*)&snd,sizeof(snd));
+        net_set_keepalive(sock);
+        uint8_t hello[2+HOP_TOKEN_MAX+HOP_NAME_MAX+9],hdr[HOP_HEADER_SIZE];uint32_t n=0;
+        size_t tl=strlen(s->cfg.token),nl=strlen(s->cfg.device_name);
+        hello[n++]=(uint8_t)tl;memcpy(hello+n,s->cfg.token,tl);n+=(uint32_t)tl;
+        hello[n++]=(uint8_t)nl;memcpy(hello+n,s->cfg.device_name,nl);n+=(uint32_t)nl;
+        hop_put_be32(hello+n,(uint32_t)s->cfg.screen_w);n+=4;hop_put_be32(hello+n,(uint32_t)s->cfg.screen_h);n+=4;
+        hello[n++]=HOP_CTRL_PROTO_VER;hop_encode_header(hdr,HOP_MSG_HELLO,n);
+        if(send_all(sock,hdr,sizeof(hdr)) && send_all(sock,hello,n))reader_thread(c);
+        else {closesocket(sock);c->sock=INVALID_SOCKET;}
+        delay=c->authed?500:(delay<8000?delay*2:8000);
+        WaitForSingleObject(s->stop,delay);
+    }
+    return 0;
+}
 net_server *net_server_start(HWND hwnd, const hop_config *cfg) {
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2,2), &wsa)) return NULL;
@@ -304,7 +381,7 @@ net_server *net_server_start(HWND hwnd, const hop_config *cfg) {
     s->stop = CreateEventW(NULL, TRUE, FALSE, NULL);
     s->q_evt = CreateEventW(NULL, FALSE, FALSE, NULL);
     if (s->stop && s->q_evt) s->sender = CreateThread(NULL, 0, sender_thread, s, 0, NULL);
-    if (s->sender) s->thread = CreateThread(NULL, 0, server_thread, s, 0, NULL);
+    if (s->sender) s->thread = CreateThread(NULL, 0, cfg->role==HOP_ROLE_SERVER?server_thread:client_thread, s, 0, NULL);
     if (!s->thread) { net_server_stop(s); return NULL; }
     return s;
 }

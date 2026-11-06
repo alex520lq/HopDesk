@@ -23,9 +23,9 @@ HopDesk 采用 **单主干 + 单活动修复分支** 的迭代方式，避免多
 
 | 功能 | 当前实现 |
 |---|---|
-| 键鼠共享 | Windows 捕获鼠标与键盘事件，macOS 注入事件 |
+| 键鼠共享 | 两端均可选择服务器（捕获输入）或客户端（注入输入） |
 | 鼠标跨屏 | 支持边缘移交、反向收回、相对位移、点击和滚轮 |
-| 键盘映射 | Windows 虚拟键码映射到 macOS 键码；Ctrl 等修饰键按映射规则转发 |
+| 键盘映射 | 保持 v6 Mac 键码线格式，支持 Windows VK 双向映射与修饰键释放 |
 | 剪贴板文本 | 双向文本同步，并抑制同步回环 |
 | 文件与文件夹 | 通过独立数据通道传输，支持目录递归和空目录 |
 | 图片 | 通过数据通道传输像素数据 |
@@ -36,9 +36,11 @@ HopDesk 采用 **单主干 + 单活动修复分支** 的迭代方式，避免多
 ### 当前边界
 
 - 目标场景是两台设备之间的局域网连接，不提供多设备组网或公网中继。
-- Windows 作为服务端，macOS 作为主动连接的客户端。
-- 当前协议使用普通 TCP；没有实现 TLS 加密。
-- 连接 token 默认为空，即默认不进行 token 校验。需要在可信网络中使用，或自行配置 token。
+- Windows / macOS 均可在“设置 → 本机角色”选择服务器或客户端。服务器显示本机 IP，客户端填写服务器地址；保存后重启生效。
+- 服务器提供键鼠，客户端接收键鼠；文字、图片和文件始终双向传输。两端必须使用相同的控制/数据端口与 Token。
+- 旧配置未写 `role` 时保留原默认值：Windows 为服务器，macOS 为客户端。
+- 控制与数据连接必须配置相同的非空 Token；空 Token 会被拒绝。
+- 当前协议使用普通 TCP，尚未实现 TLS 加密；只应在可信局域网使用。
 - 显示器 DDC 输入源代码值、macOS 切源命令与具体显示器和接线有关，需要按设备调整。
 - 图片支持受两端当前剪贴板格式处理能力限制，并非通用图片格式转换器。
 
@@ -70,13 +72,13 @@ HopDesk/
 - Win32 托盘入口 + 原生主窗口（概览、连接、设置、传输、日志、更新）
 - `WH_MOUSE_LL` / `WH_KEYBOARD_LL` 输入捕获
 - `AddClipboardFormatListener` 剪贴板监听
-- Winsock TCP 服务端
+- Winsock TCP 服务端 / 客户端
 - `dxva2.dll` DDC/CI 显示器控制
 
 **macOS**
 
 - CoreGraphics `CGEvent` 键鼠事件注入
-- POSIX socket TCP 客户端
+- POSIX socket TCP 服务端 / 客户端
 - `NSPasteboard` 剪贴板读写
 - `NSStatusItem` 菜单栏入口 + Cocoa 原生主窗口（与 Windows 保持相同页面结构和文案）
 - IOKit 显示唤醒，以及外部命令切换显示器输入源
@@ -179,9 +181,8 @@ host=192.168.1.100
 port=24817
 data_port=24818
 
-# 可选：两端配置相同的 token 才能通过握手校验
-# 不配置或留空表示不校验
-token=
+# 必填：两端配置相同的非空共享 Token（请替换为自己的随机值）
+token=change-this-to-the-same-random-secret-on-both-devices
 
 # 边缘移交设置
 server_edge=0
@@ -192,6 +193,10 @@ edge_margin_px=40
 
 # 数据通道分块大小，单位 KB
 xfer_chunk_kb=256
+
+# 自适应发送速率上限，单位 MiB/s（16-4096）
+# 默认 128 是暂定起始值，需按真实 Wi-Fi/有线网络表现调整
+xfer_rate_limit_mib=128
 ```
 
 常用配置项：
@@ -201,13 +206,14 @@ xfer_chunk_kb=256
 | `host` | 空 | macOS 客户端连接的 Windows 服务端地址 |
 | `port` | `24817` | 控制通道端口 |
 | `data_port` | `24818` | 文件与图片数据通道端口 |
-| `token` | 空 | 可选的共享 token；两端需一致 |
+| `token` | 必填 | 非空共享 Token；两端必须一致 |
 | `server_edge` | `0` | Windows 移交边缘：0=左，1=右 |
 | `client_edge` | `1` | macOS 收回边缘 |
 | `switch_delay_ms` | `250` | 鼠标贴边后持续多久才移交；0 表示立即移交 |
 | `switch_cooldown_ms` | `300` | 移交或收回后的边缘冷却时间 |
 | `edge_margin_px` | `40` | 边缘内移距离及收回越界阈值 |
 | `xfer_chunk_kb` | `256` | 数据通道分块大小，代码范围为 64–4096 KB |
+| `xfer_rate_limit_mib` | `128` | 自适应发送速率上限，单位 MiB/s，范围 16–4096；默认值尚待实机校准 |
 
 显示器相关配置包括 `disp_win_input`、`disp_mac_input`、`disp_wake_sec`、`mac_input_cmd` 和 `mac_sleep_cmd`。其中 DDC/CI 输入源值依赖显示器型号；macOS 默认切源命令使用 `m1ddc`，请确认命令已安装且适用于你的设备。
 
@@ -217,7 +223,7 @@ xfer_chunk_kb=256
 2. 在 macOS 配置文件中填写 Windows 的局域网 IP。
 3. 确保两端控制端口和数据端口一致，并允许对应 TCP 端口通信。
 4. 首次运行 macOS 端前授予辅助功能权限。
-5. 如果启用了 token，两端必须配置相同值。
+5. 两端必须配置相同的非空 Token，否则连接会被拒绝。
 6. 显示器切源功能需要按实际显示器输入源和接线配置。
 
 **可靠性**（详细设计见 `docs/architecture.md`）：
@@ -257,8 +263,7 @@ xfer_chunk_kb=256
 旧会话或不匹配批次不能写入当前传输；临时文件按 session/batch 分目录，避免重启后批次号复用覆盖旧结果。
 v6 与旧版不兼容：**Windows 与 macOS 必须一起升级**。版本、token 或 session 不匹配即拒绝连接。
 
-注意：token 只用于身份校验，当前 TCP 数据仍未加密；空 token 代表显式关闭 token
-校验。自己管理的可信局域网可暂缓 TLS/复杂配对，但 session ID 不是加密或防窃听机制。
+注意：Token 只用于身份校验，当前 TCP 数据仍未加密；空 Token 会被拒绝。自己管理的可信局域网可暂缓 TLS/复杂配对，但 session ID 不是加密或防窃听机制。
 不要暴露到公网/不可信 Wi-Fi；路径、长度、版本和 CRC 校验仍保留，不能因“自用”删掉内存与文件安全边界。
 
 **还没做的**：多文件并发、断点续传。局域网单条 TCP 流已是瓶颈，多文件并发

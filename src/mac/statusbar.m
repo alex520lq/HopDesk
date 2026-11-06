@@ -37,6 +37,7 @@ static NSTimer *s_transferTimer;
 - (void)doQuit:(id)sender {
     (void)sender;
     main_ui_shutdown();
+    clipboard_shutdown();
     net_request_stop();
     [NSApp terminate:nil];
 }
@@ -402,6 +403,7 @@ void statusbar_init(void) {
 void statusbar_update(int connected, int sharing) {
     dispatch_async(dispatch_get_main_queue(), ^{
         set_appearance(connected, sharing);
+        mac_capture_connected(connected);
         main_ui_set_status(connected, sharing);
     });
 }

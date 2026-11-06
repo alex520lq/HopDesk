@@ -13,8 +13,12 @@
 /* Receiving clipboard payloads would be a test failure; no desktop writes. */
 void clip_apply_remote_paths(const wchar_t *const *paths, int n) {(void)paths;(void)n;assert(0);}
 void clip_apply_remote_image(const uint8_t *p,int w,int h,int stride) {(void)p;(void)w;(void)h;(void)stride;assert(0);}
+void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n,int success) {
+    (void)batch;(void)paths;(void)n;(void)success;
+}
 
 static hop_session_id s_last_ack;
+static uint8_t s_last_body[256];static uint32_t s_last_len;
 
 static LRESULT CALLBACK window_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_APP_RECV) { free((hop_recv *)lp); return 0; }
@@ -52,6 +56,7 @@ static int read_frame(SOCKET s) {
     if (!read_exact(s, header, sizeof(header))) return -1;
     uint32_t len = hop_get_be32(header + 1); assert(len <= sizeof(body));
     assert(read_exact(s, body, len));
+    memcpy(s_last_body,body,len);s_last_len=len;
     if (header[0] == HOP_MSG_HELLO_ACK) {
         int ok; assert(hop_hello_ack_decode(body,len,&ok,NULL,NULL,&s_last_ack));
     }
@@ -70,6 +75,47 @@ static int wait_client(net_server *s, int expected, unsigned ms) {
     do { if (net_server_has_client(s) == expected) return 1; Sleep(20); }
     while (hop_monotonic_ms() < deadline);
     return 0;
+}
+/* The peer below is a protocol double, not a second production instance:
+ * the process-wide session registry must remain owned by the app under test. */
+static SOCKET loopback_listener(uint16_t *port){
+    SOCKET s=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);assert(s!=INVALID_SOCKET);
+    struct sockaddr_in a;memset(&a,0,sizeof(a));a.sin_family=AF_INET;
+    a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);assert(!bind(s,(struct sockaddr*)&a,sizeof(a)));
+    int n=sizeof(a);assert(!getsockname(s,(struct sockaddr*)&a,&n));*port=ntohs(a.sin_port);
+    assert(!listen(s,4));return s;
+}
+static SOCKET accept_bounded(SOCKET listener){
+    fd_set rd;FD_ZERO(&rd);FD_SET(listener,&rd);struct timeval tv={5,0};
+    assert(select(0,&rd,NULL,NULL,&tv)>0);SOCKET s=accept(listener,NULL,NULL);assert(s!=INVALID_SOCKET);
+    DWORD ms=2500;setsockopt(s,SOL_SOCKET,SO_RCVTIMEO,(char*)&ms,sizeof(ms));return s;
+}
+static void test_client_role(HWND hwnd){
+    hop_config cfg;memset(&cfg,0,sizeof(cfg));cfg.role=HOP_ROLE_CLIENT;
+    strcpy(cfg.peer_host,"127.0.0.1");strcpy(cfg.device_name,"Windows-client");strcpy(cfg.token,"client-secret");
+    cfg.screen_w=1920;cfg.screen_h=1080;
+    SOCKET control=loopback_listener(&cfg.port),data=loopback_listener(&cfg.data_port);
+    net_server *client=net_server_start(hwnd,&cfg);assert(client);
+    SOCKET peer=accept_bounded(control);assert(read_frame(peer)==HOP_MSG_HELLO);
+    hop_hello_msg hello_msg;assert(hop_hello_decode(s_last_body,s_last_len,&hello_msg));
+    assert(hop_token_matches(cfg.token,hello_msg.token,hello_msg.token_len));assert(!net_server_has_client(client));
+    uint8_t ack[12+HOP_SESSION_BYTES];hop_session_id session;assert(hop_session_generate(&session));
+    ack[0]=1;ack[1]=1;ack[2]='M';hop_put_be32(ack+3,1440);hop_put_be32(ack+7,900);
+    ack[11]=HOP_CTRL_PROTO_VER;memcpy(ack+12,session.bytes,HOP_SESSION_BYTES);
+    write_frame(peer,HOP_MSG_HELLO_ACK,ack,sizeof(ack));assert(wait_client(client,1,1500));
+    assert(xfer_init(hwnd,&cfg));SOCKET data_peer=accept_bounded(data);
+    assert(read_frame(data_peer)==HOP_MSG_XFER_HELLO);
+    assert(hop_xfer_hello_bound(s_last_body,s_last_len,cfg.token,&session));
+    uint8_t hello[2+HOP_TOKEN_MAX+HOP_SESSION_BYTES];uint32_t len=hop_xfer_hello_encode(hello,cfg.token,&session);
+    write_frame(data_peer,HOP_MSG_XFER_HELLO,hello,len);
+    uint64_t deadline=hop_monotonic_ms()+1500;while(!xfer_connected()&&hop_monotonic_ms()<deadline)Sleep(20);
+    assert(xfer_connected());assert(!xfer_listening());
+    closesocket(data_peer);closesocket(peer);assert(wait_client(client,0,1500));
+    peer=accept_bounded(control);assert(read_frame(peer)==HOP_MSG_HELLO);
+    assert(hop_session_generate(&session));memcpy(ack+12,session.bytes,HOP_SESSION_BYTES);
+    write_frame(peer,HOP_MSG_HELLO_ACK,ack,sizeof(ack));assert(wait_client(client,1,1500));
+    xfer_shutdown();net_server_stop(client);closesocket(peer);closesocket(control);closesocket(data);
+    puts("PASS: production Windows client control/data handshake and reconnect (protocol peer double)");
 }
 int main(void) {
     WSADATA wsa; assert(!WSAStartup(MAKEWORD(2,2), &wsa));
@@ -181,6 +227,7 @@ int main(void) {
     assert(read_frame(data_timeout) == -1); closesocket(data_timeout);
     xfer_shutdown();
     net_server_stop(server);
+    test_client_role(hwnd);
     MSG message;
     while (PeekMessageW(&message, hwnd, 0, 0, PM_REMOVE)) DispatchMessageW(&message);
     DestroyWindow(hwnd); UnregisterClassW(cls.lpszClassName, cls.hInstance); WSACleanup();

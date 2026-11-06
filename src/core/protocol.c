@@ -7,6 +7,117 @@
 #include <stdlib.h>
 #include <string.h>
 
+
+/* ---- Lazy file clipboard control payloads ---- */
+
+static int clip_offer_name_valid(const char *name, size_t len) {
+    if (!name || len == 0 || len > HOP_NAME_LEN_MAX) return 0;
+    if ((len == 1 && name[0] == '.') || (len == 2 && name[0] == '.' && name[1] == '.')) return 0;
+    for (size_t i = 0; i < len; ++i) {
+        unsigned char c = (unsigned char)name[i];
+        if (c == 0 || c == '/' || c == '\\' || c < 0x20 || c == 0x7f) return 0;
+    }
+    return 1;
+}
+
+uint32_t hop_clip_file_offer_encode(uint8_t *out, uint32_t capacity,
+                                    uint32_t origin, uint64_t generation,
+                                    const char *const *names, int count) {
+    if (!out || !names || origin == 0 || generation == 0 ||
+        count <= 0 || count > (int)HOP_CLIP_OFFER_MAX_ITEMS ||
+        capacity < HOP_CLIP_OFFER_HEADER_BYTES) return 0;
+    hop_put_be32(out, origin);
+    hop_put_be64(out + 4, generation);
+    hop_put_be16(out + 12, (uint16_t)count);
+    uint32_t off = HOP_CLIP_OFFER_HEADER_BYTES;
+    for (int i = 0; i < count; ++i) {
+        if (!names[i]) return 0;
+        size_t n = strlen(names[i]);
+        if (!clip_offer_name_valid(names[i], n) ||
+            capacity - off < 2u + n) return 0;
+        hop_put_be16(out + off, (uint16_t)n);
+        off += 2;
+        memcpy(out + off, names[i], n);
+        off += (uint32_t)n;
+    }
+    return off;
+}
+
+int hop_clip_file_offer_decode(const uint8_t *p, uint32_t len,
+                               hop_clip_file_offer_msg *out) {
+    if (!p || !out || len < HOP_CLIP_OFFER_HEADER_BYTES) return 0;
+    memset(out, 0, sizeof(*out));
+    out->origin = hop_get_be32(p);
+    out->generation = hop_get_be64(p + 4);
+    out->count = hop_get_be16(p + 12);
+    if (!out->origin || !out->generation || !out->count ||
+        out->count > HOP_CLIP_OFFER_MAX_ITEMS) return 0;
+    uint32_t off = HOP_CLIP_OFFER_HEADER_BYTES;
+    for (uint16_t i = 0; i < out->count; ++i) {
+        if (len - off < 2u) return 0;
+        uint16_t n = hop_get_be16(p + off);
+        off += 2;
+        if (n == 0 || n > HOP_NAME_LEN_MAX || len - off < n ||
+            !clip_offer_name_valid((const char *)p + off, n)) return 0;
+        out->names[i] = p + off;
+        out->name_lens[i] = n;
+        off += n;
+    }
+    return off == len;
+}
+
+int hop_clip_file_offer_clear_decode(const uint8_t *p, uint32_t len,
+                                     uint32_t *origin, uint64_t *generation) {
+    if (!p || len != HOP_CLIP_OFFER_CLEAR_BYTES) return 0;
+    uint32_t o = hop_get_be32(p);
+    uint64_t g = hop_get_be64(p + 4);
+    if (!o || !g) return 0;
+    if (origin) *origin = o;
+    if (generation) *generation = g;
+    return 1;
+}
+
+uint32_t hop_clip_paste_request_encode(uint8_t out[HOP_CLIP_PASTE_REQUEST_BYTES],
+                                       uint32_t request_id, uint32_t origin,
+                                       uint64_t generation, uint64_t clipboard_version) {
+    if (!out || !(request_id & HOP_XFER_PASTE_BATCH_FLAG) ||
+        !origin || !generation) return 0;
+    hop_put_be32(out, request_id);
+    hop_put_be32(out + 4, origin);
+    hop_put_be64(out + 8, generation);
+    hop_put_be64(out + 16, clipboard_version);
+    return HOP_CLIP_PASTE_REQUEST_BYTES;
+}
+
+int hop_clip_paste_request_decode(const uint8_t *p, uint32_t len,
+                                  hop_clip_paste_request_msg *out) {
+    if (!p || !out || len != HOP_CLIP_PASTE_REQUEST_BYTES) return 0;
+    out->request_id = hop_get_be32(p);
+    out->origin = hop_get_be32(p + 4);
+    out->generation = hop_get_be64(p + 8);
+    out->clipboard_version = hop_get_be64(p + 16);
+    return (out->request_id & HOP_XFER_PASTE_BATCH_FLAG) != 0 &&
+           out->origin != 0 && out->generation != 0;
+}
+
+uint32_t hop_clip_paste_failed_encode(uint8_t out[HOP_CLIP_PASTE_FAILED_BYTES],
+                                      uint32_t request_id, uint8_t reason) {
+    if (!out || !(request_id & HOP_XFER_PASTE_BATCH_FLAG) || reason == 0) return 0;
+    hop_put_be32(out, request_id);
+    out[4] = reason;
+    return HOP_CLIP_PASTE_FAILED_BYTES;
+}
+
+int hop_clip_paste_failed_decode(const uint8_t *p, uint32_t len,
+                                 uint32_t *request_id, uint8_t *reason) {
+    if (!p || len != HOP_CLIP_PASTE_FAILED_BYTES) return 0;
+    uint32_t id = hop_get_be32(p);
+    if (!(id & HOP_XFER_PASTE_BATCH_FLAG) || p[4] == 0) return 0;
+    if (request_id) *request_id = id;
+    if (reason) *reason = p[4];
+    return 1;
+}
+
 /* ---- 字节序 ---- */
 void hop_put_be16(uint8_t *p, uint16_t v) {
     p[0] = (uint8_t)(v >> 8);
@@ -193,10 +304,9 @@ int hop_hello_decode(const uint8_t *p, uint32_t len, hop_hello_msg *out) {
 int hop_token_matches(const char *expected, const uint8_t *got, size_t got_len) {
     size_t want, i;
     unsigned diff;
-    if (!expected) return 0;
+    if (!expected || !got) return 0;
     want = strlen(expected);
-    if (want == 0) return 1;
-    if (!got) return 0;
+    if (want == 0 || got_len == 0) return 0;
     diff = (unsigned)(want ^ got_len);
     for (i = 0; i < want; ++i) {
         uint8_t g = i < got_len ? got[i] : 0;
@@ -256,8 +366,9 @@ int hop_data_unwrap(uint8_t type, const uint8_t *p, uint32_t len,
     return 1;
 }
 uint32_t hop_xfer_hello_encode(uint8_t *out, const char *token, const hop_session_id *id) {
+    if (!out || !token) return 0;
     size_t n = strlen(token);
-    if (n >= HOP_TOKEN_MAX || !hop_session_id_valid(id)) return 0;
+    if (n == 0 || n >= HOP_TOKEN_MAX || !hop_session_id_valid(id)) return 0;
     out[0] = HOP_XFER_PROTO_VER; out[1] = (uint8_t)n;
     memcpy(out + 2, token, n); memcpy(out + 2 + n, id->bytes, HOP_SESSION_BYTES);
     return (uint32_t)n + 2 + HOP_SESSION_BYTES;

@@ -11,6 +11,7 @@
 #define WM_APP_TRAY    (WM_APP + 3)
 #define WM_APP_STATE   (WM_APP + 4)   /* 状态变化，刷新 UI */
 #define WM_APP_CLIP (WM_APP + 5) /* format + owned HGLOBAL; 0 = retry */
+#define WM_APP_CLIP_PASTE (WM_APP + 6) /* wParam: expected clipboard sequence; lParam: owned CF_HDROP */
 #define IDT_HOOK 5
 #define IDT_CLIP_RETRY 3              /* 剪贴板读写/发送延迟重试 */
 
@@ -37,6 +38,7 @@ typedef struct {
 } win_app;
 
 extern win_app g_app;
+void local_addresses(char *out,size_t cap);
 
 /* mouse_capture.c */
 void capture_init(win_app *app);
@@ -52,6 +54,11 @@ void kbd_shutdown(void);
 DWORD kbd_hook_tick(void);
 void kbd_reinstall(void);
 void kbd_release_all(void);        /* 交还键鼠时松开对端仍按着的键 */
+void kbd_begin_sharing(void);       /* 移交时把已按住的键从本机转交给对端 */
+void kbd_end_sharing(void);         /* 收回时恢复仍物理按住的本机按键 */
+
+void win_inject_message(uint8_t type,const uint8_t *p,uint32_t len);
+void win_inject_reset(void);
 
 /* clipboard.c */
 void clip_init(HWND hwnd);
@@ -59,6 +66,14 @@ void clip_shutdown(HWND hwnd);
 void clip_on_worker_message(UINT format, HGLOBAL h);
 void clip_on_update(void);                              /* WM_CLIPBOARDUPDATE */
 void clip_retry_pending(void);                          /* WM_TIMER(IDT_CLIP_RETRY) */
+void clip_on_link(int connected);
+void clip_on_remote_file_offer(const uint8_t *p, uint32_t len);
+void clip_on_remote_file_offer_clear(const uint8_t *p, uint32_t len);
+void clip_on_paste_request(const uint8_t *p, uint32_t len);
+void clip_on_paste_failed(const uint8_t *p, uint32_t len);
+int  clip_request_remote_paste(void);
+void clip_on_paste_message(HGLOBAL h, DWORD expected_sequence);
+void clip_complete_remote_paste(uint32_t batch, const wchar_t *const *paths, int n, int success);
 void clip_apply_remote(const uint8_t *p, uint32_t len); /* 收到 CLIP_TEXT */
 /* 数据通道收完一批后回调：把落盘的顶层条目挂到剪贴板 */
 void clip_apply_remote_paths(const wchar_t *const *paths, int n);

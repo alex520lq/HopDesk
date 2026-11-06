@@ -23,6 +23,14 @@ static HHOOK    s_hook;
 static DWORD s_hook_tick;
 static uint16_t s_held[KBD_HELD_MAX];
 static int      s_nheld;
+/* Physical state is tracked even while events are swallowed. This lets a
+ * key held across an edge handoff be released locally and restored on return. */
+static BYTE s_physical_down[256];
+static int s_local_paste_keyup_suppressed;
+static int is_mouse_vk(unsigned vk) {
+    return vk==VK_LBUTTON||vk==VK_RBUTTON||vk==VK_MBUTTON||
+           vk==VK_XBUTTON1||vk==VK_XBUTTON2;
+}
 
 static void send_key(uint16_t kc, int down) {
     uint8_t p[2];
@@ -47,12 +55,41 @@ static void held_del(uint16_t kc) {
     }
 }
 
-/* 交还键鼠时调用：把仍然按着的键在对端松开，避免 Mac 上卡住 Cmd/Shift */
+/* Injected transitions are ignored by the hook so they reach the local OS. */
+static void inject_local_key(WORD vk,int down) {
+    INPUT in;memset(&in,0,sizeof(in));in.type=INPUT_KEYBOARD;in.ki.wVk=vk;
+    if(!down)in.ki.dwFlags|=KEYEVENTF_KEYUP;
+    if(vk==VK_RCONTROL||vk==VK_RMENU||vk==VK_LWIN||vk==VK_RWIN||
+       (vk>=VK_PRIOR&&vk<=VK_DOWN)||vk==VK_INSERT||vk==VK_DELETE||vk==VK_DIVIDE)
+        in.ki.dwFlags|=KEYEVENTF_EXTENDEDKEY;
+    (void)SendInput(1,&in,sizeof(in));
+}
+
+/* Release remote keys and clear the remote-held set. */
 void kbd_release_all(void) {
     while (s_nheld > 0) {
         uint16_t kc = s_held[--s_nheld];
         send_key(kc, 0);
     }
+}
+
+/* Transfer any key already physically held when the pointer crosses the edge.
+ * Local key-up is synthetic (LLKHF_INJECTED), so it does not alter the physical
+ * snapshot maintained below. */
+void kbd_begin_sharing(void) {
+    for(unsigned vk=1;vk<256;++vk) {
+        if(is_mouse_vk(vk)||!s_physical_down[vk])continue;
+        uint16_t kc=hop_vk_to_mac((int)vk);
+        if(kc!=HOP_KEY_NONE){send_key(kc,1);held_add(kc);}
+        inject_local_key((WORD)vk,0);
+    }
+}
+
+/* On return, release remote keys first, then restore keys still physically held. */
+void kbd_end_sharing(void) {
+    kbd_release_all();
+    for(unsigned vk=1;vk<256;++vk)
+        if(!is_mouse_vk(vk)&&s_physical_down[vk])inject_local_key((WORD)vk,1);
 }
 
 static LRESULT CALLBACK kbd_proc(int code, WPARAM wp, LPARAM lp) {
@@ -62,12 +99,23 @@ static LRESULT CALLBACK kbd_proc(int code, WPARAM wp, LPARAM lp) {
 
     if (code != HC_ACTION) return CallNextHookEx(s_hook, code, wp, lp);
     s_hook_tick = GetTickCount();
-    if (g_app.state != HOP_LINK_SHARING) return CallNextHookEx(s_hook, code, wp, lp);
-
     k = (KBDLLHOOKSTRUCT *)lp;
     if (k->flags & LLKHF_INJECTED) return CallNextHookEx(s_hook, code, wp, lp);
 
     down = (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN);
+    if(k->vkCode<256)s_physical_down[k->vkCode]=(BYTE)down;
+    if (g_app.state != HOP_LINK_SHARING) {
+        if (!down && k->vkCode == 'V' && s_local_paste_keyup_suppressed) {
+            s_local_paste_keyup_suppressed=0; return 1;
+        }
+        if (down && k->vkCode == 'V' &&
+            (s_physical_down[VK_LCONTROL] || s_physical_down[VK_RCONTROL]) &&
+            clip_request_remote_paste()) {
+            s_local_paste_keyup_suppressed=1; return 1;
+        }
+        return CallNextHookEx(s_hook, code, wp, lp);
+    }
+    if(down && k->vkCode==VK_ESCAPE && (GetAsyncKeyState(VK_CONTROL)&0x8000) && (GetAsyncKeyState(VK_MENU)&0x8000)){capture_set_sharing(0);return 1;}
     kc = hop_vk_to_mac((int)k->vkCode);
     if (kc != HOP_KEY_NONE) {
         send_key(kc, down);
@@ -80,6 +128,9 @@ static LRESULT CALLBACK kbd_proc(int code, WPARAM wp, LPARAM lp) {
 void kbd_init(win_app *app) {
     (void)app;
     s_nheld = 0;
+    memset(s_physical_down,0,sizeof(s_physical_down));
+    for(unsigned vk=1;vk<256;++vk)
+        if(!is_mouse_vk(vk))s_physical_down[vk]=(GetAsyncKeyState((int)vk)&0x8000)!=0;
     s_hook = SetWindowsHookExW(WH_KEYBOARD_LL, kbd_proc, g_app.inst, 0);
     if (s_hook) hop_log(HOP_LOG_INFO, "keyboard hook installed");
     else        hop_log(HOP_LOG_ERROR, "keyboard hook failed: %lu", GetLastError());

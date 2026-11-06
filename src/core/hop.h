@@ -49,7 +49,7 @@ typedef enum {
     HOP_MSG_MOUSE_MOVE   = 10,  /* S -> C: dx,dy (int16 x2)        */
     HOP_MSG_MOUSE_BUTTON = 11,  /* S -> C: button(uint8),down(uint8) */
     HOP_MSG_MOUSE_WHEEL  = 12,  /* S -> C: dx,dy (int16 x2)        */
-    HOP_MSG_EDGE_LEAVE   = 13,  /* C -> S: edge(uint8)             */
+    HOP_MSG_EDGE_LEAVE   = 13,  /* C -> S: edge(uint8); S -> C: empty = sharing ended */
     HOP_MSG_MOUSE_ENTER  = 14,  /* S -> C: y(uint16, client 坐标)  */
 
     HOP_MSG_KEY_DOWN     = 20,  /* S -> C: keycode(uint16)         */
@@ -57,8 +57,11 @@ typedef enum {
     HOP_MSG_KEY_MODS     = 22,  /* S -> C: modmask(uint16)         */
 
     HOP_MSG_CLIP_TEXT    = 30,  /* 双向: origin(uint32) + UTF-8    */
-    /* 31 曾是"整文件一帧传完"的 CLIP_FILE，已废弃：
-     * 大文件走数据通道，单帧 8 MB 上限一并取消。 */
+    /* 31 曾是"整文件一帧传完"的 CLIP_FILE，已废弃。 */
+    HOP_MSG_CLIP_FILE_OFFER       = 32, /* 双向: 轻量文件 Offer，不含路径/文件数据 */
+    HOP_MSG_CLIP_FILE_OFFER_CLEAR = 33, /* 双向: 清除/替换旧 Offer */
+    HOP_MSG_CLIP_PASTE_REQUEST    = 34, /* 双向: 真正跨端粘贴时才请求数据 */
+    HOP_MSG_CLIP_PASTE_FAILED     = 35, /* 双向: Offer 过期/源不可用/队列拒绝 */
 
     HOP_MSG_DISP_WAKE    = 40,  /* S -> C: seconds(uint32)         */
     HOP_MSG_DISP_INPUT   = 41,  /* S -> C: vcp(uint16)             */
@@ -95,6 +98,37 @@ typedef enum {
 #define HOP_FILE_IO_ERROR    1
 #define HOP_FILE_CRC_ERROR   2
 
+/* ---- Lazy file clipboard ----
+ * File Offer IDs are monotonically increasing generations scoped to the
+ * authenticated control session and origin device. Paste request IDs reserve
+ * the high bit of the data-channel batch namespace. */
+#define HOP_CLIP_OFFER_MAX_ITEMS 256u
+#define HOP_CLIP_OFFER_HEADER_BYTES 14u
+#define HOP_CLIP_OFFER_MAX_PAYLOAD (HOP_CLIP_OFFER_HEADER_BYTES + HOP_CLIP_OFFER_MAX_ITEMS * (2u + HOP_NAME_LEN_MAX))
+#define HOP_CLIP_OFFER_CLEAR_BYTES 12u
+#define HOP_CLIP_PASTE_REQUEST_BYTES 24u
+#define HOP_CLIP_PASTE_FAILED_BYTES 5u
+#define HOP_XFER_PASTE_BATCH_FLAG 0x80000000u
+#define HOP_CLIP_PASTE_FAIL_STALE 1u
+#define HOP_CLIP_PASTE_FAIL_BUSY 2u
+#define HOP_CLIP_PASTE_FAIL_SOURCE_IO 3u
+#define HOP_CLIP_PASTE_FAIL_TRANSFER 4u
+
+typedef struct {
+    uint32_t origin;
+    uint64_t generation;
+    uint16_t count;
+    const uint8_t *names[HOP_CLIP_OFFER_MAX_ITEMS];
+    uint16_t name_lens[HOP_CLIP_OFFER_MAX_ITEMS];
+} hop_clip_file_offer_msg;
+
+typedef struct {
+    uint32_t request_id;
+    uint32_t origin;
+    uint64_t generation;
+    uint64_t clipboard_version;
+} hop_clip_paste_request_msg;
+
 /* ---- FILE_ACK 的 status（接收端报告"这个文件到底成没成"） ---- */
 #define HOP_FILE_ACK_OK       0
 #define HOP_FILE_ACK_CRC      1   /* 块或整文件 CRC 不符 → 值得重发 */
@@ -112,7 +146,7 @@ typedef enum {
  * 结果是每块都校验失败。所以连上就先比版本，别让用户对着
  * "传输一直失败"猜原因。 */
 #define HOP_XFER_PROTO_VER   6
-#define HOP_CTRL_PROTO_VER   6
+#define HOP_CTRL_PROTO_VER   7
 
 /* ---- XFER_ABORT 的 reason ---- */
 #define HOP_ABORT_CRC        1
@@ -173,8 +207,11 @@ typedef enum {
     HOP_LINK_SHARING   = 2    /* 键鼠在对端      */
 } hop_link_state;
 
+typedef enum { HOP_ROLE_SERVER = 0, HOP_ROLE_CLIENT = 1 } hop_role;
+
 /* ---- 配置 ---- */
 typedef struct {
+    hop_role role; /* independent of operating system; restart to change */
     uint16_t port;
     char     token[HOP_TOKEN_MAX];
     char     peer_host[64];        /* 客户端用：服务端地址 */
@@ -201,6 +238,7 @@ typedef struct {
      * 多开连接在 1 Gbps 及以下收益为零；等链路升到 2.5G/10G 再加池化。 */
     uint16_t data_port;            /* 数据通道端口 */
     int      xfer_chunk_kb;        /* 分块大小（KB），64-4096 */
+    int      xfer_rate_limit_mib;  /* 数据通道速率上限（MiB/s），16-4096 */
 } hop_config;
 
 void hop_config_defaults(hop_config *c);
@@ -209,6 +247,7 @@ int  hop_config_save_atomic(const hop_config *c, const char *path); /* 同目录
 
 /* ---- Windows VK -> macOS 虚拟键码（平台无关的表，阶段 2） ---- */
 #define HOP_KEY_NONE 0xFFFFu
+uint16_t hop_mac_to_vk(uint16_t kc); /* inverse canonical wire key mapping */
 uint16_t hop_vk_to_mac(int vk);                 /* 不支持返回 HOP_KEY_NONE */
 int      hop_mac_key_is_mod(uint16_t mac_key);  /* 返回 HOP_MOD_* 位，非修饰键返回 0 */
 
@@ -389,6 +428,22 @@ int hop_xfer_hello_valid(const uint8_t *payload, uint32_t len, const char *token
 int hop_xfer_relpath_bytes_safe(const uint8_t *rel, size_t len);
 int hop_xfer_relpath_safe(const char *rel);
 int hop_clip_should_apply_remote(uint32_t origin, uint32_t local_device);
+uint32_t hop_clip_file_offer_encode(uint8_t *out, uint32_t capacity,
+                                    uint32_t origin, uint64_t generation,
+                                    const char *const *names, int count);
+int hop_clip_file_offer_decode(const uint8_t *payload, uint32_t len,
+                               hop_clip_file_offer_msg *out);
+int hop_clip_file_offer_clear_decode(const uint8_t *payload, uint32_t len,
+                                     uint32_t *origin, uint64_t *generation);
+uint32_t hop_clip_paste_request_encode(uint8_t out[HOP_CLIP_PASTE_REQUEST_BYTES],
+                                       uint32_t request_id, uint32_t origin,
+                                       uint64_t generation, uint64_t clipboard_version);
+int hop_clip_paste_request_decode(const uint8_t *payload, uint32_t len,
+                                  hop_clip_paste_request_msg *out);
+uint32_t hop_clip_paste_failed_encode(uint8_t out[HOP_CLIP_PASTE_FAILED_BYTES],
+                                      uint32_t request_id, uint8_t reason);
+int hop_clip_paste_failed_decode(const uint8_t *payload, uint32_t len,
+                                 uint32_t *request_id, uint8_t *reason);
 uint32_t hop_xfer_file_crc_step(uint32_t seed, uint64_t offset, uint32_t chunk_crc);
 int hop_xfer_image_valid(int32_t width, int32_t height, int32_t stride);
 int hop_xfer_chunk_valid(const uint8_t *payload, uint32_t len,

@@ -283,6 +283,19 @@ void inject_wheel(int dx, int dy) {
 }
 
 /* ---- 阶段 2：键盘 ---- */
+void inject_paste_shortcut(void) {
+    if (!s_inited) inject_init();
+    /* The Windows server maps physical Ctrl to Mac Command. */
+    CGEventRef down = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)0x37, true);
+    if (down) { CGEventSetFlags(down, kCGEventFlagMaskCommand); CGEventPost(kCGHIDEventTap, down); CFRelease(down); }
+    CGEventRef paste_down = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)0x09, true);
+    if (paste_down) { CGEventSetFlags(paste_down, kCGEventFlagMaskCommand); CGEventPost(kCGHIDEventTap, paste_down); CFRelease(paste_down); }
+    CGEventRef paste_up = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)0x09, false);
+    if (paste_up) { CGEventSetFlags(paste_up, kCGEventFlagMaskCommand); CGEventPost(kCGHIDEventTap, paste_up); CFRelease(paste_up); }
+    CGEventRef up = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)0x37, false);
+    if (up) { CGEventSetFlags(up, 0); CGEventPost(kCGHIDEventTap, up); CFRelease(up); }
+}
+
 void inject_key(uint16_t kc, int down) {
     CGEventRef e;
     int bit, i;

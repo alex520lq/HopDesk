@@ -482,6 +482,9 @@ int main(void){
     for platform in ['mac','win']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
         receiver=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        entry=extract(sender,'send_file_entry')
+        assert 'tx + CHUNK_HDR' in entry
+        assert 'malloc(blen)' not in entry and 'free(bp)' not in entry
         job=extract(sender,'run_job')
         timeout=job.index('if (st == XFER_ACK_TIMEOUT)')
         unregister=job.index('ack_unregister_batch(j->batch)',timeout)

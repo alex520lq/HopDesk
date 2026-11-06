@@ -847,16 +847,20 @@ static int ack_wait(uint32_t batch, uint32_t id, uint64_t deadline_ns, uint64_t 
  * run_job 在最多 4 个已发送文件组成的窗口中统一收取 ACK。 */
 static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
                            uint32_t id, const xfer_entry *e, uint64_t *ack_deadline_ns) {
-    if (!ack_deadline_ns || !ack_register(batch,id)) return XFER_LOCAL_IO;
-    *ack_deadline_ns = 0;
+    if (!ack_deadline_ns || !tx) return XFER_LOCAL_IO;
     uint32_t nlen = (uint32_t)strlen(e->name);
     uint32_t plen = (uint32_t)strlen(e->rel);
     uint32_t blen = 4 + 4 + 8 + 8 + 1 + 2 + nlen + 2 + plen;
-    uint8_t *bp = (uint8_t *)malloc(blen);
-    if (!bp) { ack_unregister(batch,id); return XFER_LOCAL_IO; }
+    /* FILE_BEGIN is small and send_small is synchronous. Reuse the sender's
+     * fixed TX buffer instead of malloc/free once per file (notably 10k-file
+     * batches); send_chunk overwrites this region only after FILE_BEGIN ends. */
+    if (blen > s_x.chunk) return XFER_LOCAL_IO;
+    if (!ack_register(batch,id)) return XFER_LOCAL_IO;
+    *ack_deadline_ns = 0;
+    uint8_t *bp = tx + CHUNK_HDR;
     uint32_t o = 0;
     hop_put_be32(bp + o, batch); o += 4;
-    hop_put_be32(bp + o, id); o += 4;
+    hop_put_be32(bp + o, id);    o += 4;
     hop_put_be64(bp + o, e->size); o += 8;
     hop_put_be64(bp + o, e->mtime); o += 8;
     bp[o++] = (uint8_t)e->flags;
@@ -866,7 +870,6 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
     memcpy(bp + o, e->rel, plen); o += plen;
 
     int ok = send_small(c, HOP_MSG_FILE_BEGIN, bp, blen, batch);
-    free(bp);
     if (!ok) { ack_unregister(batch,id); return XFER_SEND_DEAD; }
 
     uint32_t fcrc = 0;
@@ -888,28 +891,21 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
                 uint64_t remaining = e->size - off;
                 DWORD request = (DWORD)(remaining < s_x.chunk ? remaining : s_x.chunk);
                 DWORD got = 0;
-                uint64_t read_started_ns=rate_now_ns();
                 int read_guard = hop_watchdog_begin("file chunk read", HOP_IO_DEADLINE_MS);
                 int read_ok = ReadFile(h, tx + CHUNK_HDR, request, &got, NULL);
                 DWORD read_error = read_ok ? ERROR_SUCCESS : GetLastError();
                 hop_watchdog_end(read_guard);
-                uint64_t read_elapsed_ns=rate_now_ns()-read_started_ns;
                 if (!read_ok) {
-                    status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_READ,read_elapsed_ns);
                     hop_log(HOP_LOG_WARN, "xfer: read failed, %s (err %lu)", e->rel, read_error);
                     end_status = HOP_FILE_IO_ERROR; local_fail = 1; break;
                 }
                 if (got == 0) {
-                    status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_READ,read_elapsed_ns);
                     hop_log(HOP_LOG_WARN, "xfer: unexpected EOF, %s (%llu/%llu bytes)",
                             e->rel, (unsigned long long)off, (unsigned long long)e->size);
                     end_status = HOP_FILE_IO_ERROR; local_fail = 1; break;
                 }
-                uint64_t crc_started_ns=rate_now_ns();
                 uint32_t ccrc = hop_crc32(0, tx + CHUNK_HDR, got);
-                uint64_t crc_elapsed_ns=rate_now_ns()-crc_started_ns;
-                if (!send_chunk(c,tx,batch,id,off,tx+CHUNK_HDR,got,ccrc,
-                                read_elapsed_ns,crc_elapsed_ns)) {
+                if (!send_chunk(c, tx, batch, id, off, tx + CHUNK_HDR, got, ccrc)) {
                     CloseHandle(h); ack_unregister(batch,id); return XFER_SEND_DEAD;
                 }
                 fcrc = hop_xfer_file_crc_step(fcrc, off, ccrc);
@@ -944,8 +940,6 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
         ack_unregister(batch,id); return XFER_SEND_DEAD;
     }
     (void)local_fail;
-    /* Arm before FILE_END to catch an immediate ACK; anchor expiry only after
-     * the complete frame has been written. */
     uint64_t deadline_ns = rate_now_ns() +
         (uint64_t)HOP_XFER_ACK_TIMEOUT_MS * 1000000ull;
     *ack_deadline_ns = deadline_ns;
@@ -953,49 +947,6 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
         ack_unregister(batch,id); return XFER_LOCAL_IO;
     }
     return XFER_ACK_PENDING;
-}
-
-/* Image payloads share the same rate limiter and owned-buffer path as files. */
-static int send_image_job(SOCKET c, uint8_t *tx, xfer_job *j) {
-    uint8_t bp[20];
-    hop_put_be32(bp, j->batch);
-    hop_put_be32(bp + 4, 1);
-    hop_put_be32(bp + 8, (uint32_t)j->w);
-    hop_put_be32(bp + 12, (uint32_t)j->h);
-    hop_put_be32(bp + 16, (uint32_t)j->stride);
-    if (!send_small(c, HOP_MSG_IMAGE_BEGIN, bp, 20, j->batch)) return 0;
-
-    uint64_t total = (uint64_t)j->stride * (uint64_t)j->h;
-    uint64_t off = 0;
-    while (off < total) {
-        uint32_t n = (uint32_t)((total - off) < s_x.chunk ? (total - off) : s_x.chunk);
-        uint64_t crc_started_ns=rate_now_ns();
-        uint32_t crc = hop_crc32(0, j->pixels + off, n);
-        uint64_t crc_elapsed_ns=rate_now_ns()-crc_started_ns;
-        if (!send_chunk(c,tx,j->batch,1,off,j->pixels+off,n,crc,0,crc_elapsed_ns)) return 0;
-        off += n;
-        yield_cpu();
-        if (cancel_requested(j->batch)) return -1;
-        if (peer_aborted(j->batch)) return -2;
-    }
-
-    uint8_t endp[9];
-    hop_put_be32(endp, 1);
-    endp[4] = HOP_FILE_OK;
-    hop_put_be32(endp + 5, 0);
-    if (!send_small(c, HOP_MSG_FILE_END, endp, 9, j->batch)) return 0;
-    rate_feedback(0);
-    return 1;
-}
-
-/* 收尾：报告本批实际送达数，保留部分成功语义。 */
-static int send_done(SOCKET c, const xfer_job *j) {
-    uint8_t dp[20];
-    hop_put_be32(dp, j->batch);
-    hop_put_be32(dp + 4, (uint32_t)j->ok);
-    hop_put_be32(dp + 8, hop_xfer_job_total(j->is_image,j->n));
-    hop_put_be64(dp + 12, 0);
-    return send_small(c, HOP_MSG_XFER_DONE, dp, 20, j->batch);
 }
 
 /* run_job 的结局 */

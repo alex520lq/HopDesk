@@ -58,6 +58,11 @@ int hop_xfer_task_cancel_requested(hop_xfer_task_id id);
 /* Linearization point: completion wins only if cancellation was not requested.
  * After this succeeds cancellation requests are rejected, before side effects. */
 int hop_xfer_task_begin_completion(const hop_xfer_task *task);
+/* Receiver-owned monotonic disconnect timer. Returns 1 only when an active
+ * receive task has continuously lacked an authenticated data channel for at
+ * least budget_ms. Reconnection and clock rollback reset its timer. */
+int hop_xfer_task_rx_disconnect_expired(const hop_xfer_task *task, int connected,
+                                        uint64_t now_ms, uint64_t budget_ms);
 /* Diagnostic only: sums manager-owned reservations under the manager lock,
  * then reads the ledger under its lock. RX pool capacity is shared infrastructure
  * and is reported in ledger but intentionally excluded from task ownership. */

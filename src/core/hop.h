@@ -155,6 +155,7 @@ typedef struct {
 #define HOP_ABORT_TOO_LARGE  3
 #define HOP_ABORT_BAD_PATH   4
 #define HOP_ABORT_CANCEL     5   /* 用户主动取消，两端都不再重试 */
+#define HOP_ABORT_TIMEOUT    6   /* 接收端等待同一会话的数据重连超时 */
 /* Target is relative to the endpoint receiving the ABORT frame. */
 #define HOP_ABORT_TO_SENDER   1
 #define HOP_ABORT_TO_RECEIVER 2
@@ -170,6 +171,8 @@ typedef struct {
 /* 断线后等对端回来的总预算。没有它，一个断线的批次会永远挂在队列里：
  * 菜单上的"取消传输"一直亮着，对端几小时后回来还会突然接着传。 */
 #define HOP_XFER_RECONNECT_BUDGET_MS 30000
+/* Receiver grace exceeds the sender budget; only actual data disconnects count. */
+#define HOP_XFER_RX_DISCONNECT_BUDGET_MS 60000
 
 static inline unsigned hop_xfer_file_retry_delay_ms(int attempt) {
     return 200u << (attempt > 1 ? attempt - 1 : 0);      /* 200,400,800… */

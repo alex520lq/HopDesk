@@ -26,7 +26,8 @@ typedef struct task_record {
     hop_xfer_task_kind kind;
     uint8_t session[HOP_TASK_SESSION_BYTES];
     hop_xfer_task_state state;
-    int cancel_requested, completing;
+    int cancel_requested, completing, rx_disconnected;
+    uint64_t rx_disconnect_ms;
     hop_xfer_reservation_handle reservation;
 } task_record;
 static task_record *s_tasks;
@@ -80,6 +81,18 @@ int hop_xfer_task_begin_completion(const hop_xfer_task *task) {
     int ok=r && !terminal(r->state) && !r->cancel_requested && !r->completing;
     if (ok) r->completing=1;
     UNLOCK(); return ok;
+}
+int hop_xfer_task_rx_disconnect_expired(const hop_xfer_task *task, int connected,
+                                        uint64_t now_ms, uint64_t budget_ms) {
+    if (!budget_ms) return 0;
+    LOCK(); task_record *r=owned(task); int expired=0;
+    if (r && r->direction==HOP_XFER_DIR_RECEIVE && r->state==HOP_XFER_TASK_ACTIVE && !r->completing) {
+        if (connected) { r->rx_disconnected=0; r->rx_disconnect_ms=0; }
+        else if (!r->rx_disconnected || now_ms<r->rx_disconnect_ms) {
+            r->rx_disconnected=1; r->rx_disconnect_ms=now_ms;
+        } else expired=now_ms-r->rx_disconnect_ms>=budget_ms;
+    }
+    UNLOCK(); return expired;
 }
 static void audit_add(uint64_t *total, uint64_t value, uint32_t *mismatches) {
     if (value > UINT64_MAX - *total) { *mismatches |= HOP_TASK_AUDIT_OVERFLOW; *total=UINT64_MAX; }

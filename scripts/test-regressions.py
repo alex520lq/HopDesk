@@ -706,6 +706,71 @@ int main(void) {
         assert 'r=send_done_result(c, j)' in thread if platform=='win' else 'r=fd >= 0 ? send_done_result(fd, j) : JOB_COMMIT_UNKNOWN' in thread
         assert 'HOP_XFER_TASK_INTERRUPTED' in thread and 'Completion delivery uncertain' in thread
 
+    # Test exact Windows task-list selection and action logic with UI doubles.
+    # Rows may move/disappear between refreshes; only the selected Task ID may
+    # receive cancellation, including after a reordered snapshot.
+    ui=(ROOT/'src/win/main_ui.c').read_text(encoding='utf-8')
+    common=r"""
+#include "xfer_task.h"
+#include <assert.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <wchar.h>
+#include <stdint.h>
+#define UI_TASK_CAP HOP_TASK_MANAGER_MAX_LIVE
+#define LB_ERR (-1)
+#define LB_ERRSPACE (-2)
+#define LB_GETCURSEL 1
+#define LB_RESETCONTENT 2
+#define LB_ADDSTRING 3
+#define LB_SETCURSEL 4
+#define MB_OK 0
+#define MB_YESNO 1
+#define MB_ICONINFORMATION 2
+#define MB_ICONWARNING 4
+#define IDYES 6
+typedef intptr_t LPARAM;typedef uintptr_t WPARAM;typedef intptr_t LRESULT;
+typedef struct {int count,selected;} list;typedef list* HWND;
+static list lists[2]={{0,-1},{0,-1}};
+static HWND s_task_lists[2]={&lists[0],&lists[1]},s_main;
+static hop_xfer_task_id s_task_ids[2][UI_TASK_CAP];static int s_task_counts[2];
+static hop_xfer_task_snapshot *s_tasks_snapshot;
+static int connected=1,answer=IDYES,calls;
+static LRESULT SendMessageW(HWND h,int op,WPARAM w,LPARAM l){(void)l;
+    if(op==LB_GETCURSEL)return h->selected;
+    if(op==LB_RESETCONTENT){h->count=0;h->selected=-1;return 0;}
+    if(op==LB_ADDSTRING)return h->count++;
+    if(op==LB_SETCURSEL){h->selected=(int)w;return 0;}
+    assert(0);return LB_ERR;
+}
+static int MessageBoxW(HWND h,const wchar_t *text,const wchar_t *title,int flags){(void)h;(void)text;(void)title;(void)flags;return answer;}
+static int xfer_connected(void){return connected;}
+static int xfer_cancel_task(hop_xfer_task_id id){calls++;return hop_xfer_task_request_cancel(id);}
+static void refresh_transfers(void){}
+"""
+    main=r"""
+int main(void){
+ hop_xfer_task a={0},b={0},c={0},rx={0};
+ assert(hop_xfer_task_init_classified(&a,0,0,1,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+ assert(hop_xfer_task_init_classified(&b,0,0,2,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+ assert(hop_xfer_task_init_classified(&rx,0,0,2,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_FILES));
+ refresh_task_lists();assert(s_task_counts[0]==2&&s_task_counts[1]==1);
+ for(int i=0;i<s_task_counts[0];i++)if(s_task_ids[0][i]==a.id)lists[0].selected=i;
+ assert(selected_task(0)==a.id);
+ assert(hop_xfer_task_init_classified(&c,0,0,3,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+ refresh_task_lists();assert(selected_task(0)==a.id);
+ connected=0;answer=0;cancel_selected_task(0);assert(!calls && !hop_xfer_task_cancel_requested(a.id));
+ answer=IDYES;cancel_selected_task(0);assert(calls==1 && hop_xfer_task_cancel_requested(a.id));
+ assert(!hop_xfer_task_cancel_requested(b.id) && !hop_xfer_task_cancel_requested(c.id) && !hop_xfer_task_cancel_requested(rx.id));
+ hop_xfer_task_dispose(&a);refresh_task_lists();assert(!selected_task(0));
+ cancel_selected_task(0);assert(calls==1);
+ hop_xfer_task_dispose(&b);hop_xfer_task_dispose(&c);hop_xfer_task_dispose(&rx);free(s_tasks_snapshot);
+ puts("PASS: task list preserves Task ID through reordering and cancels only selection");return 0;
+}
+"""
+    code=common+'\n'.join(extract(ui,n) for n in ['selected_task','task_state_name','refresh_task_lists','cancel_selected_task'])+main
+    run('task_list_selection_win',code,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+
     # Exercise the production queue removal helper with manager-owned IDs.
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')

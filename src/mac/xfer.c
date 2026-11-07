@@ -15,6 +15,7 @@
 #include "../core/xfer_tracking.h"
 #include "../core/xfer_budget.h"
 #include "../core/xfer_task.h"
+#include "../core/xfer_task_history.h"
 #include "../core/xfer_rate.h"
 #include "../core/xfer_ack_window.h"
 
@@ -176,6 +177,18 @@ static void history_load(void) {
         }
     }
     fclose(f);
+}
+static void task_history_store_open(void) {
+    if (!s_history_path[0]) return;
+    char path[PATH_MAX];
+    char *slash=strrchr(s_history_path,'/');
+    if (!slash) return;
+    size_t dir=(size_t)(slash-s_history_path+1);
+    if (dir+sizeof("task-history.bin")>sizeof(path)) return;
+    memcpy(path,s_history_path,dir);
+    memcpy(path+dir,"task-history.bin",sizeof("task-history.bin"));
+    if (!hop_xfer_task_history_store_open(path,s_history_path))
+        hop_log(HOP_LOG_WARN,"xfer: durable task history unavailable; using session history only");
 }
 static void history_save(void) {
     pthread_mutex_lock(&s_history_io_lock);
@@ -1481,6 +1494,7 @@ static void *send_thread(void *arg) {
 
 void xfer_init(const hop_config *cfg) {
     history_load();
+    task_history_store_open();
     memset(&s_x, 0, sizeof(s_x));
     s_x.sock = -1;
 
@@ -1537,6 +1551,7 @@ void xfer_shutdown(void) {
     wq_stop();
     pthread_mutex_destroy(&s_ack.lock);
     pthread_cond_destroy(&s_ack.cond);
+    hop_xfer_task_history_store_close();
 }
 
 int xfer_connected(void) {

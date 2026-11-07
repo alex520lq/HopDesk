@@ -394,6 +394,7 @@ int main(void){
 #define hop_log(...) ((void)0)
 #define HOP_MSG_XFER_DONE 54
 #define RX_CLOSE 1
+uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
 #define AcquireSRWLockExclusive(p) ((void)(p))
 #define ReleaseSRWLockExclusive(p) ((void)(p))
 #define pthread_mutex_lock(p) ((void)(p))
@@ -498,6 +499,7 @@ static int s_status_lock, saves;
 static uint64_t s_status_revision;
 static uint64_t s_test_monotonic_ms=1000;
 uint64_t hop_monotonic_ms(void){return ++s_test_monotonic_ms;}
+uint64_t hop_wallclock_ms(void){return 1700000000000ull+s_test_monotonic_ms;}
 static hop_xfer_tracking s_send_status,s_receive_status;
 static void *s_retry_paths[HOP_XFER_FILE_LIMIT];
 static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];static int s_history_count;
@@ -723,6 +725,7 @@ static list lists[2]={{0,-1},{0,-1}};
 static HWND s_task_lists[2]={&lists[0],&lists[1]},s_main;
 static hop_xfer_task_id s_task_ids[2][UI_TASK_CAP];static int s_task_counts[2];
 static hop_xfer_task_snapshot *s_tasks_snapshot;
+uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
 static int connected=1,answer=IDYES,calls;
 static LRESULT SendMessageW(HWND h,int op,WPARAM w,LPARAM l){(void)l;
     if(op==LB_GETCURSEL)return h->selected;
@@ -766,6 +769,7 @@ int main(void){
 #include "xfer_task.h"
 #include <assert.h>
 #include <stdio.h>
+uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
 int main(void) {
  hop_xfer_task rx={0},tx={0};hop_xfer_task_audit audit;
  assert(hop_xfer_task_init_classified(&rx,0,0,17,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_FILES));
@@ -818,6 +822,7 @@ int main(void) {
 typedef struct job { struct job *next; hop_xfer_task task; } job;
 typedef job xfer_job; typedef job xf_job;
 static struct { job *q_head,*q_tail; } s_x;
+uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
 """
         main=r"""
 int main(void){

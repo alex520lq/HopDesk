@@ -680,6 +680,32 @@ int main(void){
             queue=extract(sender,'send_thread')
             assert 'c != INVALID_SOCKET && cur->retry_at <= now' in queue
 
+    # A socket write error is ambiguous: the sender must not mark the job
+    # completed. Exercise the exact platform helper with successful/failed writes.
+    for platform in ['win','mac']:
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        source=r"""
+#include <assert.h>
+#include <stdio.h>
+typedef int SOCKET;
+typedef struct { int ignored; } xfer_job;
+typedef xfer_job xf_job;
+#define JOB_DONE 0
+#define JOB_COMMIT_UNKNOWN 4
+static int result;
+static int send_done(int fd,const xfer_job *j) { (void)fd; (void)j; return result; }
+""" + extract(sender,'send_done_result') + r"""
+int main(void) {
+    xfer_job job={0}; result=1; assert(send_done_result(1,&job)==JOB_DONE);
+    result=0; assert(send_done_result(1,&job)==JOB_COMMIT_UNKNOWN);
+    puts("PASS: failed completion write is not reported as success"); return 0;
+}
+"""
+        run('finish_write_'+platform,source,[])
+        thread=extract(sender,'send_thread')
+        assert 'r=send_done_result(c, j)' in thread if platform=='win' else 'r=fd >= 0 ? send_done_result(fd, j) : JOB_COMMIT_UNKNOWN' in thread
+        assert 'HOP_XFER_TASK_INTERRUPTED' in thread and 'Completion delivery uncertain' in thread
+
     # Exercise the production queue removal helper with manager-owned IDs.
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')

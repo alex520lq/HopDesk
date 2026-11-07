@@ -363,8 +363,10 @@ static hop_xfer_task_id selected_task(int direction) {
     if(selected==LB_ERR || selected<0 || selected>=s_task_counts[direction])return 0;
     return s_task_ids[direction][selected];
 }
-static const wchar_t *task_state_name(hop_xfer_task_state state) {
-    switch(state) {
+static const wchar_t *task_state_name(const hop_xfer_task_snapshot *t) {
+    if(t->state<=HOP_XFER_TASK_ACTIVE && t->cancel_requested)return L"取消中";
+    if(t->state<=HOP_XFER_TASK_ACTIVE && t->completing)return L"完成处理中";
+    switch(t->state) {
         case HOP_XFER_TASK_CREATED:return L"准备中";
         case HOP_XFER_TASK_SCANNING:return L"扫描中";
         case HOP_XFER_TASK_QUEUED:return L"排队中";
@@ -421,9 +423,10 @@ static void refresh_task_history(void) {
     SendMessageW(s_task_history,LB_RESETCONTENT,0,0);
     for(int i=0;i<n;++i){
         wchar_t row[180];const hop_xfer_task_history_record *t=&history[i];
+        hop_xfer_task_snapshot display={0};display.state=(hop_xfer_task_state)t->state;
         swprintf(row,180,L"#%llu  ·  %ls  ·  批次 %u  ·  %ls",
                  (unsigned long long)t->record_id,t->direction==HOP_XFER_DIR_SEND?L"发送":L"接收",
-                 t->transfer_id,task_state_name((hop_xfer_task_state)t->state));
+                 t->transfer_id,task_state_name(&display));
         SendMessageW(s_task_history,LB_ADDSTRING,0,(LPARAM)row);
     }
     if(top>0 && top<n)SendMessageW(s_task_history,LB_SETTOPINDEX,(WPARAM)top,0);

@@ -117,6 +117,7 @@ static int rx_add_top(const char*p){(void)p;return 1;}
 #endif
 @FINISH_BATCH@
 @CANCEL_LOCAL@
+@BIND_SESSION@
 static void rx_expire_stale_session(void){}
 @POLL_CANCEL@
 @BUSY@
@@ -222,6 +223,12 @@ int main(void){
     fake_ms+=HOP_XFER_RX_DISCONNECT_BUDGET_MS;rx_poll_cancel();
     assert_terminal(203,HOP_ABORT_TIMEOUT,before);
     assert(!s_rx.task.initialized); /* reservation returned on timeout */
+    /* Cancellation accepted before a control-session replacement must win. */
+    before=saved;image_begin(204,1);seed_resources();assert(hop_xfer_task_request_cancel(s_rx.task.id));
+    hop_session_id next_session={{2}};rx_bind_session(&next_session);
+    assert(!s_rx.active && !s_rx.task.initialized && saved==before+1);
+    assert(s_history[0].batch==204 && s_history[0].phase==HOP_XFER_CANCELLED);
+    assert(s_send_status.status.active); /* replacement cannot cancel the other direction */
     s_x.cur_batch=0; s_send_status.status.active=0;assert(!xfer_busy()); /* sender retry window is no longer active */
     puts("PASS: production receive ABORT lifecycle, early bounds errors, busy reset, tombstones and once-only history");
     return 0;

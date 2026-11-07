@@ -51,6 +51,11 @@ int main(void){
  assert(resets==1 && closes==1 && !discarded && !paste_cancelled && s_rx.dead_batch==42);
  hop_session_id next={{2}};rx_bind_session(&next);assert(resets==2 && !s_rx.dead_batch && discarded==1 && paste_cancelled==1);
  rx_bind_session(&s_x.session);s_rx.batch=42;s_rx.active=1;
+ rx_expire_stale_session();assert(s_rx.active && discarded==1);
+ hop_session_clear(&s_x.session);rx_expire_stale_session();
+ assert(!s_rx.active && discarded==2 && paste_cancelled==1);
+ rx_expire_stale_session();assert(discarded==2);
+ hop_session_publish(&s_x.session);rx_bind_session(&s_x.session);s_rx.batch=42;s_rx.active=1;
  xf_job job={0};job.session=next;job.next_i=3;job.ok=3;s_send_status.marker=9;
  job_bind_session(&job, &s_x.session);assert(!job.next_i && !job.ok && !s_send_status.marker);
  job.next_i=2;job.ok=2;job_bind_session(&job, &s_x.session);assert(job.next_i==2 && job.ok==2);

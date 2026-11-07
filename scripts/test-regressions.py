@@ -587,7 +587,7 @@ int main(void){
         handler=extract(receiver,'on_data_msg')
         def cases(first,after):
             return handler[handler.index('        case '+first+':'):handler.index('        case '+after+':')]
-        selected=cases('HOP_MSG_IMAGE_BEGIN','HOP_MSG_FILE_ACK')+cases('HOP_MSG_XFER_ABORT','HOP_MSG_XFER_DONE')
+        selected=cases('HOP_MSG_IMAGE_BEGIN','HOP_MSG_XFER_ABORT')+cases('HOP_MSG_XFER_ABORT','HOP_MSG_XFER_DONE')
         selected+=handler[handler.index('        case HOP_MSG_XFER_DONE:'):handler.index('        default:')]
         fixture=(ROOT/'tests/receive_abort_fixture.c.in').read_text(encoding='utf-8')
         values={
@@ -682,31 +682,17 @@ int main(void){
             queue=extract(sender,'send_thread')
             assert 'c != INVALID_SOCKET && cur->retry_at <= now' in queue
 
-    # A socket write error is ambiguous: the sender must not mark the job
-    # completed. Exercise the exact platform helper with successful/failed writes.
+    # Exercise the exact completion-ACK loop from both platform senders with
+    # deterministic clocks, dropped ACK, reconnect, session replacement, and abort.
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
-        source=r"""
-#include <assert.h>
-#include <stdio.h>
-typedef int SOCKET;
-typedef struct { int ignored; } xfer_job;
-typedef xfer_job xf_job;
-#define JOB_DONE 0
-#define JOB_COMMIT_UNKNOWN 4
-static int result;
-static int send_done(int fd,const xfer_job *j) { (void)fd; (void)j; return result; }
-""" + extract(sender,'send_done_result') + r"""
-int main(void) {
-    xfer_job job={0}; result=1; assert(send_done_result(1,&job)==JOB_DONE);
-    result=0; assert(send_done_result(1,&job)==JOB_COMMIT_UNKNOWN);
-    puts("PASS: failed completion write is not reported as success"); return 0;
-}
-"""
-        run('finish_write_'+platform,source,[])
+        source=(ROOT/'tests/done_ack_wait_fixture.c.in').read_text(encoding='utf-8')
+        source=source.replace('@FUNCTION@',extract(sender,'send_done_result'))
+        if platform=='win':source='#define FIXTURE_WINDOWS 1\n'+source
+        run('done_ack_'+platform,source,['src/core/protocol.c'])
         thread=extract(sender,'send_thread')
-        assert 'r=send_done_result(c, j)' in thread if platform=='win' else 'r=fd >= 0 ? send_done_result(fd, j) : JOB_COMMIT_UNKNOWN' in thread
-        assert 'HOP_XFER_TASK_INTERRUPTED' in thread and 'Completion delivery uncertain' in thread
+        assert 'send_done_result(' in thread and 'HOP_XFER_TASK_INTERRUPTED' in thread
+        assert 'Completion delivery uncertain' in thread and 'completion_path' in thread
 
     # Test exact Windows task-list selection and action logic with UI doubles.
     # Rows may move/disappear between refreshes; only the selected Task ID may

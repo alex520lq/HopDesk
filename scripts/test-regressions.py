@@ -809,6 +809,10 @@ int main(void) {
 
     run('task_history',(ROOT/'tests/task_history_tests.c').read_text(encoding='utf-8'),['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
 
+    history_ui=(ROOT/'tests/task_history_ui_fixture.c.in').read_text(encoding='utf-8')
+    history_ui=history_ui.replace('@UI_FUNCTIONS@',extract(ui,'task_state_name')+'\n'+extract(ui,'refresh_task_history'))
+    run('task_history_ui_win',history_ui,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+
     # Exercise the production queue removal helper with manager-owned IDs.
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')

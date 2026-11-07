@@ -11,6 +11,7 @@
 #include "../core/xfer_tracking.h"
 #include "../core/xfer_budget.h"
 #include "../core/xfer_task.h"
+#include "../core/xfer_task_history.h"
 #include "../core/xfer_rate.h"
 #include "../core/xfer_ack_window.h"
 
@@ -119,6 +120,20 @@ static void history_load(void) {
         }
     }
     fclose(f);
+}
+static void task_history_store_open(void) {
+    if (!s_history_path[0]) return;
+    wchar_t path_w[MAX_PATH], directory[MAX_PATH];
+    wcsncpy(directory,s_history_path,MAX_PATH-1); directory[MAX_PATH-1]=0;
+    wchar_t *slash=wcsrchr(directory,L'\\\\');
+    if (!slash) return;
+    *slash=0;
+    if (swprintf(path_w,MAX_PATH,L"%ls\\\\task-history.bin",directory)<0) return;
+    char path[MAX_PATH*3], legacy[MAX_PATH*3];
+    if (!WideCharToMultiByte(CP_UTF8,0,path_w,-1,path,sizeof(path),NULL,NULL) ||
+        !WideCharToMultiByte(CP_UTF8,0,s_history_path,-1,legacy,sizeof(legacy),NULL,NULL)) return;
+    if (!hop_xfer_task_history_store_open(path,legacy))
+        hop_log(HOP_LOG_WARN,"xfer: durable task history unavailable; using session history only");
 }
 static void history_save(void) {
     AcquireSRWLockExclusive(&s_history_io_lock);
@@ -1480,6 +1495,7 @@ static DWORD WINAPI send_thread(LPVOID arg) {
 
 int xfer_init(HWND hwnd, const hop_config *cfg) {
     history_load();
+    task_history_store_open();
     memset(&s_x, 0, sizeof(s_x));
     s_x.hwnd = hwnd;
     s_x.cfg = *cfg;
@@ -1579,6 +1595,7 @@ void xfer_shutdown(void) {
 
     rx_reset();      /* 先把写盘队列排空并关掉文件，再停写线程 */
     wq_stop();
+    hop_xfer_task_history_store_close();
     CloseHandle(s_x.stop);
     CloseHandle(s_x.q_evt);
     if (s_x.rate_timer) { CloseHandle(s_x.rate_timer); s_x.rate_timer = NULL; }

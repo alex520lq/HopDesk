@@ -1194,6 +1194,11 @@ static void rx_cancel_local(void) {
 static void rx_poll_cancel(void) {
     rx_expire_stale_session();
     if (InterlockedExchange(&s_x.cancel_rx, 0) || (s_rx.active && hop_xfer_task_cancel_requested(s_rx.task.id))) rx_cancel_local();
+    EnterCriticalSection(&s_x.lock); int connected=s_x.peer_ready; LeaveCriticalSection(&s_x.lock);
+    if (s_rx.active && hop_xfer_task_rx_disconnect_expired(&s_rx.task,connected,hop_monotonic_ms(),HOP_XFER_RX_DISCONNECT_BUDGET_MS)) {
+        hop_log(HOP_LOG_WARN,"xfer: receive batch %u expired while disconnected",s_rx.batch);
+        rx_terminate(s_rx.batch,HOP_ABORT_TIMEOUT,0);
+    }
 }
 
 /* A pending handshake is incremental, separate from the active stream. A slow

@@ -60,7 +60,8 @@ int hop_xfer_task_cancel_requested(hop_xfer_task_id id);
 int hop_xfer_task_begin_completion(const hop_xfer_task *task);
 /* Receiver-owned monotonic disconnect timer. Returns 1 only when an active
  * receive task has continuously lacked an authenticated data channel for at
- * least budget_ms. Reconnection and clock rollback reset its timer. */
+ * least budget_ms. Reconnection and clock rollback reset its timer. Expiry
+ * claims terminal processing atomically against cancellation requests. */
 int hop_xfer_task_rx_disconnect_expired(const hop_xfer_task *task, int connected,
                                         uint64_t now_ms, uint64_t budget_ms);
 /* Diagnostic only: sums manager-owned reservations under the manager lock,

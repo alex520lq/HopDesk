@@ -86,11 +86,14 @@ int hop_xfer_task_rx_disconnect_expired(const hop_xfer_task *task, int connected
                                         uint64_t now_ms, uint64_t budget_ms) {
     if (!budget_ms) return 0;
     LOCK(); task_record *r=owned(task); int expired=0;
-    if (r && r->direction==HOP_XFER_DIR_RECEIVE && r->state==HOP_XFER_TASK_ACTIVE && !r->completing) {
+    if (r && r->direction==HOP_XFER_DIR_RECEIVE && r->state==HOP_XFER_TASK_ACTIVE && !r->completing && !r->cancel_requested) {
         if (connected) { r->rx_disconnected=0; r->rx_disconnect_ms=0; }
         else if (!r->rx_disconnected || now_ms<r->rx_disconnect_ms) {
             r->rx_disconnected=1; r->rx_disconnect_ms=now_ms;
-        } else expired=now_ms-r->rx_disconnect_ms>=budget_ms;
+        } else if (now_ms-r->rx_disconnect_ms>=budget_ms) {
+            /* Claim terminal processing under the same lock as cancel. */
+            r->completing=1; expired=1;
+        }
     }
     UNLOCK(); return expired;
 }

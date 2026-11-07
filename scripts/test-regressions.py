@@ -601,6 +601,7 @@ int main(void){
             'BEGIN_BATCH':extract(receiver,'rx_begin_batch'),
             'FINISH_BATCH':extract(receiver,'rx_finish_batch'),
             'CANCEL_LOCAL':extract(receiver,'rx_cancel_local'),
+            'POLL_CANCEL':extract(receiver,'rx_poll_cancel'),
             'BUSY':extract(sender,'xfer_busy'),
             'RECEIVE_CASES':selected,
         }
@@ -770,6 +771,40 @@ int main(void){
 """
     code=common+'\n'.join(extract(ui,n) for n in ['selected_task','task_state_name','refresh_task_lists','cancel_selected_task'])+main
     run('task_list_selection_win',code,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+
+    # Manager-owned disconnect timer must be receive-only, monotonic, and reset
+    # by reconnect (including clock rollback); no reservation is independently
+    # released until the task owner terminates the task.
+    timer_fixture=r"""
+#include "xfer_task.h"
+#include <assert.h>
+#include <stdio.h>
+int main(void) {
+ hop_xfer_task rx={0},tx={0};hop_xfer_task_audit audit;
+ assert(hop_xfer_task_init_classified(&rx,0,0,17,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_FILES));
+ assert(hop_xfer_task_init_classified(&tx,0,0,17,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+ assert(hop_xfer_task_reserve_job(&rx)&&hop_xfer_task_reserve_job(&tx));
+ assert(hop_xfer_task_set_state(&rx,HOP_XFER_TASK_ACTIVE)&&hop_xfer_task_set_state(&tx,HOP_XFER_TASK_ACTIVE));
+ assert(!hop_xfer_task_rx_disconnect_expired(&rx,0,0,100));
+ assert(!hop_xfer_task_rx_disconnect_expired(&rx,0,99,100));
+ assert(hop_xfer_task_rx_disconnect_expired(&rx,0,100,100));
+ assert(!hop_xfer_task_rx_disconnect_expired(&rx,1,101,100));
+ assert(!hop_xfer_task_rx_disconnect_expired(&rx,0,150,100));
+ assert(!hop_xfer_task_rx_disconnect_expired(&rx,0,140,100));
+ assert(!hop_xfer_task_rx_disconnect_expired(&rx,0,239,100));
+ assert(hop_xfer_task_rx_disconnect_expired(&rx,0,240,100));
+ assert(!hop_xfer_task_rx_disconnect_expired(&tx,0,1000,1));
+ assert(hop_xfer_task_reconcile(&audit) && !audit.mismatches && audit.jobs==2);
+ assert(hop_xfer_task_finish(&rx,HOP_XFER_TASK_INTERRUPTED));
+ assert(hop_xfer_task_reconcile(&audit) && !audit.mismatches && audit.jobs==1);
+ assert(!hop_xfer_task_rx_disconnect_expired(&rx,0,500,1));
+ assert(hop_xfer_task_finish(&tx,HOP_XFER_TASK_COMPLETED));
+ hop_xfer_task_dispose(&rx);hop_xfer_task_dispose(&tx);
+ assert(hop_xfer_task_reconcile(&audit) && !audit.mismatches && !audit.jobs);
+ puts("PASS: manager-owned receiver timeout, reconnect reset, clock rollback and reservations");return 0;
+}
+"""
+    run('task_disconnect_timer',timer_fixture,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
 
     # Exercise the production queue removal helper with manager-owned IDs.
     for platform in ['win','mac']:

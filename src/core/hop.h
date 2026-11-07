@@ -372,6 +372,9 @@ static inline int hop_handshake_expired(uint64_t now, uint64_t started) {
 
 /* 单调时钟（毫秒）。clock.c，平台代码用；不受系统改时间影响。 */
 uint64_t hop_monotonic_ms(void);
+/* 墙上时钟（毫秒，1970 起）。仅用于给持久化记录标注完成时刻：
+ * 会被 NTP/用户改时间拨动，禁止拿来做超时或间隔判断。 */
+uint64_t hop_wallclock_ms(void);
 #define HOP_WATCHDOG_EXIT 70
 #define HOP_IO_DEADLINE_MS 15000u
 int hop_watchdog_start(void);

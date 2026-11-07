@@ -36,7 +36,10 @@ typedef enum {
 /* Recent terminal user-facing tasks; bounded and process-local for now. */
 #define HOP_TASK_HISTORY_CAPACITY 256u
 
-/* Immutable snapshot. IDs and resource values are diagnostic, never ownership. */
+/* Immutable snapshot. IDs and resource values are diagnostic, never ownership.
+ * files/bytes/name/detail are the user-facing summary supplied by the transfer
+ * code via hop_xfer_task_set_summary; finished_at is wall-clock ms since the
+ * Unix epoch stamped at the terminal transition (0 while live). */
 typedef struct {
     hop_xfer_task_id id;
     uint64_t offer_id, reservation_handle_id;
@@ -48,6 +51,10 @@ typedef struct {
     int cancel_requested, completing;
     uint32_t jobs, entries, rx_queue_slots;
     uint64_t pending_bytes, image_bytes, rx_queue_bytes, image_temp_bytes;
+    uint32_t files_done, files_total;
+    uint64_t bytes_done, bytes_total, finished_at;
+    char name[HOP_XFER_STATUS_NAME];
+    char detail[HOP_XFER_STATUS_DETAIL];
 } hop_xfer_task_snapshot;
 
 /* A task stays in the manager until dispose, even after it reaches a terminal
@@ -91,6 +98,22 @@ int hop_xfer_task_list(hop_xfer_task_snapshot *out, int capacity, int *total);
 int hop_xfer_task_history_list(hop_xfer_task_snapshot *out, int capacity,
                                int direction, hop_xfer_task_state state,
                                int newest_first, int *total);
+/* Attach the user-facing summary (file/byte counters plus display name and
+ * detail) before the terminal transition; later calls on the same live task
+ * replace it. name/detail may be NULL (kept empty). Rejected after finish.
+ * The summary never affects lifecycle or reservations: display only. */
+int hop_xfer_task_set_summary(const hop_xfer_task *task, uint32_t files_done,
+                              uint32_t files_total, uint64_t bytes_done,
+                              uint64_t bytes_total, const char *name,
+                              const char *detail);
+/* Optional observer notified exactly once for every user-facing task reaching
+ * a terminal state, after the manager lock is released, with the same snapshot
+ * the in-memory history retains. Failures inside the sink are the sink's own;
+ * the manager never blocks lifecycle work on it. Only one sink is registered
+ * at a time (the durable history store). */
+typedef void (*hop_xfer_task_terminal_sink)(const hop_xfer_task_snapshot *snapshot);
+int hop_xfer_task_set_terminal_sink(hop_xfer_task_terminal_sink sink);
+hop_xfer_task_terminal_sink hop_xfer_task_get_terminal_sink(void);
 uint64_t hop_xfer_task_image_temp_bytes(const hop_xfer_task *task);
 
 /* Zero-initialized handle and nonzero transfer_id required. */

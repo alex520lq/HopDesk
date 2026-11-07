@@ -225,9 +225,11 @@ int main(void){
     assert(!s_rx.task.initialized); /* reservation returned on timeout */
     /* Cancellation accepted before a control-session replacement must win. */
     before=saved;image_begin(204,1);seed_resources();assert(hop_xfer_task_request_cancel(s_rx.task.id));
+    notices=notified; /* the socket may already be bound to the next session */
     hop_session_id next_session={{2}};rx_bind_session(&next_session);
     assert(!s_rx.active && !s_rx.task.initialized && saved==before+1);
     assert(s_history[0].batch==204 && s_history[0].phase==HOP_XFER_CANCELLED);
+    assert(notified==notices); /* never send old-session ABORT to a new peer */
     assert(s_send_status.status.active); /* replacement cannot cancel the other direction */
     s_x.cur_batch=0; s_send_status.status.active=0;assert(!xfer_busy()); /* sender retry window is no longer active */
     puts("PASS: production receive ABORT lifecycle, early bounds errors, busy reset, tombstones and once-only history");

@@ -18,7 +18,7 @@ static int s_status_lock,resets,closes,discarded,paste_cancelled;
 static void rx_reset(void){s_rx.active=0;resets++;}
 static void rx_close_file(void){closes++;}
 static void rx_discard_dir(void){assert(closes>0);discarded++;}
-static void rx_cancel_local(void){s_rx.active=0;}
+static void rx_terminate(uint32_t batch,uint8_t reason,int notify){(void)batch;(void)reason;assert(!notify);s_rx.active=0;}
 static int test_begin_completion(const hop_xfer_task *t){(void)t;return 1;}
 static int test_cancel_requested(hop_xfer_task_id t){(void)t;return 0;}
 #define hop_xfer_task_begin_completion test_begin_completion

@@ -401,7 +401,7 @@ static void refresh_task_lists(void) {
 static void cancel_selected_task(int direction) {
     hop_xfer_task_id id=selected_task(direction);
     if(!id){MessageBoxW(s_main,L"请先选择要取消的任务。",L"取消任务",MB_OK|MB_ICONINFORMATION);return;}
-    if(!xfer_connected() && MessageBoxW(s_main,L"数据通道未连接。取消后对端的临时文件可能要等会话失效后才会清理。仍要取消吗？",L"取消任务",MB_YESNO|MB_ICONWARNING)!=IDYES)return;
+    if(!xfer_connected() && MessageBoxW(s_main,L"数据通道未连接。取消后对端的临时文件可能要等待对端连接恢复或断线超时后清理。仍要取消吗？",L"取消任务",MB_YESNO|MB_ICONWARNING)!=IDYES)return;
     if(!xfer_cancel_task(id))MessageBoxW(s_main,L"任务已经结束或正在完成，无法取消。",L"取消任务",MB_OK|MB_ICONINFORMATION);
     refresh_transfers();
 }

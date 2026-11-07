@@ -31,6 +31,8 @@ typedef enum {
     HOP_TASK_KIND_IMAGE, HOP_TASK_KIND_IMAGE_WORK, HOP_TASK_KIND_MIXED
 } hop_xfer_task_kind;
 #define HOP_TASK_SESSION_BYTES 16u
+/* Maximum number of simultaneously live manager records. */
+#define HOP_TASK_MANAGER_MAX_LIVE 4096u
 
 /* Immutable snapshot. IDs and resource values are diagnostic, never ownership. */
 typedef struct {

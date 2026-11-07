@@ -16,7 +16,6 @@ static pthread_mutex_t s_manager_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Manager lock always precedes the budget lock. No budget operation calls back
  * into this manager. A record owns exactly one reservation and one handle. */
-#define HOP_TASK_MANAGER_MAX_LIVE 4096u
 #define HOP_TASK_INDEX_BUCKETS 8192u
 typedef struct task_record {
     struct task_record *next, *hash_next;

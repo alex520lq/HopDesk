@@ -331,9 +331,14 @@ int xfer_get_files(int direction,uint32_t batch,hop_xfer_file_status *out,int ca
     return n;
 }
 int xfer_retry_file(uint32_t batch,int index) {
+    /* A paste batch carries a request and clipboard-version destination. A new
+     * ordinary transfer cannot reproduce it; reject rather than overwrite the
+     * peer clipboard or send to a changed target. Retry must be initiated as a
+     * fresh, validated paste request on the receiving device. */
+    if (!batch || (batch & HOP_XFER_PASTE_BATCH_FLAG)) return 0;
     char *path=NULL;
     pthread_mutex_lock(&s_status_lock);
-    if(s_send_status.status.batch==batch && index>=0 && index<s_send_status.count &&
+    if(s_send_status.status.batch==batch && !s_send_status.status.active && index>=0 && index<s_send_status.count &&
        s_send_status.files[index].phase==HOP_XFER_FILE_FAILED &&
        !s_send_status.files[index].is_directory && s_retry_paths[index])path=strdup(s_retry_paths[index]);
     pthread_mutex_unlock(&s_status_lock);

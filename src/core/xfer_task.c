@@ -34,6 +34,10 @@ static task_record *s_tasks;
 static task_record *s_task_index[HOP_TASK_INDEX_BUCKETS];
 static uint64_t s_next_task_id;
 static unsigned s_task_count;
+/* Descriptive snapshots only: never own handles, budget, or lifecycle state.
+ * The manager appends exactly once at the terminal transition under its lock. */
+static hop_xfer_task_snapshot s_history[HOP_TASK_HISTORY_CAPACITY];
+static unsigned s_history_next, s_history_count;
 
 static int terminal(hop_xfer_task_state s) {
     return s == HOP_XFER_TASK_COMPLETED || s == HOP_XFER_TASK_PARTIAL ||
@@ -145,6 +149,26 @@ int hop_xfer_task_list(hop_xfer_task_snapshot *out, int capacity, int *total) {
     if (total) *total=all;
     UNLOCK(); return n;
 }
+int hop_xfer_task_history_list(hop_xfer_task_snapshot *out, int capacity,
+                               int direction, hop_xfer_task_state state,
+                               int newest_first, int *total) {
+    if (capacity<0 || (capacity && !out) || (newest_first!=0 && newest_first!=1) ||
+        (direction!=HOP_XFER_DIR_NONE && direction!=HOP_XFER_DIR_SEND && direction!=HOP_XFER_DIR_RECEIVE) ||
+        (state!=HOP_XFER_TASK_EMPTY && !terminal(state))) return -1;
+    int n=0, all=0;
+    LOCK();
+    for (unsigned i=0;i<s_history_count;++i) {
+        unsigned oldest=(s_history_next+HOP_TASK_HISTORY_CAPACITY-s_history_count)%HOP_TASK_HISTORY_CAPACITY;
+        unsigned offset=newest_first?s_history_count-1-i:i;
+        const hop_xfer_task_snapshot *entry=&s_history[(oldest+offset)%HOP_TASK_HISTORY_CAPACITY];
+        if (direction!=HOP_XFER_DIR_NONE && entry->direction!=direction) continue;
+        if (state!=HOP_XFER_TASK_EMPTY && entry->state!=state) continue;
+        if (n<capacity) out[n++]=*entry;
+        ++all;
+    }
+    if (total) *total=all;
+    UNLOCK(); return n;
+}
 uint64_t hop_xfer_task_image_temp_bytes(const hop_xfer_task *task) {
     LOCK(); task_record *r=owned(task); uint64_t n=r?r->reservation.image_temp_bytes:0; UNLOCK(); return n;
 }
@@ -235,7 +259,13 @@ static int finish(task_record *r, hop_xfer_task_state state) {
     if (!r || !terminal(state) || terminal(r->state) || r->reservation.rx_queue_slots ||
         r->reservation.rx_queue_bytes || r->reservation.image_temp_bytes) return 0;
     hop_xfer_budget_release(&r->reservation);
-    r->state=state; return 1;
+    r->state=state;
+    if (r->direction==HOP_XFER_DIR_SEND || r->direction==HOP_XFER_DIR_RECEIVE) {
+        snapshot(r,&s_history[s_history_next]);
+        s_history_next=(s_history_next+1u)%HOP_TASK_HISTORY_CAPACITY;
+        if (s_history_count<HOP_TASK_HISTORY_CAPACITY) ++s_history_count;
+    }
+    return 1;
 }
 int hop_xfer_task_finish(hop_xfer_task *task, hop_xfer_task_state state) {
     LOCK(); int ok=finish(owned(task),state); UNLOCK(); return ok;

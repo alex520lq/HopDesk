@@ -33,6 +33,8 @@ typedef enum {
 #define HOP_TASK_SESSION_BYTES 16u
 /* Maximum number of simultaneously live manager records. */
 #define HOP_TASK_MANAGER_MAX_LIVE 4096u
+/* Recent terminal user-facing tasks; bounded and process-local for now. */
+#define HOP_TASK_HISTORY_CAPACITY 256u
 
 /* Immutable snapshot. IDs and resource values are diagnostic, never ownership. */
 typedef struct {
@@ -49,8 +51,8 @@ typedef struct {
 } hop_xfer_task_snapshot;
 
 /* A task stays in the manager until dispose, even after it reaches a terminal
- * state. Snapshots contain only tasks that have not yet been disposed; durable
- * history and UI/progress integration are separate, not implemented here. */
+ * state. Live snapshots contain only tasks not yet disposed. The manager also
+ * retains a bounded process-local terminal history; it is not durable. */
 /* Request is asynchronous. Returns 0 for missing, terminal, internal, or a
  * task already committing its result; never changes another task. */
 int hop_xfer_task_request_cancel(hop_xfer_task_id id);
@@ -81,6 +83,14 @@ int hop_xfer_task_reconcile(hop_xfer_task_audit *out);
 
 int hop_xfer_task_get_snapshot(hop_xfer_task_id id, hop_xfer_task_snapshot *out);
 int hop_xfer_task_list(hop_xfer_task_snapshot *out, int capacity, int *total);
+/* Terminal user-facing snapshots in finish order. direction NONE and state
+ * EMPTY mean no filter; otherwise pass SEND/RECEIVE and a terminal state.
+ * newest_first must be 0 or 1. Returns copied count, or -1 on invalid args;
+ * total receives matching retained entries even when capacity is smaller.
+ * Snapshots own no resources and are evicted oldest-first at the capacity. */
+int hop_xfer_task_history_list(hop_xfer_task_snapshot *out, int capacity,
+                               int direction, hop_xfer_task_state state,
+                               int newest_first, int *total);
 uint64_t hop_xfer_task_image_temp_bytes(const hop_xfer_task *task);
 
 /* Zero-initialized handle and nonzero transfer_id required. */

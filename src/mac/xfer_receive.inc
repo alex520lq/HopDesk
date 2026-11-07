@@ -432,6 +432,16 @@ static void rx_bind_session(const hop_session_id *session) {
     s_rx_session=*session;
 }
 
+/* The control session may vanish permanently before a new data connection is
+ * established. Poll only on the receiver thread; keep a same-session data
+ * reconnect resumable, but promptly retire an invalidated control session. */
+static void rx_expire_stale_session(void) {
+    if (hop_session_id_valid(&s_rx_session) && !hop_session_matches(&s_rx_session)) {
+        hop_session_id empty = {{0}};
+        rx_bind_session(&empty);
+    }
+}
+
 /* 递归删掉本批临时目录。
  * 只在接收批次被 ABORT 时调用；普通部分完成仍保留已送达的文件，
  * 成功批次的文件就是产物本身，都不能删。 */
@@ -1078,6 +1088,7 @@ static void rx_cancel_local(void) {
     hop_log(HOP_LOG_INFO, "xfer: batch %u cancelled locally", batch);
 }
 static void rx_poll_cancel(void) {
+    rx_expire_stale_session();
     if (__sync_lock_test_and_set(&s_x.cancel_rx, 0) || (s_rx.active && hop_xfer_task_cancel_requested(s_rx.task.id))) rx_cancel_local();
 }
 

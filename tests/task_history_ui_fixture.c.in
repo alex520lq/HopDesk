@@ -1,5 +1,7 @@
 /* Actual Win32 formatter/selection logic with UI doubles, not native rendering. */
 #include "xfer_task.h"
+#include "xfer_task_history.h"
+#include <string.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -46,6 +48,25 @@ static int win_swprintf(wchar_t *dst,size_t cap,const wchar_t *format,...) {
 }
 #define swprintf win_swprintf
 #endif
+static int hop_xfer_task_history_store_list(hop_xfer_task_history_record *out,int capacity,
+        int direction,int state,int newest_first,int *total) {
+    hop_xfer_task_snapshot rows[HOP_TASK_HISTORY_CAPACITY];
+    int count=0,n=hop_xfer_task_history_list(rows,HOP_TASK_HISTORY_CAPACITY,direction,
+        (hop_xfer_task_state)state,newest_first,&count);
+    if(n<0)return n;
+    int copied=n<capacity?n:capacity;
+    for(int i=0;i<copied;++i){
+        out[i].record_id=rows[i].id;out[i].task_id=rows[i].id;
+        out[i].transfer_id=rows[i].transfer_id;out[i].direction=rows[i].direction;
+        out[i].state=rows[i].state;out[i].files_done=rows[i].files_done;
+        out[i].files_total=rows[i].files_total;out[i].bytes_done=rows[i].bytes_done;
+        out[i].bytes_total=rows[i].bytes_total;out[i].finished_at=rows[i].finished_at;
+        memcpy(out[i].name,rows[i].name,sizeof(out[i].name));
+        memcpy(out[i].detail,rows[i].detail,sizeof(out[i].detail));
+    }
+    if(total)*total=count;
+    return copied;
+}
 @UI_FUNCTIONS@
 int main(void){
     hop_xfer_task a={0},b={0};

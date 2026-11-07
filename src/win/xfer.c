@@ -1022,6 +1022,12 @@ static int send_done(SOCKET c, const xfer_job *j) {
 #define JOB_NET_DOWN    1   /* 链路断了，整批退回队列等重连 */
 #define JOB_CANCELLED   2   /* 用户取消，通知对端丢弃，不送 DONE */
 #define JOB_PEER_ABORT  3   /* 对端中止，什么都不用送 */
+#define JOB_COMMIT_UNKNOWN 4 /* DONE could not be fully sent; peer outcome unknown */
+
+/* A failed socket write has an ambiguous peer outcome. Never report it as success. */
+static int send_done_result(SOCKET fd, const xfer_job *job) {
+    return send_done(fd,job) ? JOB_DONE : JOB_COMMIT_UNKNOWN;
+}
 
 /* 实际发送（send 线程持有 tx 缓冲）。 */
 static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
@@ -1389,7 +1395,7 @@ static DWORD WINAPI send_thread(LPVOID arg) {
                 if (j->ok < j->n)
                     hop_log(HOP_LOG_WARN, "xfer: batch %u finished %d/%d",
                             j->batch, j->ok, j->n);
-                send_done(c, j);
+                r=send_done_result(c, j);
             }
             if(r==JOB_DONE){
                 int complete=j->ok==(int)hop_xfer_job_total(j->is_image,j->n);
@@ -1401,6 +1407,9 @@ static DWORD WINAPI send_thread(LPVOID arg) {
             } else if(r==JOB_PEER_ABORT){
                 hop_xfer_task_finish(&j->task,peer_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
                 status_end(HOP_XFER_DIR_SEND,j->batch,peer_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED,peer_cancelled?"Cancelled by receiver":"Peer aborted transfer");
+            } else if(r==JOB_COMMIT_UNKNOWN){
+                hop_xfer_task_finish(&j->task,HOP_XFER_TASK_INTERRUPTED);
+                status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Completion delivery uncertain; peer may have received it");
             } else if(r==JOB_NET_DOWN){
                 hop_xfer_task_finish(&j->task,HOP_XFER_TASK_FAILED);
                 status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Reconnect attempts exhausted");

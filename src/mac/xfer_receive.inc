@@ -165,9 +165,12 @@ static void *writer_thread(void *arg) {
         uint64_t write_started_ns=rate_now_ns();
         wq_task_run(&t);
         uint64_t write_elapsed_ns=rate_now_ns()-write_started_ns;
-        if(t.kind==RX_WRITE && t.budget_owner)
-            status_stage_time(HOP_XFER_DIR_RECEIVE,t.budget_owner->transfer_id,
-                              HOP_XFER_TIME_WRITE,write_elapsed_ns);
+        if(t.kind==RX_WRITE && t.budget_owner) {
+            hop_xfer_task_snapshot task_snapshot;
+            if (hop_xfer_task_get_snapshot(t.budget_owner->id,&task_snapshot))
+                status_stage_time(HOP_XFER_DIR_RECEIVE,task_snapshot.transfer_id,
+                                  HOP_XFER_TIME_WRITE,write_elapsed_ns);
+        }
         hop_watchdog_end(disk_guard);
 
         if (t.kind == RX_WRITE && t.budget_owner)
@@ -409,14 +412,40 @@ static int rm_entry(const char *path, const struct stat *sb, int flag, struct FT
 /* Receiver-owned lifecycle boundary. Only a data reconnect in the SAME control
  * session may retain ACKs/tombstones; a new control session starts cleanly. */
 static hop_session_id s_rx_session;
+static void rx_discard_dir(void);
+static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer);
 static void rx_bind_session(const hop_session_id *session) {
     if (!hop_session_id_equal(&s_rx_session, session)) {
+        /* A new control session cannot resume the old batch. Its staging files
+         * were never published; close the writer before removing them. Completed
+         * or deliberately retained partial batches are not active here. */
+        if (s_rx.active && !hop_xfer_task_begin_completion(&s_rx.task) &&
+            hop_xfer_task_cancel_requested(s_rx.task.id))
+            /* The current socket may already belong to the new session. Never
+             * send an old-session ABORT through it, even if batch IDs collide. */
+            rx_terminate(s_rx.batch,HOP_ABORT_CANCEL,0);
+        if (s_rx.active) {
+            rx_close_file();
+            rx_discard_dir();
+            if (s_rx.batch & HOP_XFER_PASTE_BATCH_FLAG)
+                clipboard_complete_remote_paste(s_rx.batch,NULL,0,0);
+        }
         rx_reset(); s_rx.dead_batch=0; s_rx.dead_reason=0;
         pthread_mutex_lock(&s_status_lock);
         memset(&s_receive_status,0,sizeof(s_receive_status));
         pthread_mutex_unlock(&s_status_lock);
     } else rx_close_file();
     s_rx_session=*session;
+}
+
+/* The control session may vanish permanently before a new data connection is
+ * established. Poll only on the receiver thread; keep a same-session data
+ * reconnect resumable, but promptly retire an invalidated control session. */
+static void rx_expire_stale_session(void) {
+    if (hop_session_id_valid(&s_rx_session) && !hop_session_matches(&s_rx_session)) {
+        hop_session_id empty = {{0}};
+        rx_bind_session(&empty);
+    }
 }
 
 /* 递归删掉本批临时目录。
@@ -505,11 +534,12 @@ static void rx_begin_batch(uint32_t batch) {
     __sync_lock_test_and_set(&s_x.cancel_rx, 0);
 
     rx_reset();
-    if (!hop_xfer_task_init(&s_rx.task,0,(batch & HOP_XFER_PASTE_BATCH_FLAG)?batch:0,batch)) {
+    if (!hop_xfer_task_init_classified(&s_rx.task,0,(batch & HOP_XFER_PASTE_BATCH_FLAG)?batch:0,batch,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_UNSPECIFIED)) {
         s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_DISK;
         send_abort(batch,HOP_ABORT_DISK);
         return;
     }
+    (void)hop_xfer_task_bind_session(&s_rx.task,s_rx_session.bytes);
     if (!hop_xfer_task_reserve_job(&s_rx.task)) {
         s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_TOO_LARGE;
         hop_xfer_task_finish(&s_rx.task,HOP_XFER_TASK_FAILED);
@@ -543,6 +573,11 @@ static void rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
     if (!s_rx.active || s_rx.batch != batch) {
         hop_log(HOP_LOG_WARN, "xfer: stale DONE for batch %u ignored (active=%u)",
                 batch, s_rx.active ? s_rx.batch : 0);
+        return;
+    }
+    /* Completion and per-task cancellation serialize before clipboard effects. */
+    if (!hop_xfer_task_begin_completion(&s_rx.task)) {
+        rx_terminate(batch,HOP_ABORT_CANCEL,1);
         return;
     }
 
@@ -654,6 +689,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
             rx_begin_batch(batch);
             if (!s_rx.active || s_rx.batch != batch) return;
+            (void)hop_xfer_task_set_kind(&s_rx.task,HOP_TASK_KIND_FILES);
             if (id == 0 || id > HOP_XFER_FILE_LIMIT) {
                 rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
                 return;
@@ -747,6 +783,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             uint32_t batch = msg.batch;
             rx_begin_batch(batch);
             if (!s_rx.active || s_rx.batch != batch) return;
+            (void)hop_xfer_task_set_kind(&s_rx.task,HOP_TASK_KIND_IMAGE);
 
             int w = (int)msg.width;
             int h = (int)msg.height;
@@ -971,19 +1008,20 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             uint32_t batch = abort_msg.batch;
             uint8_t reason = abort_msg.reason;
 
-            /* 发送线程可能正卡在等 ACK 里 —— 踢醒它，取消不该等满 10 秒 */
-            pthread_mutex_lock(&s_x.qlock);
-            s_x.abort_batch = batch;
-            pthread_mutex_unlock(&s_x.qlock);
-            pthread_mutex_lock(&s_ack.lock);
-            pthread_cond_broadcast(&s_ack.cond);
-            pthread_mutex_unlock(&s_ack.lock);
+            if (abort_msg.target == HOP_ABORT_TO_SENDER) {
+                pthread_mutex_lock(&s_x.qlock);
+                if (s_x.cur_batch == batch) { s_x.abort_batch = batch; s_x.abort_reason = reason; }
+                pthread_mutex_unlock(&s_x.qlock);
+                pthread_mutex_lock(&s_ack.lock);
+                pthread_cond_broadcast(&s_ack.cond);
+                pthread_mutex_unlock(&s_ack.lock);
+            }
 
             hop_log(HOP_LOG_ERROR, "xfer: peer aborted batch %u (reason %u)",
                     batch, reason);
 
             /* 对端不要这一批了：关文件、删掉已落盘的半成品、立墓碑。 */
-            rx_terminate(batch,reason,0);
+            if (abort_msg.target == HOP_ABORT_TO_RECEIVER) rx_terminate(batch,reason,0);
             break;
         }
 
@@ -1055,6 +1093,15 @@ static void rx_cancel_local(void) {
     rx_terminate(batch,HOP_ABORT_CANCEL,1);
     hop_log(HOP_LOG_INFO, "xfer: batch %u cancelled locally", batch);
 }
+static void rx_poll_cancel(void) {
+    rx_expire_stale_session();
+    if (__sync_lock_test_and_set(&s_x.cancel_rx, 0) || (s_rx.active && hop_xfer_task_cancel_requested(s_rx.task.id))) rx_cancel_local();
+    pthread_mutex_lock(&s_x.slock); int connected=s_x.peer_ready; pthread_mutex_unlock(&s_x.slock);
+    if (s_rx.active && hop_xfer_task_rx_disconnect_expired(&s_rx.task,connected,hop_monotonic_ms(),HOP_XFER_RX_DISCONNECT_BUDGET_MS)) {
+        hop_log(HOP_LOG_WARN,"xfer: receive batch %u expired while disconnected",s_rx.batch);
+        rx_terminate(s_rx.batch,HOP_ABORT_TIMEOUT,0);
+    }
+}
 
 static int s_data_listener=-1;
 static int accept_data(const hop_session_id *expected){
@@ -1069,6 +1116,7 @@ static int accept_data(const hop_session_id *expected){
         hop_log(HOP_LOG_INFO,"xfer: listening on data port %u",(unsigned)g_mac.cfg.data_port);
     }
     while(!s_x.stop && hop_session_matches(expected)){
+        rx_poll_cancel();
         fd_set rd;FD_ZERO(&rd);FD_SET(s_data_listener,&rd);struct timeval tv={0,200000};
         int n=select(s_data_listener+1,&rd,NULL,NULL,&tv);
         if(n>0){
@@ -1087,6 +1135,7 @@ static void *conn_thread(void *arg) {
 
     int backoff = 1;
     while (!s_x.stop) {
+        rx_poll_cancel();
         hop_session_id session;
         if (!hop_session_current(&session)) { usleep(200000); continue; }
         int s = g_mac.cfg.role==HOP_ROLE_SERVER?accept_data(&session):do_connect();
@@ -1096,8 +1145,10 @@ static void *conn_thread(void *arg) {
                 hop_log(HOP_LOG_WARN,"xfer: TCP data connection failed: host=%s port=%u; check data port and firewall",
                         g_mac.cfg.peer_host,(unsigned)g_mac.cfg.data_port);
             /* 退避要能被 stop 打断 —— 否则退出时要等满 10 秒 */
-            for (int i = 0; i < backoff * 10 && !s_x.stop; ++i)
+            for (int i = 0; i < backoff * 10 && !s_x.stop; ++i) {
+                rx_poll_cancel();
                 usleep(100 * 1000);
+            }
             backoff = backoff < 10 ? backoff * 2 : 10;
             continue;
         }
@@ -1165,7 +1216,7 @@ static void *conn_thread(void *arg) {
                 if (errno == EINTR) continue;
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     /* 不是断线，只是这 200 ms 没数据：借这次醒来处理取消请求 */
-                    if (__sync_lock_test_and_set(&s_x.cancel_rx, 0)) rx_cancel_local();
+                    rx_poll_cancel();
                     continue;
                 }
                 break;
@@ -1173,7 +1224,7 @@ static void *conn_thread(void *arg) {
             if (r == 0) break;                 /* 对端正常关闭 */
 
             if (!hop_decoder_feed(dec, (const uint8_t *)buf, (uint32_t)r)) break;
-            if (__sync_lock_test_and_set(&s_x.cancel_rx, 0)) rx_cancel_local();
+            rx_poll_cancel();
         }
 
         pthread_mutex_lock(&s_x.slock);

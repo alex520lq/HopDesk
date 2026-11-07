@@ -1,0 +1,62 @@
+/* Actual Win32 formatter/selection logic with UI doubles, not native rendering. */
+#include "xfer_task.h"
+#include <assert.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <wchar.h>
+#define CB_GETCURSEL 1
+#define LB_GETTOPINDEX 2
+#define LB_RESETCONTENT 3
+#define LB_ADDSTRING 4
+#define LB_SETTOPINDEX 5
+typedef uintptr_t WPARAM;typedef intptr_t LPARAM;
+typedef struct {int selection,top,count;wchar_t rows[4][180];} control;
+static control history,direction,state,order;
+static control *s_task_history=&history,*s_history_direction=&direction,*s_history_state=&state,*s_history_order=&order;
+static intptr_t SendMessageW(control *c,int op,WPARAM w,LPARAM l){
+    if(op==CB_GETCURSEL)return c->selection;
+    if(op==LB_GETTOPINDEX)return c->top;
+    if(op==LB_RESETCONTENT){c->count=0;c->top=0;return 0;}
+    if(op==LB_SETTOPINDEX){c->top=(int)w;return 0;}
+    if(op==LB_ADDSTRING){assert(c->count<4);wcsncpy(c->rows[c->count],(const wchar_t *)l,179);c->rows[c->count][179]=0;return c->count++;}
+    assert(0);return 0;
+}
+/* The formatter is Win32 production code. Darwin's wide stdio formatting
+ * obeys a different default locale; use a Win32-shaped test double there so
+ * that a CI host locale does not change the UI logic test. Native Windows
+ * builds and runs use the actual CRT implementation. */
+#ifndef _WIN32
+#include <stdarg.h>
+#include <string.h>
+static int win_swprintf(wchar_t *dst,size_t cap,const wchar_t *format,...) {
+    (void)format;
+    va_list args;va_start(args,format);
+    unsigned long long id=va_arg(args,unsigned long long);
+    const wchar_t *direction_text=va_arg(args,const wchar_t *);
+    unsigned batch=va_arg(args,unsigned);
+    const wchar_t *state_text=va_arg(args,const wchar_t *);
+    va_end(args);
+    wchar_t first[48],second[48];
+    if(swprintf(first,48,L"#%llu",id)<0 || swprintf(second,48,L"%u",batch)<0)return -1;
+    if(wcslen(first)+wcslen(direction_text)+wcslen(second)+wcslen(state_text)+12>=cap)return -1;
+    wcscpy(dst,first);wcscat(dst,L" · ");wcscat(dst,direction_text);
+    wcscat(dst,L" · ");wcscat(dst,second);wcscat(dst,L" · ");wcscat(dst,state_text);
+    return (int)wcslen(dst);
+}
+#define swprintf win_swprintf
+#endif
+@UI_FUNCTIONS@
+int main(void){
+    hop_xfer_task a={0},b={0};
+    assert(hop_xfer_task_init_classified(&a,0,0,1,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+    assert(hop_xfer_task_begin_completion(&a));assert(hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));hop_xfer_task_dispose(&a);
+    assert(hop_xfer_task_init_classified(&b,0,0,2,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_FILES));
+    assert(hop_xfer_task_request_cancel(b.id));assert(hop_xfer_task_finish(&b,HOP_XFER_TASK_CANCELLED));hop_xfer_task_dispose(&b);
+    refresh_task_history();assert(history.count==2);
+    assert(wcsstr(history.rows[0],L"已取消") && wcsstr(history.rows[1],L"已完成"));
+    history.top=1;refresh_task_history();assert(history.top==1);
+    order.selection=1;refresh_task_history();assert(wcsstr(history.rows[0],L"已完成"));
+    direction.selection=2;state.selection=4;refresh_task_history();assert(history.count==1 && wcsstr(history.rows[0],L"已取消"));
+    state.selection=1;refresh_task_history();assert(history.count==0);
+    puts("PASS: Windows task history filters, sort, terminal labels and scroll (UI doubles)");return 0;
+}

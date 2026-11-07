@@ -409,6 +409,7 @@ static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t ba
 static void wq_push(rx_task*t){(void)t;}
 static void wq_drain(void){}
 static void rx_reset(void){s_rx.active=0;hop_xfer_task_dispose(&s_rx.task);}
+static void rx_terminate(uint32_t batch,uint8_t reason,int notify){(void)batch;(void)reason;(void)notify;assert(!"unexpected cancellation in successful fixture");}
 static void status_file_phase(int d,uint32_t b,int i,int p,uint32_t a){assert(d==HOP_XFER_DIR_RECEIVE);hop_xfer_tracking_phase(&s_receive_status,b,i,p,a);}
 static void status_end(int d,uint32_t b,int p,const char*s){assert(d==HOP_XFER_DIR_RECEIVE);hop_xfer_tracking_end(&s_receive_status,b,p,s);}
 static void apply_image(const uint8_t*p,int w,int h,int stride){(void)p;(void)w;(void)h;(void)stride;applied++;}
@@ -600,6 +601,8 @@ int main(void){
             'BEGIN_BATCH':extract(receiver,'rx_begin_batch'),
             'FINISH_BATCH':extract(receiver,'rx_finish_batch'),
             'CANCEL_LOCAL':extract(receiver,'rx_cancel_local'),
+            'BIND_SESSION':extract(receiver,'rx_bind_session'),
+            'POLL_CANCEL':extract(receiver,'rx_poll_cancel'),
             'BUSY':extract(sender,'xfer_busy'),
             'RECEIVE_CASES':selected,
         }
@@ -620,7 +623,7 @@ int main(void){
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
         receiver=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
         fixture=(ROOT/'tests/session_transport_fixture.c.in').read_text(encoding='utf-8')
-        functions='\n'.join([extract(sender,'job_bind_session'),extract(sender,'send_small'),extract(sender,'send_chunk'),extract(receiver,'rx_bind_session'),extract(receiver,'on_data_frame_checked'),extract(receiver,'on_data_frame')])
+        functions='\n'.join([extract(sender,'job_bind_session'),extract(sender,'send_small'),extract(sender,'send_chunk'),extract(receiver,'rx_bind_session'),extract(receiver,'rx_expire_stale_session'),extract(receiver,'on_data_frame_checked'),extract(receiver,'on_data_frame')])
         fixture=fixture.replace('@FUNCTIONS@',functions)
         run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c'],threads=True)
 
@@ -678,6 +681,174 @@ int main(void){
         else:
             queue=extract(sender,'send_thread')
             assert 'c != INVALID_SOCKET && cur->retry_at <= now' in queue
+
+    # A socket write error is ambiguous: the sender must not mark the job
+    # completed. Exercise the exact platform helper with successful/failed writes.
+    for platform in ['win','mac']:
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        source=r"""
+#include <assert.h>
+#include <stdio.h>
+typedef int SOCKET;
+typedef struct { int ignored; } xfer_job;
+typedef xfer_job xf_job;
+#define JOB_DONE 0
+#define JOB_COMMIT_UNKNOWN 4
+static int result;
+static int send_done(int fd,const xfer_job *j) { (void)fd; (void)j; return result; }
+""" + extract(sender,'send_done_result') + r"""
+int main(void) {
+    xfer_job job={0}; result=1; assert(send_done_result(1,&job)==JOB_DONE);
+    result=0; assert(send_done_result(1,&job)==JOB_COMMIT_UNKNOWN);
+    puts("PASS: failed completion write is not reported as success"); return 0;
+}
+"""
+        run('finish_write_'+platform,source,[])
+        thread=extract(sender,'send_thread')
+        assert 'r=send_done_result(c, j)' in thread if platform=='win' else 'r=fd >= 0 ? send_done_result(fd, j) : JOB_COMMIT_UNKNOWN' in thread
+        assert 'HOP_XFER_TASK_INTERRUPTED' in thread and 'Completion delivery uncertain' in thread
+
+    # Test exact Windows task-list selection and action logic with UI doubles.
+    # Rows may move/disappear between refreshes; only the selected Task ID may
+    # receive cancellation, including after a reordered snapshot.
+    ui=(ROOT/'src/win/main_ui.c').read_text(encoding='utf-8')
+    common=r"""
+#include "xfer_task.h"
+#include <assert.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <wchar.h>
+#include <stdint.h>
+#define UI_TASK_CAP HOP_TASK_MANAGER_MAX_LIVE
+#define LB_ERR (-1)
+#define LB_ERRSPACE (-2)
+#define LB_GETCURSEL 1
+#define LB_RESETCONTENT 2
+#define LB_ADDSTRING 3
+#define LB_SETCURSEL 4
+#define MB_OK 0
+#define MB_YESNO 1
+#define MB_ICONINFORMATION 2
+#define MB_ICONWARNING 4
+#define IDYES 6
+typedef intptr_t LPARAM;typedef uintptr_t WPARAM;typedef intptr_t LRESULT;
+typedef struct {int count,selected;} list;typedef list* HWND;
+static list lists[2]={{0,-1},{0,-1}};
+static HWND s_task_lists[2]={&lists[0],&lists[1]},s_main;
+static hop_xfer_task_id s_task_ids[2][UI_TASK_CAP];static int s_task_counts[2];
+static hop_xfer_task_snapshot *s_tasks_snapshot;
+static int connected=1,answer=IDYES,calls;
+static LRESULT SendMessageW(HWND h,int op,WPARAM w,LPARAM l){(void)l;
+    if(op==LB_GETCURSEL)return h->selected;
+    if(op==LB_RESETCONTENT){h->count=0;h->selected=-1;return 0;}
+    if(op==LB_ADDSTRING)return h->count++;
+    if(op==LB_SETCURSEL){h->selected=(int)w;return 0;}
+    assert(0);return LB_ERR;
+}
+static int MessageBoxW(HWND h,const wchar_t *text,const wchar_t *title,int flags){(void)h;(void)text;(void)title;(void)flags;return answer;}
+static int xfer_connected(void){return connected;}
+static int xfer_cancel_task(hop_xfer_task_id id){calls++;return hop_xfer_task_request_cancel(id);}
+static void refresh_transfers(void){}
+"""
+    main=r"""
+int main(void){
+ hop_xfer_task a={0},b={0},c={0},rx={0};
+ assert(hop_xfer_task_init_classified(&a,0,0,1,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+ assert(hop_xfer_task_init_classified(&b,0,0,2,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+ assert(hop_xfer_task_init_classified(&rx,0,0,2,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_FILES));
+ refresh_task_lists();assert(s_task_counts[0]==2&&s_task_counts[1]==1);
+ for(int i=0;i<s_task_counts[0];i++)if(s_task_ids[0][i]==a.id)lists[0].selected=i;
+ assert(selected_task(0)==a.id);
+ assert(hop_xfer_task_init_classified(&c,0,0,3,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+ refresh_task_lists();assert(selected_task(0)==a.id);
+ connected=0;answer=0;cancel_selected_task(0);assert(!calls && !hop_xfer_task_cancel_requested(a.id));
+ answer=IDYES;cancel_selected_task(0);assert(calls==1 && hop_xfer_task_cancel_requested(a.id));
+ assert(!hop_xfer_task_cancel_requested(b.id) && !hop_xfer_task_cancel_requested(c.id) && !hop_xfer_task_cancel_requested(rx.id));
+ hop_xfer_task_dispose(&a);refresh_task_lists();assert(!selected_task(0));
+ cancel_selected_task(0);assert(calls==1);
+ hop_xfer_task_dispose(&b);hop_xfer_task_dispose(&c);hop_xfer_task_dispose(&rx);free(s_tasks_snapshot);
+ puts("PASS: task list preserves Task ID through reordering and cancels only selection");return 0;
+}
+"""
+    code=common+'\n'.join(extract(ui,n) for n in ['selected_task','task_state_name','refresh_task_lists','cancel_selected_task'])+main
+    run('task_list_selection_win',code,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+
+    # Manager-owned disconnect timer must be receive-only, monotonic, and reset
+    # by reconnect (including clock rollback); no reservation is independently
+    # released until the task owner terminates the task.
+    timer_fixture=r"""
+#include "xfer_task.h"
+#include <assert.h>
+#include <stdio.h>
+int main(void) {
+ hop_xfer_task rx={0},tx={0};hop_xfer_task_audit audit;
+ assert(hop_xfer_task_init_classified(&rx,0,0,17,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_FILES));
+ assert(hop_xfer_task_init_classified(&tx,0,0,17,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+ assert(hop_xfer_task_reserve_job(&rx)&&hop_xfer_task_reserve_job(&tx));
+ assert(hop_xfer_task_set_state(&rx,HOP_XFER_TASK_ACTIVE)&&hop_xfer_task_set_state(&tx,HOP_XFER_TASK_ACTIVE));
+ assert(!hop_xfer_task_rx_disconnect_expired(&rx,0,0,100));
+ assert(!hop_xfer_task_rx_disconnect_expired(&rx,0,99,100));
+ assert(!hop_xfer_task_rx_disconnect_expired(&rx,1,101,100));
+ assert(!hop_xfer_task_rx_disconnect_expired(&rx,0,150,100));
+ assert(!hop_xfer_task_rx_disconnect_expired(&rx,0,140,100));
+ assert(!hop_xfer_task_rx_disconnect_expired(&rx,0,239,100));
+ assert(hop_xfer_task_rx_disconnect_expired(&rx,0,240,100));
+ assert(!hop_xfer_task_request_cancel(rx.id)); /* expiry claimed first */
+ assert(!hop_xfer_task_rx_disconnect_expired(&tx,0,1000,1));
+ assert(hop_xfer_task_reconcile(&audit) && !audit.mismatches && audit.jobs==2);
+ assert(hop_xfer_task_finish(&rx,HOP_XFER_TASK_INTERRUPTED));
+ assert(hop_xfer_task_reconcile(&audit) && !audit.mismatches && audit.jobs==1);
+ assert(!hop_xfer_task_rx_disconnect_expired(&rx,0,500,1));
+ assert(hop_xfer_task_finish(&tx,HOP_XFER_TASK_COMPLETED));
+ hop_xfer_task_dispose(&rx);hop_xfer_task_dispose(&tx);
+ assert(hop_xfer_task_reconcile(&audit) && !audit.mismatches && !audit.jobs);
+ puts("PASS: manager-owned receiver timeout, reconnect reset, clock rollback and reservations");return 0;
+}
+"""
+    run('task_disconnect_timer',timer_fixture,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+
+    run('task_history',(ROOT/'tests/task_history_tests.c').read_text(encoding='utf-8'),['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+
+    history_ui=(ROOT/'tests/task_history_ui_fixture.c.in').read_text(encoding='utf-8')
+    history_ui=history_ui.replace('@UI_FUNCTIONS@',extract(ui,'task_state_name')+'\n'+extract(ui,'refresh_task_history'))
+    run('task_history_ui_win',history_ui,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+
+    # Exercise the production queue removal helper with manager-owned IDs.
+    for platform in ['win','mac']:
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        common=r"""
+#include "xfer_task.h"
+#include <assert.h>
+#include <stdio.h>
+typedef struct job { struct job *next; hop_xfer_task task; } job;
+typedef job xfer_job; typedef job xf_job;
+static struct { job *q_head,*q_tail; } s_x;
+"""
+        main=r"""
+int main(void){
+    job a={0}, b={0}, c={0};
+    assert(hop_xfer_task_init_classified(&a.task,0,0,1,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+    assert(hop_xfer_task_init_classified(&b.task,0,0,2,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+    assert(hop_xfer_task_init_classified(&c.task,0,0,3,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+    assert(hop_xfer_task_reserve_job(&a.task)); assert(hop_xfer_task_reserve_job(&b.task)); assert(hop_xfer_task_reserve_job(&c.task));
+    a.next=&b; b.next=&c; s_x.q_head=&a; s_x.q_tail=&c;
+    assert(hop_xfer_task_request_cancel(b.task.id));
+    assert(queue_take_cancelled()==&b && !b.next);
+    assert(s_x.q_head==&a && a.next==&c && s_x.q_tail==&c);
+    assert(!hop_xfer_task_cancel_requested(a.task.id) && !hop_xfer_task_cancel_requested(c.task.id));
+    assert(hop_xfer_task_finish(&b.task,HOP_XFER_TASK_CANCELLED)); hop_xfer_task_dispose(&b.task);
+    assert(hop_xfer_task_request_cancel(c.task.id));
+    assert(queue_take_cancelled()==&c && s_x.q_tail==&a && !a.next);
+    assert(hop_xfer_task_finish(&c.task,HOP_XFER_TASK_CANCELLED)); hop_xfer_task_dispose(&c.task);
+    assert(hop_xfer_task_request_cancel(a.task.id));
+    assert(queue_take_cancelled()==&a && !s_x.q_head && !s_x.q_tail);
+    assert(hop_xfer_task_finish(&a.task,HOP_XFER_TASK_CANCELLED)); hop_xfer_task_dispose(&a.task);
+    hop_xfer_budget_snapshot budget;hop_xfer_budget_get_snapshot(&budget);assert(!budget.jobs);
+    puts("PASS: production queue cancels only selected task, preserving links and reservations");return 0;
+}
+"""
+        code=common+extract(sender,'queue_unlink')+'\n'+extract(sender,'queue_take_cancelled')+main
+        run('task_cancel_queue_'+platform,code,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
 
     # hop_xfer_tracking embeds 8192 file records with 1024-byte paths
     # (~8 MiB). Keep these fixtures off Windows' default 1 MiB thread stack.

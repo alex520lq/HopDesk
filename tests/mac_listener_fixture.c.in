@@ -23,11 +23,13 @@
 #include <sys/select.h>
 
 static struct { hop_config cfg; } g_mac;
-static _Atomic int s_stop, valid=1, suppressed;
+static _Atomic int s_stop, valid=1, suppressed, cancel_polls;
 static struct { _Atomic int stop; } s_x;
 static int s_listener=-1,s_data_listener=-1;
 void hop_log(hop_log_level level,const char *fmt,...){(void)level;(void)fmt;}
 int hop_session_matches(const hop_session_id *s){(void)s;return atomic_load(&valid);}
+/* This listener fixture has no receive task; observe the production poll hook. */
+static void rx_poll_cancel(void){atomic_fetch_add(&cancel_polls,1);}
 /* Linux has no SO_NOSIGPIPE; emulate it in the fixture only.
  * On macOS, exercise the native socket option directly and verify it with
  * getsockopt() below. */
@@ -79,6 +81,7 @@ int main(void){
     int peer=(int)(intptr_t)result-1;assert(peer>=0);assert_no_sigpipe(peer);close(peer);close(client);close(s_listener);
     g_mac.cfg.data_port=free_port();assert(!pthread_create(&t,NULL,data_thread,NULL));
     usleep(300000);atomic_store(&valid,0);assert(!pthread_join(t,&result));assert((intptr_t)result==0);
+    assert(atomic_load(&cancel_polls)>0);
     atomic_store(&valid,1);assert(!pthread_create(&t,NULL,data_thread,NULL));
     client=connect_eventually(g_mac.cfg.data_port);assert(client>=0);assert(!pthread_join(t,&result));
     peer=(int)(intptr_t)result-1;assert(peer>=0);assert_no_sigpipe(peer);

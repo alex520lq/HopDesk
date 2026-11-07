@@ -359,7 +359,7 @@ static int image_work_task_begin(hop_xfer_task *task) {
     memset(task, 0, sizeof(*task));
     uint32_t transfer_id = (uint32_t)InterlockedIncrement(&s_image_task_seq);
     if (!transfer_id) transfer_id = (uint32_t)InterlockedIncrement(&s_image_task_seq);
-    if (!hop_xfer_task_init(task, 0, 0, transfer_id) ||
+    if (!hop_xfer_task_init_classified(task, 0, 0, transfer_id, HOP_XFER_DIR_NONE, HOP_TASK_KIND_IMAGE_WORK) ||
         !hop_xfer_task_reserve_job(task) ||
         !hop_xfer_task_set_state(task, HOP_XFER_TASK_ACTIVE)) {
         if (task->initialized) {
@@ -373,8 +373,8 @@ static int image_work_task_begin(hop_xfer_task *task) {
 
 static void image_work_task_finish(hop_xfer_task *task, int success) {
     if (!task || !task->initialized) return;
-    if (task->reservation.image_temp_bytes &&
-        !hop_xfer_task_release_image_temp(task, task->reservation.image_temp_bytes)) {
+    uint64_t temp_bytes=hop_xfer_task_image_temp_bytes(task);
+    if (temp_bytes && !hop_xfer_task_release_image_temp(task, temp_bytes)) {
         hop_log(HOP_LOG_ERROR, "clip: image temporary budget release failed (task=%llu)",
                 (unsigned long long)task->id);
     }

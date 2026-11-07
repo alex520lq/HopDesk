@@ -163,7 +163,7 @@ static int image_work_can_start(void) {
 static hop_xfer_task *image_work_task_create(void) {
     hop_xfer_task *task = (hop_xfer_task *)calloc(1, sizeof(*task));
     if (!task) return NULL;
-    if (!hop_xfer_task_init(task, 0, 0, image_work_transfer_id()) ||
+    if (!hop_xfer_task_init_classified(task, 0, 0, image_work_transfer_id(), HOP_XFER_DIR_NONE, HOP_TASK_KIND_IMAGE_WORK) ||
         !hop_xfer_task_reserve_job(task) ||
         !hop_xfer_task_set_state(task, HOP_XFER_TASK_ACTIVE)) {
         if (task->initialized) {
@@ -178,8 +178,8 @@ static hop_xfer_task *image_work_task_create(void) {
 
 static void image_work_task_finish(hop_xfer_task *task, int success) {
     if (!task) return;
-    if (task->reservation.image_temp_bytes &&
-        !hop_xfer_task_release_image_temp(task, task->reservation.image_temp_bytes)) {
+    uint64_t temp_bytes=hop_xfer_task_image_temp_bytes(task);
+    if (temp_bytes && !hop_xfer_task_release_image_temp(task, temp_bytes)) {
         hop_log(HOP_LOG_ERROR, "clip: image temporary budget release failed (task=%llu)",
                 (unsigned long long)task->id);
     }
@@ -227,7 +227,12 @@ static BOOL send_image(NSImage *img, NSInteger expected_change, hop_xfer_task *t
     uint64_t conversion_bytes = (uint64_t)total * 3u;
     hop_xfer_budget_snapshot budget;
     hop_xfer_budget_get_snapshot(&budget);
-    uint64_t input_reserved = task->reservation.image_temp_bytes - *conversion_reserved;
+    uint64_t image_temp = hop_xfer_task_image_temp_bytes(task);
+    if (image_temp < *conversion_reserved) {
+        hop_log(HOP_LOG_ERROR, "clip: image task reservation changed unexpectedly");
+        return NO;
+    }
+    uint64_t input_reserved = image_temp - *conversion_reserved;
     if (!image_conversion_fits_budget(input_reserved, conversion_bytes, &budget.limits)) {
         hop_log(HOP_LOG_WARN, "clip: image conversion exceeds the memory budget; copy a smaller image");
         if ([[NSPasteboard generalPasteboard] changeCount] == expected_change)

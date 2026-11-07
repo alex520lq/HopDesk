@@ -37,8 +37,13 @@ static NSPopUpButton *s_edgePopups[2];
 static NSTextField *s_xferTitle, *s_xferDetail, *s_xferCounts;
 static NSTextField *s_xferBudget, *s_xferMemory, *s_xferBudgetStats, *s_xferBudgetLifecycle;
 static NSProgressIndicator *s_xferProgress;
-static NSTextView *s_xferFiles, *s_xferHistory, *s_logView;
+static NSTextView *s_xferFiles, *s_xferHistory, *s_logView, *s_taskHistory;
+static NSPopUpButton *s_historyDirection, *s_historyState, *s_historyOrder;
 static NSButton *s_retryButton;
+static NSTableView *s_taskTables[2];
+static NSArray<NSDictionary *> *s_taskRows[2];
+static hop_xfer_task_snapshot *s_tasksSnapshot;
+#define UI_TASK_CAP HOP_TASK_MANAGER_MAX_LIVE
 static NSTextField *s_updateVersion, *s_updateSource;
 static NSTimer *s_mainTimer;
 static NSObject *s_uiController;
@@ -99,7 +104,7 @@ void mac_request_accessibility_permission(void) {
 
 static NSString *const kPageNames[6] = {@"概览",@"连接",@"设置",@"传输",@"日志",@"更新"};
 
-@interface HopDeskMainController : NSObject <NSWindowDelegate>
+@interface HopDeskMainController : NSObject <NSWindowDelegate, NSTableViewDataSource>
 - (void)selectPage:(id)sender;
 - (void)saveSettings:(id)sender;
 - (void)roleChanged:(id)sender;
@@ -109,7 +114,7 @@ static NSString *const kPageNames[6] = {@"概览",@"连接",@"设置",@"传输",
 - (void)switchWin:(id)sender;
 - (void)wakeDisplay:(id)sender;
 - (void)sleepDisplay:(id)sender;
-- (void)cancelTransfer:(id)sender;
+- (void)cancelTask:(id)sender;
 - (void)retryFile:(id)sender;
 - (void)toggleFolder:(id)sender;
 - (void)refreshLogs:(id)sender;
@@ -259,9 +264,75 @@ static void reset_settings(void) {
     populate_settings();
     s_cfgNote.stringValue=@"已恢复默认值；点击“保存设置”写入配置文件。";
 }
+static NSString *task_state_name(const hop_xfer_task_snapshot *t) {
+    if(t->state<=HOP_XFER_TASK_ACTIVE && t->cancel_requested)return @"取消中";
+    if(t->state<=HOP_XFER_TASK_ACTIVE && t->completing)return @"完成处理中";
+    switch(t->state){
+        case HOP_XFER_TASK_CREATED:return @"准备中";
+        case HOP_XFER_TASK_SCANNING:return @"扫描中";
+        case HOP_XFER_TASK_QUEUED:return @"排队中";
+        case HOP_XFER_TASK_ACTIVE:return @"进行中";
+        case HOP_XFER_TASK_COMPLETED:return @"已完成";
+        case HOP_XFER_TASK_PARTIAL:return @"部分完成";
+        case HOP_XFER_TASK_FAILED:return @"失败";
+        case HOP_XFER_TASK_CANCELLED:return @"已取消";
+        case HOP_XFER_TASK_INTERRUPTED:return @"已中断";
+        default:return @"未知";
+    }
+}
+static hop_xfer_task_id selected_task(int d) {
+    NSInteger row=s_taskTables[d].selectedRow;
+    return row>=0 && (NSUInteger)row<s_taskRows[d].count ? [s_taskRows[d][(NSUInteger)row][@"id"] unsignedLongLongValue] : 0;
+}
+static void refresh_task_lists(void) {
+    if(!s_taskTables[0]||!s_taskTables[1])return;
+    if(!s_tasksSnapshot)s_tasksSnapshot=calloc(UI_TASK_CAP,sizeof(*s_tasksSnapshot));
+    if(!s_tasksSnapshot)return;
+    hop_xfer_task_id selected[2]={selected_task(0),selected_task(1)};
+    int total=0,n=hop_xfer_task_list(s_tasksSnapshot,UI_TASK_CAP,&total);
+    if(n<0)return;
+    NSMutableArray<NSDictionary *> *rows[2]={[NSMutableArray array],[NSMutableArray array]};
+    for(int i=0;i<n;++i){
+        hop_xfer_task_snapshot *t=&s_tasksSnapshot[i];
+        int d=t->direction==HOP_XFER_DIR_SEND?0:t->direction==HOP_XFER_DIR_RECEIVE?1:-1;
+        if(d<0)continue;
+        NSString *text=[NSString stringWithFormat:@"#%llu  ·  批次 %u  ·  %@",(unsigned long long)t->id,t->transfer_id,task_state_name(t)];
+        [rows[d] addObject:@{@"id":@(t->id),@"text":text}];
+    }
+    for(int d=0;d<2;++d){
+        s_taskRows[d]=[rows[d] copy];[s_taskTables[d] reloadData];[s_taskTables[d] deselectAll:nil];
+        if(selected[d])for(NSUInteger i=0;i<s_taskRows[d].count;++i)
+            if([s_taskRows[d][i][@"id"] unsignedLongLongValue]==selected[d]){
+                [s_taskTables[d] selectRowIndexes:[NSIndexSet indexSetWithIndex:i] byExtendingSelection:NO];break;
+            }
+    }
+    (void)total;
+}
+static void refresh_task_history(void) {
+    if(!s_taskHistory || !s_historyDirection || !s_historyState || !s_historyOrder)return;
+    static const int directions[]={HOP_XFER_DIR_NONE,HOP_XFER_DIR_SEND,HOP_XFER_DIR_RECEIVE};
+    static const hop_xfer_task_state states[]={HOP_XFER_TASK_EMPTY,HOP_XFER_TASK_COMPLETED,
+        HOP_XFER_TASK_PARTIAL,HOP_XFER_TASK_FAILED,HOP_XFER_TASK_CANCELLED,HOP_XFER_TASK_INTERRUPTED};
+    NSInteger d=s_historyDirection.indexOfSelectedItem,st=s_historyState.indexOfSelectedItem,order=s_historyOrder.indexOfSelectedItem;
+    if(d<0 || d>2 || st<0 || st>5 || order<0 || order>1)return;
+    hop_xfer_task_snapshot history[HOP_TASK_HISTORY_CAPACITY];
+    int total=0,n=hop_xfer_task_history_list(history,HOP_TASK_HISTORY_CAPACITY,directions[d],states[st],order==0,&total);
+    if(n<0)return;
+    NSMutableString *rows=[NSMutableString string];
+    for(int i=0;i<n;++i){const hop_xfer_task_snapshot *t=&history[i];
+        [rows appendFormat:@"#%llu  ·  %@  ·  批次 %u  ·  %@\n",(unsigned long long)t->id,
+         t->direction==HOP_XFER_DIR_SEND?@"发送":@"接收",t->transfer_id,task_state_name(t)];
+    }
+    NSString *next=rows.length?rows:@"暂无符合条件的任务";
+    if(![s_taskHistory.string isEqualToString:next])s_taskHistory.string=next;
+    (void)total;
+}
 static void refresh_transfer_page(void) {
     if (!s_xferTitle) return;
-    hop_xfer_status st; memset(&st,0,sizeof(st)); xfer_get_status(&st);
+    refresh_task_lists();
+    refresh_task_history();
+    hop_xfer_status_pair pair; memset(&pair,0,sizeof(pair)); xfer_get_status_pair(&pair);
+    hop_xfer_status st=pair.primary_direction==HOP_XFER_DIR_SEND?pair.send:pair.receive;
     NSString *phase=@"空闲";
     switch(st.phase){
         case HOP_XFER_QUEUED:phase=@"排队中";break; case HOP_XFER_SCANNING:phase=@"扫描中";break;
@@ -281,7 +352,12 @@ static void refresh_transfer_page(void) {
         direction,phase,utf8(st.detail),rate,eta];
     s_xferCounts.stringValue=[NSString stringWithFormat:@"文件 %u / %u    排队 %u    数据 %@ / %@",
         st.files_done,st.files_total,st.queued_count,byte_count(st.bytes_done),byte_count(st.bytes_total)];
-    hop_xfer_budget_snapshot budget; memset(&budget,0,sizeof(budget)); xfer_get_budget_snapshot(&budget);
+    if(pair.send.active && pair.receive.active)
+        s_xferCounts.stringValue=[NSString stringWithFormat:@"同时进行：发送 %@/%@ · 接收 %@/%@ · 排队 %u",
+            byte_count(pair.send.bytes_done),byte_count(pair.send.bytes_total),
+            byte_count(pair.receive.bytes_done),byte_count(pair.receive.bytes_total),pair.send.queued_count];
+    hop_xfer_task_audit audit; memset(&audit,0,sizeof(audit)); hop_xfer_task_reconcile(&audit);
+    hop_xfer_budget_snapshot budget=audit.ledger;
     s_xferBudget.stringValue=[NSString stringWithFormat:@"预算  jobs %u/%u  ·  entries %u/%u  ·  待传输 %@/%@",
         budget.jobs,budget.limits.max_jobs,budget.entries,budget.limits.max_entries,
         byte_count(budget.pending_bytes),byte_count(budget.limits.max_pending_bytes)];
@@ -298,12 +374,13 @@ static void refresh_transfer_page(void) {
         byte_count(budget.pending_bytes_high_water),byte_count(budget.image_bytes_high_water),
         budget.rx_queue_slots_high_water,byte_count(budget.rx_queue_bytes_high_water),
         (unsigned long long)rejected];
-    s_xferBudgetLifecycle.stringValue=[NSString stringWithFormat:@"释放 tasks %llu · RX buffers %llu · image temp %@ · image handoff %@ · 账本异常 %llu",
+    s_xferBudgetLifecycle.stringValue=[NSString stringWithFormat:@"释放 tasks %llu · RX buffers %llu · image temp %@ · image handoff %@ · 账本异常 %llu · 对账 %@ (0x%X)",
         (unsigned long long)budget.released_reservations,
         (unsigned long long)budget.released_rx_buffers,
         byte_count(budget.released_image_temp_bytes),
         byte_count(budget.transferred_image_temp_bytes),
-        (unsigned long long)budget.accounting_errors];
+        (unsigned long long)budget.accounting_errors,
+        audit.mismatches?@"异常":@"正常",(unsigned)audit.mismatches];
     s_xferProgress.doubleValue=st.bytes_total?MIN(100.0,100.0*(double)st.bytes_done/(double)st.bytes_total):(st.phase==HOP_XFER_COMPLETED?100:0);
     s_retryButton.enabled=st.direction==HOP_XFER_DIR_SEND;
     if (!s_fileSnapshot) s_fileSnapshot=calloc(HOP_XFER_FILE_LIMIT,sizeof(*s_fileSnapshot));
@@ -505,7 +582,7 @@ static void build_pages(NSView *root) {
     s_xferFiles.editable=NO;s_xferFiles.font=[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
     scroll.documentView=s_xferFiles;[card addSubview:scroll];
     card=ui_card(p,NSMakeRect(20,24,840,180));
-    ui_label(card,@"传输历史",NSMakeRect(22,144,780,22),13,YES);
+    ui_label(card,@"历史记录（旧版）",NSMakeRect(22,144,780,22),13,YES);
     NSScrollView *histScroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(18,16,804,116)];
     histScroll.hasVerticalScroller=YES;histScroll.hasHorizontalScroller=YES;
     s_xferHistory=[[NSTextView alloc] initWithFrame:NSMakeRect(0,0,800,110)];
@@ -513,7 +590,38 @@ static void build_pages(NSView *root) {
     histScroll.documentView=s_xferHistory;[card addSubview:histScroll];
     ui_button(p,@"展开/折叠目录",NSMakeRect(510,0,130,30),s_uiController,@selector(toggleFolder:));
     s_retryButton=ui_button(p,@"重试选中文件",NSMakeRect(650,0,112,30),s_uiController,@selector(retryFile:));
-    ui_button(p,@"取消传输",NSMakeRect(772,0,88,30),s_uiController,@selector(cancelTransfer:));
+    /* Live Task Manager entries, separate from legacy file and history detail. */
+    [p setFrameSize:NSMakeSize(880,890)];
+    card=ui_card(p,NSMakeRect(20,660,840,210));
+    ui_label(card,@"活动任务（选择后单独取消）",NSMakeRect(22,180,780,20),13,YES);
+    for(int d=0;d<2;++d){
+        CGFloat x=d?430:22;
+        ui_label(card,d?@"接收任务":@"发送任务",NSMakeRect(x,154,370,20),11,YES);
+        NSScrollView *taskScroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(x,52,370,96)];
+        taskScroll.hasVerticalScroller=YES;taskScroll.borderType=NSBezelBorder;
+        NSTableView *table=[[NSTableView alloc] initWithFrame:NSMakeRect(0,0,370,96)];
+        NSTableColumn *column=[[NSTableColumn alloc] initWithIdentifier:@"task"];
+        column.width=360;[table addTableColumn:column];table.headerView=nil;table.dataSource=(id<NSTableViewDataSource>)s_uiController;
+        table.allowsEmptySelection=YES;taskScroll.documentView=table;[card addSubview:taskScroll];s_taskTables[d]=table;
+        NSButton *cancel=ui_button(card,d?@"取消选中接收任务":@"取消选中发送任务",NSMakeRect(x,12,168,30),s_uiController,@selector(cancelTask:));cancel.tag=d;
+    }
+
+    /* Keep active tasks at the top; add session-only history below existing content. */
+    for(NSView *v in p.subviews){NSRect frame=v.frame;frame.origin.y+=230;v.frame=frame;}
+    [p setFrameSize:NSMakeSize(880,1120)];
+    card=ui_card(p,NSMakeRect(20,10,840,210));
+    ui_label(card,@"本次运行的任务历史（最多 256 条，重启后清空）",NSMakeRect(22,180,780,20),13,YES);
+    s_historyDirection=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(22,146,150,26) pullsDown:NO];
+    [s_historyDirection addItemsWithTitles:@[@"全部方向",@"发送",@"接收"]];[card addSubview:s_historyDirection];
+    s_historyState=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(185,146,160,26) pullsDown:NO];
+    [s_historyState addItemsWithTitles:@[@"全部状态",@"已完成",@"部分完成",@"失败",@"已取消",@"已中断"]];[card addSubview:s_historyState];
+    s_historyOrder=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(358,146,160,26) pullsDown:NO];
+    [s_historyOrder addItemsWithTitles:@[@"最近完成优先",@"最早完成优先"]];[card addSubview:s_historyOrder];
+    NSScrollView *taskHistoryScroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(18,14,804,122)];
+    taskHistoryScroll.hasVerticalScroller=YES;taskHistoryScroll.hasHorizontalScroller=YES;
+    s_taskHistory=[[NSTextView alloc] initWithFrame:NSMakeRect(0,0,800,116)];
+    s_taskHistory.editable=NO;s_taskHistory.font=[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+    taskHistoryScroll.documentView=s_taskHistory;[card addSubview:taskHistoryScroll];
 
     p=s_pages[4];
     card=ui_card(p,NSMakeRect(20,70,840,570));
@@ -560,7 +668,25 @@ static void build_pages(NSView *root) {
 - (void)switchWin:(id)sender {(void)sender;disp_set_input(g_mac.cfg.disp_win_input);}
 - (void)wakeDisplay:(id)sender {(void)sender;disp_wake(g_mac.cfg.disp_wake_sec);}
 - (void)sleepDisplay:(id)sender {(void)sender;disp_sleep();}
-- (void)cancelTransfer:(id)sender {(void)sender;xfer_cancel();}
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
+    int d=tableView==s_taskTables[1]?1:0;return (NSInteger)s_taskRows[d].count;
+}
+- (id)tableView:(NSTableView *)tableView objectValueForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
+    (void)column;int d=tableView==s_taskTables[1]?1:0;
+    return row>=0 && (NSUInteger)row<s_taskRows[d].count ? s_taskRows[d][(NSUInteger)row][@"text"] : @"";
+}
+- (void)cancelTask:(id)sender {
+    int d=[sender tag]==1?1:0;hop_xfer_task_id id=selected_task(d);
+    if(!id){NSAlert *a=[NSAlert new];a.messageText=@"请先选择要取消的任务。";[a runModal];return;}
+    if(!xfer_connected()){
+        NSAlert *a=[NSAlert new];a.messageText=@"数据通道未连接";
+        a.informativeText=@"取消后对端的临时文件可能要等待对端连接恢复或断线超时后清理。仍要取消吗？";
+        [a addButtonWithTitle:@"取消任务"];[a addButtonWithTitle:@"返回"];
+        if([a runModal]!=NSAlertFirstButtonReturn)return;
+    }
+    if(!xfer_cancel_task(id)){NSAlert *a=[NSAlert new];a.messageText=@"任务已经结束或正在完成，无法取消。";[a runModal];}
+    refresh_transfer_page();
+}
 - (void)retryFile:(id)sender {
     (void)sender;
     if(!s_fileSnapshot||s_fileDirection!=HOP_XFER_DIR_SEND||!s_xferFiles)return;

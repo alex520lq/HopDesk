@@ -13,7 +13,8 @@
 #include <time.h>
 #include <wchar.h>
 #include <errno.h>
-uint64_t hop_monotonic_ms(void){static uint64_t now=1000;return ++now;}
+static uint64_t fake_ms=1000;
+uint64_t hop_monotonic_ms(void){return ++fake_ms;}
 #define hop_log(...) ((void)0)
 #define MAX_PATH 260
 #define RX_CLOSE 1
@@ -30,7 +31,7 @@ uint64_t hop_monotonic_ms(void){static uint64_t now=1000;return ++now;}
 #define SetEvent(p) ((void)(p))
 typedef unsigned long DWORD;
 typedef int SOCKET;
-static struct {int lock,slock,qlock,client,sock,cancel_rx;uint32_t cur_batch,abort_batch;void*q_head;hop_session_id session;} s_x;
+static struct {int lock,slock,qlock,client,sock,cancel_rx,peer_ready;uint32_t cur_batch,abort_batch;uint8_t abort_reason;void*q_head;hop_session_id session;} s_x;
 static struct {int lock,cond,ev;} s_ack;
 static int s_status_lock;
 static uint64_t s_status_revision;
@@ -41,7 +42,7 @@ static int saved,closed,closes,discarded,applied,fail_directory,fail_alloc,fail_
 static int notified;static uint8_t last_reason;
 static void history_save(void);
 static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t batch){(void)batch;
-    (void)fd;if(fail_send)assert(!closed);assert(type==HOP_MSG_XFER_ABORT && n==5);last_reason=p[4];notified++;return !fail_send;
+    (void)fd;if(fail_send)assert(!closed);assert(type==HOP_MSG_XFER_ABORT && n==6 && p[5]==HOP_ABORT_TO_SENDER);last_reason=p[4];notified++;return !fail_send;
 }
 typedef struct {int kind;uint64_t off;uint32_t len;uint8_t*data;} rx_task;
 static struct {int err;} s_wq;
@@ -53,6 +54,7 @@ static int wq_push_data(hop_xfer_task *owner,uint64_t off,const uint8_t *data,ui
     return hop_xfer_task_release_rx_buffer(owner,len);
 }
 @RX_STATE@
+static hop_session_id s_rx_session = {{1}};
 static void history_save(void){assert(closed && !s_rx.img && !s_rx.cur_path && !s_rx.tops && !s_rx.active);saved++;}
 #ifdef FIXTURE_WINDOWS
 #define XFER_RX_ROOT L"HopDesk"
@@ -115,6 +117,9 @@ static int rx_add_top(const char*p){(void)p;return 1;}
 #endif
 @FINISH_BATCH@
 @CANCEL_LOCAL@
+@BIND_SESSION@
+static void rx_expire_stale_session(void){}
+@POLL_CANCEL@
 @BUSY@
 static void*try_realloc(void*p,size_t n){return fail_alloc?NULL:realloc(p,n);}
 #define realloc try_realloc
@@ -131,7 +136,8 @@ static void chunk(uint32_t id,uint64_t off,int bad_crc){
     uint8_t p[24]={0};hop_put_be32(p,id);hop_put_be64(p+4,off);hop_put_be32(p+12,4);
     hop_put_be32(p+16,hop_crc32(0,p+20,4)^(bad_crc?1u:0u));dispatch(HOP_MSG_FILE_CHUNK,p,sizeof(p));
 }
-static void peer_abort(uint32_t batch,uint8_t reason){uint8_t p[5];hop_put_be32(p,batch);p[4]=reason;dispatch(HOP_MSG_XFER_ABORT,p,5);}
+static void peer_abort_target(uint32_t batch,uint8_t reason,uint8_t target){uint8_t p[6];hop_put_be32(p,batch);p[4]=reason;p[5]=target;dispatch(HOP_MSG_XFER_ABORT,p,6);}
+static void peer_abort(uint32_t batch,uint8_t reason){peer_abort_target(batch,reason,HOP_ABORT_TO_RECEIVER);}
 static void late_done(uint32_t batch){uint8_t p[20]={0};hop_put_be32(p,batch);hop_put_be32(p+4,1);hop_put_be32(p+8,1);dispatch(HOP_MSG_XFER_DONE,p,20);}
 static void late_end(void){uint8_t p[9]={0};hop_put_be32(p,1);dispatch(HOP_MSG_FILE_END,p,9);}
 static void seed_resources(void){
@@ -197,10 +203,35 @@ int main(void){
     assert_terminal(200,HOP_ABORT_DISK,before);
     /* Peer-triggered cleanup must not echo another ABORT or duplicate history. */
     before=saved;image_begin(201,1);seed_resources();int notices=notified;
-    peer_abort(201,HOP_ABORT_CRC);assert_terminal(201,HOP_ABORT_CRC,before);assert(notified==notices);
+    /* Both directions use batch 201: a sender-target ABORT must not touch RX. */
+    s_x.cur_batch=201; s_x.abort_batch=0;
+    peer_abort_target(201,HOP_ABORT_CANCEL,HOP_ABORT_TO_SENDER);
+    assert(s_x.abort_batch==201 && s_x.abort_reason==HOP_ABORT_CANCEL && s_rx.active && s_rx.batch==201 && saved==before);
+    s_x.abort_batch=0;
+    peer_abort(201,HOP_ABORT_CRC);
+    assert(s_x.abort_batch==0);assert_terminal(201,HOP_ABORT_CRC,before);assert(notified==notices);
     peer_abort(201,HOP_ABORT_CRC);assert(saved==before+1);
+    /* An accepted per-ID cancellation wins against a concurrent DONE. */
+    before=saved; image_begin(202,1); seed_resources();
+    assert(hop_xfer_task_request_cancel(s_rx.task.id));
+    late_done(202); assert_terminal(202,HOP_ABORT_CANCEL,before);
     assert(applied==0);
-    s_send_status.status.active=0;assert(!xfer_busy()); /* sender retry window is no longer active */
+    /* A same-session data outage is bounded; reconnect resets the grace timer. */
+    before=saved; image_begin(203,1); seed_resources();s_x.cancel_rx=0;s_x.peer_ready=0;
+    rx_poll_cancel();fake_ms+=HOP_XFER_RX_DISCONNECT_BUDGET_MS-3;rx_poll_cancel();assert(s_rx.active);
+    s_x.peer_ready=1;rx_poll_cancel();s_x.peer_ready=0;rx_poll_cancel();assert(s_rx.active);
+    fake_ms+=HOP_XFER_RX_DISCONNECT_BUDGET_MS;rx_poll_cancel();
+    assert_terminal(203,HOP_ABORT_TIMEOUT,before);
+    assert(!s_rx.task.initialized); /* reservation returned on timeout */
+    /* Cancellation accepted before a control-session replacement must win. */
+    before=saved;image_begin(204,1);seed_resources();assert(hop_xfer_task_request_cancel(s_rx.task.id));
+    notices=notified; /* the socket may already be bound to the next session */
+    hop_session_id next_session={{2}};rx_bind_session(&next_session);
+    assert(!s_rx.active && !s_rx.task.initialized && saved==before+1);
+    assert(s_history[0].batch==204 && s_history[0].phase==HOP_XFER_CANCELLED);
+    assert(notified==notices); /* never send old-session ABORT to a new peer */
+    assert(s_send_status.status.active); /* replacement cannot cancel the other direction */
+    s_x.cur_batch=0; s_send_status.status.active=0;assert(!xfer_busy()); /* sender retry window is no longer active */
     puts("PASS: production receive ABORT lifecycle, early bounds errors, busy reset, tombstones and once-only history");
     return 0;
 }

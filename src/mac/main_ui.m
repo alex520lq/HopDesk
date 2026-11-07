@@ -642,7 +642,7 @@ static void build_pages(NSView *root) {
     if(!id){NSAlert *a=[NSAlert new];a.messageText=@"请先选择要取消的任务。";[a runModal];return;}
     if(!xfer_connected()){
         NSAlert *a=[NSAlert new];a.messageText=@"数据通道未连接";
-        a.informativeText=@"取消后对端的临时文件可能要等会话失效后才会清理。仍要取消吗？";
+        a.informativeText=@"取消后对端的临时文件可能要等待对端连接恢复或断线超时后清理。仍要取消吗？";
         [a addButtonWithTitle:@"取消任务"];[a addButtonWithTitle:@"返回"];
         if([a runModal]!=NSAlertFirstButtonReturn)return;
     }

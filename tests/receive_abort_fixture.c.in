@@ -13,7 +13,8 @@
 #include <time.h>
 #include <wchar.h>
 #include <errno.h>
-uint64_t hop_monotonic_ms(void){static uint64_t now=1000;return ++now;}
+static uint64_t fake_ms=1000;
+uint64_t hop_monotonic_ms(void){return ++fake_ms;}
 #define hop_log(...) ((void)0)
 #define MAX_PATH 260
 #define RX_CLOSE 1
@@ -30,7 +31,7 @@ uint64_t hop_monotonic_ms(void){static uint64_t now=1000;return ++now;}
 #define SetEvent(p) ((void)(p))
 typedef unsigned long DWORD;
 typedef int SOCKET;
-static struct {int lock,slock,qlock,client,sock,cancel_rx;uint32_t cur_batch,abort_batch;uint8_t abort_reason;void*q_head;hop_session_id session;} s_x;
+static struct {int lock,slock,qlock,client,sock,cancel_rx,peer_ready;uint32_t cur_batch,abort_batch;uint8_t abort_reason;void*q_head;hop_session_id session;} s_x;
 static struct {int lock,cond,ev;} s_ack;
 static int s_status_lock;
 static uint64_t s_status_revision;
@@ -116,6 +117,8 @@ static int rx_add_top(const char*p){(void)p;return 1;}
 #endif
 @FINISH_BATCH@
 @CANCEL_LOCAL@
+static void rx_expire_stale_session(void){}
+@POLL_CANCEL@
 @BUSY@
 static void*try_realloc(void*p,size_t n){return fail_alloc?NULL:realloc(p,n);}
 #define realloc try_realloc
@@ -212,6 +215,13 @@ int main(void){
     assert(hop_xfer_task_request_cancel(s_rx.task.id));
     late_done(202); assert_terminal(202,HOP_ABORT_CANCEL,before);
     assert(applied==0);
+    /* A same-session data outage is bounded; reconnect resets the grace timer. */
+    before=saved; image_begin(203,1); seed_resources();s_x.cancel_rx=0;s_x.peer_ready=0;
+    rx_poll_cancel();fake_ms+=HOP_XFER_RX_DISCONNECT_BUDGET_MS-3;rx_poll_cancel();assert(s_rx.active);
+    s_x.peer_ready=1;rx_poll_cancel();s_x.peer_ready=0;rx_poll_cancel();assert(s_rx.active);
+    fake_ms+=HOP_XFER_RX_DISCONNECT_BUDGET_MS;rx_poll_cancel();
+    assert_terminal(203,HOP_ABORT_TIMEOUT,before);
+    assert(!s_rx.task.initialized); /* reservation returned on timeout */
     s_x.cur_batch=0; s_send_status.status.active=0;assert(!xfer_busy()); /* sender retry window is no longer active */
     puts("PASS: production receive ABORT lifecycle, early bounds errors, busy reset, tombstones and once-only history");
     return 0;

@@ -1150,6 +1150,39 @@ static void test_xfer_task_cancel_isolation_and_completion(void) {
 }
 
 
+/* Timeout and cancel must have exactly one winner under the manager lock.
+ * Equal transfer IDs on an unrelated sender must remain untouched. */
+static void test_xfer_task_cancel_timeout_race(void) {
+    for (int i=0;i<128;i++) {
+        hop_xfer_task rx={0},tx={0}; cancel_race_context ctx={0}; hop_xfer_task_audit audit;
+        CHECK(hop_xfer_task_init_classified(&rx,0,0,313,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_FILES));
+        CHECK(hop_xfer_task_init_classified(&tx,0,0,313,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+        CHECK(hop_xfer_task_reserve_job(&rx)); CHECK(hop_xfer_task_reserve_job(&tx));
+        CHECK(hop_xfer_task_set_state(&rx,HOP_XFER_TASK_ACTIVE));
+        CHECK(!hop_xfer_task_rx_disconnect_expired(&rx,0,1,100));
+        ctx.id=rx.id;
+#ifdef _WIN32
+        HANDLE th=CreateThread(NULL,0,cancel_race_worker,&ctx,0,NULL);
+        CHECK(th!=NULL); if(!th){hop_xfer_task_dispose(&rx);hop_xfer_task_dispose(&tx);continue;}
+        int expired=hop_xfer_task_rx_disconnect_expired(&rx,0,101,100);
+        CHECK(WaitForSingleObject(th,INFINITE)==WAIT_OBJECT_0); CloseHandle(th);
+#else
+        pthread_t th; int created=pthread_create(&th,NULL,cancel_race_worker,&ctx)==0;
+        CHECK(created); if(!created){hop_xfer_task_dispose(&rx);hop_xfer_task_dispose(&tx);continue;}
+        int expired=hop_xfer_task_rx_disconnect_expired(&rx,0,101,100);
+        CHECK(pthread_join(th,NULL)==0);
+#endif
+        CHECK((expired!=0)!=(ctx.result!=0));
+        CHECK(!hop_xfer_task_cancel_requested(tx.id));
+        CHECK(hop_xfer_task_finish(&rx,expired?HOP_XFER_TASK_FAILED:HOP_XFER_TASK_CANCELLED));
+        CHECK(hop_xfer_task_reconcile(&audit) && !audit.mismatches && audit.jobs==1);
+        CHECK(hop_xfer_task_finish(&tx,HOP_XFER_TASK_COMPLETED));
+        hop_xfer_task_dispose(&rx);hop_xfer_task_dispose(&tx);
+        CHECK(hop_xfer_task_reconcile(&audit) && !audit.mismatches && audit.jobs==0);
+    }
+}
+
+
 /* Exercises shared manager and ledger concurrently, not real network I/O. Each
  * worker owns its handle; equal transfer IDs on opposite directions must not
  * alias. Audit while other threads reserve/release, not just after joining. */
@@ -1268,6 +1301,7 @@ int main(void) {
     RUN_TEST(test_xfer_task_identity_and_lifecycle);
     RUN_TEST(test_xfer_task_index_collision);
     RUN_TEST(test_xfer_task_cancel_isolation_and_completion);
+    RUN_TEST(test_xfer_task_cancel_timeout_race);
     RUN_TEST(test_xfer_task_concurrent_ledger_stress);
     RUN_TEST(test_xfer_task_image_buffer_transfer);
 

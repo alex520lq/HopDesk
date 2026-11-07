@@ -767,8 +767,8 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     int selected=(int)SendMessageW(s_xfer_files,LB_GETCURSEL,0,0);
                     if(selected!=LB_ERR){
                         int index=(int)SendMessageW(s_xfer_files,LB_GETITEMDATA,(WPARAM)selected,0);
-                        if(s_file_direction==HOP_XFER_DIR_SEND && index>=0)
-                            (void)xfer_retry_file(s_file_batch,index);
+                        if(s_file_direction==HOP_XFER_DIR_SEND && index>=0 && !xfer_retry_file(s_file_batch,index))
+                            MessageBoxW(s_main,L"无法重试：任务可能仍在进行、文件并非失败状态，或这是跨端粘贴任务。跨端粘贴请在目标设备确认剪贴板后重新发起粘贴。",L"无法重试",MB_OK|MB_ICONINFORMATION);
                     } return 0;
                 }
                 case UI_ID_FILES:

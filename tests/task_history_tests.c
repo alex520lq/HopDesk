@@ -2,6 +2,7 @@
 #include "xfer_task.h"
 #include <assert.h>
 #include <stdio.h>
+uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
 #ifdef _WIN32
 #include <windows.h>
 #else

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <wchar.h>
+uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
 #define CB_GETCURSEL 1
 #define LB_GETTOPINDEX 2
 #define LB_RESETCONTENT 3

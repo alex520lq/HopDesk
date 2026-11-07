@@ -15,6 +15,7 @@
 #include <errno.h>
 static uint64_t fake_ms=1000;
 uint64_t hop_monotonic_ms(void){return ++fake_ms;}
+uint64_t hop_wallclock_ms(void){return 1700000000000ull+fake_ms;}
 #define hop_log(...) ((void)0)
 #define MAX_PATH 260
 #define INVALID_SOCKET (-1)

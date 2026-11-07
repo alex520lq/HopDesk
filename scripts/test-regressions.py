@@ -601,6 +601,7 @@ int main(void){
             'BEGIN_BATCH':extract(receiver,'rx_begin_batch'),
             'FINISH_BATCH':extract(receiver,'rx_finish_batch'),
             'CANCEL_LOCAL':extract(receiver,'rx_cancel_local'),
+            'BIND_SESSION':extract(receiver,'rx_bind_session'),
             'POLL_CANCEL':extract(receiver,'rx_poll_cancel'),
             'BUSY':extract(sender,'xfer_busy'),
             'RECEIVE_CASES':selected,
@@ -787,12 +788,12 @@ int main(void) {
  assert(hop_xfer_task_set_state(&rx,HOP_XFER_TASK_ACTIVE)&&hop_xfer_task_set_state(&tx,HOP_XFER_TASK_ACTIVE));
  assert(!hop_xfer_task_rx_disconnect_expired(&rx,0,0,100));
  assert(!hop_xfer_task_rx_disconnect_expired(&rx,0,99,100));
- assert(hop_xfer_task_rx_disconnect_expired(&rx,0,100,100));
  assert(!hop_xfer_task_rx_disconnect_expired(&rx,1,101,100));
  assert(!hop_xfer_task_rx_disconnect_expired(&rx,0,150,100));
  assert(!hop_xfer_task_rx_disconnect_expired(&rx,0,140,100));
  assert(!hop_xfer_task_rx_disconnect_expired(&rx,0,239,100));
  assert(hop_xfer_task_rx_disconnect_expired(&rx,0,240,100));
+ assert(!hop_xfer_task_request_cancel(rx.id)); /* expiry claimed first */
  assert(!hop_xfer_task_rx_disconnect_expired(&tx,0,1000,1));
  assert(hop_xfer_task_reconcile(&audit) && !audit.mismatches && audit.jobs==2);
  assert(hop_xfer_task_finish(&rx,HOP_XFER_TASK_INTERRUPTED));

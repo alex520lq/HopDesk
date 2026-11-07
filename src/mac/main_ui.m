@@ -10,6 +10,7 @@
 #include "xfer.h"
 #include "../core/xfer_status.h"
 #include "../core/hop.h"
+#include "../core/xfer_task_history.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -264,10 +265,8 @@ static void reset_settings(void) {
     populate_settings();
     s_cfgNote.stringValue=@"已恢复默认值；点击“保存设置”写入配置文件。";
 }
-static NSString *task_state_name(const hop_xfer_task_snapshot *t) {
-    if(t->state<=HOP_XFER_TASK_ACTIVE && t->cancel_requested)return @"取消中";
-    if(t->state<=HOP_XFER_TASK_ACTIVE && t->completing)return @"完成处理中";
-    switch(t->state){
+static NSString *task_state_name(hop_xfer_task_state state) {
+    switch(state){
         case HOP_XFER_TASK_CREATED:return @"准备中";
         case HOP_XFER_TASK_SCANNING:return @"扫描中";
         case HOP_XFER_TASK_QUEUED:return @"排队中";
@@ -315,13 +314,13 @@ static void refresh_task_history(void) {
         HOP_XFER_TASK_PARTIAL,HOP_XFER_TASK_FAILED,HOP_XFER_TASK_CANCELLED,HOP_XFER_TASK_INTERRUPTED};
     NSInteger d=s_historyDirection.indexOfSelectedItem,st=s_historyState.indexOfSelectedItem,order=s_historyOrder.indexOfSelectedItem;
     if(d<0 || d>2 || st<0 || st>5 || order<0 || order>1)return;
-    hop_xfer_task_snapshot history[HOP_TASK_HISTORY_CAPACITY];
-    int total=0,n=hop_xfer_task_history_list(history,HOP_TASK_HISTORY_CAPACITY,directions[d],states[st],order==0,&total);
+    hop_xfer_task_history_record history[HOP_TASK_HISTORY_CAPACITY];
+    int total=0,n=hop_xfer_task_history_store_list(history,HOP_TASK_HISTORY_CAPACITY,directions[d],states[st],order==0,&total);
     if(n<0)return;
     NSMutableString *rows=[NSMutableString string];
-    for(int i=0;i<n;++i){const hop_xfer_task_snapshot *t=&history[i];
-        [rows appendFormat:@"#%llu  ·  %@  ·  批次 %u  ·  %@\n",(unsigned long long)t->id,
-         t->direction==HOP_XFER_DIR_SEND?@"发送":@"接收",t->transfer_id,task_state_name(t)];
+    for(int i=0;i<n;++i){const hop_xfer_task_history_record *t=&history[i];
+        [rows appendFormat:@"#%llu  ·  %@  ·  批次 %u  ·  %@\n",(unsigned long long)t->record_id,
+         t->direction==HOP_XFER_DIR_SEND?@"发送":@"接收",t->transfer_id,task_state_name((hop_xfer_task_state)t->state)];
     }
     NSString *next=rows.length?rows:@"暂无符合条件的任务";
     if(![s_taskHistory.string isEqualToString:next])s_taskHistory.string=next;

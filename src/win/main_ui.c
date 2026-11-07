@@ -8,6 +8,7 @@
 #include "main_ui.h"
 #include "../core/xfer_status.h"
 #include "../core/hop.h"
+#include "../core/xfer_task_history.h"
 
 #include <commctrl.h>
 #include <stdio.h>
@@ -362,10 +363,8 @@ static hop_xfer_task_id selected_task(int direction) {
     if(selected==LB_ERR || selected<0 || selected>=s_task_counts[direction])return 0;
     return s_task_ids[direction][selected];
 }
-static const wchar_t *task_state_name(const hop_xfer_task_snapshot *t) {
-    if(t->state<=HOP_XFER_TASK_ACTIVE && t->cancel_requested)return L"取消中";
-    if(t->state<=HOP_XFER_TASK_ACTIVE && t->completing)return L"完成处理中";
-    switch(t->state) {
+static const wchar_t *task_state_name(hop_xfer_task_state state) {
+    switch(state) {
         case HOP_XFER_TASK_CREATED:return L"准备中";
         case HOP_XFER_TASK_SCANNING:return L"扫描中";
         case HOP_XFER_TASK_QUEUED:return L"排队中";
@@ -415,16 +414,16 @@ static void refresh_task_history(void) {
     int st=(int)SendMessageW(s_history_state,CB_GETCURSEL,0,0);
     int order=(int)SendMessageW(s_history_order,CB_GETCURSEL,0,0);
     if(d<0 || d>2 || st<0 || st>5 || order<0 || order>1)return;
-    hop_xfer_task_snapshot history[HOP_TASK_HISTORY_CAPACITY];
-    int total=0,n=hop_xfer_task_history_list(history,HOP_TASK_HISTORY_CAPACITY,directions[d],states[st],order==0,&total);
+    hop_xfer_task_history_record history[HOP_TASK_HISTORY_CAPACITY];
+    int total=0,n=hop_xfer_task_history_store_list(history,HOP_TASK_HISTORY_CAPACITY,directions[d],states[st],order==0,&total);
     if(n<0)return;
     int top=(int)SendMessageW(s_task_history,LB_GETTOPINDEX,0,0);
     SendMessageW(s_task_history,LB_RESETCONTENT,0,0);
     for(int i=0;i<n;++i){
-        wchar_t row[180];const hop_xfer_task_snapshot *t=&history[i];
+        wchar_t row[180];const hop_xfer_task_history_record *t=&history[i];
         swprintf(row,180,L"#%llu  ·  %ls  ·  批次 %u  ·  %ls",
-                 (unsigned long long)t->id,t->direction==HOP_XFER_DIR_SEND?L"发送":L"接收",
-                 t->transfer_id,task_state_name(t));
+                 (unsigned long long)t->record_id,t->direction==HOP_XFER_DIR_SEND?L"发送":L"接收",
+                 t->transfer_id,task_state_name((hop_xfer_task_state)t->state));
         SendMessageW(s_task_history,LB_ADDSTRING,0,(LPARAM)row);
     }
     if(top>0 && top<n)SendMessageW(s_task_history,LB_SETTOPINDEX,(WPARAM)top,0);

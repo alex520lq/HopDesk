@@ -425,8 +425,18 @@ static void rx_reset(void) {
 /* Receiver-owned lifecycle boundary. Only a data reconnect in the SAME control
  * session may retain ACKs/tombstones; a new control session starts cleanly. */
 static hop_session_id s_rx_session;
+static void rx_discard_dir(void);
 static void rx_bind_session(const hop_session_id *session) {
     if (!hop_session_id_equal(&s_rx_session, session)) {
+        /* A new control session cannot resume the old batch. Its staging files
+         * were never published; close the writer before removing them. Completed
+         * or deliberately retained partial batches are not active here. */
+        if (s_rx.active) {
+            rx_close_file();
+            rx_discard_dir();
+            if (s_rx.batch & HOP_XFER_PASTE_BATCH_FLAG)
+                clip_complete_remote_paste(s_rx.batch,NULL,0,0);
+        }
         rx_reset(); s_rx.dead_batch=0; s_rx.dead_reason=0;
         AcquireSRWLockExclusive(&s_status_lock);
         memset(&s_receive_status,0,sizeof(s_receive_status));

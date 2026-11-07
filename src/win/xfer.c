@@ -1544,6 +1544,7 @@ fail:
     if (s_x.th_send) { WaitForSingleObject(s_x.th_send, INFINITE); CloseHandle(s_x.th_send); s_x.th_send = NULL; }
     if (s_x.listen_s != INVALID_SOCKET) closesocket(s_x.listen_s);
     wq_stop();
+    hop_xfer_task_history_store_close();
     if (s_x.stop) CloseHandle(s_x.stop);
     if (s_x.q_evt) CloseHandle(s_x.q_evt);
     if (s_x.rate_timer) { CloseHandle(s_x.rate_timer); s_x.rate_timer = NULL; }

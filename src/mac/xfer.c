@@ -939,6 +939,7 @@ static int send_file_entry(int fd, uint8_t *tx, uint32_t batch,
 #define JOB_NET_DOWN    1   /* 链路断了，整批退回队列等重连 */
 #define JOB_CANCELLED   2   /* 用户取消，通知对端丢弃，不送 DONE */
 #define JOB_PEER_ABORT  3   /* 对端中止，什么都不用送 */
+#define JOB_COMMIT_UNKNOWN 4 /* DONE could not be fully sent; peer outcome unknown */
 
 /* 收尾：告诉接收端本批实际送达了多少。
  * ok < total 时接收端会报"部分成功" —— 这是用户唯一能拿到准确结论的地方，
@@ -950,6 +951,11 @@ static int send_done(int fd, const xf_job *j) {
     hop_put_be32(dp + 8,  hop_xfer_job_total(j->is_image,j->n));
     hop_put_be64(dp + 12, 0);
     return send_small(fd, HOP_MSG_XFER_DONE, dp, 20, j->batch);
+}
+
+/* A failed socket write has an ambiguous peer outcome. Never report it as success. */
+static int send_done_result(int fd, const xf_job *job) {
+    return send_done(fd,job) ? JOB_DONE : JOB_COMMIT_UNKNOWN;
 }
 
 /* 发一个批量级 ABORT（取消时通知对端丢弃本批） */
@@ -1389,7 +1395,7 @@ static void *send_thread(void *arg) {
             if (j->ok < j->n)
                 hop_log(HOP_LOG_WARN, "xfer: batch %u finished %d/%d",
                         j->batch, j->ok, j->n);
-            if (fd >= 0) send_done(fd, j);
+            r=fd >= 0 ? send_done_result(fd, j) : JOB_COMMIT_UNKNOWN;
         }
         if (r == JOB_DONE) {
             int complete=j->ok==(int)hop_xfer_job_total(j->is_image,j->n);
@@ -1402,6 +1408,9 @@ static void *send_thread(void *arg) {
         } else if (r == JOB_PEER_ABORT) {
             hop_xfer_task_finish(&j->task,peer_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
             status_end(HOP_XFER_DIR_SEND,j->batch,peer_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED,peer_cancelled?"Cancelled by receiver":"Peer aborted transfer");
+        } else if (r == JOB_COMMIT_UNKNOWN) {
+            hop_xfer_task_finish(&j->task,HOP_XFER_TASK_INTERRUPTED);
+            status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Completion delivery uncertain; peer may have received it");
         } else if (r == JOB_NET_DOWN) {
             hop_xfer_task_finish(&j->task,HOP_XFER_TASK_FAILED);
             status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Reconnect attempts exhausted");

@@ -56,6 +56,7 @@ static HWND s_cfg[CFG_COUNT], s_cfg_note;
 static HWND s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_budget, s_xfer_memory, s_xfer_budget_stats, s_xfer_budget_lifecycle;
 static HWND s_xfer_progress, s_xfer_files, s_xfer_history, s_xfer_retry_button;
 static HWND s_task_lists[2];
+static HWND s_task_history, s_history_direction, s_history_state, s_history_order;
 static hop_xfer_task_id s_task_ids[2][UI_TASK_CAP];
 static int s_task_counts[2];
 static hop_xfer_task_snapshot *s_tasks_snapshot;
@@ -143,7 +144,7 @@ static void paint_cards(HWND page,HDC dc,int scroll) {
 static LRESULT CALLBACK page_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if(m==WM_COMMAND){SendMessageW(GetParent(h),m,w,l);return 0;}
     if(m==WM_CTLCOLORSTATIC){SetTextColor((HDC)w,RGB(39,45,56));SetBkColor((HDC)w,RGB(255,255,255));return (LRESULT)s_canvas;}
-    if(m==WM_SIZE){RECT r;GetClientRect(h,&r);SCROLLINFO si={sizeof(si),SIF_RANGE|SIF_PAGE,0,dip(h==s_pages[3]?870:624),r.bottom,0,0};SetScrollInfo(h,SB_VERT,&si,TRUE);layout_nodes();return 0;}
+    if(m==WM_SIZE){RECT r;GetClientRect(h,&r);SCROLLINFO si={sizeof(si),SIF_RANGE|SIF_PAGE,0,dip(h==s_pages[3]?1130:624),r.bottom,0,0};SetScrollInfo(h,SB_VERT,&si,TRUE);layout_nodes();return 0;}
     if(m==WM_VSCROLL || m==WM_MOUSEWHEEL){
         SCROLLINFO si={sizeof(si),SIF_ALL,0,0,0,0,0};GetScrollInfo(h,SB_VERT,&si);int pos=si.nPos;
         if(m==WM_MOUSEWHEEL)pos-=GET_WHEEL_DELTA_WPARAM(w)/WHEEL_DELTA*dip(48);
@@ -362,8 +363,8 @@ static hop_xfer_task_id selected_task(int direction) {
     return s_task_ids[direction][selected];
 }
 static const wchar_t *task_state_name(const hop_xfer_task_snapshot *t) {
-    if(t->cancel_requested)return L"取消中";
-    if(t->completing)return L"完成处理中";
+    if(t->state<=HOP_XFER_TASK_ACTIVE && t->cancel_requested)return L"取消中";
+    if(t->state<=HOP_XFER_TASK_ACTIVE && t->completing)return L"完成处理中";
     switch(t->state) {
         case HOP_XFER_TASK_CREATED:return L"准备中";
         case HOP_XFER_TASK_SCANNING:return L"扫描中";
@@ -405,9 +406,34 @@ static void cancel_selected_task(int direction) {
     if(!xfer_cancel_task(id))MessageBoxW(s_main,L"任务已经结束或正在完成，无法取消。",L"取消任务",MB_OK|MB_ICONINFORMATION);
     refresh_transfers();
 }
+static void refresh_task_history(void) {
+    if(!s_task_history || !s_history_direction || !s_history_state || !s_history_order)return;
+    static const int directions[]={HOP_XFER_DIR_NONE,HOP_XFER_DIR_SEND,HOP_XFER_DIR_RECEIVE};
+    static const hop_xfer_task_state states[]={HOP_XFER_TASK_EMPTY,HOP_XFER_TASK_COMPLETED,
+        HOP_XFER_TASK_PARTIAL,HOP_XFER_TASK_FAILED,HOP_XFER_TASK_CANCELLED,HOP_XFER_TASK_INTERRUPTED};
+    int d=(int)SendMessageW(s_history_direction,CB_GETCURSEL,0,0);
+    int st=(int)SendMessageW(s_history_state,CB_GETCURSEL,0,0);
+    int order=(int)SendMessageW(s_history_order,CB_GETCURSEL,0,0);
+    if(d<0 || d>2 || st<0 || st>5 || order<0 || order>1)return;
+    hop_xfer_task_snapshot history[HOP_TASK_HISTORY_CAPACITY];
+    int total=0,n=hop_xfer_task_history_list(history,HOP_TASK_HISTORY_CAPACITY,directions[d],states[st],order==0,&total);
+    if(n<0)return;
+    int top=(int)SendMessageW(s_task_history,LB_GETTOPINDEX,0,0);
+    SendMessageW(s_task_history,LB_RESETCONTENT,0,0);
+    for(int i=0;i<n;++i){
+        wchar_t row[180];const hop_xfer_task_snapshot *t=&history[i];
+        swprintf(row,180,L"#%llu  ·  %ls  ·  批次 %u  ·  %ls",
+                 (unsigned long long)t->id,t->direction==HOP_XFER_DIR_SEND?L"发送":L"接收",
+                 t->transfer_id,task_state_name(t));
+        SendMessageW(s_task_history,LB_ADDSTRING,0,(LPARAM)row);
+    }
+    if(top>0 && top<n)SendMessageW(s_task_history,LB_SETTOPINDEX,(WPARAM)top,0);
+    (void)total;
+}
 static void refresh_transfers(void) {
     if (!s_xfer_title) return;
     refresh_task_lists();
+    refresh_task_history();
     hop_xfer_status_pair pair; memset(&pair, 0, sizeof(pair)); xfer_get_status_pair(&pair);
     hop_xfer_status st = pair.primary_direction==HOP_XFER_DIR_SEND ? pair.send : pair.receive;
     wchar_t name[HOP_XFER_STATUS_NAME], detail[HOP_XFER_STATUS_DETAIL], row[1800], path[1024];
@@ -613,7 +639,7 @@ static void create_pages(HWND h) {
     s_xfer_progress=child(p,PROGRESS_CLASSW,L"",PBS_SMOOTH,40,194,740,10,0);
     group(p,L"文件明细",20,210,800,159);
     s_xfer_files=child(p,L"LISTBOX",L"",LBS_NOTIFY|WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS|WS_TABSTOP,40,232,760,119,UI_ID_FILES);
-    group(p,L"传输历史",20,386,800,175);
+    group(p,L"历史记录（旧版）",20,386,800,175);
     s_xfer_history=child(p,L"LISTBOX",L"",WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS,40,410,760,135,0);
     s_xfer_retry_button=button(p,L"重试选中文件",500,572,140,34,UI_ID_XFER_RETRY);
     group(p,L"活动任务（选择后单独取消）",20,620,800,224);
@@ -623,8 +649,20 @@ static void create_pages(HWND h) {
     s_task_lists[1]=child(p,L"LISTBOX",L"",LBS_NOTIFY|WS_BORDER|WS_VSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS|WS_TABSTOP,430,676,350,100,UI_ID_RECEIVE_TASKS);
     button(p,L"取消选中发送任务",40,786,180,34,UI_ID_SEND_CANCEL);
     button(p,L"取消选中接收任务",430,786,180,34,UI_ID_RECEIVE_CANCEL);
+    group(p,L"本次运行的任务历史（最多 256 条，重启后清空）",20,860,800,236);
+    s_history_direction=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,40,900,150,180,0);
+    s_history_state=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,205,900,170,200,0);
+    s_history_order=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,390,900,170,160,0);
+    const wchar_t *directions[]={L"全部方向",L"发送",L"接收"};
+    const wchar_t *states[]={L"全部状态",L"已完成",L"部分完成",L"失败",L"已取消",L"已中断"};
+    const wchar_t *orders[]={L"最近完成优先",L"最早完成优先"};
+    for(int i=0;i<3;++i)SendMessageW(s_history_direction,CB_ADDSTRING,0,(LPARAM)directions[i]);
+    for(int i=0;i<6;++i)SendMessageW(s_history_state,CB_ADDSTRING,0,(LPARAM)states[i]);
+    for(int i=0;i<2;++i)SendMessageW(s_history_order,CB_ADDSTRING,0,(LPARAM)orders[i]);
+    SendMessageW(s_history_direction,CB_SETCURSEL,0,0);SendMessageW(s_history_state,CB_SETCURSEL,0,0);SendMessageW(s_history_order,CB_SETCURSEL,0,0);
+    s_task_history=child(p,L"LISTBOX",L"",WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS,40,935,760,140,0);
     RECT page_rect;GetClientRect(p,&page_rect);
-    SCROLLINFO task_scroll={sizeof(task_scroll),SIF_RANGE|SIF_PAGE,0,dip(870),(UINT)page_rect.bottom,0,0};SetScrollInfo(p,SB_VERT,&task_scroll,TRUE);
+    SCROLLINFO task_scroll={sizeof(task_scroll),SIF_RANGE|SIF_PAGE,0,dip(1130),(UINT)page_rect.bottom,0,0};SetScrollInfo(p,SB_VERT,&task_scroll,TRUE);
 
     p=s_pages[4];
     group(p,L"运行日志",20,14,800,590);

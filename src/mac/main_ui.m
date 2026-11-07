@@ -37,7 +37,8 @@ static NSPopUpButton *s_edgePopups[2];
 static NSTextField *s_xferTitle, *s_xferDetail, *s_xferCounts;
 static NSTextField *s_xferBudget, *s_xferMemory, *s_xferBudgetStats, *s_xferBudgetLifecycle;
 static NSProgressIndicator *s_xferProgress;
-static NSTextView *s_xferFiles, *s_xferHistory, *s_logView;
+static NSTextView *s_xferFiles, *s_xferHistory, *s_logView, *s_taskHistory;
+static NSPopUpButton *s_historyDirection, *s_historyState, *s_historyOrder;
 static NSButton *s_retryButton;
 static NSTableView *s_taskTables[2];
 static NSArray<NSDictionary *> *s_taskRows[2];
@@ -264,8 +265,8 @@ static void reset_settings(void) {
     s_cfgNote.stringValue=@"已恢复默认值；点击“保存设置”写入配置文件。";
 }
 static NSString *task_state_name(const hop_xfer_task_snapshot *t) {
-    if(t->cancel_requested)return @"取消中";
-    if(t->completing)return @"完成处理中";
+    if(t->state<=HOP_XFER_TASK_ACTIVE && t->cancel_requested)return @"取消中";
+    if(t->state<=HOP_XFER_TASK_ACTIVE && t->completing)return @"完成处理中";
     switch(t->state){
         case HOP_XFER_TASK_CREATED:return @"准备中";
         case HOP_XFER_TASK_SCANNING:return @"扫描中";
@@ -307,9 +308,29 @@ static void refresh_task_lists(void) {
     }
     (void)total;
 }
+static void refresh_task_history(void) {
+    if(!s_taskHistory || !s_historyDirection || !s_historyState || !s_historyOrder)return;
+    static const int directions[]={HOP_XFER_DIR_NONE,HOP_XFER_DIR_SEND,HOP_XFER_DIR_RECEIVE};
+    static const hop_xfer_task_state states[]={HOP_XFER_TASK_EMPTY,HOP_XFER_TASK_COMPLETED,
+        HOP_XFER_TASK_PARTIAL,HOP_XFER_TASK_FAILED,HOP_XFER_TASK_CANCELLED,HOP_XFER_TASK_INTERRUPTED};
+    NSInteger d=s_historyDirection.indexOfSelectedItem,st=s_historyState.indexOfSelectedItem,order=s_historyOrder.indexOfSelectedItem;
+    if(d<0 || d>2 || st<0 || st>5 || order<0 || order>1)return;
+    hop_xfer_task_snapshot history[HOP_TASK_HISTORY_CAPACITY];
+    int total=0,n=hop_xfer_task_history_list(history,HOP_TASK_HISTORY_CAPACITY,directions[d],states[st],order==0,&total);
+    if(n<0)return;
+    NSMutableString *rows=[NSMutableString string];
+    for(int i=0;i<n;++i){const hop_xfer_task_snapshot *t=&history[i];
+        [rows appendFormat:@"#%llu  ·  %@  ·  批次 %u  ·  %@\n",(unsigned long long)t->id,
+         t->direction==HOP_XFER_DIR_SEND?@"发送":@"接收",t->transfer_id,task_state_name(t)];
+    }
+    NSString *next=rows.length?rows:@"暂无符合条件的任务";
+    if(![s_taskHistory.string isEqualToString:next])s_taskHistory.string=next;
+    (void)total;
+}
 static void refresh_transfer_page(void) {
     if (!s_xferTitle) return;
     refresh_task_lists();
+    refresh_task_history();
     hop_xfer_status_pair pair; memset(&pair,0,sizeof(pair)); xfer_get_status_pair(&pair);
     hop_xfer_status st=pair.primary_direction==HOP_XFER_DIR_SEND?pair.send:pair.receive;
     NSString *phase=@"空闲";
@@ -561,7 +582,7 @@ static void build_pages(NSView *root) {
     s_xferFiles.editable=NO;s_xferFiles.font=[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
     scroll.documentView=s_xferFiles;[card addSubview:scroll];
     card=ui_card(p,NSMakeRect(20,24,840,180));
-    ui_label(card,@"传输历史",NSMakeRect(22,144,780,22),13,YES);
+    ui_label(card,@"历史记录（旧版）",NSMakeRect(22,144,780,22),13,YES);
     NSScrollView *histScroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(18,16,804,116)];
     histScroll.hasVerticalScroller=YES;histScroll.hasHorizontalScroller=YES;
     s_xferHistory=[[NSTextView alloc] initWithFrame:NSMakeRect(0,0,800,110)];
@@ -584,6 +605,23 @@ static void build_pages(NSView *root) {
         table.allowsEmptySelection=YES;taskScroll.documentView=table;[card addSubview:taskScroll];s_taskTables[d]=table;
         NSButton *cancel=ui_button(card,d?@"取消选中接收任务":@"取消选中发送任务",NSMakeRect(x,12,168,30),s_uiController,@selector(cancelTask:));cancel.tag=d;
     }
+
+    /* Keep active tasks at the top; add session-only history below existing content. */
+    for(NSView *v in p.subviews){NSRect frame=v.frame;frame.origin.y+=230;v.frame=frame;}
+    [p setFrameSize:NSMakeSize(880,1120)];
+    card=ui_card(p,NSMakeRect(20,10,840,210));
+    ui_label(card,@"本次运行的任务历史（最多 256 条，重启后清空）",NSMakeRect(22,180,780,20),13,YES);
+    s_historyDirection=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(22,146,150,26) pullsDown:NO];
+    [s_historyDirection addItemsWithTitles:@[@"全部方向",@"发送",@"接收"]];[card addSubview:s_historyDirection];
+    s_historyState=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(185,146,160,26) pullsDown:NO];
+    [s_historyState addItemsWithTitles:@[@"全部状态",@"已完成",@"部分完成",@"失败",@"已取消",@"已中断"]];[card addSubview:s_historyState];
+    s_historyOrder=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(358,146,160,26) pullsDown:NO];
+    [s_historyOrder addItemsWithTitles:@[@"最近完成优先",@"最早完成优先"]];[card addSubview:s_historyOrder];
+    NSScrollView *taskHistoryScroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(18,14,804,122)];
+    taskHistoryScroll.hasVerticalScroller=YES;taskHistoryScroll.hasHorizontalScroller=YES;
+    s_taskHistory=[[NSTextView alloc] initWithFrame:NSMakeRect(0,0,800,116)];
+    s_taskHistory.editable=NO;s_taskHistory.font=[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+    taskHistoryScroll.documentView=s_taskHistory;[card addSubview:taskHistoryScroll];
 
     p=s_pages[4];
     card=ui_card(p,NSMakeRect(20,70,840,570));

@@ -813,6 +813,15 @@ int main(void) {
     history_ui=history_ui.replace('@UI_FUNCTIONS@',extract(ui,'task_state_name')+'\n'+extract(ui,'refresh_task_history'))
     run('task_history_ui_win',history_ui,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
 
+    # A paste request cannot be replayed as a generic transfer: that would
+    # discard destination/version context and may overwrite the peer clipboard.
+    retry_fixture=(ROOT/'tests/retry_guard_fixture.c.in').read_text(encoding='utf-8')
+    for platform in ['win','mac']:
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        fixture=retry_fixture.replace('@RETRY@',extract(sender,'xfer_retry_file'))
+        if platform=='win':fixture='#define FIXTURE_WINDOWS 1\n'+fixture
+        run('retry_guard_'+platform,fixture,[])
+
     # Exercise the production queue removal helper with manager-owned IDs.
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')

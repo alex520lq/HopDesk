@@ -356,7 +356,7 @@ int hop_data_unwrap(uint8_t type, const uint8_t *p, uint32_t len,
     p += HOP_DATA_PREFIX; len -= HOP_DATA_PREFIX;
     switch (type) {
         case HOP_MSG_FILE_BEGIN: case HOP_MSG_IMAGE_BEGIN:
-        case HOP_MSG_FILE_ACK: case HOP_MSG_XFER_DONE: case HOP_MSG_XFER_ABORT:
+        case HOP_MSG_FILE_ACK: case HOP_MSG_XFER_DONE: case HOP_MSG_XFER_DONE_ACK: case HOP_MSG_XFER_ABORT:
             if (len < 4 || hop_get_be32(p) != b) return 0;
             break;
         case HOP_MSG_FILE_CHUNK: case HOP_MSG_FILE_END: break;

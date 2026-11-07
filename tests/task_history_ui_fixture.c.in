@@ -48,7 +48,7 @@ static int win_swprintf(wchar_t *dst,size_t cap,const wchar_t *format,...) {
 }
 #define swprintf win_swprintf
 #endif
-static int hop_xfer_task_history_store_list(hop_xfer_task_history_record *out,int capacity,
+int hop_xfer_task_history_store_list(hop_xfer_task_history_record *out,int capacity,
         int direction,int state,int newest_first,int *total) {
     hop_xfer_task_snapshot rows[HOP_TASK_HISTORY_CAPACITY];
     int count=0,n=hop_xfer_task_history_list(rows,HOP_TASK_HISTORY_CAPACITY,direction,

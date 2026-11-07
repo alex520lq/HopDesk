@@ -13,6 +13,8 @@ $sources = @(
     (Join-Path $root 'src/core/update_manifest.c'),
     (Join-Path $root 'src/core/xfer_budget.c'),
     (Join-Path $root 'src/core/xfer_task.c'),
+    (Join-Path $root 'src/core/xfer_task_history.c'),
+    (Join-Path $root 'src/core/clock.c'),
     (Join-Path $root 'src/core/xfer_rate.c')
 )
 $inc = Join-Path $root 'src/core'

@@ -265,8 +265,10 @@ static void reset_settings(void) {
     populate_settings();
     s_cfgNote.stringValue=@"已恢复默认值；点击“保存设置”写入配置文件。";
 }
-static NSString *task_state_name(hop_xfer_task_state state) {
-    switch(state){
+static NSString *task_state_name(const hop_xfer_task_snapshot *t) {
+    if(t->state<=HOP_XFER_TASK_ACTIVE && t->cancel_requested)return @"取消中";
+    if(t->state<=HOP_XFER_TASK_ACTIVE && t->completing)return @"完成处理中";
+    switch(t->state){
         case HOP_XFER_TASK_CREATED:return @"准备中";
         case HOP_XFER_TASK_SCANNING:return @"扫描中";
         case HOP_XFER_TASK_QUEUED:return @"排队中";
@@ -319,8 +321,9 @@ static void refresh_task_history(void) {
     if(n<0)return;
     NSMutableString *rows=[NSMutableString string];
     for(int i=0;i<n;++i){const hop_xfer_task_history_record *t=&history[i];
+        hop_xfer_task_snapshot display={0};display.state=(hop_xfer_task_state)t->state;
         [rows appendFormat:@"#%llu  ·  %@  ·  批次 %u  ·  %@\n",(unsigned long long)t->record_id,
-         t->direction==HOP_XFER_DIR_SEND?@"发送":@"接收",t->transfer_id,task_state_name((hop_xfer_task_state)t->state)];
+         t->direction==HOP_XFER_DIR_SEND?@"发送":@"接收",t->transfer_id,task_state_name(&display)];
     }
     NSString *next=rows.length?rows:@"暂无符合条件的任务";
     if(![s_taskHistory.string isEqualToString:next])s_taskHistory.string=next;

@@ -693,7 +693,10 @@ static void build_pages(NSView *root) {
     NSString *text=s_xferFiles.string ?: @"";
     NSUInteger line=0,limit=MIN(s_xferFiles.selectedRange.location,text.length);
     for(NSUInteger i=0;i<limit;++i)if([text characterAtIndex:i]=='\n')line++;
-    if(line<(NSUInteger)s_visibleFileCount)(void)xfer_retry_file(s_fileBatch,s_visibleFileIndices[line]);
+    if(line<(NSUInteger)s_visibleFileCount && !xfer_retry_file(s_fileBatch,s_visibleFileIndices[line])){
+        NSAlert *a=[NSAlert new];a.messageText=@"无法重试";
+        a.informativeText=@"任务可能仍在进行、文件并非失败状态，或这是跨端粘贴任务。跨端粘贴请在目标设备确认剪贴板后重新发起粘贴。";[a runModal];
+    }
 }
 - (void)toggleFolder:(id)sender {
     (void)sender;

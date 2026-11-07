@@ -413,14 +413,17 @@ static int rm_entry(const char *path, const struct stat *sb, int flag, struct FT
  * session may retain ACKs/tombstones; a new control session starts cleanly. */
 static hop_session_id s_rx_session;
 static void rx_discard_dir(void);
-static void rx_cancel_local(void);
+static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer);
 static void rx_bind_session(const hop_session_id *session) {
     if (!hop_session_id_equal(&s_rx_session, session)) {
         /* A new control session cannot resume the old batch. Its staging files
          * were never published; close the writer before removing them. Completed
          * or deliberately retained partial batches are not active here. */
         if (s_rx.active && !hop_xfer_task_begin_completion(&s_rx.task) &&
-            hop_xfer_task_cancel_requested(s_rx.task.id)) rx_cancel_local();
+            hop_xfer_task_cancel_requested(s_rx.task.id))
+            /* The current socket may already belong to the new session. Never
+             * send an old-session ABORT through it, even if batch IDs collide. */
+            rx_terminate(s_rx.batch,HOP_ABORT_CANCEL,0);
         if (s_rx.active) {
             rx_close_file();
             rx_discard_dir();

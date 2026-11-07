@@ -20,6 +20,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <io.h>
 static SRWLOCK s_store_lock = SRWLOCK_INIT;
 #define LOCK() AcquireSRWLockExclusive(&s_store_lock)
 #define UNLOCK() ReleaseSRWLockExclusive(&s_store_lock)

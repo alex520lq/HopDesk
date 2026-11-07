@@ -944,7 +944,8 @@ static int send_file_entry(int fd, uint8_t *tx, uint32_t batch,
 #define JOB_NET_DOWN    1   /* 链路断了，整批退回队列等重连 */
 #define JOB_CANCELLED   2   /* 用户取消，通知对端丢弃，不送 DONE */
 #define JOB_PEER_ABORT  3   /* 对端中止，什么都不用送 */
-#define JOB_COMMIT_UNKNOWN 4 /* DONE could not be fully sent; peer outcome unknown */
+#define JOB_COMMIT_UNKNOWN 4 /* receiver outcome is unknown */
+#define JOB_COMMIT_REJECTED 5 /* receiver explicitly rejected completion */
 
 /* 收尾：告诉接收端本批实际送达了多少。
  * ok < total 时接收端会报"部分成功" —— 这是用户唯一能拿到准确结论的地方，
@@ -958,9 +959,45 @@ static int send_done(int fd, const xf_job *j) {
     return send_small(fd, HOP_MSG_XFER_DONE, dp, 20, j->batch);
 }
 
-/* A failed socket write has an ambiguous peer outcome. Never report it as success. */
+/* Re-send only DONE, never file contents, while the same control session
+ * survives. Receiver caches its last receipt and never reapplies effects. */
 static int send_done_result(int fd, const xf_job *job) {
-    return send_done(fd,job) ? JOB_DONE : JOB_COMMIT_UNKNOWN;
+    uint64_t until=now_ms()+HOP_XFER_RECONNECT_BUDGET_MS;
+    while (now_ms()<until) {
+        if (!hop_session_matches(&job->session)) return JOB_COMMIT_UNKNOWN;
+        if (s_x.stop) return JOB_COMMIT_UNKNOWN;
+        pthread_mutex_lock(&s_x.slock);
+        fd=s_x.peer_ready?s_x.sock:-1;
+        hop_session_id session=s_x.session;
+        s_send_epoch=s_x.epoch;
+        pthread_mutex_unlock(&s_x.slock);
+        if (fd<0) { usleep(100000); continue; }
+        if (!hop_session_id_equal(&session,&job->session)) return JOB_COMMIT_UNKNOWN;
+        if (!ack_register(job->batch,HOP_DONE_ACK_SLOT)) return JOB_COMMIT_UNKNOWN;
+        if (!ack_mark_sent(job->batch,HOP_DONE_ACK_SLOT)) {
+            ack_unregister(job->batch,HOP_DONE_ACK_SLOT); return JOB_COMMIT_UNKNOWN;
+        }
+        if (!send_done(fd,job)) {
+            ack_unregister(job->batch,HOP_DONE_ACK_SLOT); usleep(100000); continue;
+        }
+        uint64_t now=now_ms();
+        if (now>=until) { ack_unregister(job->batch,HOP_DONE_ACK_SLOT); return JOB_COMMIT_UNKNOWN; }
+        uint64_t wait=until-now;
+        if (wait>HOP_XFER_ACK_TIMEOUT_MS) wait=HOP_XFER_ACK_TIMEOUT_MS;
+        uint64_t deadline=rate_now_ns()+wait*1000000ull;
+        if (!ack_set_deadline(job->batch,HOP_DONE_ACK_SLOT,deadline)) {
+            ack_unregister(job->batch,HOP_DONE_ACK_SLOT); return JOB_COMMIT_UNKNOWN;
+        }
+        int result=ack_wait(job->batch,HOP_DONE_ACK_SLOT,deadline,NULL);
+        if (result==HOP_DONE_ACK_FAILED) return JOB_COMMIT_REJECTED;
+        int expected=job->ok==(int)hop_xfer_job_total(job->is_image,job->n)
+            ? HOP_DONE_ACK_COMPLETE : HOP_DONE_ACK_PARTIAL;
+        if (result==expected) return JOB_DONE;
+        if (result==XFER_PEER_ABORT) return JOB_PEER_ABORT;
+        if (result!=XFER_ACK_TIMEOUT && result!=XFER_SEND_DEAD) return JOB_COMMIT_UNKNOWN;
+        usleep(100000);
+    }
+    return JOB_COMMIT_UNKNOWN;
 }
 
 /* 发一个批量级 ABORT（取消时通知对端丢弃本批） */
@@ -1359,7 +1396,8 @@ static void *send_thread(void *arg) {
 
         pthread_mutex_lock(&s_x.qlock);
         int peer_cancelled=(s_x.abort_batch==j->batch && s_x.abort_reason==HOP_ABORT_CANCEL);
-        s_x.cur_batch = 0; s_x.cur_task_id = 0;
+        int completion_path=(r==JOB_DONE);
+        if (!completion_path) { s_x.cur_batch = 0; s_x.cur_task_id = 0; }
         pthread_mutex_unlock(&s_x.qlock);
 
         if (r != JOB_DONE && hop_xfer_task_cancel_requested(j->task.id)) r=JOB_CANCELLED;
@@ -1400,7 +1438,13 @@ static void *send_thread(void *arg) {
             if (j->ok < j->n)
                 hop_log(HOP_LOG_WARN, "xfer: batch %u finished %d/%d",
                         j->batch, j->ok, j->n);
-            r=fd >= 0 ? send_done_result(fd, j) : JOB_COMMIT_UNKNOWN;
+            r=send_done_result(fd, j);
+        }
+        if (completion_path) {
+            pthread_mutex_lock(&s_x.qlock);
+            peer_cancelled=(s_x.abort_batch==j->batch && s_x.abort_reason==HOP_ABORT_CANCEL);
+            s_x.cur_batch=0; s_x.cur_task_id=0;
+            pthread_mutex_unlock(&s_x.qlock);
         }
         if (r == JOB_DONE) {
             int complete=j->ok==(int)hop_xfer_job_total(j->is_image,j->n);
@@ -1413,6 +1457,9 @@ static void *send_thread(void *arg) {
         } else if (r == JOB_PEER_ABORT) {
             hop_xfer_task_finish(&j->task,peer_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
             status_end(HOP_XFER_DIR_SEND,j->batch,peer_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED,peer_cancelled?"Cancelled by receiver":"Peer aborted transfer");
+        } else if (r == JOB_COMMIT_REJECTED) {
+            hop_xfer_task_finish(&j->task,HOP_XFER_TASK_FAILED);
+            status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Receiver rejected completion");
         } else if (r == JOB_COMMIT_UNKNOWN) {
             hop_xfer_task_finish(&j->task,HOP_XFER_TASK_INTERRUPTED);
             status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Completion delivery uncertain; peer may have received it");

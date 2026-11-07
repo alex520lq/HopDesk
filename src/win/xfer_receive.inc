@@ -425,10 +425,14 @@ static void rx_reset(void) {
 /* Receiver-owned lifecycle boundary. Only a data reconnect in the SAME control
  * session may retain ACKs/tombstones; a new control session starts cleanly. */
 static hop_session_id s_rx_session;
+/* One FIFO sender batch can be awaiting DONE_ACK per session. This is only
+ * wire idempotency metadata, not another task or reservation owner. */
+static struct { int valid; hop_session_id session; hop_xfer_done_msg done; uint8_t status; } s_done_receipt;
 static void rx_discard_dir(void);
 static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer);
 static void rx_bind_session(const hop_session_id *session) {
     if (!hop_session_id_equal(&s_rx_session, session)) {
+        memset(&s_done_receipt,0,sizeof(s_done_receipt));
         /* A new control session cannot resume the old batch. Its staging files
          * were never published; close the writer before removing them. Completed
          * or deliberately retained partial batches are not active here. */
@@ -594,6 +598,10 @@ static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
 }
 
 static void rx_begin_batch(uint32_t batch) {
+    if (s_done_receipt.valid && s_done_receipt.done.batch == batch &&
+        hop_session_id_equal(&s_done_receipt.session,&s_rx_session)) {
+        return; /* already committed in this session; never recreate its task */
+    }
     /* 作废过的批次又来了（对端还没收到取消）：回一个 ABORT 让它立刻放手，
      * 千万别为它重建目录 —— 用户已经说过不要了。 */
     if (batch == s_rx.dead_batch) {
@@ -682,16 +690,16 @@ static void rx_begin_batch(uint32_t batch) {
 }
 
 /* 收完后把顶层条目放进剪贴板（CF_HDROP），Mac 那边就能直接粘贴 */
-static void rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
+static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
     if (!s_rx.active || s_rx.batch != batch) {
         hop_log(HOP_LOG_WARN, "xfer: stale DONE for batch %u ignored (active=%u)",
                 batch, s_rx.active ? s_rx.batch : 0);
-        return;
+        return -1;
     }
     /* Completion and per-task cancellation serialize before clipboard effects. */
     if (!hop_xfer_task_begin_completion(&s_rx.task)) {
         rx_terminate(batch,HOP_ABORT_CANCEL,1);
-        return;
+        return -1;
     }
 
     /* 落盘全部完成后才能把路径挂到剪贴板。 */
@@ -742,7 +750,9 @@ static void rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
     status_end(HOP_XFER_DIR_RECEIVE,batch,complete?HOP_XFER_COMPLETED:
                (s_rx.cur_is_image?HOP_XFER_FAILED:HOP_XFER_PARTIAL),
                complete?"Receive completed":"Receive incomplete; clipboard not updated");
+    int result=complete?HOP_DONE_ACK_COMPLETE:(s_rx.cur_is_image?HOP_DONE_ACK_FAILED:HOP_DONE_ACK_PARTIAL);
     rx_reset();
+    return result;
 }
 
 static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
@@ -1112,7 +1122,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
         case HOP_MSG_FILE_ACK: {
             hop_xfer_file_ack_msg ack;
-            if (hop_xfer_decode_file_ack(p, len, &ack))
+            if (hop_xfer_decode_file_ack(p, len, &ack) && ack.id >= 1 && ack.id <= HOP_XFER_FILE_LIMIT)
                 ack_deliver(ack.batch, ack.id, ack.status);
             break;
         }
@@ -1145,13 +1155,31 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 hop_log(HOP_LOG_WARN, "xfer: malformed XFER_DONE ignored");
                 return;
             }
-            if (done.ok < done.total)
-                hop_log(HOP_LOG_ERROR,
-                        "xfer: batch %u PARTIAL - %u/%u delivered, %u failed",
-                        done.batch, done.ok, done.total, done.total - done.ok);
-            rx_finish_batch(done.batch, done.ok, done.total);
+            if (!done.batch || !done.total || done.total > HOP_XFER_FILE_LIMIT || done.ok > done.total) return;
+            int result;
+            if (s_done_receipt.valid && s_done_receipt.done.batch==done.batch &&
+                hop_session_id_equal(&s_done_receipt.session,&s_rx_session)) {
+                if (s_done_receipt.done.ok!=done.ok || s_done_receipt.done.total!=done.total ||
+                    s_done_receipt.done.bytes!=done.bytes) return;
+                result=s_done_receipt.status; /* repeat ACK without repeating clipboard effects */
+            } else {
+                result=rx_finish_batch(done.batch,done.ok,done.total);
+                if (result<0) return;
+                s_done_receipt.valid=1; s_done_receipt.session=s_rx_session;
+                s_done_receipt.done=done; s_done_receipt.status=(uint8_t)result;
+            }
+            uint8_t reply[5]; hop_put_be32(reply,done.batch); reply[4]=(uint8_t)result;
+            EnterCriticalSection(&s_x.lock);
+            SOCKET fd=s_x.client;
+            LeaveCriticalSection(&s_x.lock);
+            if (fd != INVALID_SOCKET) (void)send_small(fd,HOP_MSG_XFER_DONE_ACK,reply,sizeof(reply),done.batch);
             break;
         }
+
+        case HOP_MSG_XFER_DONE_ACK:
+            if (len==5 && hop_get_be32(p)!=0 && p[4]<=HOP_DONE_ACK_FAILED)
+                ack_deliver(hop_get_be32(p),HOP_DONE_ACK_SLOT,p[4]);
+            break;
 
         default:
             break;

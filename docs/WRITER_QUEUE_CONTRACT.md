@@ -120,3 +120,16 @@ The Windows implementation now exists as `src/win/xfer_writer_queue.[ch]` with a
 The Receiver compatibility layer exposes only its existing local operations and no longer reaches into queue internals. `tests/writer_queue_tests.c` links the production queue/worker/IO/Core modules and checks disk bytes plus budget rollback/release.
 
 This is one platform slice only. macOS still uses the previous queue implementation in `xfer_receive.inc`; API and semantic parity plus macOS native tests are required before removing both legacy implementations or declaring phase 2 complete.
+
+
+## 2026-11-08 Cross-platform production extraction status
+
+Both platform adapters now implement the opaque Writer Queue API:
+- Windows: `src/win/xfer_writer_queue.[ch]`
+- macOS: `src/mac/xfer_writer_queue.[ch]`
+
+Both Queues own their ring commands, slot/byte accounting, reusable payload pool, worker, writer IO, and stop/join lifecycle. Receiver code supplies Task RX budget reserve/release, watchdog, monotonic clock, write-time reporting, and error logging through callbacks. The platform-specific path representation and synchronization primitives remain local to each adapter.
+
+Production-linked tests exist for both platforms and verify FIFO OPEN/WRITE/CLOSE, actual disk bytes, budget admission rollback/release, drain, and stop. Run #609 (commit `33ec53b9d49c4d2dcb3c0bbe52119c9f3a34e574`) passed the full Windows and macOS CI pipelines, including these tests.
+
+This closes the Writer Queue extraction slice on both platforms, not the whole receive-side refactor. Receiver Protocol / Batch Lifecycle remains in the legacy include and must be extracted separately. Additional stop-vs-producer race, allocation-failure, slow-disk, persistent-error, and sanitizer stress coverage remains required before phase 2 acceptance.

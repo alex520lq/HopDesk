@@ -487,3 +487,22 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - The first two extraction CI attempts correctly exposed stale regression-fixture assumptions: the fixture expected the Receiver include to export its old global error accessor. The Receiver now keeps a narrow `wq_error_get()` compatibility wrapper; production queue internals remain outside the fixture.
 - The next attempt exposed a missing test-link dependency: `xfer_buffer_pool.c` updates the global RX-pool budget through `xfer_budget.c`. The independent Windows writer-queue test target now links that production Core module as well.
 - Run #596 for commit `66fb932315208ade62860b9234d578fe0c351cc6` has been queued. No pass is claimed until its Windows and macOS jobs finish.
+
+
+### 2026-11-08：Windows/macOS Writer Queue 独立生产模块完成（双平台第一切片）
+
+- 新增平台独立的 opaque Writer Queue 生产模块：
+  - Windows：`src/win/xfer_writer_queue.[ch]`
+  - macOS：`src/mac/xfer_writer_queue.[ch]`
+- 两端 Receiver include 现在只保留 OPEN/CLOSE 轻量命令适配、WRITE API 转发和 Task/Watchdog/metrics/log callback 注入；ring、slot/bytes accounting、buffer pool、worker、文件 IO 和 stop/join 生命周期均由 Queue 模块持有。
+- 两端公开 API 语义一致：create、enqueue_open、enqueue_write、enqueue_close、drain、error_reset/error、stop、destroy。平台路径类型和原生锁/条件变量仍由各自 adapter 处理。
+- 两端 WRITE admission/ownership 顺序保持一致：Queue slot+bytes reservation -> Task RX budget reservation -> buffer pool acquire -> payload copy -> commit。失败时 rollback queue accounting、Task budget、pool slot；worker completion exactly-once release Task budget、pool slot 和 queue accounting。
+- Stop 先 drain 已接受命令，再拒绝新命令并唤醒 worker/producers；join 超时保留整个 Queue 对象，成功 join 后才 dispose pool、销毁同步对象并允许 destroy。
+- 新增生产模块直连测试：
+  - Windows：`tests/writer_queue_tests.c`，由 `scripts/test-core.ps1` 编译执行。
+  - macOS：`tests/mac_writer_queue_tests.c`，由 `scripts/test-core.sh` 使用 AddressSanitizer/UndefinedBehaviorSanitizer 编译执行。
+  - 覆盖 FIFO OPEN/WRITE/CLOSE、磁盘实际字节、Task budget admission reject/rollback、completion release、drain/stop。
+- `scripts/test-ha.ps1` 已链接 Windows Queue 生产编译单元；应用构建递归源发现自动包含两端新模块。回归脚本现在检查两端 Receiver 不再拥有 Queue 内部状态。
+- CI 证据：GitHub Actions Run #609，run ID `42478897342`，head `33ec53b9d49c4d2dcb3c0bbe52119c9f3a34e574`：Windows MSVC build、Core/regression（含独立 Writer Queue 测试）、transfer protocol、TCP loopback、native control/data reconnect、updater syntax、package 全部 PASS；macOS build、Core/regression（含 ASan/UBSan Writer Queue 测试）、transfer protocol、TCP loopback、control/listener loopback、bundle verification、package 全部 PASS；Release publication skipped（PR 预期）。
+- 中途 CI 揭示并修复了测试集成问题：源码布局断言、fixture error accessor、Writer Queue 测试缺失 RX budget 链接，以及 POSIX feature macro 隐藏 Apple QoS API。最新 Run #609 全部通过。
+- 阶段 2 尚未完成：Receiver Protocol / Batch Lifecycle 仍在 `xfer_receive.inc`，后续要从 include 中提取独立模块；还需增加更完整的 stop-vs-producer race、buffer allocation failure、slow-disk/error persistence 和 sanitizer stress tests。不得将整个阶段 2 标记完成。

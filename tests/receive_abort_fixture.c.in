@@ -86,14 +86,15 @@ static void fixture_deliver_ack(void *context,uint32_t batch,uint32_t id,int sta
     (void)context;ack_deliver(batch,id,status);
 }
 static void fixture_configure_rx_context(void){
-    s_rx.platform_context=NULL;
+    s_rx.writer=NULL;
+    s_rx.services.context=NULL;
     s_rx.lifecycle=&s_rx_lifecycle;
     s_rx.done_receipt=&s_done_receipt;
-    s_rx.shutdown_data_channel=fixture_shutdown_data;
-    s_rx.mark_sender_aborted=fixture_mark_sender_aborted;
-    s_rx.send_file_ack=fixture_send_file_ack;
-    s_rx.send_done_ack=fixture_send_done_ack;
-    s_rx.deliver_ack=fixture_deliver_ack;
+    s_rx.services.shutdown_data_channel=fixture_shutdown_data;
+    s_rx.services.mark_sender_aborted=fixture_mark_sender_aborted;
+    s_rx.services.send_file_ack=fixture_send_file_ack;
+    s_rx.services.send_done_ack=fixture_send_done_ack;
+    s_rx.services.deliver_ack=fixture_deliver_ack;
 }
 static void history_save(void){assert(closed); if(s_receive_status.status.phase!=HOP_XFER_COMPLETED) assert(!s_rx.image_buffer.data && !s_rx.cur_path && !s_rx.tops && !s_rx.batch_state.active); saved++;}
 #ifdef FIXTURE_WINDOWS

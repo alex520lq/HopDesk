@@ -6,6 +6,7 @@
 #include "update_manifest.h"
 #include "xfer_budget.h"
 #include "xfer_task.h"
+#include "xfer_task_history.h"
 #include "xfer_tracking.h"
 #include "xfer_rate.h"
 #include "xfer_ack_window.h"
@@ -535,7 +536,7 @@ static void test_image_begin_decode(void) {
 }
 
 static void test_file_end_ack_abort_done_decoders(void) {
-    uint8_t end[9] = {0}, ack[9] = {0}, abortp[5] = {0}, donep[20] = {0};
+    uint8_t end[9] = {0}, ack[9] = {0}, abortp[6] = {0}, donep[20] = {0};
     hop_put_be32(end, 17); end[4] = HOP_FILE_OK; hop_put_be32(end+5, 0xAABBCCDDu);
     hop_xfer_file_end_msg e;
     CHECK(hop_xfer_decode_file_end(end,sizeof(end),&e));
@@ -549,11 +550,14 @@ static void test_file_end_ack_abort_done_decoders(void) {
     CHECK(a.batch==21 && a.id==17 && a.status==HOP_FILE_ACK_CRC);
     CHECK(!hop_xfer_decode_file_ack(ack,8,&a));
 
-    hop_put_be32(abortp, 21); abortp[4]=HOP_ABORT_CANCEL;
+    hop_put_be32(abortp, 21); abortp[4]=HOP_ABORT_CANCEL; abortp[5]=HOP_ABORT_TO_RECEIVER;
     hop_xfer_abort_msg ab;
     CHECK(hop_xfer_decode_abort(abortp,sizeof(abortp),&ab));
-    CHECK(ab.batch==21 && ab.reason==HOP_ABORT_CANCEL);
-    CHECK(!hop_xfer_decode_abort(abortp,6,&ab));
+    CHECK(ab.batch==21 && ab.reason==HOP_ABORT_CANCEL && ab.target==HOP_ABORT_TO_RECEIVER);
+    CHECK(!hop_xfer_decode_abort(abortp,5,&ab));
+    abortp[5]=HOP_ABORT_TO_SENDER; CHECK(hop_xfer_decode_abort(abortp,sizeof(abortp),&ab) && ab.target==HOP_ABORT_TO_SENDER);
+    abortp[5]=0; CHECK(!hop_xfer_decode_abort(abortp,sizeof(abortp),&ab));
+    abortp[5]=3; CHECK(!hop_xfer_decode_abort(abortp,sizeof(abortp),&ab));
 
     hop_put_be32(donep,21); hop_put_be32(donep+4,2); hop_put_be32(donep+8,3);
     hop_put_be64(donep+12,123456);
@@ -729,7 +733,13 @@ static void test_xfer_global_budget(void) {
     CHECK(created==32&&acquired==4);
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==4&&snap.jobs_high_water==4);
+    hop_xfer_task_snapshot records[32]; int total=0;
+    CHECK(hop_xfer_task_list(records,32,&total)==32 && total==32);
+    int reserved=0; for(int i=0;i<32;i++) reserved+=(int)records[i].jobs;
+    CHECK(reserved==4);
+    CHECK(hop_xfer_task_list(records,2,&total)==2 && total==32);
     for(int i=0;i<32;i++)hop_xfer_task_dispose(&contexts[i].task);
+    CHECK(hop_xfer_task_list(NULL,0,&total)==0 && total==0);
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==0);
     hop_xfer_budget_limits defaults={16u,32768u,8ull*1024ull*1024ull*1024ull,256ull*1024ull*1024ull,256ull*1024ull*1024ull,8u,8ull*1024ull*1024ull,512ull*1024ull*1024ull};
@@ -919,6 +929,36 @@ static void test_xfer_tracking_stage_timing(void) {
     CHECK(t.stage_ns[HOP_XFER_TIME_SEND]==0); /* terminal tasks cannot accrue time */
 }
 
+static void test_xfer_tracking_duplex_snapshot(void) {
+    /* Each tracker includes 8192 file records; never place them on the stack. */
+    static hop_xfer_tracking tx, rx;
+    hop_xfer_status_pair pair;
+    memset(&tx,0,sizeof(tx)); memset(&rx,0,sizeof(rx));
+    hop_xfer_tracking_snapshot_pair(&tx,&rx,0,&pair);
+    CHECK(!pair.send.active && !pair.receive.active);
+    hop_xfer_tracking_begin(&tx,77,HOP_XFER_DIR_SEND,1,0,"send",HOP_XFER_SENDING);
+    hop_xfer_tracking_file(&tx,77,1,"send",100,0,HOP_XFER_FILE_SENDING);
+    hop_xfer_tracking_chunk(&tx,77,1,0,30,1000);
+    /* Batch IDs can collide across directions without aliasing their state. */
+    hop_xfer_tracking_begin(&rx,77,HOP_XFER_DIR_RECEIVE,1,0,"receive",HOP_XFER_RECEIVING);
+    hop_xfer_tracking_file(&rx,77,1,"receive",200,0,HOP_XFER_FILE_RECEIVING);
+    hop_xfer_tracking_chunk(&rx,77,1,0,40,1000);
+    tx.revision=1; rx.revision=2;
+    hop_xfer_tracking_snapshot_pair(&tx,&rx,3,&pair);
+    CHECK(pair.send.active && pair.receive.active && pair.primary_direction==HOP_XFER_DIR_RECEIVE);
+    CHECK(pair.send.batch==77 && pair.receive.batch==77);
+    CHECK(pair.send.bytes_done==30 && pair.send.bytes_total==100);
+    CHECK(pair.receive.bytes_done==40 && pair.receive.bytes_total==200);
+    CHECK(pair.send.queued_count==3 && pair.receive.queued_count==3);
+    CHECK(hop_xfer_tracking_end(&rx,77,HOP_XFER_COMPLETED,"ok"));
+    hop_xfer_tracking_snapshot_pair(&tx,&rx,0,&pair);
+    CHECK(pair.primary_direction==HOP_XFER_DIR_SEND && pair.send.active && !pair.receive.active);
+    CHECK(pair.receive.phase==HOP_XFER_COMPLETED && pair.send.bytes_done==30);
+    /* Copies must not change retroactively when trackers advance. */
+    hop_xfer_tracking_chunk(&tx,77,1,30,20,1200);
+    CHECK(pair.send.bytes_done==30 && tx.status.bytes_done==50);
+}
+
 static void test_xfer_tracking_speed_and_eta(void) {
     static hop_xfer_tracking tracking;
     memset(&tracking,0,sizeof(tracking));
@@ -956,15 +996,32 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     hop_xfer_task a,b,moved;
     memset(&a,0,sizeof(a));memset(&b,0,sizeof(b));memset(&moved,0,sizeof(moved));
     CHECK(hop_xfer_budget_set_limits_for_test(&limits));
-    CHECK(hop_xfer_task_init(&a,UINT64_C(0xABCDEF),UINT32_C(0x80000001),123));
+    CHECK(hop_xfer_task_init_classified(&a,UINT64_C(0xABCDEF),UINT32_C(0x80000001),123,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_UNSPECIFIED));
     CHECK(hop_xfer_task_init(&b,0,0,124));
     CHECK(a.id!=0&&b.id!=0&&a.id!=b.id);
-    CHECK(a.reservation.task_id==a.id&&b.reservation.task_id==b.id);
-    CHECK(a.offer_id==UINT64_C(0xABCDEF)&&a.request_id==UINT32_C(0x80000001)&&a.transfer_id==123);
-    CHECK(b.offer_id==0&&b.request_id==0&&b.transfer_id==124);
-    CHECK(a.reservation.handle_id!=0&&b.reservation.handle_id!=0);
-    CHECK(a.reservation.handle_id!=b.reservation.handle_id);
-    CHECK(a.state==HOP_XFER_TASK_CREATED);
+    hop_xfer_task_snapshot as,bs;
+    CHECK(hop_xfer_task_get_snapshot(a.id,&as) && hop_xfer_task_get_snapshot(b.id,&bs));
+    CHECK(as.offer_id==UINT64_C(0xABCDEF)&&as.request_id==UINT32_C(0x80000001)&&as.transfer_id==123);
+    CHECK(bs.offer_id==0&&bs.request_id==0&&bs.transfer_id==124);
+    CHECK(as.reservation_handle_id && bs.reservation_handle_id && as.reservation_handle_id!=bs.reservation_handle_id);
+    CHECK(as.state==HOP_XFER_TASK_CREATED && as.direction==HOP_XFER_DIR_RECEIVE && as.kind==HOP_TASK_KIND_UNSPECIFIED);
+    uint8_t session[HOP_TASK_SESSION_BYTES]={1}, zero_session[HOP_TASK_SESSION_BYTES]={0};
+    CHECK(!hop_xfer_task_bind_session(&a,zero_session));
+    CHECK(hop_xfer_task_bind_session(&a,session));
+    CHECK(hop_xfer_task_set_kind(&a,HOP_TASK_KIND_FILES));
+    CHECK(hop_xfer_task_set_kind(&a,HOP_TASK_KIND_IMAGE));
+    CHECK(hop_xfer_task_set_kind(&a,HOP_TASK_KIND_FILES));
+    CHECK(!hop_xfer_task_set_kind(&a,HOP_TASK_KIND_IMAGE_WORK));
+    CHECK(hop_xfer_task_get_snapshot(a.id,&as) && as.kind==HOP_TASK_KIND_MIXED && !memcmp(as.session,session,sizeof(session)));
+    session[0]=2; CHECK(hop_xfer_task_bind_session(&a,session));
+    CHECK(hop_xfer_task_get_snapshot(a.id,&as) && !memcmp(as.session,session,sizeof(session)));
+    int total=0; hop_xfer_task_snapshot list[2];
+    CHECK(hop_xfer_task_list(list,2,&total)==2 && total==2);
+    hop_xfer_task copied=a; /* A copied handle must never mutate or release the owner. */
+    CHECK(!hop_xfer_task_reserve_job(&copied));
+    hop_xfer_task_dispose(&copied);
+    CHECK(hop_xfer_task_get_snapshot(a.id,&as));
+    CHECK(!hop_xfer_task_init(&a,0,0,456)); /* cannot replace an existing owner */
     CHECK(hop_xfer_task_reserve_job(&a));
     CHECK(hop_xfer_task_reserve_entry(&a,100));
     CHECK(hop_xfer_task_reserve_image(&a,400));
@@ -979,6 +1036,10 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     CHECK(snap.jobs==1&&snap.entries==2&&snap.pending_bytes==500&&snap.image_bytes==656);
     CHECK(snap.rx_queue_slots==1&&snap.rx_queue_bytes==128);
     CHECK(snap.image_temp_bytes==256);
+    hop_xfer_task_audit audit;
+    CHECK(hop_xfer_task_reconcile(&audit) && !audit.mismatches && audit.task_count==2);
+    CHECK(audit.jobs==1 && audit.entries==2 && audit.pending_bytes==500 && audit.image_bytes==656);
+    CHECK(audit.rx_queue_slots==1 && audit.rx_queue_bytes==128 && audit.image_temp_bytes==256);
     CHECK(!hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));
     CHECK(hop_xfer_task_release_rx_buffer(&a,128));
     CHECK(!hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));
@@ -986,21 +1047,217 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     CHECK(hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));
     CHECK(!hop_xfer_task_finish(&a,HOP_XFER_TASK_CANCELLED));
     CHECK(!hop_xfer_task_set_state(&a,HOP_XFER_TASK_ACTIVE));
+    CHECK(!hop_xfer_task_bind_session(&a,session));
+    CHECK(!hop_xfer_task_set_kind(&a,HOP_TASK_KIND_IMAGE));
     CHECK(!hop_xfer_task_reserve_entry(&a,1));
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0&&snap.image_bytes==0);
+    uint64_t b_id=b.id; hop_xfer_task stale=b;
     CHECK(hop_xfer_task_move(&moved,&b));
-    CHECK(!b.initialized&&moved.initialized&&moved.id!=0);
+    CHECK(!b.initialized&&moved.initialized&&moved.id==b_id);
+    CHECK(!hop_xfer_task_finish(&stale,HOP_XFER_TASK_CANCELLED));
+    CHECK(hop_xfer_task_get_snapshot(b_id,&bs) && bs.state==HOP_XFER_TASK_CREATED);
     CHECK(hop_xfer_task_reserve_job(&moved));
     CHECK(hop_xfer_task_set_state(&moved,HOP_XFER_TASK_ACTIVE));
     CHECK(hop_xfer_task_finish(&moved,HOP_XFER_TASK_CANCELLED));
     hop_xfer_task_dispose(&a);
     hop_xfer_task_dispose(&b);
     hop_xfer_task_dispose(&moved);
+    CHECK(!hop_xfer_task_get_snapshot(b_id,&bs));
+    CHECK(hop_xfer_task_list(NULL,0,&total)==0 && total==0);
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0&&snap.image_bytes==0);
+    CHECK(hop_xfer_task_reconcile(&audit) && !audit.mismatches && audit.task_count==0);
+    /* A rogue reservation is visible as a discrepancy, never silently repaired. */
+    hop_xfer_reservation_handle rogue={0};
+    CHECK(hop_xfer_budget_reservation_init(&rogue,999)); CHECK(hop_xfer_budget_reserve_job(&rogue));
+    CHECK(hop_xfer_task_reconcile(&audit) && (audit.mismatches&HOP_TASK_AUDIT_USAGE));
+    hop_xfer_budget_release(&rogue);
+    CHECK(hop_xfer_task_reconcile(&audit) && !audit.mismatches);
     hop_xfer_budget_limits defaults={16u,32768u,8ull*1024ull*1024ull*1024ull,256ull*1024ull*1024ull,256ull*1024ull*1024ull,8u,8ull*1024ull*1024ull,512ull*1024ull*1024ull};
     CHECK(hop_xfer_budget_set_limits_for_test(&defaults));
+}
+
+static void test_xfer_task_index_collision(void) {
+    hop_xfer_task first={0}, tmp={0}, last={0};
+    hop_xfer_task_snapshot snap;
+    CHECK(hop_xfer_task_init(&first,0,0,1));
+    const uint64_t first_id=first.id;
+    /* The manager index has 8192 buckets. Keep the first record alive while
+     * cycling enough IDs to force a real collision, then remove both orders. */
+    for (unsigned i=0; i<8191; ++i) {
+        CHECK(hop_xfer_task_init(&tmp,0,0,2));
+        hop_xfer_task_dispose(&tmp);
+    }
+    CHECK(hop_xfer_task_init(&last,0,0,3));
+    const uint64_t last_id=last.id;
+    CHECK(last_id-first_id==8192);
+    CHECK(hop_xfer_task_get_snapshot(first_id,&snap) && snap.transfer_id==1);
+    CHECK(hop_xfer_task_get_snapshot(last_id,&snap) && snap.transfer_id==3);
+    hop_xfer_task_dispose(&first);
+    CHECK(!hop_xfer_task_get_snapshot(first_id,&snap));
+    CHECK(hop_xfer_task_get_snapshot(last_id,&snap) && snap.transfer_id==3);
+    hop_xfer_task_dispose(&last);
+    CHECK(!hop_xfer_task_get_snapshot(last_id,&snap));
+}
+
+typedef struct { hop_xfer_task_id id; int result; } cancel_race_context;
+#ifdef _WIN32
+static DWORD WINAPI cancel_race_worker(LPVOID p) {
+    cancel_race_context *c=(cancel_race_context *)p; c->result=hop_xfer_task_request_cancel(c->id); return 0;
+}
+#else
+static void *cancel_race_worker(void *p) {
+    cancel_race_context *c=(cancel_race_context *)p; c->result=hop_xfer_task_request_cancel(c->id); return NULL;
+}
+#endif
+static void test_xfer_task_cancel_isolation_and_completion(void) {
+    hop_xfer_task send={0},receive={0},internal={0}; hop_xfer_task_snapshot snap;
+    CHECK(hop_xfer_task_init_classified(&send,0,0,100,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+    CHECK(hop_xfer_task_init_classified(&receive,0,0,100,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_IMAGE));
+    CHECK(hop_xfer_task_init_classified(&internal,0,0,100,HOP_XFER_DIR_NONE,HOP_TASK_KIND_IMAGE_WORK));
+    CHECK(hop_xfer_task_reserve_job(&send)); CHECK(hop_xfer_task_reserve_job(&receive));
+    CHECK(!hop_xfer_task_request_cancel(internal.id));
+    CHECK(hop_xfer_task_request_cancel(send.id)); CHECK(hop_xfer_task_request_cancel(send.id));
+    CHECK(hop_xfer_task_cancel_requested(send.id) && !hop_xfer_task_cancel_requested(receive.id));
+    CHECK(!hop_xfer_task_begin_completion(&send)); CHECK(hop_xfer_task_begin_completion(&receive));
+    CHECK(!hop_xfer_task_request_cancel(receive.id));
+    CHECK(hop_xfer_task_get_snapshot(receive.id,&snap) && snap.completing && !snap.cancel_requested);
+    CHECK(hop_xfer_task_finish(&send,HOP_XFER_TASK_CANCELLED));
+    CHECK(hop_xfer_task_finish(&receive,HOP_XFER_TASK_COMPLETED));
+    CHECK(!hop_xfer_task_request_cancel(send.id));
+    hop_xfer_task_dispose(&send);hop_xfer_task_dispose(&receive);hop_xfer_task_dispose(&internal);
+    hop_xfer_budget_snapshot budget;hop_xfer_budget_get_snapshot(&budget);
+    CHECK(budget.jobs==0 && budget.entries==0 && budget.pending_bytes==0);
+    for (int i=0;i<128;i++) {
+        hop_xfer_task task={0}; cancel_race_context ctx={0};
+        CHECK(hop_xfer_task_init_classified(&task,0,0,101,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+        ctx.id=task.id;
+#ifdef _WIN32
+        HANDLE th=CreateThread(NULL,0,cancel_race_worker,&ctx,0,NULL);
+        CHECK(th!=NULL); if(!th){hop_xfer_task_dispose(&task);continue;}
+        int completed=hop_xfer_task_begin_completion(&task);
+        CHECK(WaitForSingleObject(th,INFINITE)==WAIT_OBJECT_0); CloseHandle(th);
+#else
+        pthread_t th; int created=pthread_create(&th,NULL,cancel_race_worker,&ctx)==0;
+        CHECK(created); if(!created){hop_xfer_task_dispose(&task);continue;}
+        int completed=hop_xfer_task_begin_completion(&task);
+        CHECK(pthread_join(th,NULL)==0);
+#endif
+        CHECK((completed!=0) != (ctx.result!=0));
+        CHECK(hop_xfer_task_finish(&task,completed?HOP_XFER_TASK_COMPLETED:HOP_XFER_TASK_CANCELLED));
+        hop_xfer_task_dispose(&task);
+    }
+}
+
+
+/* Timeout and cancel must have exactly one winner under the manager lock.
+ * Equal transfer IDs on an unrelated sender must remain untouched. */
+static void test_xfer_task_cancel_timeout_race(void) {
+    for (int i=0;i<128;i++) {
+        hop_xfer_task rx={0},tx={0}; cancel_race_context ctx={0}; hop_xfer_task_audit audit;
+        CHECK(hop_xfer_task_init_classified(&rx,0,0,313,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_FILES));
+        CHECK(hop_xfer_task_init_classified(&tx,0,0,313,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+        CHECK(hop_xfer_task_reserve_job(&rx)); CHECK(hop_xfer_task_reserve_job(&tx));
+        CHECK(hop_xfer_task_set_state(&rx,HOP_XFER_TASK_ACTIVE));
+        CHECK(!hop_xfer_task_rx_disconnect_expired(&rx,0,1,100));
+        ctx.id=rx.id;
+#ifdef _WIN32
+        HANDLE th=CreateThread(NULL,0,cancel_race_worker,&ctx,0,NULL);
+        CHECK(th!=NULL); if(!th){hop_xfer_task_dispose(&rx);hop_xfer_task_dispose(&tx);continue;}
+        int expired=hop_xfer_task_rx_disconnect_expired(&rx,0,101,100);
+        CHECK(WaitForSingleObject(th,INFINITE)==WAIT_OBJECT_0); CloseHandle(th);
+#else
+        pthread_t th; int created=pthread_create(&th,NULL,cancel_race_worker,&ctx)==0;
+        CHECK(created); if(!created){hop_xfer_task_dispose(&rx);hop_xfer_task_dispose(&tx);continue;}
+        int expired=hop_xfer_task_rx_disconnect_expired(&rx,0,101,100);
+        CHECK(pthread_join(th,NULL)==0);
+#endif
+        CHECK((expired!=0)!=(ctx.result!=0));
+        CHECK(!hop_xfer_task_cancel_requested(tx.id));
+        CHECK(hop_xfer_task_finish(&rx,expired?HOP_XFER_TASK_FAILED:HOP_XFER_TASK_CANCELLED));
+        CHECK(hop_xfer_task_reconcile(&audit) && !audit.mismatches && audit.jobs==1);
+        CHECK(hop_xfer_task_finish(&tx,HOP_XFER_TASK_COMPLETED));
+        hop_xfer_task_dispose(&rx);hop_xfer_task_dispose(&tx);
+        CHECK(hop_xfer_task_reconcile(&audit) && !audit.mismatches && audit.jobs==0);
+    }
+}
+
+
+/* Exercises shared manager and ledger concurrently, not real network I/O. Each
+ * worker owns its handle; equal transfer IDs on opposite directions must not
+ * alias. Audit while other threads reserve/release, not just after joining. */
+typedef struct { int worker, errors; } task_stress_context;
+static void task_stress_run(task_stress_context *c) {
+    for (int i=0; i<1000; ++i) {
+        hop_xfer_task task={0}; hop_xfer_task_snapshot snapshot;
+        hop_xfer_task_audit audit; int has_rx=0, has_temp=0;
+        int direction=(c->worker & 1)?HOP_XFER_DIR_RECEIVE:HOP_XFER_DIR_SEND;
+        if (!hop_xfer_task_init_classified(&task,0,0,(uint32_t)(i+1),direction,HOP_TASK_KIND_FILES)) {
+            ++c->errors; continue;
+        }
+        if (!hop_xfer_task_reserve_job(&task) || !hop_xfer_task_reserve_entry(&task,128) ||
+            !hop_xfer_task_set_state(&task,HOP_XFER_TASK_ACTIVE)) { ++c->errors; goto cleanup; }
+        if (direction==HOP_XFER_DIR_RECEIVE) {
+            if (!hop_xfer_task_reserve_rx_buffer(&task,64)) { ++c->errors; goto cleanup; }
+            has_rx=1;
+        } else {
+            if (!hop_xfer_task_reserve_image_temp(&task,64)) { ++c->errors; goto cleanup; }
+            has_temp=1;
+        }
+        if (!hop_xfer_task_get_snapshot(task.id,&snapshot) || snapshot.direction!=direction ||
+            snapshot.transfer_id!=(uint32_t)(i+1) || !hop_xfer_task_reconcile(&audit) || audit.mismatches)
+            ++c->errors;
+        if (has_rx) { if (!hop_xfer_task_release_rx_buffer(&task,64)) ++c->errors; else has_rx=0; }
+        if (has_temp) { if (!hop_xfer_task_release_image_temp(&task,64)) ++c->errors; else has_temp=0; }
+        if (i%3==0) {
+            if (!hop_xfer_task_request_cancel(task.id) || hop_xfer_task_begin_completion(&task) ||
+                !hop_xfer_task_finish(&task,HOP_XFER_TASK_CANCELLED)) ++c->errors;
+        } else if (i%3==1) {
+            if (!hop_xfer_task_begin_completion(&task) || hop_xfer_task_request_cancel(task.id) ||
+                !hop_xfer_task_finish(&task,HOP_XFER_TASK_COMPLETED)) ++c->errors;
+        } else if (!hop_xfer_task_finish(&task,HOP_XFER_TASK_FAILED)) ++c->errors;
+cleanup:
+        if (has_rx && !hop_xfer_task_release_rx_buffer(&task,64)) ++c->errors;
+        if (has_temp && !hop_xfer_task_release_image_temp(&task,64)) ++c->errors;
+        hop_xfer_task_dispose(&task);
+        if (task.initialized) ++c->errors;
+    }
+}
+#ifdef _WIN32
+static DWORD WINAPI task_stress_worker(LPVOID p) { task_stress_run((task_stress_context *)p); return 0; }
+#else
+static void *task_stress_worker(void *p) { task_stress_run((task_stress_context *)p); return NULL; }
+#endif
+static void test_xfer_task_concurrent_ledger_stress(void) {
+    enum { WORKERS=6 }; task_stress_context contexts[WORKERS]={0}; int created[WORKERS]={0};
+#ifdef _WIN32
+    HANDLE threads[WORKERS]={0};
+#else
+    pthread_t threads[WORKERS];
+#endif
+    for (int i=0; i<WORKERS; ++i) {
+        contexts[i].worker=i;
+#ifdef _WIN32
+        threads[i]=CreateThread(NULL,0,task_stress_worker,&contexts[i],0,NULL);
+        created[i]=threads[i]!=NULL;
+#else
+        created[i]=pthread_create(&threads[i],NULL,task_stress_worker,&contexts[i])==0;
+#endif
+        CHECK(created[i]);
+    }
+    for (int i=0; i<WORKERS; ++i) if (created[i]) {
+#ifdef _WIN32
+        CHECK(WaitForSingleObject(threads[i],INFINITE)==WAIT_OBJECT_0); CloseHandle(threads[i]);
+#else
+        CHECK(pthread_join(threads[i],NULL)==0);
+#endif
+        CHECK(contexts[i].errors==0);
+    }
+    hop_xfer_task_audit audit;
+    CHECK(hop_xfer_task_reconcile(&audit) && !audit.mismatches && !audit.task_count);
+    CHECK(!audit.jobs && !audit.entries && !audit.pending_bytes && !audit.image_temp_bytes &&
+          !audit.rx_queue_slots && !audit.rx_queue_bytes);
 }
 
 #define RUN_TEST(fn) do { \
@@ -1008,6 +1265,184 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     fflush(stderr); \
     fn(); \
 } while (0)
+
+
+static int g_sink_calls;
+static hop_xfer_task_snapshot g_sink_last;
+static void counting_sink(const hop_xfer_task_snapshot *snap) {
+    ++g_sink_calls; g_sink_last=*snap;
+}
+
+static void test_xfer_task_summary_and_sink(void) {
+    hop_xfer_task_set_terminal_sink(NULL);
+    g_sink_calls=0;
+    hop_xfer_task task;
+    memset(&task,0,sizeof(task));
+    CHECK(hop_xfer_task_init_classified(&task,1,2,3,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+    CHECK(hop_xfer_task_set_summary(&task,4,5,100,200,"report.zip","7z done"));
+    CHECK(hop_xfer_task_set_terminal_sink(counting_sink));
+    CHECK(hop_xfer_task_finish(&task,HOP_XFER_TASK_COMPLETED));
+    CHECK(g_sink_calls==1);
+    CHECK(g_sink_last.id==task.id && g_sink_last.state==HOP_XFER_TASK_COMPLETED);
+    CHECK(g_sink_last.files_done==4 && g_sink_last.files_total==5);
+    CHECK(g_sink_last.bytes_done==100 && g_sink_last.bytes_total==200);
+    CHECK(strcmp(g_sink_last.name,"report.zip")==0);
+    CHECK(strcmp(g_sink_last.detail,"7z done")==0);
+    CHECK(g_sink_last.finished_at>0);
+    /* summary is display-only: rejected once terminal */
+    CHECK(!hop_xfer_task_set_summary(&task,9,9,9,9,"x","y"));
+    /* a second finish never happens: the sink fires exactly once */
+    CHECK(!hop_xfer_task_finish(&task,HOP_XFER_TASK_FAILED));
+    CHECK(g_sink_calls==1);
+    hop_xfer_task_snapshot hist[HOP_TASK_HISTORY_CAPACITY];
+    int total=0;
+    int n=hop_xfer_task_history_list(hist,HOP_TASK_HISTORY_CAPACITY,
+                                     HOP_XFER_DIR_SEND,HOP_XFER_TASK_COMPLETED,1,&total);
+    CHECK(n>=1 && total>=1);
+    int found=0;
+    for(int i=0;i<n;++i)
+        if(hist[i].id==task.id) {
+            found=1;
+            CHECK(hist[i].files_done==4 && hist[i].files_total==5);
+            CHECK(strcmp(hist[i].name,"report.zip")==0);
+            CHECK(strcmp(hist[i].detail,"7z done")==0);
+            CHECK(hist[i].finished_at>0);
+        }
+    CHECK(found);
+    /* dispose without finish auto-interrupts and fires the sink once */
+    hop_xfer_task t2;
+    memset(&t2,0,sizeof(t2));
+    CHECK(hop_xfer_task_init_classified(&t2,1,2,4,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_FILES));
+    hop_xfer_task_dispose(&t2);
+    CHECK(g_sink_calls==2 && g_sink_last.state==HOP_XFER_TASK_INTERRUPTED);
+    /* clearing the sink stops notifications */
+    CHECK(hop_xfer_task_set_terminal_sink(NULL));
+    hop_xfer_task t3;
+    memset(&t3,0,sizeof(t3));
+    CHECK(hop_xfer_task_init_classified(&t3,1,2,5,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+    CHECK(hop_xfer_task_finish(&t3,HOP_XFER_TASK_CANCELLED));
+    CHECK(g_sink_calls==2);
+    hop_xfer_task_dispose(&t3);
+    hop_xfer_task_dispose(&task);
+}
+
+static void test_xfer_task_history_store_persistence(void) {
+    hop_xfer_task_history_store_close();
+    remove("hop-core-history-store.bin");
+    remove("hop-core-history-store.bin.tmp");
+    CHECK(!hop_xfer_task_history_store_is_open());
+    CHECK(hop_xfer_task_history_store_open("hop-core-history-store.bin",NULL));
+    CHECK(hop_xfer_task_history_store_is_open());
+    hop_xfer_task a;
+    memset(&a,0,sizeof(a));
+    CHECK(hop_xfer_task_init_classified(&a,1,7,70,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+    CHECK(hop_xfer_task_set_summary(&a,1,2,10,20,"a.txt","ok"));
+    CHECK(hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));
+    hop_xfer_task b;
+    memset(&b,0,sizeof(b));
+    CHECK(hop_xfer_task_init_classified(&b,1,8,80,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_FILES));
+    CHECK(hop_xfer_task_set_summary(&b,0,1,0,5,"b.png","missing"));
+    CHECK(hop_xfer_task_finish(&b,HOP_XFER_TASK_FAILED));
+    hop_xfer_task_history_record recs[8];
+    int total=-1;
+    int n=hop_xfer_task_history_store_list(recs,8,HOP_XFER_DIR_NONE,HOP_XFER_TASK_EMPTY,1,&total);
+    CHECK(n==2 && total==2);
+    CHECK(recs[0].record_id==2);
+    CHECK(recs[0].state==HOP_XFER_TASK_FAILED && recs[0].direction==HOP_XFER_DIR_RECEIVE);
+    CHECK(recs[0].transfer_id==80 && strcmp(recs[0].name,"b.png")==0);
+    CHECK(recs[1].record_id==1 && recs[1].files_total==2 && strcmp(recs[1].name,"a.txt")==0);
+    CHECK(recs[1].task_id==a.id);
+    n=hop_xfer_task_history_store_list(recs,8,HOP_XFER_DIR_SEND,HOP_XFER_TASK_EMPTY,0,&total);
+    CHECK(n==1 && recs[0].direction==HOP_XFER_DIR_SEND);
+    n=hop_xfer_task_history_store_list(recs,8,HOP_XFER_DIR_NONE,HOP_XFER_TASK_FAILED,0,&total);
+    CHECK(n==1 && recs[0].state==HOP_XFER_TASK_FAILED);
+    n=hop_xfer_task_history_store_list(recs,8,HOP_XFER_DIR_NONE,HOP_XFER_TASK_CANCELLED,0,&total);
+    CHECK(n==0 && total==0);
+    CHECK(hop_xfer_task_history_store_list(recs,8,HOP_XFER_DIR_NONE,HOP_XFER_TASK_EMPTY,2,&total)==-1);
+    CHECK(hop_xfer_task_history_store_list(recs,8,HOP_XFER_DIR_NONE,HOP_XFER_TASK_ACTIVE,0,&total)==-1);
+    hop_xfer_task_dispose(&a);
+    hop_xfer_task_dispose(&b);
+    /* reopen simulates a restart: records survive, ids continue from the file */
+    hop_xfer_task_history_store_close();
+    CHECK(hop_xfer_task_history_store_open("hop-core-history-store.bin",NULL));
+    n=hop_xfer_task_history_store_list(recs,8,HOP_XFER_DIR_NONE,HOP_XFER_TASK_EMPTY,0,&total);
+    CHECK(n==2 && total==2);
+    CHECK(recs[0].record_id==1 && recs[1].record_id==2);
+    hop_xfer_task c;
+    memset(&c,0,sizeof(c));
+    CHECK(hop_xfer_task_init_classified(&c,1,9,90,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
+    CHECK(hop_xfer_task_set_summary(&c,3,3,30,30,"c.bin","done"));
+    CHECK(hop_xfer_task_finish(&c,HOP_XFER_TASK_CANCELLED));
+    n=hop_xfer_task_history_store_list(recs,8,HOP_XFER_DIR_NONE,HOP_XFER_TASK_EMPTY,1,&total);
+    CHECK(n==3 && recs[0].record_id==3 && recs[0].transfer_id==90);
+    hop_xfer_task_dispose(&c);
+    hop_xfer_task_history_store_close();
+}
+
+static void write_legacy_history_file(const char *path) {
+    FILE *f=fopen(path,"wb");
+    CHECK(f!=NULL);
+    static const char magic[8]={'H','O','P','X','H','S','T','1'};
+    uint32_t version=1,record_size=(uint32_t)sizeof(hop_xfer_history_entry),count=2;
+    CHECK(fwrite(magic,8,1,f)==1);
+    CHECK(fwrite(&version,sizeof(version),1,f)==1);
+    CHECK(fwrite(&record_size,sizeof(record_size),1,f)==1);
+    CHECK(fwrite(&count,sizeof(count),1,f)==1);
+    hop_xfer_history_entry rows[2];
+    memset(rows,0,sizeof(rows));
+    rows[0].batch=11; rows[0].direction=HOP_XFER_DIR_SEND; rows[0].phase=HOP_XFER_COMPLETED;
+    rows[0].files_done=2; rows[0].files_total=2; rows[0].bytes_done=20; rows[0].bytes_total=20;
+    rows[0].finished_at=1700000000u;
+    snprintf(rows[0].name,sizeof(rows[0].name),"%s","old-new.bin");
+    rows[1].batch=10; rows[1].direction=HOP_XFER_DIR_RECEIVE; rows[1].phase=HOP_XFER_PARTIAL;
+    rows[1].files_done=1; rows[1].files_total=3; rows[1].bytes_done=5; rows[1].bytes_total=15;
+    rows[1].finished_at=1699999999u;
+    snprintf(rows[1].name,sizeof(rows[1].name),"%s","old-recv");
+    CHECK(fwrite(rows,sizeof(rows[0]),2,f)==2);
+    CHECK(fclose(f)==0);
+}
+
+static void test_xfer_task_history_store_legacy_migration(void) {
+    hop_xfer_task_history_store_close();
+    remove("hop-core-history-store2.bin");
+    remove("hop-core-history-store2.bin.tmp");
+    remove("hop-core-history-legacy.bin");
+    write_legacy_history_file("hop-core-history-legacy.bin");
+    CHECK(hop_xfer_task_history_store_open("hop-core-history-store2.bin","hop-core-history-legacy.bin"));
+    hop_xfer_task_history_record recs[8];
+    int total=-1;
+    int n=hop_xfer_task_history_store_list(recs,8,HOP_XFER_DIR_NONE,HOP_XFER_TASK_EMPTY,0,&total);
+    CHECK(n==2 && total==2);
+    /* disk order is newest-first; ids ascend with finish time (oldest = id 1) */
+    CHECK(recs[0].record_id==1 && recs[0].transfer_id==10);
+    CHECK(recs[0].state==HOP_XFER_TASK_PARTIAL && recs[0].direction==HOP_XFER_DIR_RECEIVE);
+    CHECK(recs[0].finished_at==1699999999ull*1000ull);
+    CHECK(recs[0].task_id==0 && strcmp(recs[0].name,"old-recv")==0);
+    CHECK(recs[1].record_id==2 && recs[1].transfer_id==11);
+    CHECK(recs[1].state==HOP_XFER_TASK_COMPLETED && strcmp(recs[1].name,"old-new.bin")==0);
+    /* migration persisted the v2 store: reopening keeps data without the legacy file */
+    hop_xfer_task_history_store_close();
+    remove("hop-core-history-legacy.bin");
+    CHECK(hop_xfer_task_history_store_open("hop-core-history-store2.bin",NULL));
+    n=hop_xfer_task_history_store_list(recs,8,HOP_XFER_DIR_NONE,HOP_XFER_TASK_EMPTY,0,&total);
+    CHECK(n==2 && total==2);
+    CHECK(recs[1].record_id==2 && recs[1].transfer_id==11);
+    hop_xfer_task_history_store_close();
+    /* a corrupt v2 store is rejected without crashing; session starts empty */
+    FILE *f=fopen("hop-core-history-store2.bin","wb");
+    CHECK(f!=NULL);
+    CHECK(fwrite("garbage-not-a-store",1,19,f)==19);
+    CHECK(fclose(f)==0);
+    CHECK(hop_xfer_task_history_store_open("hop-core-history-store2.bin",NULL));
+    total=-1;
+    n=hop_xfer_task_history_store_list(recs,8,HOP_XFER_DIR_NONE,HOP_XFER_TASK_EMPTY,0,&total);
+    CHECK(n==0 && total==0);
+    hop_xfer_task_history_store_close();
+    remove("hop-core-history-store2.bin");
+    remove("hop-core-history-store2.bin.tmp");
+    remove("hop-core-history-store.bin");
+    remove("hop-core-history-store.bin.tmp");
+}
 
 int main(void) {
     hop_crc32_init();
@@ -1040,9 +1475,17 @@ int main(void) {
     RUN_TEST(test_xfer_ack_window);
     RUN_TEST(test_xfer_rate_limiter);
     RUN_TEST(test_xfer_tracking_stage_timing);
+    RUN_TEST(test_xfer_tracking_duplex_snapshot);
     RUN_TEST(test_xfer_tracking_speed_and_eta);
     RUN_TEST(test_xfer_task_identity_and_lifecycle);
+    RUN_TEST(test_xfer_task_index_collision);
+    RUN_TEST(test_xfer_task_cancel_isolation_and_completion);
+    RUN_TEST(test_xfer_task_cancel_timeout_race);
+    RUN_TEST(test_xfer_task_concurrent_ledger_stress);
     RUN_TEST(test_xfer_task_image_buffer_transfer);
+    RUN_TEST(test_xfer_task_summary_and_sink);
+    RUN_TEST(test_xfer_task_history_store_persistence);
+    RUN_TEST(test_xfer_task_history_store_legacy_migration);
 
     if (g_failures) {
         fprintf(stderr, "HopDesk core tests: %d failure(s)\\n", g_failures);

@@ -58,9 +58,11 @@ int hop_xfer_decode_file_ack(const uint8_t *p, uint32_t len,
 
 int hop_xfer_decode_abort(const uint8_t *p, uint32_t len,
                           hop_xfer_abort_msg *out) {
-    if (!p || !out || len != 5u) return 0;
+    if (!p || !out || len != 6u ||
+        (p[5] != HOP_ABORT_TO_SENDER && p[5] != HOP_ABORT_TO_RECEIVER)) return 0;
     out->batch = hop_get_be32(p);
     out->reason = p[4];
+    out->target = p[5];
     return 1;
 }
 

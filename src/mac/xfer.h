@@ -25,6 +25,8 @@ int  xfer_connected(void);
 int  xfer_busy(void);
 /* Thread-safe snapshot for native transfer manager UI; caller owns the copy. */
 void xfer_get_status(hop_xfer_status *out);
+/* Coherent snapshot of current/latest send and receive; queue length is approximate. */
+void xfer_get_status_pair(hop_xfer_status_pair *out);
 /* Snapshot live resource budgets and high-water/rejection/release counters. */
 void xfer_get_budget_snapshot(hop_xfer_budget_snapshot *out);
 /* Most recent completed batches first; returns number of records copied. */
@@ -37,6 +39,8 @@ int xfer_retry_file(uint32_t batch, int index);
 /* 取消当前批次：停发、通知对端、删掉接收侧半成品。
  * 发送端每块之后检查一次，所以响应延迟上限是一个分块（默认 256 KB）。 */
 void xfer_cancel(void);
+/* Asynchronous, isolated cancellation by live task ID. */
+int xfer_cancel_task(hop_xfer_task_id id);
 
 /* 提交本机路径（文件或目录，目录递归）。内部深拷贝，返回后调用方可释放。 */
 int  xfer_submit_paths(const char *const *paths, int n);

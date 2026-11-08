@@ -5,17 +5,28 @@
 #include <string.h>
 #include <stdio.h>
 #include "xfer_tracking.h"
+#include "xfer_task.h"
 #define SD_BOTH 2
 #define SHUT_RDWR 2
 #define INVALID_SOCKET -1
 typedef int SOCKET;
 static struct {int client,sock,lock,slock;hop_session_id session;hop_xfer_rate_limiter rate;} s_x;
-static struct {int active;uint32_t batch,dead_batch;uint8_t dead_reason;} s_rx;
+static struct {int active;uint32_t batch,dead_batch;uint8_t dead_reason;hop_xfer_task task;} s_rx;
 static hop_session_id s_rx_session;
+static struct {int valid;} s_done_receipt;
 static struct {int marker;} s_send_status,s_receive_status;
-static int s_status_lock,resets,closes;
+static int s_status_lock,resets,closes,discarded,paste_cancelled;
 static void rx_reset(void){s_rx.active=0;resets++;}
 static void rx_close_file(void){closes++;}
+static void rx_discard_dir(void){assert(closes>0);discarded++;}
+static void rx_terminate(uint32_t batch,uint8_t reason,int notify){(void)batch;(void)reason;assert(!notify);s_rx.active=0;}
+static int test_begin_completion(const hop_xfer_task *t){(void)t;return 1;}
+static int test_cancel_requested(hop_xfer_task_id t){(void)t;return 0;}
+#define hop_xfer_task_begin_completion test_begin_completion
+#define hop_xfer_task_cancel_requested test_cancel_requested
+static void finish_paste(uint32_t b,const void*p,int n,int ok){(void)b;(void)p;(void)n;assert(!ok);paste_cancelled++;}
+#define clip_complete_remote_paste finish_paste
+#define clipboard_complete_remote_paste finish_paste
 typedef struct {hop_session_id session;int next_i,ok;} xf_job;
 typedef xf_job xfer_job;
 #define AcquireSRWLockExclusive(p) ((void)(p))
@@ -43,10 +54,15 @@ int main(void){
  s_x.session.bytes[0]=1;s_x.client=s_x.sock=7;hop_session_publish(&s_x.session);
  s_rx.dead_batch=42;s_receive_status.marker=9;rx_bind_session(&s_x.session);
  assert(resets==1 && !s_rx.dead_batch && !s_receive_status.marker);
- s_rx.active=1;s_rx.dead_batch=42;rx_bind_session(&s_x.session);
- assert(resets==1 && closes==1 && s_rx.dead_batch==42);
- hop_session_id next={{2}};rx_bind_session(&next);assert(resets==2 && !s_rx.dead_batch);
+ s_rx.active=1;s_rx.batch=HOP_XFER_PASTE_BATCH_FLAG|42;s_rx.dead_batch=42;rx_bind_session(&s_x.session);
+ assert(resets==1 && closes==1 && !discarded && !paste_cancelled && s_rx.dead_batch==42);
+ hop_session_id next={{2}};rx_bind_session(&next);assert(resets==2 && !s_rx.dead_batch && discarded==1 && paste_cancelled==1);
  rx_bind_session(&s_x.session);s_rx.batch=42;s_rx.active=1;
+ rx_expire_stale_session();assert(s_rx.active && discarded==1);
+ hop_session_clear(&s_x.session);rx_expire_stale_session();
+ assert(!s_rx.active && discarded==2 && paste_cancelled==1);
+ rx_expire_stale_session();assert(discarded==2);
+ hop_session_publish(&s_x.session);rx_bind_session(&s_x.session);s_rx.batch=42;s_rx.active=1;
  xf_job job={0};job.session=next;job.next_i=3;job.ok=3;s_send_status.marker=9;
  job_bind_session(&job, &s_x.session);assert(!job.next_i && !job.ok && !s_send_status.marker);
  job.next_i=2;job.ok=2;job_bind_session(&job, &s_x.session);assert(job.next_i==2 && job.ok==2);
@@ -77,5 +93,5 @@ int main(void){
  on_data_frame(NULL,HOP_MSG_FILE_BEGIN,end,9);
  assert(delivered==old_delivered && closed==old_closed+1);
  hop_update_install_end();
- puts("PASS: production v6 sender/receiver rejects foreign sessions and late batch CHUNK/END");return 0;
+ puts("PASS: production session cleanup and sender/receiver rejects foreign sessions and late batch CHUNK/END");return 0;
 }

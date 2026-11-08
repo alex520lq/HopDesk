@@ -300,7 +300,9 @@
 | 阶段二第七批：ACK timeout 连接隔离与接收端失败清理 | `9b50618`, `f1cf608`, `b95edbc`, `6268ea2`, `9b770dd`, `2ae2348`, `7a5cf10`, `287dd5c`, `a289ae0`, `a356d46` | ACK timeout 强制 kick 当前数据通道；未确认文件不推进 checkpoint；离线时不消耗重试次数；接收端重试移除旧顶层路径、关闭 writer 后删除失败半成品；顶层登记失败不再 ACK_OK | 此前 #42060905387 的 Windows 原生应用编译成功，但 core tests 以 STATUS_STACK_OVERFLOW 退出；原因是 tracking fixture 在默认 1 MiB 栈上分配约 8 MiB 对象，已由 `78f2cf8704c27322590174d0d8a1d1c2a11037ed` 改为静态存储；本次新增源码回归保护，当前 HEAD 待 CI | ACK 丢失/迟到回执、连接重建与重试幂等性待测 |
 | 阶段二第八批：接收端目录创建失败处理 | `4cbccd0`, `16a2eb4` | POSIX 对 EEXIST 路径执行 stat/S_ISDIR 校验；Windows 对 ERROR_ALREADY_EXISTS 执行 GetFileAttributesW 目录属性校验；父目录/目录创建失败返回逐文件 DISK ACK；stack fixture 回归保护 | 源码回归断言已加入；当前 HEAD 尚无新 Actions run | Windows/macOS 原生 CI、权限拒绝、路径同名文件/目录冲突和双机验收待测 |
 | 阶段二第九批：FILE_BEGIN 固定缓冲复用 | `0f47910`, `f86d7ab` | FILE_BEGIN payload 复用发送线程固定 TX buffer，移除每个文件一次 malloc/free；对 payload 长度进行 chunk 容量检查 | 源码回归断言已加入；当前 HEAD 尚无新 Actions run | Windows/macOS 原生 CI、10,000 小文件吞吐与内存分配次数待测 |
-| 阶段三 | 待实施 | Task ID 状态模型、reservation 账本、独立取消/重试、UI/历史与双向验收 | 待执行 | 待执行 |
+| 阶段三首批 | 待提交 | 两端增加同锁双向状态快照；双向同时活动时显示各方向进度，取消按钮明确标示双向影响。现仍为每方向一个当前/最近批次，并非完整 Task ID 集合；取消仍可能同时影响两方向 | 双向相同 batch、进度隔离和快照复制测试 | 原生 CI、实机待验证 |
+| 阶段三第二批：任务管理器基础 | 待提交 | 管理器集中拥有 Task ID、状态和 Reservation Handle；任务句柄只承载 ID，支持活动记录快照/枚举、移动所有权与过期/复制句柄拒绝；所有生产预算预留经任务管理器。暂不保留持久历史，未统一 UI 进度和任务状态 | 32 线程预留、集合快照、句柄复制/移动、资源释放及 ASan/UBSan 回归 | 原生 CI、实机待验证 |
+| 阶段三剩余 | 待实施 | 任务的 session/direction/进度绑定、按 Task ID 独立取消/重试、reservation 账本对账、完整 UI/历史与双向验收 | 待执行 | 待执行 |
 
 ## 7. 本轮明确不做的事
 

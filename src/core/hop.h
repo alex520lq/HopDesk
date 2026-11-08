@@ -79,10 +79,9 @@ typedef enum {
     HOP_MSG_XFER_DONE    = 54,  /* S -> C: batch(4)+ok(4)+total(4)+bytes(8)
                                  * ok < total 就是部分成功，接收端据此报错 */
     HOP_MSG_IMAGE_BEGIN  = 55,  /* S -> C: id(4)+w(4)+h(4)+stride(4)+flags(1) */
-    HOP_MSG_XFER_ABORT   = 56,  /* 双向: batch(4)+reason(1)，收到即中止本批 */
-    HOP_MSG_FILE_ACK     = 57   /* C -> S: batch(4)+id(4)+status(1)
-                                 * 单文件结论。没有 ACK 就没有"完成" ——
-                                 * 这是发送端判断要不要重发这一个文件的唯一依据。 */
+    HOP_MSG_XFER_ABORT   = 56,  /* 双向: batch(4)+reason(1)+接收端目标方向(1) */
+    HOP_MSG_FILE_ACK     = 57,  /* batch(4)+id(4)+status(1): per-file result */
+    HOP_MSG_XFER_DONE_ACK = 58  /* batch(4)+status(1): receiver finalized batch */
 } hop_msg_type;
 
 /* ---- 鼠标按键 ---- */
@@ -142,10 +141,16 @@ typedef struct {
  * v4: 数据通道 HELLO 增加 token 身份校验，握手未通过不得传输。
  * v5: 整文件 CRC fold 同时纳入 chunk offset 与 chunk CRC，校验块位置。
  * v6: 控制握手协商 session；数据 HELLO 绑定它，所有数据帧携带 session+batch。
+ * v7: ABORT 明确指向接收方的发送或接收任务，双向批次号冲突不互相取消。
  * 两端必须同版本：旧端发来的块在新端会按错位的 CRC 字段解析，
  * 结果是每块都校验失败。所以连上就先比版本，别让用户对着
  * "传输一直失败"猜原因。 */
-#define HOP_XFER_PROTO_VER   6
+/* v8: receiver acknowledges batch completion; both peers must upgrade. */
+#define HOP_XFER_PROTO_VER   8
+#define HOP_DONE_ACK_COMPLETE 0
+#define HOP_DONE_ACK_PARTIAL  1
+#define HOP_DONE_ACK_FAILED   2
+#define HOP_DONE_ACK_SLOT UINT32_MAX
 #define HOP_CTRL_PROTO_VER   7
 
 /* ---- XFER_ABORT 的 reason ---- */
@@ -154,6 +159,10 @@ typedef struct {
 #define HOP_ABORT_TOO_LARGE  3
 #define HOP_ABORT_BAD_PATH   4
 #define HOP_ABORT_CANCEL     5   /* 用户主动取消，两端都不再重试 */
+#define HOP_ABORT_TIMEOUT    6   /* 接收端等待同一会话的数据重连超时 */
+/* Target is relative to the endpoint receiving the ABORT frame. */
+#define HOP_ABORT_TO_SENDER   1
+#define HOP_ABORT_TO_RECEIVER 2
 
 /* ---- 传输重试策略 ----
  * 两层，各管各的，别混：
@@ -166,6 +175,8 @@ typedef struct {
 /* 断线后等对端回来的总预算。没有它，一个断线的批次会永远挂在队列里：
  * 菜单上的"取消传输"一直亮着，对端几小时后回来还会突然接着传。 */
 #define HOP_XFER_RECONNECT_BUDGET_MS 30000
+/* Receiver grace exceeds the sender budget; only actual data disconnects count. */
+#define HOP_XFER_RX_DISCONNECT_BUDGET_MS 60000
 
 static inline unsigned hop_xfer_file_retry_delay_ms(int attempt) {
     return 200u << (attempt > 1 ? attempt - 1 : 0);      /* 200,400,800… */
@@ -361,6 +372,9 @@ static inline int hop_handshake_expired(uint64_t now, uint64_t started) {
 
 /* 单调时钟（毫秒）。clock.c，平台代码用；不受系统改时间影响。 */
 uint64_t hop_monotonic_ms(void);
+/* 墙上时钟（毫秒，1970 起）。仅用于给持久化记录标注完成时刻：
+ * 会被 NTP/用户改时间拨动，禁止拿来做超时或间隔判断。 */
+uint64_t hop_wallclock_ms(void);
 #define HOP_WATCHDOG_EXIT 70
 #define HOP_IO_DEADLINE_MS 15000u
 int hop_watchdog_start(void);
@@ -404,7 +418,7 @@ typedef struct {
 
 typedef struct {
     uint32_t batch;
-    uint8_t reason;
+    uint8_t reason, target;
 } hop_xfer_abort_msg;
 
 typedef struct {

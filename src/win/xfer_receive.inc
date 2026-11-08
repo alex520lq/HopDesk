@@ -170,9 +170,12 @@ static DWORD WINAPI writer_thread(LPVOID arg) {
         uint64_t write_started_ns=rate_now_ns();
         wq_task_run(&t);
         uint64_t write_elapsed_ns=rate_now_ns()-write_started_ns;
-        if(t.kind==RX_WRITE && t.budget_owner)
-            status_stage_time(HOP_XFER_DIR_RECEIVE,t.budget_owner->transfer_id,
-                              HOP_XFER_TIME_WRITE,write_elapsed_ns);
+        if(t.kind==RX_WRITE && t.budget_owner) {
+            hop_xfer_task_snapshot task_snapshot;
+            if (hop_xfer_task_get_snapshot(t.budget_owner->id,&task_snapshot))
+                status_stage_time(HOP_XFER_DIR_RECEIVE,task_snapshot.transfer_id,
+                                  HOP_XFER_TIME_WRITE,write_elapsed_ns);
+        }
         hop_watchdog_end(disk_guard);
 
         if (t.kind == RX_WRITE && t.budget_owner)
@@ -422,14 +425,44 @@ static void rx_reset(void) {
 /* Receiver-owned lifecycle boundary. Only a data reconnect in the SAME control
  * session may retain ACKs/tombstones; a new control session starts cleanly. */
 static hop_session_id s_rx_session;
+/* One FIFO sender batch can be awaiting DONE_ACK per session. This is only
+ * wire idempotency metadata, not another task or reservation owner. */
+static struct { int valid; hop_session_id session; hop_xfer_done_msg done; uint8_t status; } s_done_receipt;
+static void rx_discard_dir(void);
+static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer);
 static void rx_bind_session(const hop_session_id *session) {
     if (!hop_session_id_equal(&s_rx_session, session)) {
+        memset(&s_done_receipt,0,sizeof(s_done_receipt));
+        /* A new control session cannot resume the old batch. Its staging files
+         * were never published; close the writer before removing them. Completed
+         * or deliberately retained partial batches are not active here. */
+        if (s_rx.active && !hop_xfer_task_begin_completion(&s_rx.task) &&
+            hop_xfer_task_cancel_requested(s_rx.task.id))
+            /* The current socket may already belong to the new session. Never
+             * send an old-session ABORT through it, even if batch IDs collide. */
+            rx_terminate(s_rx.batch,HOP_ABORT_CANCEL,0);
+        if (s_rx.active) {
+            rx_close_file();
+            rx_discard_dir();
+            if (s_rx.batch & HOP_XFER_PASTE_BATCH_FLAG)
+                clip_complete_remote_paste(s_rx.batch,NULL,0,0);
+        }
         rx_reset(); s_rx.dead_batch=0; s_rx.dead_reason=0;
         AcquireSRWLockExclusive(&s_status_lock);
         memset(&s_receive_status,0,sizeof(s_receive_status));
         ReleaseSRWLockExclusive(&s_status_lock);
     } else rx_close_file();
     s_rx_session=*session;
+}
+
+/* The control session may vanish permanently before a new data connection is
+ * established. Poll only on the receiver thread; keep a same-session data
+ * reconnect resumable, but promptly retire an invalidated control session. */
+static void rx_expire_stale_session(void) {
+    if (hop_session_id_valid(&s_rx_session) && !hop_session_matches(&s_rx_session)) {
+        hop_session_id empty = {{0}};
+        rx_bind_session(&empty);
+    }
 }
 
 /* 递归删掉本批临时目录。
@@ -550,7 +583,7 @@ static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
     if (!batch) return;
     if (batch & HOP_XFER_PASTE_BATCH_FLAG)
         clip_complete_remote_paste(batch,NULL,0,0);
-    if (notify_peer) { send_abort_msg(s_x.client,batch,reason); }
+    if (notify_peer) { send_abort_msg(s_x.client,batch,reason,HOP_ABORT_TO_SENDER); }
     if (!s_rx.active || s_rx.batch != batch) return;
     rx_close_file();
     rx_discard_dir();
@@ -565,6 +598,10 @@ static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
 }
 
 static void rx_begin_batch(uint32_t batch) {
+    if (s_done_receipt.valid && s_done_receipt.done.batch == batch &&
+        hop_session_id_equal(&s_done_receipt.session,&s_rx_session)) {
+        return; /* already committed in this session; never recreate its task */
+    }
     /* 作废过的批次又来了（对端还没收到取消）：回一个 ABORT 让它立刻放手，
      * 千万别为它重建目录 —— 用户已经说过不要了。 */
     if (batch == s_rx.dead_batch) {
@@ -581,23 +618,24 @@ static void rx_begin_batch(uint32_t batch) {
     InterlockedExchange(&s_x.cancel_rx, 0);
 
     rx_reset();
-    if (!hop_xfer_task_init(&s_rx.task,0,(batch & HOP_XFER_PASTE_BATCH_FLAG)?batch:0,batch)) {
+    if (!hop_xfer_task_init_classified(&s_rx.task,0,(batch & HOP_XFER_PASTE_BATCH_FLAG)?batch:0,batch,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_UNSPECIFIED)) {
         s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_DISK;
-        send_abort_msg(s_x.client,batch,HOP_ABORT_DISK);
+        send_abort_msg(s_x.client,batch,HOP_ABORT_DISK,HOP_ABORT_TO_SENDER);
         return;
     }
+    (void)hop_xfer_task_bind_session(&s_rx.task,s_rx_session.bytes);
     if (!hop_xfer_task_reserve_job(&s_rx.task)) {
         s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_TOO_LARGE;
         hop_xfer_task_finish(&s_rx.task,HOP_XFER_TASK_FAILED);
         hop_xfer_task_dispose(&s_rx.task);
-        send_abort_msg(s_x.client,batch,HOP_ABORT_TOO_LARGE);
+        send_abort_msg(s_x.client,batch,HOP_ABORT_TOO_LARGE,HOP_ABORT_TO_SENDER);
         return;
     }
     if (!hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE)) {
         s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_DISK;
         hop_xfer_task_finish(&s_rx.task,HOP_XFER_TASK_FAILED);
         hop_xfer_task_dispose(&s_rx.task);
-        send_abort_msg(s_x.client,batch,HOP_ABORT_DISK);
+        send_abort_msg(s_x.client,batch,HOP_ABORT_DISK,HOP_ABORT_TO_SENDER);
         return;
     }
     /* Keep the last tombstone: a late old BEGIN must not replace a newer task. */
@@ -652,11 +690,16 @@ static void rx_begin_batch(uint32_t batch) {
 }
 
 /* 收完后把顶层条目放进剪贴板（CF_HDROP），Mac 那边就能直接粘贴 */
-static void rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
+static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
     if (!s_rx.active || s_rx.batch != batch) {
         hop_log(HOP_LOG_WARN, "xfer: stale DONE for batch %u ignored (active=%u)",
                 batch, s_rx.active ? s_rx.batch : 0);
-        return;
+        return -1;
+    }
+    /* Completion and per-task cancellation serialize before clipboard effects. */
+    if (!hop_xfer_task_begin_completion(&s_rx.task)) {
+        rx_terminate(batch,HOP_ABORT_CANCEL,1);
+        return -1;
     }
 
     /* 落盘全部完成后才能把路径挂到剪贴板。 */
@@ -707,7 +750,9 @@ static void rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
     status_end(HOP_XFER_DIR_RECEIVE,batch,complete?HOP_XFER_COMPLETED:
                (s_rx.cur_is_image?HOP_XFER_FAILED:HOP_XFER_PARTIAL),
                complete?"Receive completed":"Receive incomplete; clipboard not updated");
+    int result=complete?HOP_DONE_ACK_COMPLETE:(s_rx.cur_is_image?HOP_DONE_ACK_FAILED:HOP_DONE_ACK_PARTIAL);
     rx_reset();
+    return result;
 }
 
 static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
@@ -768,6 +813,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
             rx_begin_batch(batch);
             if (!s_rx.active || s_rx.batch != batch) return;
+            (void)hop_xfer_task_set_kind(&s_rx.task,HOP_TASK_KIND_FILES);
             if (id == 0 || id > HOP_XFER_FILE_LIMIT) {
                 rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
                 return;
@@ -864,6 +910,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             uint32_t batch = msg.batch;
             rx_begin_batch(batch);
             if (!s_rx.active || s_rx.batch != batch) return;
+            (void)hop_xfer_task_set_kind(&s_rx.task,HOP_TASK_KIND_IMAGE);
 
             int w = (int)msg.width;
             int h = (int)msg.height;
@@ -1075,7 +1122,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
         case HOP_MSG_FILE_ACK: {
             hop_xfer_file_ack_msg ack;
-            if (hop_xfer_decode_file_ack(p, len, &ack))
+            if (hop_xfer_decode_file_ack(p, len, &ack) && ack.id >= 1 && ack.id <= HOP_XFER_FILE_LIMIT)
                 ack_deliver(ack.batch, ack.id, ack.status);
             break;
         }
@@ -1086,18 +1133,19 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             uint32_t batch = abort_msg.batch;
             uint8_t reason = abort_msg.reason;
 
-            /* 发送线程可能正卡在等 ACK 里 —— 踢醒它，取消不该等满 10 秒 */
-            EnterCriticalSection(&s_x.lock);
-            s_x.abort_batch = batch;
-            LeaveCriticalSection(&s_x.lock);
-            SetEvent(s_ack.ev);
+            if (abort_msg.target == HOP_ABORT_TO_SENDER) {
+                EnterCriticalSection(&s_x.lock);
+                if (s_x.cur_batch == batch) { s_x.abort_batch = batch; s_x.abort_reason = reason; }
+                LeaveCriticalSection(&s_x.lock);
+                SetEvent(s_ack.ev);
+            }
 
             hop_log(HOP_LOG_ERROR, "xfer: peer aborted batch %u (reason %u)",
                     batch, reason);
 
             /* 对端不要这一批了：关文件、删掉已落盘的半成品、立墓碑。
              * 墓碑必须立 —— 否则对端再发一帧 FILE_BEGIN 就把目录又建回来了。 */
-            rx_terminate(batch,reason,0);
+            if (abort_msg.target == HOP_ABORT_TO_RECEIVER) rx_terminate(batch,reason,0);
             break;
         }
 
@@ -1107,13 +1155,31 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 hop_log(HOP_LOG_WARN, "xfer: malformed XFER_DONE ignored");
                 return;
             }
-            if (done.ok < done.total)
-                hop_log(HOP_LOG_ERROR,
-                        "xfer: batch %u PARTIAL - %u/%u delivered, %u failed",
-                        done.batch, done.ok, done.total, done.total - done.ok);
-            rx_finish_batch(done.batch, done.ok, done.total);
+            if (!done.batch || !done.total || done.total > HOP_XFER_FILE_LIMIT || done.ok > done.total) return;
+            int result;
+            if (s_done_receipt.valid && s_done_receipt.done.batch==done.batch &&
+                hop_session_id_equal(&s_done_receipt.session,&s_rx_session)) {
+                if (s_done_receipt.done.ok!=done.ok || s_done_receipt.done.total!=done.total ||
+                    s_done_receipt.done.bytes!=done.bytes) return;
+                result=s_done_receipt.status; /* repeat ACK without repeating clipboard effects */
+            } else {
+                result=rx_finish_batch(done.batch,done.ok,done.total);
+                if (result<0) return;
+                s_done_receipt.valid=1; s_done_receipt.session=s_rx_session;
+                s_done_receipt.done=done; s_done_receipt.status=(uint8_t)result;
+            }
+            uint8_t reply[5]; hop_put_be32(reply,done.batch); reply[4]=(uint8_t)result;
+            EnterCriticalSection(&s_x.lock);
+            SOCKET fd=s_x.client;
+            LeaveCriticalSection(&s_x.lock);
+            if (fd != INVALID_SOCKET) (void)send_small(fd,HOP_MSG_XFER_DONE_ACK,reply,sizeof(reply),done.batch);
             break;
         }
+
+        case HOP_MSG_XFER_DONE_ACK:
+            if (len==5 && hop_get_be32(p)!=0 && p[4]<=HOP_DONE_ACK_FAILED)
+                ack_deliver(hop_get_be32(p),HOP_DONE_ACK_SLOT,p[4]);
+            break;
 
         default:
             break;
@@ -1158,6 +1224,15 @@ static void rx_cancel_local(void) {
     uint32_t batch = s_rx.batch;
     rx_terminate(batch,HOP_ABORT_CANCEL,1);
     hop_log(HOP_LOG_INFO, "xfer: batch %u cancelled locally", batch);
+}
+static void rx_poll_cancel(void) {
+    rx_expire_stale_session();
+    if (InterlockedExchange(&s_x.cancel_rx, 0) || (s_rx.active && hop_xfer_task_cancel_requested(s_rx.task.id))) rx_cancel_local();
+    EnterCriticalSection(&s_x.lock); int connected=s_x.peer_ready; LeaveCriticalSection(&s_x.lock);
+    if (s_rx.active && hop_xfer_task_rx_disconnect_expired(&s_rx.task,connected,hop_monotonic_ms(),HOP_XFER_RX_DISCONNECT_BUDGET_MS)) {
+        hop_log(HOP_LOG_WARN,"xfer: receive batch %u expired while disconnected",s_rx.batch);
+        rx_terminate(s_rx.batch,HOP_ABORT_TIMEOUT,0);
+    }
 }
 
 /* A pending handshake is incremental, separate from the active stream. A slow
@@ -1208,7 +1283,7 @@ static DWORD WINAPI listen_thread(LPVOID arg) {
         if (pending != INVALID_SOCKET && hop_handshake_expired(now, started)) {
             closesocket(pending); pending = INVALID_SOCKET;
         }
-        if (InterlockedExchange(&s_x.cancel_rx, 0)) rx_cancel_local();
+        rx_poll_cancel();
         fd_set rd; FD_ZERO(&rd);
         if (s_x.listen_s != INVALID_SOCKET) FD_SET(s_x.listen_s, &rd);
         if (active != INVALID_SOCKET) FD_SET(active, &rd);
@@ -1300,12 +1375,17 @@ static DWORD WINAPI data_client_thread(LPVOID unused){
     (void)unused;unsigned delay=500;
     hop_decoder *dec=hop_decoder_new(NULL,on_data_frame);if(!dec)return 1;
     while(WaitForSingleObject(s_x.stop,0)!=WAIT_OBJECT_0){
+        rx_poll_cancel();
         hop_session_id session;
         if(!hop_session_current(&session)){WaitForSingleObject(s_x.stop,200);continue;}
         SOCKET sock=net_connect_timeout_win(s_x.cfg.peer_host,s_x.cfg.data_port,s_x.stop);
         if(sock==INVALID_SOCKET){
             if(s_x.cfg.peer_host[0])hop_log(HOP_LOG_WARN,"xfer: TCP data connection failed: host=%s port=%u; check data port and firewall",s_x.cfg.peer_host,(unsigned)s_x.cfg.data_port);
-            WaitForSingleObject(s_x.stop,delay);delay=delay<8000?delay*2:8000;continue;
+            for(unsigned waited=0;waited<delay;waited+=200){
+                rx_poll_cancel();
+                if(WaitForSingleObject(s_x.stop,200)==WAIT_OBJECT_0)break;
+            }
+            delay=delay<8000?delay*2:8000;continue;
         }
         DWORD snd=5000,rcv=200;net_set_keepalive(sock);
         setsockopt(sock,SOL_SOCKET,SO_SNDTIMEO,(char*)&snd,sizeof(snd));setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,(char*)&rcv,sizeof(rcv));
@@ -1318,13 +1398,17 @@ static DWORD WINAPI data_client_thread(LPVOID unused){
         while(WaitForSingleObject(s_x.stop,0)!=WAIT_OBJECT_0 && hop_session_matches(&session)){
             EnterCriticalSection(&s_x.lock);authed=s_x.peer_ready;LeaveCriticalSection(&s_x.lock);
             if(!authed && hop_handshake_expired(hop_monotonic_ms(),started))break;
-            if(InterlockedExchange(&s_x.cancel_rx,0))rx_cancel_local();
+            rx_poll_cancel();
             uint8_t buf[65536];int n=recv(sock,(char*)buf,sizeof(buf),0);
             if(n==SOCKET_ERROR){int e=WSAGetLastError();if(e==WSAETIMEDOUT||e==WSAEWOULDBLOCK||e==WSAEINTR)continue;break;}
             if(n<=0||!hop_decoder_feed(dec,buf,(uint32_t)n))break;
         }
         retire_data_socket(sock);rx_close_file();
-        delay=authed?500:(delay<8000?delay*2:8000);WaitForSingleObject(s_x.stop,delay);
+        delay=authed?500:(delay<8000?delay*2:8000);
+        for(unsigned waited=0;waited<delay;waited+=200){
+            rx_poll_cancel();
+            if(WaitForSingleObject(s_x.stop,200)==WAIT_OBJECT_0)break;
+        }
     }
     hop_decoder_free(dec);return 0;
 }

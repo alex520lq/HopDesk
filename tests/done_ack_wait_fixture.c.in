@@ -1,0 +1,67 @@
+#include "hop.h"
+#include "xfer_tracking.h"
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+#define JOB_DONE 0
+#define JOB_COMMIT_UNKNOWN 4
+#define JOB_COMMIT_REJECTED 5
+#define JOB_PEER_ABORT 3
+#define XFER_ACK_TIMEOUT (-1)
+#define XFER_SEND_DEAD (-2)
+#define XFER_PEER_ABORT (-5)
+#define INVALID_SOCKET (-1)
+#define WAIT_OBJECT_0 0
+#define EnterCriticalSection(p) ((void)(p))
+#define LeaveCriticalSection(p) ((void)(p))
+#define pthread_mutex_lock(p) ((void)(p))
+#define pthread_mutex_unlock(p) ((void)(p))
+typedef int SOCKET;
+typedef struct {uint32_t batch;int ok,n,is_image;hop_session_id session;} xfer_job;
+typedef xfer_job xf_job;
+static struct {int stop,lock,slock,peer_ready,client,sock;unsigned long epoch;hop_session_id session;} s_x;
+static unsigned long s_send_epoch;
+static uint64_t ms;
+static int scenario, attempts, registrations, outstanding, waits;
+static uint64_t now_ms(void){return ms;}
+static uint64_t rate_now_ns(void){return ms*1000000ull+1;}
+#define WaitForSingleObject(event,timeout) ((void)(event),(void)(timeout),1)
+#define Sleep(n) (ms+=(uint64_t)(n))
+#define usleep(n) (ms+=(uint64_t)(n)/1000)
+int hop_session_matches(const hop_session_id*s){return scenario!=4 && hop_session_id_equal(s,&s_x.session);}
+static int ack_register(uint32_t b,uint32_t id){assert(b==42 && id==HOP_DONE_ACK_SLOT && !outstanding);outstanding=1;registrations++;return 1;}
+static int ack_mark_sent(uint32_t b,uint32_t id){assert(b==42 && id==HOP_DONE_ACK_SLOT && outstanding);return 1;}
+static int ack_set_deadline(uint32_t b,uint32_t id,uint64_t d){assert(b==42 && id==HOP_DONE_ACK_SLOT && d>0);return 1;}
+static void ack_unregister(uint32_t b,uint32_t id){assert(b==42 && id==HOP_DONE_ACK_SLOT && outstanding);outstanding=0;}
+static int send_done(int fd,const xfer_job*j){assert(fd==7 && j->batch==42);attempts++;return !(scenario==2 && attempts==1);}
+static int ack_wait(uint32_t b,uint32_t id,uint64_t deadline,uint64_t*rtt){
+    (void)deadline;(void)rtt;assert(b==42 && id==HOP_DONE_ACK_SLOT && outstanding);outstanding=0;waits++;
+    if(scenario==1 && waits==1){ms+=HOP_XFER_ACK_TIMEOUT_MS;return XFER_ACK_TIMEOUT;}
+    if(scenario==3)return HOP_DONE_ACK_FAILED;
+    if(scenario==5)return XFER_PEER_ABORT;
+    if(scenario==6)return HOP_DONE_ACK_PARTIAL;
+    if(scenario==7){ms+=HOP_XFER_ACK_TIMEOUT_MS;return XFER_ACK_TIMEOUT;}
+    return HOP_DONE_ACK_COMPLETE;
+}
+@FUNCTION@
+int main(void){
+    s_x.peer_ready=1;s_x.client=s_x.sock=7;s_x.epoch=1;s_x.session.bytes[0]=1;
+    xfer_job j={0};j.batch=42;j.n=1;j.ok=1;j.session=s_x.session;
+    for(scenario=0;scenario<=7;scenario++){
+        ms=1;attempts=registrations=outstanding=waits=0;
+        int r=send_done_result(7,&j);
+        int expected=scenario==3?JOB_COMMIT_REJECTED:scenario==4||scenario==6||scenario==7?JOB_COMMIT_UNKNOWN:scenario==5?JOB_PEER_ABORT:JOB_DONE;
+        assert(r==expected && !outstanding);
+        if(scenario==1 || scenario==2)assert(attempts==2 && registrations==2);
+        if(scenario==4)assert(attempts==0);
+    }
+    uint8_t wire[HOP_DATA_PREFIX+5]={0};hop_session_id other={{2}};
+    hop_data_prefix(wire,&j.session,j.batch);hop_put_be32(wire+HOP_DATA_PREFIX,j.batch);
+    uint32_t batch,len;const uint8_t *body;
+    assert(hop_data_unwrap(HOP_MSG_XFER_DONE_ACK,wire,sizeof(wire),&j.session,&batch,&body,&len));
+    assert(batch==j.batch && len==5 && body[4]==0);
+    assert(!hop_data_unwrap(HOP_MSG_XFER_DONE_ACK,wire,sizeof(wire),&other,&batch,&body,&len));
+    hop_put_be32(wire+HOP_DATA_PREFIX,99);
+    assert(!hop_data_unwrap(HOP_MSG_XFER_DONE_ACK,wire,sizeof(wire),&j.session,&batch,&body,&len));
+    puts("PASS: completion ACK retries, unknown, rejection, abort and session binding");return 0;
+}

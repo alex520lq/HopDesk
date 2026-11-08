@@ -1,0 +1,49 @@
+/* Tests exact platform retry guard with status, filesystem and queue doubles. */
+#include "hop.h"
+#include "xfer_status.h"
+#include <assert.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <wchar.h>
+#define AcquireSRWLockExclusive(p) ((void)(p))
+#define ReleaseSRWLockExclusive(p) ((void)(p))
+#define pthread_mutex_lock(p) ((void)(p))
+#define pthread_mutex_unlock(p) ((void)(p))
+static int s_status_lock, submitted, accept=1;
+static struct {struct {uint32_t batch; int active;} status;int count;
+    struct {int phase,is_directory;} files[2];} s_send_status;
+#ifdef FIXTURE_WINDOWS
+typedef wchar_t path_char;
+#define PATH(x) L##x
+#else
+typedef char path_char;
+#define PATH(x) x
+#endif
+static path_char *s_retry_paths[2];
+static path_char *copy_path(const path_char *path) {
+#ifdef FIXTURE_WINDOWS
+    size_t n=(wcslen(path)+1)*sizeof(*path);
+#else
+    size_t n=strlen(path)+1;
+#endif
+    path_char *copy=(path_char*)malloc(n);if(copy)memcpy(copy,path,n);return copy;
+}
+#define _wcsdup copy_path
+#define strdup copy_path
+static int xfer_submit_paths(const path_char *const *paths,int n){assert(n==1 && paths[0]);submitted++;return accept;}
+@RETRY@
+int main(void) {
+    s_send_status.status.batch=5;s_send_status.count=1;
+    s_send_status.files[0].phase=HOP_XFER_FILE_FAILED;s_retry_paths[0]=PATH("file.txt");
+    assert(!xfer_retry_file(0,0));assert(!xfer_retry_file(6,0));
+    s_send_status.status.active=1;assert(!xfer_retry_file(5,0));assert(!submitted);
+    s_send_status.status.active=0;s_send_status.status.batch=HOP_XFER_PASTE_BATCH_FLAG|5;
+    assert(!xfer_retry_file(s_send_status.status.batch,0));assert(!submitted);
+    s_send_status.status.batch=5;s_send_status.files[0].is_directory=1;assert(!xfer_retry_file(5,0));
+    s_send_status.files[0].is_directory=0;s_send_status.files[0].phase=HOP_XFER_FILE_COMPLETED;assert(!xfer_retry_file(5,0));
+    s_send_status.files[0].phase=HOP_XFER_FILE_FAILED;assert(!xfer_retry_file(5,-1));assert(!xfer_retry_file(5,1));
+    assert(xfer_retry_file(5,0));assert(submitted==1);
+    accept=0;assert(!xfer_retry_file(5,0));assert(submitted==2);
+    puts("PASS: active and paste-context retry blocked; eligible failed file submitted");return 0;
+}

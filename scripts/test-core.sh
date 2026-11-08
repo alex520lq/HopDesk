@@ -14,6 +14,8 @@ clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-
   "$ROOT/src/core/update_manifest.c" \
   "$ROOT/src/core/xfer_budget.c" \
   "$ROOT/src/core/xfer_task.c" \
+  "$ROOT/src/core/xfer_task_history.c" \
+  "$ROOT/src/core/clock.c" \
   "$ROOT/src/core/xfer_rate.c"
 "$BUILD/hopdesk-core-tests"
 python3 "$ROOT/scripts/test-regressions.py"

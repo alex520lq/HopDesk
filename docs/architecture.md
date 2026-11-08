@@ -101,7 +101,7 @@ src/
 
 v6 的每个非 HELLO 数据帧均在下表载荷前加 `session(16) + batch(4)`（共 20 字节）。
 CHUNK/END 因而也有显式批次。已有类型体内的 batch 必须与前缀一致；会话错误关闭连接，
-旧批次的 CHUNK/END 被忽略。控制 HELLO 追加版本，ACK 返回版本和随机 session；两端须同时升级。
+旧批次的 CHUNK/END 被忽略。控制 HELLO 追加版本，ACK 返回版本和随机 session；两端须同时升级。数据协议 v7 的 ABORT 增加目标方向；v8 增加批次完成回执。数据协议不同版本不兼容，必须两端同时升级。完成回执表示接收端已完成批次收尾并发起剪贴板处理，不保证系统剪贴板更新或目标应用粘贴成功；断线或回执超时且无法确认时，发送端显示结果不确定。
 
 | 类型 | 方向 | 类型体载荷（不含公共前缀） |
 |---|---|---|
@@ -112,7 +112,7 @@ CHUNK/END 因而也有显式批次。已有类型体内的 batch 必须与前缀
 | FILE_ACK | 双向 | `batch(4) id(4) status(1)` |
 | IMAGE_BEGIN | 双向 | `batch(4) id(4) w(4) h(4) stride(4)` |
 | XFER_DONE | 双向 | `batch(4) ok(4) total(4) bytes(8)` |
-| XFER_ABORT | 双向 | `batch(4) reason(1)` |
+| XFER_ABORT | 双向 | `batch(4) reason(1) target(1)`；target 为接收方的发送或接收任务 |
 
 - **目录递归**：每个条目自带相对路径，接收端按路径逐级建目录，
   空目录用 `flags & HOP_FILE_FLAG_DIR` 单独登记。不需要额外的树结构协议。

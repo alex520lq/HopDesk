@@ -15,8 +15,11 @@
 #include "../core/xfer_tracking.h"
 #include "../core/xfer_budget.h"
 #include "../core/xfer_task.h"
+#include "../core/xfer_task_history.h"
 #include "../core/xfer_rate.h"
 #include "../core/xfer_ack_window.h"
+
+_Static_assert(HOP_TASK_SESSION_BYTES == HOP_SESSION_BYTES, "task and protocol session sizes differ");
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -104,9 +107,11 @@ static struct {
      * cur_batch 由发送线程在开始一批时设置；cancel_batch 由主线程设置。
      * 发送线程每块之后比一次，所以取消的响应延迟上限是一个分块（256 KB）。 */
     uint32_t         cur_batch;     /* 0 = 当前没有在发的批次 */
+    hop_xfer_task_id cur_task_id;  /* same queue lock as cur_batch */
     uint32_t         cancel_batch;  /* 0 = 没有取消请求 */
     volatile int     cancel_rx;     /* 接收侧取消请求，由 conn 线程消费 */
     uint32_t         abort_batch;   /* 对端 ABORT 过的批次，0 = 无 */
+    uint8_t          abort_reason;
 } s_x;
 
 /* ---------------- 小工具 ---------------- */
@@ -172,6 +177,18 @@ static void history_load(void) {
         }
     }
     fclose(f);
+}
+static void task_history_store_open(void) {
+    if (!s_history_path[0]) return;
+    char path[PATH_MAX];
+    char *slash=strrchr(s_history_path,'/');
+    if (!slash) return;
+    size_t dir=(size_t)(slash-s_history_path+1);
+    if (dir+sizeof("task-history.bin")>sizeof(path)) return;
+    memcpy(path,s_history_path,dir);
+    memcpy(path+dir,"task-history.bin",sizeof("task-history.bin"));
+    if (!hop_xfer_task_history_store_open(path,s_history_path))
+        hop_log(HOP_LOG_WARN,"xfer: durable task history unavailable; using session history only");
 }
 static void history_save(void) {
     pthread_mutex_lock(&s_history_io_lock);
@@ -327,9 +344,14 @@ int xfer_get_files(int direction,uint32_t batch,hop_xfer_file_status *out,int ca
     return n;
 }
 int xfer_retry_file(uint32_t batch,int index) {
+    /* A paste batch carries a request and clipboard-version destination. A new
+     * ordinary transfer cannot reproduce it; reject rather than overwrite the
+     * peer clipboard or send to a changed target. Retry must be initiated as a
+     * fresh, validated paste request on the receiving device. */
+    if (!batch || (batch & HOP_XFER_PASTE_BATCH_FLAG)) return 0;
     char *path=NULL;
     pthread_mutex_lock(&s_status_lock);
-    if(s_send_status.status.batch==batch && index>=0 && index<s_send_status.count &&
+    if(s_send_status.status.batch==batch && !s_send_status.status.active && index>=0 && index<s_send_status.count &&
        s_send_status.files[index].phase==HOP_XFER_FILE_FAILED &&
        !s_send_status.files[index].is_directory && s_retry_paths[index])path=strdup(s_retry_paths[index]);
     pthread_mutex_unlock(&s_status_lock);
@@ -343,15 +365,22 @@ int xfer_get_history(hop_xfer_history_entry *out,int capacity) {
     pthread_mutex_unlock(&s_status_lock);
     return n;
 }
-void xfer_get_status(hop_xfer_status *out) {
-    if(!out)return; uint32_t queued=0;
+void xfer_get_status_pair(hop_xfer_status_pair *out) {
+    if (!out) return;
+    uint32_t queued=0;
     pthread_mutex_lock(&s_x.qlock);
-    for(xf_job *j=s_x.q_head;j;j=j->next)queued++;
+    for (xf_job *j=s_x.q_head; j; j=j->next) queued++;
     pthread_mutex_unlock(&s_x.qlock);
     pthread_mutex_lock(&s_status_lock);
-    *out=hop_xfer_tracking_visible(&s_send_status,&s_receive_status)->status;
-    out->queued_count=queued;
+    hop_xfer_tracking_snapshot_pair(&s_send_status,&s_receive_status,queued,out);
     pthread_mutex_unlock(&s_status_lock);
+}
+
+void xfer_get_status(hop_xfer_status *out) {
+    if (!out) return;
+    hop_xfer_status_pair pair;
+    xfer_get_status_pair(&pair);
+    *out=pair.primary_direction==HOP_XFER_DIR_SEND ? pair.send : pair.receive;
 }
 
 void xfer_get_budget_snapshot(hop_xfer_budget_snapshot *out) {
@@ -490,6 +519,7 @@ static struct dirent *guarded_readdir(DIR *directory) {
 }
 static void walk_into(elist *l, const char *full, const char *rel) {
     if (!l || l->failed) return;
+    if (hop_xfer_task_cancel_requested(l->task.id)) { l->failed=1; return; }
     struct stat st;
     int stat_guard = hop_watchdog_begin("file attributes", HOP_IO_DEADLINE_MS);
     int stat_ok = lstat(full, &st); hop_watchdog_end(stat_guard);
@@ -744,8 +774,9 @@ static void ack_deliver(uint32_t batch, uint32_t id, int status) {
 static int cancel_requested(uint32_t batch) {
     pthread_mutex_lock(&s_x.qlock);
     int c = (s_x.cancel_batch == batch);
+    hop_xfer_task_id id = s_x.cur_batch == batch ? s_x.cur_task_id : 0;
     pthread_mutex_unlock(&s_x.qlock);
-    return c;
+    return c || (id && hop_xfer_task_cancel_requested(id));
 }
 
 /* 对端中止过这个批次？（ABORT 是批量级的，比如图片超限、接收端建不了目录） */
@@ -926,6 +957,8 @@ static int send_file_entry(int fd, uint8_t *tx, uint32_t batch,
 #define JOB_NET_DOWN    1   /* 链路断了，整批退回队列等重连 */
 #define JOB_CANCELLED   2   /* 用户取消，通知对端丢弃，不送 DONE */
 #define JOB_PEER_ABORT  3   /* 对端中止，什么都不用送 */
+#define JOB_COMMIT_UNKNOWN 4 /* receiver outcome is unknown */
+#define JOB_COMMIT_REJECTED 5 /* receiver explicitly rejected completion */
 
 /* 收尾：告诉接收端本批实际送达了多少。
  * ok < total 时接收端会报"部分成功" —— 这是用户唯一能拿到准确结论的地方，
@@ -939,25 +972,66 @@ static int send_done(int fd, const xf_job *j) {
     return send_small(fd, HOP_MSG_XFER_DONE, dp, 20, j->batch);
 }
 
+/* Re-send only DONE, never file contents, while the same control session
+ * survives. Receiver caches its last receipt and never reapplies effects. */
+static int send_done_result(int fd, const xf_job *job) {
+    uint64_t until=now_ms()+HOP_XFER_RECONNECT_BUDGET_MS;
+    while (now_ms()<until) {
+        if (!hop_session_matches(&job->session)) return JOB_COMMIT_UNKNOWN;
+        if (s_x.stop) return JOB_COMMIT_UNKNOWN;
+        pthread_mutex_lock(&s_x.slock);
+        fd=s_x.peer_ready?s_x.sock:-1;
+        hop_session_id session=s_x.session;
+        s_send_epoch=s_x.epoch;
+        pthread_mutex_unlock(&s_x.slock);
+        if (fd<0) { usleep(100000); continue; }
+        if (!hop_session_id_equal(&session,&job->session)) return JOB_COMMIT_UNKNOWN;
+        if (!ack_register(job->batch,HOP_DONE_ACK_SLOT)) return JOB_COMMIT_UNKNOWN;
+        if (!ack_mark_sent(job->batch,HOP_DONE_ACK_SLOT)) {
+            ack_unregister(job->batch,HOP_DONE_ACK_SLOT); return JOB_COMMIT_UNKNOWN;
+        }
+        if (!send_done(fd,job)) {
+            ack_unregister(job->batch,HOP_DONE_ACK_SLOT); usleep(100000); continue;
+        }
+        uint64_t now=now_ms();
+        if (now>=until) { ack_unregister(job->batch,HOP_DONE_ACK_SLOT); return JOB_COMMIT_UNKNOWN; }
+        uint64_t wait=until-now;
+        if (wait>HOP_XFER_ACK_TIMEOUT_MS) wait=HOP_XFER_ACK_TIMEOUT_MS;
+        uint64_t deadline=rate_now_ns()+wait*1000000ull;
+        if (!ack_set_deadline(job->batch,HOP_DONE_ACK_SLOT,deadline)) {
+            ack_unregister(job->batch,HOP_DONE_ACK_SLOT); return JOB_COMMIT_UNKNOWN;
+        }
+        int result=ack_wait(job->batch,HOP_DONE_ACK_SLOT,deadline,NULL);
+        if (result==HOP_DONE_ACK_FAILED) return JOB_COMMIT_REJECTED;
+        int expected=job->ok==(int)hop_xfer_job_total(job->is_image,job->n)
+            ? HOP_DONE_ACK_COMPLETE : HOP_DONE_ACK_PARTIAL;
+        if (result==expected) return JOB_DONE;
+        if (result==XFER_PEER_ABORT) return JOB_PEER_ABORT;
+        if (result!=XFER_ACK_TIMEOUT && result!=XFER_SEND_DEAD) return JOB_COMMIT_UNKNOWN;
+        usleep(100000);
+    }
+    return JOB_COMMIT_UNKNOWN;
+}
+
 /* 发一个批量级 ABORT（取消时通知对端丢弃本批） */
 static void send_abort_msg(int fd, uint32_t batch, uint8_t reason) {
-    uint8_t ab[5];
+    uint8_t ab[6];
     hop_put_be32(ab, batch);
-    ab[4] = reason;
-    send_small(fd, HOP_MSG_XFER_ABORT, ab, 5, batch);
+    ab[4] = reason; ab[5] = HOP_ABORT_TO_RECEIVER;
+    send_small(fd, HOP_MSG_XFER_ABORT, ab, sizeof(ab), batch);
 }
 
 /* 取当前连接再发 ABORT。sock 由 slock 保护，不能裸读。
  * 锁序固定 slock -> txlock，不会和发送线程反序。 */
 static void send_abort(uint32_t batch, uint8_t reason) {
-    uint8_t ab[5];
+    uint8_t ab[6];
     hop_put_be32(ab, batch);
-    ab[4] = reason;
+    ab[4] = reason; ab[5] = HOP_ABORT_TO_SENDER;
 
     pthread_mutex_lock(&s_x.slock);
     int fd = s_x.sock;
     pthread_mutex_unlock(&s_x.slock);
-    if (fd >= 0) send_small(fd, HOP_MSG_XFER_ABORT, ab, 5, batch);
+    if (fd >= 0) send_small(fd, HOP_MSG_XFER_ABORT, ab, sizeof(ab), batch);
 }
 
 /* 接收线程调用：把一个文件的结论真正发回对端。
@@ -1203,6 +1277,15 @@ static void queue_unlink(xf_job *prev, xf_job *cur) {
     if (s_x.q_tail == cur) s_x.q_tail = prev;
 }
 
+/* Caller holds the queue lock. Removing a cancelled later entry must not
+ * change FIFO order or lose the tail of the remaining queue. */
+static xf_job *queue_take_cancelled(void) {
+    xf_job *prev=NULL, *cur=s_x.q_head;
+    while (cur && !hop_xfer_task_cancel_requested(cur->task.id)) { prev=cur; cur=cur->next; }
+    if (cur) { queue_unlink(prev,cur); cur->next=NULL; }
+    return cur;
+}
+
 static void job_free(xf_job *j) {
     if (!j) return;
     for (int i = 0; i < j->n; ++i) {
@@ -1270,8 +1353,8 @@ static void *send_thread(void *arg) {
         }
 
         uint64_t now = now_ms();
-        xf_job *prev = NULL;
-        xf_job *cur  = s_x.q_head;
+        expired=queue_take_cancelled();
+        xf_job *prev=NULL, *cur=expired ? NULL : s_x.q_head;
         while (cur) {
             /* 重连预算用完：连接在不在都放弃 */
             if (cur->batch==s_x.cancel_batch || (cur->give_up_at && now >= cur->give_up_at)) {
@@ -1287,17 +1370,25 @@ static void *send_thread(void *arg) {
             }
             break; /* FIFO: do not overtake a paused batch. */
         }
-        if (j) s_x.cur_batch = j->batch;
+        if (j) { s_x.cur_batch = j->batch; s_x.cur_task_id = j->task.id; s_x.abort_batch=0; s_x.abort_reason=0; }
         pthread_mutex_unlock(&s_x.qlock);
 
         if (expired) {
             hop_log(HOP_LOG_ERROR,
                     "xfer: batch %u abandoned, peer never came back (%d/%d delivered)",
                     expired->batch, expired->ok, expired->n);
-            status_start_job(expired);
-            int was_cancelled=cancel_requested(expired->batch);
+            int was_cancelled=cancel_requested(expired->batch) || hop_xfer_task_cancel_requested(expired->task.id);
+            pthread_mutex_lock(&s_x.slock);
+            int abort_fd=s_x.peer_ready && hop_session_id_equal(&expired->session,&s_x.session) ? s_x.sock : -1;
+            s_send_epoch=s_x.epoch;
+            pthread_mutex_unlock(&s_x.slock);
+            if (was_cancelled && abort_fd>=0) send_abort_msg(abort_fd,expired->batch,HOP_ABORT_CANCEL);
+            pthread_mutex_lock(&s_status_lock);
+            int show_status=!s_send_status.status.active || s_send_status.status.batch==expired->batch;
+            pthread_mutex_unlock(&s_status_lock);
+            if (show_status) status_start_job(expired);
             hop_xfer_task_finish(&expired->task,was_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
-            status_end(HOP_XFER_DIR_SEND,expired->batch,was_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED,"Transfer stopped while queued");
+            if (show_status) status_end(HOP_XFER_DIR_SEND,expired->batch,was_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED,"Transfer stopped while queued");
             job_free(expired);
             continue;
         }
@@ -1308,6 +1399,7 @@ static void *send_thread(void *arg) {
         hop_session_id transport_session = s_x.session;
         pthread_mutex_unlock(&s_x.slock);
         job_bind_session(j, &transport_session);
+        if (hop_session_id_valid(&j->session)) (void)hop_xfer_task_bind_session(&j->task,j->session.bytes);
         if(!hop_xfer_task_set_state(&j->task,HOP_XFER_TASK_ACTIVE)){
             hop_xfer_task_finish(&j->task,HOP_XFER_TASK_FAILED);job_free(j);continue;
         }
@@ -1316,9 +1408,13 @@ static void *send_thread(void *arg) {
         int r = (fd >= 0) ? run_job(fd, tx, j) : JOB_NET_DOWN;
 
         pthread_mutex_lock(&s_x.qlock);
-        s_x.cur_batch = 0;
+        int peer_cancelled=(s_x.abort_batch==j->batch && s_x.abort_reason==HOP_ABORT_CANCEL);
+        int completion_path=(r==JOB_DONE);
+        if (!completion_path) { s_x.cur_batch = 0; s_x.cur_task_id = 0; }
         pthread_mutex_unlock(&s_x.qlock);
 
+        if (r != JOB_DONE && hop_xfer_task_cancel_requested(j->task.id)) r=JOB_CANCELLED;
+        if (r == JOB_DONE && !hop_xfer_task_begin_completion(&j->task)) r=JOB_CANCELLED;
         if (r == JOB_NET_DOWN) {
             if (j->give_up_at == 0)
                 j->give_up_at = now_ms() + HOP_XFER_RECONNECT_BUDGET_MS;
@@ -1355,7 +1451,13 @@ static void *send_thread(void *arg) {
             if (j->ok < j->n)
                 hop_log(HOP_LOG_WARN, "xfer: batch %u finished %d/%d",
                         j->batch, j->ok, j->n);
-            if (fd >= 0) send_done(fd, j);
+            r=send_done_result(fd, j);
+        }
+        if (completion_path) {
+            pthread_mutex_lock(&s_x.qlock);
+            peer_cancelled=(s_x.abort_batch==j->batch && s_x.abort_reason==HOP_ABORT_CANCEL);
+            s_x.cur_batch=0; s_x.cur_task_id=0;
+            pthread_mutex_unlock(&s_x.qlock);
         }
         if (r == JOB_DONE) {
             int complete=j->ok==(int)hop_xfer_job_total(j->is_image,j->n);
@@ -1366,8 +1468,14 @@ static void *send_thread(void *arg) {
             hop_xfer_task_finish(&j->task,HOP_XFER_TASK_CANCELLED);
             status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_CANCELLED,"Cancelled");
         } else if (r == JOB_PEER_ABORT) {
+            hop_xfer_task_finish(&j->task,peer_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
+            status_end(HOP_XFER_DIR_SEND,j->batch,peer_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED,peer_cancelled?"Cancelled by receiver":"Peer aborted transfer");
+        } else if (r == JOB_COMMIT_REJECTED) {
             hop_xfer_task_finish(&j->task,HOP_XFER_TASK_FAILED);
-            status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Peer aborted transfer");
+            status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Receiver rejected completion");
+        } else if (r == JOB_COMMIT_UNKNOWN) {
+            hop_xfer_task_finish(&j->task,HOP_XFER_TASK_INTERRUPTED);
+            status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Completion delivery uncertain; peer may have received it");
         } else if (r == JOB_NET_DOWN) {
             hop_xfer_task_finish(&j->task,HOP_XFER_TASK_FAILED);
             status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Reconnect attempts exhausted");
@@ -1386,6 +1494,7 @@ static void *send_thread(void *arg) {
 
 void xfer_init(const hop_config *cfg) {
     history_load();
+    task_history_store_open();
     memset(&s_x, 0, sizeof(s_x));
     s_x.sock = -1;
 
@@ -1442,6 +1551,7 @@ void xfer_shutdown(void) {
     wq_stop();
     pthread_mutex_destroy(&s_ack.lock);
     pthread_cond_destroy(&s_ack.cond);
+    hop_xfer_task_history_store_close();
 }
 
 int xfer_connected(void) {
@@ -1487,6 +1597,13 @@ void xfer_cancel(void) {
     hop_log(HOP_LOG_INFO, "xfer: cancel requested");
 }
 
+int xfer_cancel_task(hop_xfer_task_id id) {
+    if (!hop_xfer_task_request_cancel(id)) return 0;
+    pthread_mutex_lock(&s_x.qlock); pthread_cond_signal(&s_x.qcond); pthread_mutex_unlock(&s_x.qlock);
+    pthread_mutex_lock(&s_ack.lock); pthread_cond_broadcast(&s_ack.cond); pthread_mutex_unlock(&s_ack.lock);
+    return 1;
+}
+
 static int submit(xf_job *j) {
     int duplicate = 0;
     pthread_mutex_lock(&s_x.qlock);
@@ -1516,7 +1633,7 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
 
     elist l;
     memset(&l, 0, sizeof(l));
-    if (!hop_xfer_task_init(&l.task,offer_id,requested_batch,batch)) return 0;
+    if (!hop_xfer_task_init_classified(&l.task,offer_id,requested_batch,batch,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES)) return 0;
     if (!hop_xfer_task_reserve_job(&l.task)) {
         uint64_t task_id=l.task.id;
         hop_xfer_task_finish(&l.task, HOP_XFER_TASK_FAILED);
@@ -1541,14 +1658,14 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
     }
     uint64_t scan_elapsed_ns=rate_now_ns()-scan_started_ns;
 
-    if (l.failed || l.n == 0) {
+    if (l.failed || l.n == 0 || hop_xfer_task_cancel_requested(l.task.id)) {
         if (l.budget_rejected)
             hop_log(HOP_LOG_WARN, "xfer: global entries/pending-bytes budget exceeded; batch rejected (task=%llu)",
                     (unsigned long long)l.task.id);
         else
             hop_log(HOP_LOG_WARN, "xfer: source tree rejected; no partial transfer queued (task=%llu)",
                     (unsigned long long)l.task.id);
-        hop_xfer_task_finish(&l.task, HOP_XFER_TASK_FAILED);
+        hop_xfer_task_finish(&l.task, hop_xfer_task_cancel_requested(l.task.id) ? HOP_XFER_TASK_CANCELLED : HOP_XFER_TASK_FAILED);
         elist_free(&l);
         return 0;
     }
@@ -1626,7 +1743,7 @@ static int xfer_submit_image_impl(const uint8_t *bgra, uint8_t *owned, int w, in
     do { batch = __sync_add_and_fetch(&s_x.batch_seq, 1); } while (!batch);
     hop_xfer_task task;
     memset(&task,0,sizeof(task));
-    if(!hop_xfer_task_init(&task,0,0,batch)){
+    if(!hop_xfer_task_init_classified(&task,0,0,batch,HOP_XFER_DIR_SEND,HOP_TASK_KIND_IMAGE)){
         if(owned)free(owned);
         release_image_source_reservation(source_task, source_reserved_bytes);
         return 0;

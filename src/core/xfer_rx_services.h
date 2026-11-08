@@ -33,7 +33,7 @@ typedef struct {
     void (*finish_clipboard)(void *context, uint32_t batch,
                              const void *image_data, uint32_t width,
                              uint32_t height, uint32_t stride, int image_valid,
-                             const void *const *top_paths, int top_count);
+                             const void *const *top_paths, int top_count, int allow_publish);
     void (*cancel_clipboard)(void *context, uint32_t batch);
 } hop_xfer_rx_services;
 

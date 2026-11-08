@@ -1,5 +1,6 @@
 #include "hop.h"
 #include "xfer_rx_context.h"
+#include "xfer_rx_message_handlers.h"
 #include "xfer_tracking.h"
 #include <stdint.h>
 #include <stdio.h>
@@ -13,6 +14,11 @@ static uint64_t rx_now_ns(xfer_rx_context *rx) {
 static void rx_handler_terminate(xfer_rx_context *rx, uint32_t batch, uint8_t reason, int notify_peer) {
     if (rx && rx->services.terminate_batch)
         rx->services.terminate_batch(rx->services.context, batch, reason, notify_peer);
+}
+
+static void rx_handler_begin_batch(xfer_rx_context *rx, uint32_t batch) {
+    if (rx && rx->services.begin_batch)
+        rx->services.begin_batch(rx->services.context, batch);
 }
 
 void hop_xfer_rx_handle_image_begin(void *context, const uint8_t *p, uint32_t len) {

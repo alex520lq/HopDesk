@@ -811,41 +811,35 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             if (s_rx.cur_is_image) break;
 
             status_file_phase(HOP_XFER_DIR_RECEIVE,s_rx.batch,(int)id-1,HOP_XFER_FILE_VERIFYING,0);
-            int ack = HOP_FILE_ACK_OK;
-
-            /* Always drain and close, including a file already marked bad by
-             * a chunk CRC or queue error. Failure cleanup must never race the
-             * writer's still-open handle. */
+            /* Always drain and close before deciding the per-file ACK. */
             if (!s_rx.cur_is_dir) rx_close_file();
 
-            if (s_rx.file_state.failure >= 0) {
-                ack = s_rx.file_state.failure;
-            } else {
-                if (wq_error_get()) {
+            int writer_error = wq_error_get();
+            int ack = hop_xfer_rx_file_state_ack(
+                &s_rx.file_state, status, writer_error, want);
+            if (s_rx.file_state.failure < 0) {
+                if (writer_error) {
                     hop_log(HOP_LOG_ERROR, "xfer: disk error, %ls incomplete",
                             s_rx.cur_path ? s_rx.cur_path : L"?");
-                    ack = HOP_FILE_ACK_DISK;
                 } else if (status != HOP_FILE_OK) {
                     hop_log(HOP_LOG_ERROR, "xfer: peer reported status %u for %ls",
                             (unsigned)status, s_rx.cur_path ? s_rx.cur_path : L"?");
-                    ack = HOP_FILE_ACK_DISK;
-                } else if (s_rx.file_state.received != s_rx.file_state.declared_size) {
+                } else if (ack == HOP_FILE_ACK_CRC &&
+                           s_rx.file_state.received != s_rx.file_state.declared_size) {
                     hop_log(HOP_LOG_ERROR, "xfer: incomplete file rejected (%llu/%llu bytes)",
                             (unsigned long long)s_rx.file_state.received,
                             (unsigned long long)s_rx.file_state.declared_size);
-                    ack = HOP_FILE_ACK_CRC;
-                } else if (want != s_rx.file_state.crc) {
+                } else if (ack == HOP_FILE_ACK_CRC) {
                     hop_log(HOP_LOG_ERROR,
                             "xfer: FILE CRC MISMATCH %ls (expect %08x got %08x)",
                             s_rx.cur_path ? s_rx.cur_path : L"?", want, s_rx.file_state.crc);
-                    ack = HOP_FILE_ACK_CRC;
-                } else if (s_rx.cur_path && !s_rx.cur_is_dir) {
-                    /* 落盘成功、校验通过，才登记为可粘贴条目。
-                     * 目录条目不在这里登记 —— 它在 BEGIN 时就已建好并登记。 */
-                    const wchar_t *tail = s_rx.cur_path + wcslen(s_rx.dir) + 1;
-                    if (!wcschr(tail, L'\\') && !rx_add_top(s_rx.cur_path))
-                        ack = HOP_FILE_ACK_DISK;
                 }
+            }
+            if (ack == HOP_FILE_ACK_OK && s_rx.cur_path && !s_rx.cur_is_dir) {
+                /* Only verified top-level files are exposed through clipboard. */
+                const wchar_t *tail = s_rx.cur_path + wcslen(s_rx.dir) + 1;
+                if (!wcschr(tail, L'\\') && !rx_add_top(s_rx.cur_path))
+                    ack = HOP_FILE_ACK_DISK;
             }
 
 

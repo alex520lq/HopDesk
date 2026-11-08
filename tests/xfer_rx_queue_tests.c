@@ -6,7 +6,7 @@
 static int failures;
 #define CHECK(expr) do { \
     if (!(expr)) { \
-        fprintf(stderr, "FAIL %s:%d: %s\\n", __FILE__, __LINE__, #expr); \
+        fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #expr); \
         ++failures; \
     } \
 } while (0)
@@ -70,7 +70,7 @@ int main(void) {
     test_reservation_lifecycle();
     test_busy_and_queued_accounting();
     if (failures) {
-        fprintf(stderr, "RX queue tests failed: %d\\n", failures);
+        fprintf(stderr, "RX queue tests failed: %d\n", failures);
         return 1;
     }
     puts("PASS: RX queue accounting boundaries and lifecycle");

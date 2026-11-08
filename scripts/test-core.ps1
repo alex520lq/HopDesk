@@ -96,7 +96,7 @@ if ($LASTEXITCODE -ne 0) { throw "Writer worker compilation failed ($LASTEXITCOD
 if ($LASTEXITCODE -ne 0) { throw "Writer worker lifecycle tests failed ($LASTEXITCODE)" }
 
 $writerQueue = Join-Path $build 'hopdesk-writer-queue-tests.exe'
-$writerQueueSources = @((Join-Path $root 'tests/writer_queue_tests.c'), (Join-Path $root 'src/win/xfer_writer_queue.c'), (Join-Path $root 'src/win/xfer_writer_io.c'), (Join-Path $root 'src/win/xfer_writer_worker.c'), (Join-Path $root 'src/core/xfer_buffer_pool.c'), (Join-Path $root 'src/core/xfer_rx_queue.c'))
+$writerQueueSources = @((Join-Path $root 'tests/writer_queue_tests.c'), (Join-Path $root 'src/win/xfer_writer_queue.c'), (Join-Path $root 'src/win/xfer_writer_io.c'), (Join-Path $root 'src/win/xfer_writer_worker.c'), (Join-Path $root 'src/core/xfer_buffer_pool.c'), (Join-Path $root 'src/core/xfer_rx_queue.c'), (Join-Path $root 'src/core/xfer_budget.c'))
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
     & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /I (Join-Path $root 'src/win') /Fe:$writerQueue @writerQueueSources
 } else {

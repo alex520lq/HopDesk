@@ -5,6 +5,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <errno.h>
 #include <time.h>
 #endif
 
@@ -43,7 +44,7 @@ static void sleep_ms(unsigned ms) {
     Sleep(ms);
 #else
     struct timespec delay = {(time_t)(ms / 1000), (long)(ms % 1000) * 1000000L};
-    while (nanosleep(&delay, &delay) != 0) { }
+    while (nanosleep(&delay, &delay) != 0 && errno == EINTR) { }
 #endif
 }
 

@@ -189,11 +189,11 @@ tests/
 **目标**：允许安全引入真正独立的模块文件。
 
 任务：
-- [ ] 统一 Windows/macOS 源文件清单，支持嵌套目录且无重复编译。
+- [x] Windows/macOS app 构建源文件发现支持嵌套目录；重复编译与显式模块清单仍需继续验证。
 - [ ] 本地构建与 GitHub Actions 使用同一套明确源文件发现规则。
 - [ ] 定义模块头文件规则：公开 API、内部 API、平台适配 API 分开。
 - [ ] 增加 include 边界检查，确保 Core 不依赖平台头文件。
-- [ ] 将源码提取测试逐步替换为真实生产模块链接测试。
+- [x] ACK Window 已从 header-only static inline 迁移为真实生产 `.c` 模块，并纳入 Windows/macOS Core 测试链接；其余源码提取测试仍待逐步替换。
 
 验收：
 - 两端 clean build 成功。
@@ -382,9 +382,9 @@ tests/
 
 | 阶段/切片 | 状态 | 提交 SHA | 变更与证据 |
 |---|---|---|---|
-| 基线核对 | 进行中 | — | 已核实 main HEAD、无开放 PR、仅 main 远程分支；读取 AGENTS、architecture、既有传输重构计划、构建脚本和测试矩阵。 |
-| 阶段 0：深度审计 | 待完成 | — | 待补全全局状态/函数依赖/线程和资源所有权清单、CI 基线。 |
-| 阶段 1：构建与模块边界 | 待完成 | — | 待实现递归源文件清单和 Core 平台依赖检查。 |
+| 基线核对 | 完成 | `68818b3f093af20385c3fba5785405eb4ac8d634` | 已核实 main HEAD、PR/分支状态；完成主要模块与函数簇审计附件。动态调用图、全量资源所有权追踪仍作为阶段 0 深度审计待办。 |
+| 阶段 0：深度审计 | 进行中 | `eaf8488b21c87201297aaf9edcdad2660bab76f2` | 已建立模块/函数簇和平台差异清单；仍需逐项追踪所有资源 owner、锁顺序、线程退出与回调迟到路径。PR 基线双平台 CI 已通过。 |
+| 阶段 1：构建与模块边界 | 进行中 | `01974e551e16a11d16f0846286b72ade5e553917` | app 构建递归发现已完成；ACK Window 已拆为独立生产编译单元并接入两端 Core 测试。Core 平台 include 检查、源清单重复检查和更多模块测试待完成。 |
 | 阶段 2：接收端/Writer | 待完成 | — | 待先抽取 writer queue，再拆 receiver protocol/lifecycle；Windows/macOS 同步。 |
 | 阶段 3：Sender/Service | 待完成 | — | 待实施。 |
 | 阶段 4：共享 Transfer Domain | 待完成 | — | 待实施。 |
@@ -396,6 +396,8 @@ tests/
 
 ## 11. 当前执行切片
 
-下一项执行：**阶段 0 完成深度审计并建立可重复基线**。在审计完成前，不对生产传输代码进行大规模搬移。审计后第一项代码重构是阶段 1 的构建源文件清单和模块边界检查；随后进入阶段 2，从 Writer Queue 开始按 Windows → macOS 对称提取。
+已完成第一个真实模块拆分：ACK Window 从 `xfer_ack_window.h` 的 header-only `static inline` 实现迁移为 `xfer_ack_window.c` + 公开声明头文件；Windows/macOS app 递归源发现自动纳入新文件，两个 Core 测试脚本显式链接该生产模块。原有 ACK 状态、窗口容量、deadline race 和 checkpoint 测试保留。
+
+下一项执行：补齐 Core include 边界检查与模块源清单验证，然后进入阶段 2。Writer Queue 仍与 Receiver 状态、Task/Reservation 生命周期、watchdog/status 回调和平台文件句柄交织，不能直接把 `.inc` 改成 `.c`；先定义 writer adapter contract，再按 Windows → macOS 对称提取。
 
 此顺序是为了先确保新模块会被本地构建和 CI 正确编译，再拆解最有隐式依赖、最容易引入生命周期回归的接收端代码。

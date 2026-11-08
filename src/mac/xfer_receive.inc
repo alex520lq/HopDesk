@@ -31,7 +31,7 @@ static struct {
     pthread_mutex_t lock;
     pthread_cond_t  cv_work, cv_space;
     pthread_t       th;
-    int             f;          /* 写线程独占 */
+    hop_writer_io   io;         /* 写线程独占 */
     int             err;        /* 写盘失败标记，主路径读 */
     int             stop;
 } s_wq;
@@ -44,36 +44,23 @@ static struct {
 
 
 static void wq_task_run(rx_task *t) {
+    int error = 0;
     switch (t->kind) {
         case RX_OPEN:
-            if (s_wq.f >= 0) { close(s_wq.f); s_wq.f = -1; }
-            s_wq.f = open(t->path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            if (s_wq.f < 0) {
-                hop_log(HOP_LOG_WARN, "xfer: cannot create %s (%s)",
-                        t->path, strerror(errno));
+            if (!hop_writer_io_open(&s_wq.io, t->path, &error)) {
+                hop_log(HOP_LOG_WARN, "xfer: cannot create %s (%s)", t->path, strerror(error));
                 s_wq.err = 1;
             }
             break;
-
         case RX_WRITE:
-            if (s_wq.f >= 0) {
-                if (lseek(s_wq.f, (off_t)t->off, SEEK_SET) < 0) { s_wq.err = 1; break; }
-                size_t done = 0;
-                while (done < t->len) {
-                    ssize_t w = write(s_wq.f, t->data + done, t->len - done);
-                    if (w <= 0) {
-                        hop_log(HOP_LOG_WARN, "xfer: write failed at %llu (%s)",
-                                (unsigned long long)t->off, strerror(errno));
-                        s_wq.err = 1;
-                        break;
-                    }
-                    done += (size_t)w;
-                }
+            if (!hop_writer_io_write_at(&s_wq.io, t->off, t->data, t->len, &error)) {
+                hop_log(HOP_LOG_WARN, "xfer: write failed at %llu (%s)",
+                        (unsigned long long)t->off, strerror(error));
+                s_wq.err = 1;
             }
             break;
-
         case RX_CLOSE:
-            if (s_wq.f >= 0) { close(s_wq.f); s_wq.f = -1; }
+            hop_writer_io_close(&s_wq.io);
             break;
     }
 }
@@ -120,7 +107,7 @@ static void *writer_thread(void *arg) {
         pthread_cond_broadcast(&s_wq.cv_space);
         pthread_mutex_unlock(&s_wq.lock);
     }
-    if (s_wq.f >= 0) { close(s_wq.f); s_wq.f = -1; }
+    hop_writer_io_close(&s_wq.io);
     return NULL;
 }
 
@@ -232,7 +219,7 @@ static void wq_drain(void) {
 static int wq_start(void) {
     memset(&s_wq, 0, sizeof(s_wq));
     hop_xfer_buffer_pool_init(&s_wq.pool);
-    s_wq.f = -1;
+    hop_writer_io_init(&s_wq.io);
     pthread_mutex_init(&s_wq.lock, NULL);
     pthread_cond_init(&s_wq.cv_work, NULL);
     pthread_cond_init(&s_wq.cv_space, NULL);

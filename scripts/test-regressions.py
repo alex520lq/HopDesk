@@ -696,9 +696,9 @@ int main(void){
         context_header=(ROOT/'src/core/xfer_rx_context.h').read_text(encoding='utf-8')
         assert 'typedef struct xfer_rx_context' in context_header
         state_contract='#include "xfer_rx_context.h"\nstatic xfer_rx_context s_rx;'
-        dispatch_names=['file_ack','abort_message','done','done_ack']
-        dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_handler_terminate','rx_handler_begin_batch','rx_handler_finish_batch','rx_ack_deliver_file','rx_ack_deliver_done','rx_now_ns','rx_reserve_entry_budget'])+'\n'+'\n'.join(extract(receiver,'rx_dispatch_'+name) for name in ['rx_dispatch_file_begin','rx_dispatch_file_end','rx_dispatch_file_ack','rx_dispatch_abort_message','rx_dispatch_done','rx_dispatch_done_ack'])+'\n'+extract(receiver,'hop_xfer_rx_handle_image_begin')+'\n'+extract(receiver,'hop_xfer_rx_handle_file_chunk')
-        dispatch_handlers+='\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { rx_dispatch_file_begin, hop_xfer_rx_handle_image_begin, hop_xfer_rx_handle_file_chunk, rx_dispatch_file_end, rx_dispatch_file_ack, rx_dispatch_abort_message, rx_dispatch_done, rx_dispatch_done_ack };\n'
+        dispatch_names=[]
+        dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_handler_terminate','rx_handler_begin_batch','rx_handler_finish_batch','rx_ack_deliver_file','rx_ack_deliver_done','rx_now_ns','rx_reserve_entry_budget'])+'\n'+extract(receiver,'rx_dispatch_file_begin')+'\n'+extract(receiver,'rx_dispatch_file_end')+'\n'+'\n'.join(extract(receiver,name) for name in ['hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_handle_file_ack','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_handle_done_ack'])
+        dispatch_handlers+='\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { rx_dispatch_file_begin, hop_xfer_rx_handle_image_begin, hop_xfer_rx_handle_file_chunk, rx_dispatch_file_end, hop_xfer_rx_handle_file_ack, hop_xfer_rx_handle_abort, hop_xfer_rx_handle_done, hop_xfer_rx_handle_done_ack };\n'
         fixture=(ROOT/'tests/receive_abort_fixture.c.in').read_text(encoding='utf-8')
         values={
             'RX_STATE':state_contract,
@@ -731,12 +731,12 @@ int main(void){
         for key,value in values.items():fixture=fixture.replace('@'+key+'@',value)
         assert '@' not in fixture
         assert 'if (!rx->batch_state.active || rx->batch_state.batch != batch) return;' in extract(receiver,'rx_dispatch_file_begin')
-        for handler_name in ['file_begin','file_end','file_ack','abort_message','done','done_ack']:
+        for handler_name in ['file_begin','file_end']:
             handler=extract(receiver,'rx_dispatch_'+handler_name)
             assert 'xfer_rx_context *rx = (xfer_rx_context *)context;' in handler
             assert not any(token in handler for token in ['s_rx.', 's_x.', 's_ack.', 's_wq']), f'{platform} {handler_name} still reads receiver/platform globals'
         assert 'rx_handler_begin_batch(rx, batch)' in extract(receiver,'hop_xfer_rx_handle_image_begin')
-        for core_handler in ['hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk']:
+        for core_handler in ['hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_handle_file_ack','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_handle_done_ack']:
             handler=extract(receiver,core_handler)
             assert 'xfer_rx_context *rx = (xfer_rx_context *)context;' in handler
             assert not any(token in handler for token in ['s_rx.', 's_x.', 's_ack.', 's_wq'])

@@ -99,7 +99,7 @@ static void wq_stop(void) {
 
 /* ---------------- 接收 ---------------- */
 
-static struct {
+typedef struct xfer_rx_context {
     hop_xfer_rx_batch_state batch_state;
     hop_xfer_task task;
     hop_xfer_rx_entry_reservations entry_reservations;
@@ -110,7 +110,9 @@ static struct {
     hop_xfer_rx_image_state image_state;
     char   **tops;
     int      ntop;
-} s_rx;
+} xfer_rx_context;
+
+static xfer_rx_context s_rx;
 
 static int rx_reserve_entry_budget(void *context, uint64_t bytes) {
     return hop_xfer_task_reserve_entry((hop_xfer_task *)context, bytes);

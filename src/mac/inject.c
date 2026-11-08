@@ -62,6 +62,18 @@ static void post(CGEventRef e) {
     CFRelease(e);
 }
 
+/* Windows Win maps to macOS Control. On macOS, Control+left-click is
+ * interpreted as a secondary click even when the injected event is explicitly
+ * kCGEventLeftMouseDown. Keep keyboard modifiers for keyboard events, but do
+ * not let a remote Control state rewrite the semantic button of mouse events.
+ * Explicit right-clicks continue to use kCGEventRightMouseDown/Up. */
+static void post_mouse(CGEventRef e) {
+    if (!e) return;
+    CGEventSetFlags(e, s_flags & ~kCGEventFlagMaskControl);
+    CGEventPost(kCGHIDEventTap, e);
+    CFRelease(e);
+}
+
 /* 服务端（Windows 物理像素）-> 本端坐标的位移缩放。
  * 当前两端都是 3840×2160，scale 为 1；显示器模式变了会自动跟。
  * peer 尺寸未知时退化为 1:1。 */
@@ -143,7 +155,7 @@ void inject_release_all(void) {
                                i == HOP_BTN_MIDDLE ? kCGMouseButtonCenter : kCGMouseButtonLeft;
         CGEventType type = i == HOP_BTN_RIGHT ? kCGEventRightMouseUp :
                            i == HOP_BTN_MIDDLE ? kCGEventOtherMouseUp : kCGEventLeftMouseUp;
-        post(CGEventCreateMouseEvent(NULL, type, pt, button));
+        post_mouse(CGEventCreateMouseEvent(NULL, type, pt, button));
         s_input.btn_held[i] = 0;
     }
 
@@ -184,7 +196,7 @@ static CGEventType move_type(void) {
 static void post_move(CGPoint pt, CGMouseButton btn) {
     CGEventRef e = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved, pt, btn);
     CGEventSetType(e, move_type());
-    post(e);
+    post_mouse(e);
 }
 
 /* 进入共享：边缘内侧死区、指定 y（已是本端坐标），并立即定位物理鼠标 */
@@ -270,7 +282,7 @@ void inject_button(int button, int down) {
     if (button >= 0 && button < 3) s_input.btn_held[button] = down;
 
     e = CGEventCreateMouseEvent(NULL, t, pt, b);
-    post(e);
+    post_mouse(e);
 }
 
 void inject_wheel(int dx, int dy) {
@@ -279,7 +291,7 @@ void inject_wheel(int dx, int dy) {
     /* Windows WHEEL_DELTA=120 ≈ 3 行；按像素单位换算 */
     e = CGEventCreateScrollWheelEvent2(NULL, kCGScrollEventUnitPixel, 2,
                                        (int32_t)dy, (int32_t)dx, 0);
-    post(e);
+    post_mouse(e);
 }
 
 /* ---- 阶段 2：键盘 ---- */

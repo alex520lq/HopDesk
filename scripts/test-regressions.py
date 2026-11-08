@@ -33,6 +33,35 @@ with tempfile.TemporaryDirectory(prefix='hopdesk-regression-') as directory:
         subprocess.run([str(exe)],cwd=work,check=True,timeout=30)
 
     run('tracking_config',(ROOT/'tests/regression_tests.c').read_text(encoding='utf-8'),['src/core/config.c','src/core/xfer_tracking.c'])
+    run('rx_protocol_adapter',r'''
+#include "hop.h"
+#include "xfer_rx_protocol_adapter.h"
+#include <assert.h>
+#include <stdio.h>
+typedef struct { int calls; int marker; } test_context;
+static void on_file_begin(void *context,const uint8_t *payload,uint32_t length) {
+    test_context *state=(test_context *)context;
+    assert(state && state->marker==73 && length==2 && payload[0]==4);
+    state->calls++;
+}
+int main(void) {
+    hop_xfer_rx_protocol_adapter adapter={0};
+    hop_xfer_rx_dispatch_handlers handlers={0};
+    test_context context={0,73};
+    uint8_t payload[2]={4,5};
+    assert(!hop_xfer_rx_protocol_adapter_dispatch(&adapter,HOP_MSG_FILE_BEGIN,payload,2));
+    assert(!hop_xfer_rx_protocol_adapter_init(NULL,&handlers,&context));
+    assert(!hop_xfer_rx_protocol_adapter_init(&adapter,NULL,&context));
+    handlers.file_begin=on_file_begin;
+    assert(hop_xfer_rx_protocol_adapter_init(&adapter,&handlers,&context));
+    assert(hop_xfer_rx_protocol_adapter_dispatch(&adapter,HOP_MSG_FILE_BEGIN,payload,2));
+    assert(context.calls==1);
+    assert(!hop_xfer_rx_protocol_adapter_dispatch(&adapter,0xff,payload,2));
+    assert(context.calls==1);
+    puts("PASS: receiver protocol adapter validates lifecycle and forwards explicit context");
+    return 0;
+}
+''',['src/core/xfer_rx_protocol_adapter.c','src/core/xfer_rx_dispatch.c'])
     assert not list(work.glob('*.tmp.*')), 'failed migration leaked temporary files'
     run('ack_window_checkpoint',r'''
 #include "xfer_ack_window.h"
@@ -525,7 +554,7 @@ int main(void){
     puts("PASS: production IMAGE DONE and validated file-paste completion paths");return 0;
 }
 '''
-        run('image_'+platform,common+extract(source,'send_done')+'\n'+extract(source,'rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_rx_image_buffer.c'],threads=True)
+        run('image_'+platform,common+extract(source,'send_done')+'\n'+extract(source,'rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_protocol_adapter.c','src/core/xfer_rx_dispatch.c'],threads=True)
     # Run the actual per-platform state wrappers, not only a reimplemented model.
     for platform in ['win','mac']:
         source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', '\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_batch_lifecycle.inc','xfer_rx_protocol_handlers.inc')))

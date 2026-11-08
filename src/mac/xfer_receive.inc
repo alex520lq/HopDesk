@@ -197,6 +197,32 @@ static hop_xfer_rx_lifecycle s_rx_lifecycle;
  * wire idempotency metadata, not another task or reservation owner. */
 static hop_xfer_rx_done_receipt s_done_receipt;
 
+static void rx_context_reset_file_error(void *context) {
+    (void)context;
+    hop_writer_queue_error_reset(s_wq);
+}
+static int rx_context_open_file(void *context, const void *native_path) {
+    (void)context;
+    rx_task task;
+    memset(&task, 0, sizeof(task));
+    task.kind = RX_OPEN;
+    snprintf(task.path, sizeof(task.path), "%s", (const char *)native_path);
+    return wq_push(&task);
+}
+static int rx_context_write_file_chunk(void *context, hop_xfer_task *task,
+                                       uint64_t offset, const uint8_t *data, uint32_t length) {
+    (void)context;
+    return wq_push_data(task, offset, data, length);
+}
+static void rx_context_close_file(void *context) {
+    (void)context;
+    rx_close_file();
+}
+static int rx_context_file_error(void *context) {
+    (void)context;
+    return wq_error_get();
+}
+
 static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer);
 static void rx_begin_batch(uint32_t batch);
 static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total);
@@ -227,6 +253,11 @@ static void rx_context_configure(void) {
     s_rx.services.terminate_batch = rx_context_terminate_batch;
     s_rx.services.begin_batch = rx_context_begin_batch;
     s_rx.services.finish_batch = rx_context_finish_batch;
+    s_rx.services.reset_file_error = rx_context_reset_file_error;
+    s_rx.services.open_file = rx_context_open_file;
+    s_rx.services.write_file_chunk = rx_context_write_file_chunk;
+    s_rx.services.close_file = rx_context_close_file;
+    s_rx.services.file_error = rx_context_file_error;
 }
 static void rx_discard_dir(void);
 static void rx_bind_session(const hop_session_id *session) {

@@ -1,3 +1,8 @@
+static uint64_t rx_now_ns(xfer_rx_context *rx) {
+    return rx && rx->services.now_ns
+        ? rx->services.now_ns(rx->services.context) : 0;
+}
+
 static void rx_handler_terminate(xfer_rx_context *rx, uint32_t batch, uint8_t reason, int notify_peer) {
     if (rx && rx->services.terminate_batch)
         rx->services.terminate_batch(rx->services.context, batch, reason, notify_peer);
@@ -58,7 +63,7 @@ hop_xfer_file_begin_msg msg;
                 hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_BADPATH);
                 return;
             }
-            status_add_received_file(batch,id,relz,size,rx->file_state.is_directory);
+            if (rx->services.status_add_received_file) rx->services.status_add_received_file(rx->services.context,batch,id,relz,size,rx->file_state.is_directory);
             wchar_t *path = hop_xfer_rx_fs_path_for(rx->dir, relz);
             free(relz);
             if (!path) { hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_BADPATH); return; }
@@ -156,7 +161,7 @@ hop_xfer_image_begin_msg msg;
             }
             if (rx->image_buffer.data) hop_xfer_rx_image_state_set_capacity(
                 &rx->image_state, rx->image_buffer.capacity);
-            status_image(batch,HOP_XFER_DIR_RECEIVE,rx->image_state.expected);
+            if (rx->services.status_image) rx->services.status_image(rx->services.context,batch,rx->image_state.expected);
             return;
 }
 
@@ -164,7 +169,7 @@ static void rx_dispatch_file_chunk(void *context, const uint8_t *p, uint32_t len
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx) return;
 if (!rx->batch_state.active) return; /* late data after termination */
-            uint64_t receive_started_ns=rate_now_ns();
+            uint64_t receive_started_ns=rx_now_ns(rx);
             hop_xfer_file_chunk_msg chunk;
             if (!hop_xfer_decode_file_chunk(p, len,
                     rx->file_state.is_image ? rx->image_state.expected :
@@ -188,13 +193,13 @@ if (!rx->batch_state.active) return; /* late data after termination */
              *
              * 坏一块只作废这一个文件，不再 ABORT 整批：
              * 发送端收到 ACK_CRC 会单独重发它，其余文件照常落地。 */
-            uint64_t crc_started_ns=rate_now_ns();
+            uint64_t crc_started_ns=rx_now_ns(rx);
             int crc_ok=(hop_crc32(0, data, n) == crc);
-            uint64_t crc_elapsed_ns=rate_now_ns()-crc_started_ns;
+            uint64_t crc_elapsed_ns=rx_now_ns(rx)-crc_started_ns;
             if (!crc_ok) {
-                status_stage_time(HOP_XFER_DIR_RECEIVE,rx->batch_state.batch,HOP_XFER_TIME_CRC,crc_elapsed_ns);
-                status_stage_time(HOP_XFER_DIR_RECEIVE,rx->batch_state.batch,HOP_XFER_TIME_RECEIVE,
-                                  rate_now_ns()-receive_started_ns);
+                if (rx->services.status_stage_time) rx->services.status_stage_time(rx->services.context,rx->batch_state.batch,HOP_XFER_TIME_CRC,crc_elapsed_ns);
+                if (rx->services.status_stage_time) rx->services.status_stage_time(rx->services.context,rx->batch_state.batch,HOP_XFER_TIME_RECEIVE,
+                                  rx_now_ns(rx)-receive_started_ns);
                 hop_log(HOP_LOG_ERROR,
                         "xfer: CHUNK CRC MISMATCH off=%llu len=%u (expect %08x)",
                         (unsigned long long)off, n, crc);
@@ -235,9 +240,8 @@ if (!rx->batch_state.active) return; /* late data after termination */
                     rx_handler_terminate(rx, rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
                     return;
                 }
-                uint64_t receive_elapsed_ns=rate_now_ns()-receive_started_ns;
-                status_chunk_timed(HOP_XFER_DIR_RECEIVE,rx->batch_state.batch,rx->file_state.id,off,n,
-                                   0,crc_elapsed_ns,0,receive_elapsed_ns);
+                uint64_t receive_elapsed_ns=rx_now_ns(rx)-receive_started_ns;
+                if (rx->services.status_chunk_received) rx->services.status_chunk_received(rx->services.context,rx->batch_state.batch,rx->file_state.id,off,n,crc_elapsed_ns,receive_elapsed_ns);
                 return;
             }
 
@@ -265,9 +269,8 @@ if (!rx->batch_state.active) return; /* late data after termination */
                 hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_CRC);
                 return;
             }
-            uint64_t receive_elapsed_ns=rate_now_ns()-receive_started_ns;
-            status_chunk_timed(HOP_XFER_DIR_RECEIVE,rx->batch_state.batch,rx->file_state.id,off,n,
-                               0,crc_elapsed_ns,0,receive_elapsed_ns);
+            uint64_t receive_elapsed_ns=rx_now_ns(rx)-receive_started_ns;
+            if (rx->services.status_chunk_received) rx->services.status_chunk_received(rx->services.context,rx->batch_state.batch,rx->file_state.id,off,n,crc_elapsed_ns,receive_elapsed_ns);
             return;
 }
 
@@ -284,7 +287,7 @@ hop_xfer_file_end_msg end_msg;
             /* 图片整批走，没有逐文件回执：发送端不会等 */
             if (rx->file_state.is_image) return;
 
-            status_file_phase(HOP_XFER_DIR_RECEIVE,rx->batch_state.batch,(int)id-1,HOP_XFER_FILE_VERIFYING,0);
+            if (rx->services.status_file_phase) rx->services.status_file_phase(rx->services.context,rx->batch_state.batch,(int)id-1,HOP_XFER_FILE_VERIFYING,0);
             /* Always drain and close before deciding the per-file ACK. */
             if (!rx->file_state.is_directory) if (rx->services.close_file) rx->services.close_file(rx->services.context);
 
@@ -325,7 +328,7 @@ hop_xfer_file_end_msg end_msg;
                             rx->cur_path, error);
             }
 
-            status_file_phase(HOP_XFER_DIR_RECEIVE,rx->batch_state.batch,(int)id-1,ack==HOP_FILE_ACK_OK?HOP_XFER_FILE_COMPLETED:HOP_XFER_FILE_FAILED,0);
+            if (rx->services.status_file_phase) rx->services.status_file_phase(rx->services.context,rx->batch_state.batch,(int)id-1,ack==HOP_FILE_ACK_OK?HOP_XFER_FILE_COMPLETED:HOP_XFER_FILE_FAILED,0);
 
             /* 回执是发送端判断"这个文件成没成"的唯一依据。
              * 以前这里发的是批量级 ABORT，等于一个文件坏了就把整批判死。 */

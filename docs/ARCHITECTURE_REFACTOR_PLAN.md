@@ -480,3 +480,10 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - Receiver 源码结构回归测试已调整：Windows 检查 Queue 生产模块拥有 pool/accounting，Receiver include 不再包含 worker/pool 实现；macOS 在 parity 完成前仍检查旧平台适配。
 - 本切片还未验收：GitHub Actions Run #594（commit `cc32cd30a050520d8bb10c19ef61c94dca3e0d7b`）正在执行；前一轮因旧源码结构断言失败，已修正断言并触发新一轮。不得将编译/测试状态提前标记通过。
 - 当前只完成 Windows 平台提取；macOS Writer Queue 仍留在 `src/mac/xfer_receive.inc`，不能标记阶段 2 完成。
+
+
+#### Windows Queue extraction validation follow-up
+
+- The first two extraction CI attempts correctly exposed stale regression-fixture assumptions: the fixture expected the Receiver include to export its old global error accessor. The Receiver now keeps a narrow `wq_error_get()` compatibility wrapper; production queue internals remain outside the fixture.
+- The next attempt exposed a missing test-link dependency: `xfer_buffer_pool.c` updates the global RX-pool budget through `xfer_budget.c`. The independent Windows writer-queue test target now links that production Core module as well.
+- Run #596 for commit `66fb932315208ade62860b9234d578fe0c351cc6` has been queued. No pass is claimed until its Windows and macOS jobs finish.

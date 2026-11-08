@@ -14,6 +14,7 @@
 #include "../core/xfer_rx_entry_reservations.h"
 #include "../core/xfer_rx_file_state.h"
 #include "../core/xfer_rx_dispatch.h"
+#include "../core/xfer_rx_platform_dispatch.h"
 #include "../core/xfer_rx_services.h"
 #include "../core/xfer_rx_context.h"
 #include "../core/xfer_rx_ack_handler.h"

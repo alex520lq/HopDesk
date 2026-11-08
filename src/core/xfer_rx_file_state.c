@@ -44,3 +44,14 @@ int hop_xfer_rx_file_state_record_chunk(
     state->crc = hop_xfer_file_crc_step(state->crc, offset, chunk_crc);
     return 1;
 }
+
+uint8_t hop_xfer_rx_file_state_ack(const hop_xfer_rx_file_state *state,
+                                   uint8_t peer_status, int writer_error,
+                                   uint32_t expected_file_crc) {
+    if (!state || !state->id) return HOP_FILE_ACK_DISK;
+    if (state->failure >= 0) return (uint8_t)state->failure;
+    if (writer_error || peer_status != HOP_FILE_OK) return HOP_FILE_ACK_DISK;
+    if (state->received != state->declared_size) return HOP_FILE_ACK_CRC;
+    if (state->crc != expected_file_crc) return HOP_FILE_ACK_CRC;
+    return HOP_FILE_ACK_OK;
+}

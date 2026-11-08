@@ -632,8 +632,8 @@ int main(void){
         state_start=receiver.index('typedef struct {',receiver.index('/* ---------------- 接收')) if platform=='win' else receiver.index('static struct {',receiver.index('/* ---------------- 接收'))
         state_end=receiver.index('static xfer_rx s_rx;',state_start)+len('static xfer_rx s_rx;') if platform=='win' else receiver.index('} s_rx;',state_start)+len('} s_rx;')
         dispatch_names=['image_begin','file_chunk','abort_message','done']
-        dispatch_handlers='\\n'.join(extract(receiver,'rx_dispatch_'+name) for name in dispatch_names)
-        dispatch_handlers+='\\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { NULL, rx_dispatch_image_begin, rx_dispatch_file_chunk, NULL, NULL, rx_dispatch_abort_message, rx_dispatch_done, NULL };\\n'
+        dispatch_handlers='\n'.join(extract(receiver,'rx_dispatch_'+name) for name in dispatch_names)
+        dispatch_handlers+='\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { NULL, rx_dispatch_image_begin, rx_dispatch_file_chunk, NULL, NULL, rx_dispatch_abort_message, rx_dispatch_done, NULL };\n'
         fixture=(ROOT/'tests/receive_abort_fixture.c.in').read_text(encoding='utf-8')
         values={
             'RX_STATE':receiver[state_start:state_end],

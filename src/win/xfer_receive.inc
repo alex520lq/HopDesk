@@ -250,6 +250,7 @@ static int wq_start(void) {
     };
     if (!hop_writer_worker_start(&s_wq.worker, &s_wq, sizeof(rx_task), &callbacks)) {
         DeleteCriticalSection(&s_wq.lock);
+        hop_xfer_buffer_pool_dispose(&s_wq.pool);
         return 0;
     }
     return 1;

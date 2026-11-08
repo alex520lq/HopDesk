@@ -27,7 +27,7 @@ int main(void) {
     assert(hop_xfer_rx_file_state_ack(&state, HOP_FILE_OK, 0, state.crc) == HOP_FILE_ACK_OK);
     assert(hop_xfer_rx_file_state_ack(&state, HOP_FILE_IO_ERROR, 0, state.crc) == HOP_FILE_ACK_DISK);
     assert(hop_xfer_rx_file_state_ack(&state, HOP_FILE_OK, 1, state.crc) == HOP_FILE_ACK_DISK);
-    assert(hop_xfer_rx_file_state_ack(&state, HOP_FILE_OK, 0, state.crc + 1) == HOP_FILE_ACK_OK);
+    assert(hop_xfer_rx_file_state_ack(&state, HOP_FILE_OK, 0, state.crc + 1) == HOP_FILE_ACK_CRC);
     /* An incomplete transfer is CRC failure even if the peer CRC happens to match. */
     hop_xfer_rx_file_state_set_size(&state, 10);
     assert(hop_xfer_rx_file_state_ack(&state, HOP_FILE_OK, 0, state.crc) == HOP_FILE_ACK_CRC);

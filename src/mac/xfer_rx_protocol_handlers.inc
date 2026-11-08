@@ -297,7 +297,7 @@ hop_xfer_file_end_msg end_msg;
 
 
             if (ack != HOP_FILE_ACK_OK && !s_rx.file_state.is_directory && s_rx.cur_path) {
-                if (unlink(s_rx.cur_path) != 0 && errno != ENOENT)
+                if (hop_xfer_rx_fs_remove_file(s_rx.cur_path) != 0 && errno != ENOENT)
                     hop_log(HOP_LOG_WARN, "xfer: failed to remove incomplete file %s (%s)",
                             s_rx.cur_path, strerror(errno));
             }

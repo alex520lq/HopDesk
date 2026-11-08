@@ -33,11 +33,6 @@ static void rx_handler_begin_batch(xfer_rx_context *rx, uint32_t batch) {
         rx->services.begin_batch(rx->services.context, batch);
 }
 
-static int rx_handler_finish_batch(xfer_rx_context *rx, uint32_t batch, uint32_t ok, uint32_t total) {
-    if (!rx || !rx->services.finish_batch) return -1;
-    return rx->services.finish_batch(rx->services.context, batch, ok, total);
-}
-
 static void rx_dispatch_file_begin(void *context, const uint8_t *p, uint32_t len) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx) return;
@@ -190,83 +185,13 @@ hop_xfer_file_end_msg end_msg;
             return;
 }
 
-static void rx_ack_deliver_file(void *context, uint32_t batch, uint32_t id, uint8_t status) {
-    xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (rx && rx->services.deliver_ack)
-        rx->services.deliver_ack(rx->services.context, batch, id, status);
-}
-
-static void rx_ack_deliver_done(void *context, uint32_t batch, uint32_t status) {
-    xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (rx && rx->services.deliver_ack)
-        rx->services.deliver_ack(rx->services.context, batch, HOP_DONE_ACK_SLOT, (int)status);
-}
-
-static void rx_dispatch_file_ack(void *context, const uint8_t *p, uint32_t len) {
-    xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (!rx) return;
-    (void)hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, rx);
-}
-
-static void rx_dispatch_abort_message(void *context, const uint8_t *p, uint32_t len) {
-    xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (!rx) return;
-hop_xfer_abort_msg abort_msg;
-            if (!hop_xfer_decode_abort(p, len, &abort_msg)) return;
-            uint32_t batch = abort_msg.batch;
-            uint8_t reason = abort_msg.reason;
-
-            if (abort_msg.target == HOP_ABORT_TO_SENDER && rx->services.mark_sender_aborted)
-                rx->services.mark_sender_aborted(rx->services.context, batch, reason);
-
-            hop_log(HOP_LOG_ERROR, "xfer: peer aborted batch %u (reason %u)",
-                    batch, reason);
-
-            /* 对端不要这一批了：关文件、删掉已落盘的半成品、立墓碑。 */
-            if (abort_msg.target == HOP_ABORT_TO_RECEIVER) rx_handler_terminate(rx, batch,reason,0);
-            return;
-}
-
-static void rx_dispatch_done(void *context, const uint8_t *p, uint32_t len) {
-    xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (!rx) return;
-hop_xfer_done_msg done;
-            if (!hop_xfer_decode_done(p, len, &done)) {
-                hop_log(HOP_LOG_WARN, "xfer: malformed XFER_DONE ignored");
-                return;
-            }
-            if (!done.batch || !done.total || done.total > HOP_XFER_FILE_LIMIT || done.ok > done.total) return;
-            int result;
-            const hop_xfer_rx_done_receipt *receipt =
-                hop_xfer_rx_done_receipt_find(rx->done_receipt, hop_xfer_rx_lifecycle_session(rx->lifecycle), done.batch);
-            if (receipt) {
-                if (!hop_xfer_rx_done_receipt_matches_payload(receipt, &done)) return;
-                result=receipt->status; /* repeat ACK without repeating clipboard effects */
-            } else {
-                result=rx_handler_finish_batch(rx, done.batch, done.ok, done.total);
-                if (result<0) return;
-                hop_xfer_rx_done_receipt_record(rx->done_receipt, hop_xfer_rx_lifecycle_session(rx->lifecycle),
-                                                &done, (uint8_t)result);
-            }
-            uint8_t reply[5]; hop_put_be32(reply,done.batch); reply[4]=(uint8_t)result;
-            if (rx->services.send_done_ack)
-                rx->services.send_done_ack(rx->services.context, done.batch, reply, sizeof(reply));
-            return;
-}
-
-static void rx_dispatch_done_ack(void *context, const uint8_t *p, uint32_t len) {
-    xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (!rx) return;
-    (void)hop_xfer_rx_handle_done_ack(p, len, rx_ack_deliver_done, rx);
-}
-
 const hop_xfer_rx_dispatch_handlers hop_xfer_rx_platform_dispatch_handlers = {
     rx_dispatch_file_begin,
     hop_xfer_rx_handle_image_begin,
     hop_xfer_rx_handle_file_chunk,
     rx_dispatch_file_end,
-    rx_dispatch_file_ack,
-    rx_dispatch_abort_message,
-    rx_dispatch_done,
-    rx_dispatch_done_ack
+    hop_xfer_rx_handle_file_ack,
+    hop_xfer_rx_handle_abort,
+    hop_xfer_rx_handle_done,
+    hop_xfer_rx_handle_done_ack
 };

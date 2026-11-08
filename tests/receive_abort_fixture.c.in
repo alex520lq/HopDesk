@@ -70,6 +70,11 @@ static void fixture_shutdown_data(void *context){(void)context;}
 static void fixture_terminate_batch(void *context,uint32_t batch,uint8_t reason,int notify_peer);
 static void fixture_begin_batch(void *context,uint32_t batch);
 static int fixture_finish_batch(void *context,uint32_t batch,uint32_t ok,uint32_t total);
+static void fixture_reset_file_error(void *context);
+static int fixture_open_file(void *context,const void *native_path);
+static int fixture_write_file_chunk(void *context,hop_xfer_task *task,uint64_t offset,const uint8_t *data,uint32_t length);
+static void fixture_close_file(void *context);
+static int fixture_file_error(void *context);
 static void fixture_mark_sender_aborted(void *context,uint32_t batch,uint8_t reason){
     (void)context;
     if(s_x.cur_batch==batch){s_x.abort_batch=batch;s_x.abort_reason=reason;}
@@ -102,6 +107,11 @@ static void fixture_configure_rx_context(void){
     s_rx.services.terminate_batch=fixture_terminate_batch;
     s_rx.services.begin_batch=fixture_begin_batch;
     s_rx.services.finish_batch=fixture_finish_batch;
+    s_rx.services.reset_file_error=fixture_reset_file_error;
+    s_rx.services.open_file=fixture_open_file;
+    s_rx.services.write_file_chunk=fixture_write_file_chunk;
+    s_rx.services.close_file=fixture_close_file;
+    s_rx.services.file_error=fixture_file_error;
 }
 static void history_save(void){assert(closed); if(s_receive_status.status.phase!=HOP_XFER_COMPLETED) assert(!s_rx.image_buffer.data && !s_rx.cur_path && !s_rx.tops && !s_rx.batch_state.active); saved++;}
 #ifdef FIXTURE_WINDOWS
@@ -156,6 +166,7 @@ static void apply_paths(const void*p,int n){(void)p;(void)n;applied++;}
 #define clipboard_apply_paths apply_paths
 @FINISH_BATCH@
 @RX_SERVICE_CALLBACKS@
+@RX_WRITER_CALLBACKS@
 @CANCEL_LOCAL@
 @BIND_SESSION@
 static void rx_expire_stale_session(void){}

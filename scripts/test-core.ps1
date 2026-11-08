@@ -116,3 +116,14 @@ if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
 if ($LASTEXITCODE -ne 0) { throw "RX receipt test compilation failed ($LASTEXITCODE)" }
 & $rxReceipt
 if ($LASTEXITCODE -ne 0) { throw "RX receipt tests failed ($LASTEXITCODE)" }
+
+$rxLifecycle = Join-Path $build 'hopdesk-rx-lifecycle-tests.exe'
+$rxLifecycleSources = @((Join-Path $root 'tests/xfer_rx_lifecycle_tests.c'), (Join-Path $root 'src/core/xfer_rx_lifecycle.c'), (Join-Path $root 'src/core/protocol.c'), (Join-Path $root 'src/core/crc32.c'))
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$rxLifecycle @rxLifecycleSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $rxLifecycle @rxLifecycleSources
+}
+if ($LASTEXITCODE -ne 0) { throw "RX lifecycle test compilation failed ($LASTEXITCODE)" }
+& $rxLifecycle
+if ($LASTEXITCODE -ne 0) { throw "RX lifecycle tests failed ($LASTEXITCODE)" }

@@ -771,6 +771,9 @@ int main(void){
         for writer_call in ['reset_file_error','open_file','write_file_chunk','close_file','file_error']:
             assert 'rx->services.'+writer_call in protocol_handlers
         assert not any(token in protocol_handlers for token in ['wq_push(', 'wq_push_data(', 'wq_error_get(', 'rx_close_file(', 'hop_writer_queue_error_reset('])
+        assert not any(token in protocol_handlers for token in ['rx_add_top(', 'rx_remove_top(', 'status_add_received_file(', 'status_image(', 'status_stage_time(', 'status_chunk_timed(', 'status_file_phase(', 'rate_now_ns('])
+        for service in ['add_top_path','remove_top_path','finish_clipboard','cancel_clipboard','now_ns','status_begin','status_end','status_add_received_file','status_image','status_stage_time','status_chunk_received','status_file_phase','status_set_files_total']:
+            assert 'rx->services.'+service in protocol_handlers or service in receiver
         done_handler=extract(receiver,'rx_dispatch_done')
         assert 'hop_xfer_rx_done_receipt_find(rx->done_receipt,' in done_handler
         assert 'hop_xfer_rx_done_receipt_find(&rx->done_receipt,' not in done_handler
@@ -779,8 +782,8 @@ int main(void){
         assert 'status > HOP_DONE_ACK_FAILED' in shared_ack
         lifecycle=extract(receiver,'rx_begin_batch')
         assert 'hop_xfer_rx_fs_mkdir_p(s_rx.dir)' in lifecycle if platform=='mac' else 'hop_xfer_rx_fs_ensure_dirs(s_rx.dir)' in lifecycle
-        assert 'rx_remove_top(rx->cur_path)' in begin
-        assert '!rx_add_top(path)' in begin or '!rx_add_top(rx->cur_path)' in end
+        assert 'rx->services.remove_top_path' in begin
+        assert 'rx->services.add_top_path' in begin and 'rx->services.add_top_path' in end
         if platform=='mac':
             assert 'hop_xfer_rx_fs_mkdir_p(path) != 0' in begin
             fs=(ROOT/'src/mac/xfer_rx_fs.c').read_text(encoding='utf-8')

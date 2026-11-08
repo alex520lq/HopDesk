@@ -31,7 +31,7 @@ static struct {
     CRITICAL_SECTION   lock;
     CONDITION_VARIABLE cv_work, cv_space;
     HANDLE             th;
-    HANDLE             f;        /* 写线程独占 */
+    hop_writer_io      io;       /* 写线程独占 */
     volatile LONG      err;      /* 写盘失败标记，主路径读 */
     int                stop;
 } s_wq;
@@ -47,38 +47,23 @@ static void wq_error_set(int value) { InterlockedExchange(&s_wq.err, value); }
 static int wq_error_get(void) { return InterlockedCompareExchange(&s_wq.err, 0, 0); }
 
 static void wq_task_run(rx_task *t) {
+    unsigned long error = 0;
     switch (t->kind) {
         case RX_OPEN:
-            if (s_wq.f && s_wq.f != INVALID_HANDLE_VALUE) CloseHandle(s_wq.f);
-            s_wq.f = CreateFileW(t->path, GENERIC_WRITE, 0, NULL,
-                                 CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-            if (s_wq.f == INVALID_HANDLE_VALUE) {
-                hop_log(HOP_LOG_WARN, "xfer: cannot create %ls (err %lu)",
-                        t->path, GetLastError());
+            if (!hop_writer_io_open(&s_wq.io, t->path, &error)) {
+                hop_log(HOP_LOG_WARN, "xfer: cannot create %ls (err %lu)", t->path, error);
                 wq_error_set(1);
             }
             break;
-
         case RX_WRITE:
-            if (s_wq.f && s_wq.f != INVALID_HANDLE_VALUE) {
-                LARGE_INTEGER li;
-                li.QuadPart = (LONGLONG)t->off;
-                SetFilePointerEx(s_wq.f, li, NULL, FILE_BEGIN);
-                DWORD wrote = 0;
-                if (!WriteFile(s_wq.f, t->data, t->len, &wrote, NULL) ||
-                    wrote != t->len) {
-                    hop_log(HOP_LOG_WARN, "xfer: write failed at %llu (err %lu)",
-                            (unsigned long long)t->off, GetLastError());
-                    wq_error_set(1);
-                }
+            if (!hop_writer_io_write_at(&s_wq.io, t->off, t->data, t->len, &error)) {
+                hop_log(HOP_LOG_WARN, "xfer: write failed at %llu (err %lu)",
+                        (unsigned long long)t->off, error);
+                wq_error_set(1);
             }
             break;
-
         case RX_CLOSE:
-            if (s_wq.f && s_wq.f != INVALID_HANDLE_VALUE) {
-                CloseHandle(s_wq.f);
-                s_wq.f = INVALID_HANDLE_VALUE;
-            }
+            hop_writer_io_close(&s_wq.io);
             break;
     }
 }
@@ -125,10 +110,7 @@ static DWORD WINAPI writer_thread(LPVOID arg) {
         WakeConditionVariable(&s_wq.cv_space);
         LeaveCriticalSection(&s_wq.lock);
     }
-    if (s_wq.f && s_wq.f != INVALID_HANDLE_VALUE) {
-        CloseHandle(s_wq.f);
-        s_wq.f = INVALID_HANDLE_VALUE;
-    }
+    hop_writer_io_close(&s_wq.io);
     return 0;
 }
 
@@ -240,7 +222,7 @@ static void wq_drain(void) {
 static int wq_start(void) {
     memset(&s_wq, 0, sizeof(s_wq));
     hop_xfer_buffer_pool_init(&s_wq.pool);
-    s_wq.f = INVALID_HANDLE_VALUE;
+    hop_writer_io_init(&s_wq.io);
     InitializeCriticalSection(&s_wq.lock);
     InitializeConditionVariable(&s_wq.cv_work);
     InitializeConditionVariable(&s_wq.cv_space);

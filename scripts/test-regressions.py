@@ -345,7 +345,7 @@ int main(void){
     run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','apply_global_expected','apply_global','clip_retry_pending','clip_on_paste_message'])+clip_main)
     # A cross-device paste batch must never fall through to the ordinary clipboard writer.
     for platform in ['win','mac']:
-        rx=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        rx='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_batch_lifecycle.inc','xfer_rx_protocol_handlers.inc'))
         if platform=='win':
             assert 'clip_complete_remote_paste(batch,(const wchar_t *const *)s_rx.tops,s_rx.ntop,1)' in rx
             assert 'clip_complete_remote_paste(batch,NULL,0,0)' in rx

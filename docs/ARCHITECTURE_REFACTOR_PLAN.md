@@ -435,3 +435,13 @@ tests/
 - 新增 `tests/writer_worker_tests.c`，覆盖 take/run/complete/on_exit 的调用顺序、成功 join 和 join 后重启；两端 core test 脚本均接入该独立目标。
 - 当前切片尚未取得本次新提交的 CI 结果。下一步应补齐 start failure、join timeout 注入、停止期间 producer 唤醒和队列 drain 竞态测试，再继续把 queue command/ownership 从 include 中抽出。
 - 提交序列：`ccaef1d`、`1e7649c`、`8d34d94`、`eec2622`、`40c4b7d`、`80d3e2f`、`f6ce65c`、`be4dfd2`、`fa9c1f4`、`baa94ec`、`39d5168`、`ec72cb1`、`e947258`、`359b68f`、`5963e0d`、`05b11b9`、`79204e7`、`1608649`、`18178f9`。
+
+
+### 2026-11-08：Writer Queue 上下文与初始化失败回滚
+
+- 将平台 Writer Queue 的内部匿名结构命名为 `hop_rx_writer_queue`，Worker 回调全部通过显式 `context` 访问队列对象，不再在回调内隐式捕获全局 `s_wq`。
+- 写盘命令执行函数改为接收队列实例；线程回调中的锁、条件变量、ring、accounting、buffer pool 和 IO 均从 context 取得，为后续移入独立 `xfer_writer_queue.c` 做准备。
+- macOS 的 mutex / condition 初始化逐项检查，任一失败均按逆序销毁已初始化同步对象并释放 buffer pool；Worker 创建失败同样完整回滚。
+- Windows Worker 创建失败时同步释放已初始化的临界区和 buffer pool。
+- 此切片仍保留 Receiver 兼容入口 `wq_push / wq_push_data / wq_drain / wq_start / wq_stop`，未改变协议和任务状态机。
+- 尚需通过最新 Windows/macOS 原生 CI 与压力测试；在此之前不把本切片视为验收完成。

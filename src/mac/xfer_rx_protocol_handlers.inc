@@ -43,7 +43,7 @@ hop_xfer_file_begin_msg msg;
             rx->cur_path     = NULL;
             hop_xfer_rx_file_state_begin(&rx->file_state, id);
             hop_xfer_rx_file_state_set_kind(&rx->file_state, 0, (flags & HOP_FILE_FLAG_DIR) != 0);
-            hop_writer_queue_error_reset((hop_writer_queue *)rx->writer);
+            if (rx->services.reset_file_error) rx->services.reset_file_error(rx->services.context);
 
             char rel[HOP_PATH_LEN_MAX + 1];
             if (!hop_xfer_relpath_bytes_safe(msg.relpath, plen)) {
@@ -92,11 +92,9 @@ hop_xfer_file_begin_msg msg;
                 }
 
                 /* 打开交给写线程 —— 描述符归它独占 */
-                rx_task t;
-                memset(&t, 0, sizeof(t));
-                t.kind = RX_OPEN;
-                snprintf(t.path, sizeof(t.path), "%s", path);
-                if (!wq_push(&t)) hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_DISK);
+                if (!rx->services.open_file ||
+                    !rx->services.open_file(rx->services.context, path))
+                    hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_DISK);
 
                 /* 不在这里进剪贴板清单 —— 此刻文件还没写成功。
                  * 写盘失败 / 校验失败的文件绝不能出现在剪贴板里，
@@ -252,7 +250,7 @@ if (!rx->batch_state.active) return; /* late data after termination */
 
             /* 校验通过才入队。拷贝一份交给写线程 —— 解码器的缓冲
              * 在回调返回后就被释放了，不能把指针递出去。 */
-            if (!wq_push_data(&rx->task, off, data, n)) {
+            if (!rx->services.write_file_chunk && rx->services.write_file_chunk(rx->services.context, &rx->task, off, data, n)) {
                 hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_DISK);
                 return;
             }
@@ -282,9 +280,9 @@ hop_xfer_file_end_msg end_msg;
 
             status_file_phase(HOP_XFER_DIR_RECEIVE,rx->batch_state.batch,(int)id-1,HOP_XFER_FILE_VERIFYING,0);
             /* Always drain and close before deciding the per-file ACK. */
-            if (!rx->file_state.is_directory) rx_close_file();
+            if (!rx->file_state.is_directory) if (rx->services.close_file) rx->services.close_file(rx->services.context);
 
-            int writer_error = wq_error_get();
+            int writer_error = rx->services.file_error ? rx->services.file_error(rx->services.context) : 1;
             int ack = hop_xfer_rx_file_state_ack(
                 &rx->file_state, status, writer_error, want);
             if (rx->file_state.failure < 0) {

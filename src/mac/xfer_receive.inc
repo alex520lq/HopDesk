@@ -223,6 +223,43 @@ static int rx_context_file_error(void *context) {
     return wq_error_get();
 }
 
+static int rx_add_top(const char *p);
+static void rx_remove_top(const char *p);
+
+static int rx_context_add_top_path(void *context, const void *native_path) {
+    (void)context;
+    return rx_add_top((const char *)native_path);
+}
+static void rx_context_remove_top_path(void *context, const void *native_path) {
+    (void)context;
+    rx_remove_top((const char *)native_path);
+}
+static void rx_context_cancel_clipboard(void *context, uint32_t batch) {
+    (void)context;
+    clipboard_complete_remote_paste(batch, NULL, 0, 0);
+}
+static void rx_context_finish_clipboard(void *context, uint32_t batch,
+        const void *image_data, uint32_t width, uint32_t height, uint32_t stride,
+        int image_valid, const void *const *top_paths, int top_count, int allow_publish) {
+    (void)context;
+    if (allow_publish && image_valid && image_data) {
+        uint64_t started = rate_now_ns();
+        clipboard_apply_image(image_data, (int)width, (int)height, (int)stride);
+        status_stage_time(HOP_XFER_DIR_RECEIVE, batch, HOP_XFER_TIME_CLIPBOARD_DISPATCH,
+                          rate_now_ns() - started);
+    } else if (allow_publish && top_count > 0) {
+        uint64_t started = rate_now_ns();
+        if (batch & HOP_XFER_PASTE_BATCH_FLAG)
+            clipboard_complete_remote_paste(batch, (const char *const *)top_paths, top_count, 1);
+        else
+            clipboard_apply_paths((const char *const *)top_paths, top_count);
+        status_stage_time(HOP_XFER_DIR_RECEIVE, batch, HOP_XFER_TIME_CLIPBOARD_DISPATCH,
+                          rate_now_ns() - started);
+    } else if (batch & HOP_XFER_PASTE_BATCH_FLAG) {
+        clipboard_complete_remote_paste(batch, NULL, 0, 0);
+    }
+}
+
 static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer);
 static void rx_begin_batch(uint32_t batch);
 static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total);
@@ -258,6 +295,10 @@ static void rx_context_configure(void) {
     s_rx.services.write_file_chunk = rx_context_write_file_chunk;
     s_rx.services.close_file = rx_context_close_file;
     s_rx.services.file_error = rx_context_file_error;
+    s_rx.services.add_top_path = rx_context_add_top_path;
+    s_rx.services.remove_top_path = rx_context_remove_top_path;
+    s_rx.services.finish_clipboard = rx_context_finish_clipboard;
+    s_rx.services.cancel_clipboard = rx_context_cancel_clipboard;
 }
 static void rx_discard_dir(void);
 static void rx_bind_session(const hop_session_id *session) {

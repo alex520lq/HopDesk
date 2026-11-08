@@ -234,6 +234,7 @@ static int wq_start(void) {
     /* A previous join timeout leaves a live worker; never erase its state. */
     if (s_wq.worker.state == 1) return 0;
     memset(&s_wq, 0, sizeof(s_wq));
+    atomic_init(&s_wq.err, 0);
     hop_xfer_buffer_pool_init(&s_wq.pool);
     hop_xfer_rx_queue_init(&s_wq.accounting, RX_Q_SLOTS, RX_Q_MAX_BYTES);
     hop_writer_io_init(&s_wq.io);

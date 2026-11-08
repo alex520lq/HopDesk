@@ -400,7 +400,7 @@ tests/
 
 已完成三个 Core 领域模块拆分：ACK Window、Transfer Tracking、RX Buffer Pool。另将 RX Queue accounting 的边界与生命周期用例独立为单独测试目标，避免所有队列回归都依赖大型 `core_tests.c`。最新又将 Windows/macOS 接收端重复的队列容量与 slot/byte accounting 抽取为 `xfer_rx_queue.c/.h`；平台层保留 ring storage、锁/条件变量和线程调度，Core 统一负责 slot/bytes admission、reservation/rollback/commit、dequeue/complete 和 drained 判断。新增 Core 单元测试覆盖满队列、busy writer、预留回滚、提交和排空。最新提交的 Windows/macOS CI 正在执行，尚未以通过状态结案。
 
-下一项执行：定义 Writer Queue 的显式 adapter contract，将队列/缓冲区所有权、Task Reservation、watchdog/status 观察接口分开；平台文件写入已先提取。接下来先提取 Windows writer worker，再按相同契约提取 macOS。与此同时补齐 Core include 边界检查与构建源清单重复检查。
+下一项执行：已新增 `docs/WRITER_QUEUE_CONTRACT.md`，明确 Writer Queue、Receiver、Task/Budget、Platform Adapter 的责任边界、命令所有权、状态机、FAILED_JOIN 语义和双平台测试门槛。接下来按该契约先提取 Windows writer worker，再按相同接口提取 macOS；平台文件 IO 已先提取。与此同时补齐 Core include 边界检查与构建源清单重复检查。
 
 此顺序是为了先确保新模块会被本地构建和 CI 正确编译，再拆解最有隐式依赖、最容易引入生命周期回归的接收端代码。
 
@@ -413,3 +413,13 @@ tests/
 - 该切片只拆分测试组织，不改变队列生产行为；此前 `core_tests.c` 中的原有 RX Queue 测试暂时保留，作为交叉回归覆盖。
 - 提交：`8edde5c`（初始测试文件）、`abf6d7c`（补齐独立测试）、`7806336`（诊断输出修正）、`192b7a1`（macOS 脚本接入）、`54496ab`（Windows 脚本接入）。
 - 当前状态：代码已推送到活动分支；本切片双平台 CI 结果待 Actions 实际执行。不得据此声称 Writer Worker 已独立化。
+
+
+### 2026-11-08：Writer Queue 所有权与生命周期契约
+
+- 新增 `docs/WRITER_QUEUE_CONTRACT.md`。
+- 明确 OPEN/WRITE/CLOSE 的 slot/bytes 计费、payload/Task reservation/pool slot 所有权转移和 exactly-once 释放。
+- 明确 UNINITIALIZED/RUNNING/STOPPING/STOPPED/FAILED_JOIN 状态，以及线程 join 超时后不得清空句柄、释放同步对象或重新初始化共享状态的约束。
+- 明确 Writer 不拥有 Receiver Task 终态，不直接控制 ACK；Receiver 必须在 CRC/删除/复用路径前 drain + CLOSE + drain。
+- 当前仍是接口与验收契约，不代表 Writer Worker 已拆成独立生产编译单元；后续按 Windows -> macOS 顺序实施。
+- 提交：`6dc51da68276eaa2ea1230e0f94882ab88ff19f7`。

@@ -72,3 +72,14 @@ if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
 if ($LASTEXITCODE -ne 0) { throw "Writer IO adapter compilation failed ($LASTEXITCODE)" }
 & $writerIo
 if ($LASTEXITCODE -ne 0) { throw "Writer IO adapter tests failed ($LASTEXITCODE)" }
+
+$rxQueueTests = Join-Path $build 'hopdesk-rx-queue-tests.exe'
+$rxQueueSources = @((Join-Path $root 'tests/xfer_rx_queue_tests.c'), (Join-Path $root 'src/core/xfer_rx_queue.c'))
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$rxQueueTests @rxQueueSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $rxQueueTests @rxQueueSources
+}
+if ($LASTEXITCODE -ne 0) { throw "RX queue test compilation failed ($LASTEXITCODE)" }
+& $rxQueueTests
+if ($LASTEXITCODE -ne 0) { throw "RX queue tests failed ($LASTEXITCODE)" }

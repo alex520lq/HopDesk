@@ -53,7 +53,7 @@ clang -std=c11 -Wall -Wextra -Werror -pthread -I "$ROOT/src/mac" \
   "$ROOT/tests/writer_worker_tests.c" "$ROOT/src/mac/xfer_writer_worker.c"
 "$BUILD/hopdesk-writer-worker-tests"
 
-clang -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
+clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -I "$ROOT/src/mac" -o "$BUILD/hopdesk-writer-queue-tests" \
   "$ROOT/tests/mac_writer_queue_tests.c" "$ROOT/src/mac/xfer_writer_queue.c" \
   "$ROOT/src/mac/xfer_writer_io.c" "$ROOT/src/mac/xfer_writer_worker.c" \

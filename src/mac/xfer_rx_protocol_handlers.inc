@@ -5,8 +5,8 @@ hop_xfer_file_begin_msg msg;
             if (!hop_xfer_decode_file_begin(p, len, &msg)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed FILE_BEGIN rejected");
                 if (rx->batch_state.active) rx_terminate(rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
-                if (rx->shutdown_data_channel)
-                    rx->shutdown_data_channel(rx->platform_context);
+                if (rx->services.shutdown_data_channel)
+                    rx->services.shutdown_data_channel(rx->services.context);
                 return;
             }
             uint32_t batch = msg.batch;
@@ -308,21 +308,21 @@ hop_xfer_file_end_msg end_msg;
 
             /* 回执是发送端判断"这个文件成没成"的唯一依据。
              * 以前这里发的是批量级 ABORT，等于一个文件坏了就把整批判死。 */
-            if (rx->send_file_ack)
-                rx->send_file_ack(rx->platform_context, rx->batch_state.batch, id, ack);
+            if (rx->services.send_file_ack)
+                rx->services.send_file_ack(rx->services.context, rx->batch_state.batch, id, ack);
             return;
 }
 
 static void rx_ack_deliver_file(void *context, uint32_t batch, uint32_t id, uint8_t status) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (rx && rx->deliver_ack)
-        rx->deliver_ack(rx->platform_context, batch, id, status);
+    if (rx && rx->services.deliver_ack)
+        rx->services.deliver_ack(rx->services.context, batch, id, status);
 }
 
 static void rx_ack_deliver_done(void *context, uint32_t batch, uint32_t status) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (rx && rx->deliver_ack)
-        rx->deliver_ack(rx->platform_context, batch, HOP_DONE_ACK_SLOT, (int)status);
+    if (rx && rx->services.deliver_ack)
+        rx->services.deliver_ack(rx->services.context, batch, HOP_DONE_ACK_SLOT, (int)status);
 }
 
 static void rx_dispatch_file_ack(void *context, const uint8_t *p, uint32_t len) {
@@ -339,8 +339,8 @@ hop_xfer_abort_msg abort_msg;
             uint32_t batch = abort_msg.batch;
             uint8_t reason = abort_msg.reason;
 
-            if (abort_msg.target == HOP_ABORT_TO_SENDER && rx->mark_sender_aborted)
-                rx->mark_sender_aborted(rx->platform_context, batch, reason);
+            if (abort_msg.target == HOP_ABORT_TO_SENDER && rx->services.mark_sender_aborted)
+                rx->services.mark_sender_aborted(rx->services.context, batch, reason);
 
             hop_log(HOP_LOG_ERROR, "xfer: peer aborted batch %u (reason %u)",
                     batch, reason);
@@ -372,8 +372,8 @@ hop_xfer_done_msg done;
                                                 &done, (uint8_t)result);
             }
             uint8_t reply[5]; hop_put_be32(reply,done.batch); reply[4]=(uint8_t)result;
-            if (rx->send_done_ack)
-                rx->send_done_ack(rx->platform_context, done.batch, reply, sizeof(reply));
+            if (rx->services.send_done_ack)
+                rx->services.send_done_ack(rx->services.context, done.batch, reply, sizeof(reply));
             return;
 }
 

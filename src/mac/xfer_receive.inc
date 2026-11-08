@@ -440,7 +440,7 @@ static void rx_remove_top(const char *p) {
  * is idempotent; repeated/stale ABORTs cannot end an unrelated active batch. */
 #include "xfer_rx_batch_lifecycle.inc"
 
-#include "xfer_rx_protocol_handlers.inc"
+
 
 static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
     (void)user;
@@ -479,7 +479,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
     static hop_xfer_rx_protocol_adapter adapter;
     rx_context_configure();
-    hop_xfer_rx_protocol_adapter_init(&adapter, &s_rx_dispatch_handlers, &s_rx);
+    hop_xfer_rx_protocol_adapter_init(&adapter, &hop_xfer_rx_platform_dispatch_handlers, &s_rx);
     (void)hop_xfer_rx_protocol_adapter_dispatch(&adapter, type, p, len);
 }
 

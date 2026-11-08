@@ -37,6 +37,13 @@ static void CGEventPost(int tap,CGEventRef e){
  if(e->type==kCGEventLeftMouseUp || e->type==kCGEventRightMouseUp || e->type==kCGEventOtherMouseUp)mouseups++;
 }
 static void CFRelease(CGEventRef e){free(e);}
+/* Mirrors the production mouse-event modifier policy for the isolated fixture. */
+static void post_mouse(CGEventRef e){
+ if(!e)return;
+ CGEventSetFlags(e,s_flags & ~kCGEventFlagMaskControl);
+ CGEventPost(kCGHIDEventTap,e);
+ CFRelease(e);
+}
 @FUNCTIONS@
 int main(void){
  inject_key(0,1);inject_key(7,1);

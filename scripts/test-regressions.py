@@ -691,13 +691,14 @@ int main(void){
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
         receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_batch_lifecycle.inc','xfer_rx_protocol_handlers.c'))
+        receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         protocol_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
         context_header=(ROOT/'src/core/xfer_rx_context.h').read_text(encoding='utf-8')
         assert 'typedef struct xfer_rx_context' in context_header
         state_contract='#include "xfer_rx_context.h"\nstatic xfer_rx_context s_rx;'
-        dispatch_names=['image_begin','file_chunk','file_ack','abort_message','done','done_ack']
-        dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_handler_terminate','rx_handler_begin_batch','rx_handler_finish_batch','rx_ack_deliver_file','rx_ack_deliver_done'])+'\n'+'\n'.join(extract(receiver,'rx_dispatch_'+name) for name in dispatch_names)
-        dispatch_handlers+='\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { NULL, rx_dispatch_image_begin, rx_dispatch_file_chunk, NULL, rx_dispatch_file_ack, rx_dispatch_abort_message, rx_dispatch_done, rx_dispatch_done_ack };\n'
+        dispatch_names=['file_ack','abort_message','done','done_ack']
+        dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_handler_terminate','rx_handler_begin_batch','rx_handler_finish_batch','rx_ack_deliver_file','rx_ack_deliver_done','rx_now_ns','rx_reserve_entry_budget'])+'\n'+'\n'.join(extract(receiver,'rx_dispatch_'+name) for name in ['rx_dispatch_file_begin','rx_dispatch_file_end','rx_dispatch_file_ack','rx_dispatch_abort_message','rx_dispatch_done','rx_dispatch_done_ack'])+'\n'+extract(receiver,'hop_xfer_rx_handle_image_begin')+'\n'+extract(receiver,'hop_xfer_rx_handle_file_chunk')
+        dispatch_handlers+='\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { rx_dispatch_file_begin, hop_xfer_rx_handle_image_begin, hop_xfer_rx_handle_file_chunk, rx_dispatch_file_end, rx_dispatch_file_ack, rx_dispatch_abort_message, rx_dispatch_done, rx_dispatch_done_ack };\n'
         fixture=(ROOT/'tests/receive_abort_fixture.c.in').read_text(encoding='utf-8')
         values={
             'RX_STATE':state_contract,
@@ -730,11 +731,15 @@ int main(void){
         for key,value in values.items():fixture=fixture.replace('@'+key+'@',value)
         assert '@' not in fixture
         assert 'if (!rx->batch_state.active || rx->batch_state.batch != batch) return;' in extract(receiver,'rx_dispatch_file_begin')
-        for handler_name in ['file_begin','image_begin','file_chunk','file_end','file_ack','abort_message','done','done_ack']:
+        for handler_name in ['file_begin','file_end','file_ack','abort_message','done','done_ack']:
             handler=extract(receiver,'rx_dispatch_'+handler_name)
             assert 'xfer_rx_context *rx = (xfer_rx_context *)context;' in handler
             assert not any(token in handler for token in ['s_rx.', 's_x.', 's_ack.', 's_wq']), f'{platform} {handler_name} still reads receiver/platform globals'
-        assert 'rx_handler_begin_batch(rx, batch)' in extract(receiver,'rx_dispatch_image_begin')
+        assert 'rx_handler_begin_batch(rx, batch)' in extract(receiver,'hop_xfer_rx_handle_image_begin')
+        for core_handler in ['hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk']:
+            handler=extract(receiver,core_handler)
+            assert 'xfer_rx_context *rx = (xfer_rx_context *)context;' in handler
+            assert not any(token in handler for token in ['s_rx.', 's_x.', 's_ack.', 's_wq'])
         if platform=='win':fixture='#define FIXTURE_WINDOWS 1\n'+fixture
         run('abort_'+platform,fixture,['src/core/protocol.c','src/core/crc32.c','src/core/xfer_validate.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_dispatch.c','src/core/xfer_rx_ack_handler.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_file_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_image_buffer.c'],threads=True)
 

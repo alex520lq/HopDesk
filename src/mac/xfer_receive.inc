@@ -8,285 +8,93 @@
  * 这就是显式背压：内存上界 = RX_Q_SLOTS × chunk，不随传输时长增长。
  * 文件描述符由写线程独占，避免"网络线程关文件、写线程还在写"的竞态。
  */
-#define RX_Q_SLOTS HOP_XFER_DEFAULT_RX_QUEUE_SLOTS
-#define RX_Q_MAX_BYTES HOP_XFER_DEFAULT_RX_QUEUE_BYTES
-
-enum { RX_OPEN = 1, RX_WRITE, RX_CLOSE };
+enum { RX_OPEN = 1, RX_CLOSE };
 
 typedef struct {
-    int      kind;
-    char     path[4096];
-    uint64_t off;
-    uint32_t len;
-    uint8_t *data;
-    int      pool_slot;
-    hop_xfer_task *budget_owner;
+    int kind;
+    char path[4096];
 } rx_task;
 
-typedef struct {
-    hop_xfer_buffer_pool pool;
-    rx_task         ring[RX_Q_SLOTS];
-    int head, tail;
-    hop_xfer_rx_queue accounting;
-    pthread_mutex_t lock;
-    pthread_cond_t  cv_work, cv_space;
-    hop_writer_worker worker;
-    hop_writer_io   io;         /* 写线程独占 */
-    _Atomic int    err;        /* 写盘失败标记，主路径读 */
-    int             stop;
-} hop_rx_writer_queue;
+static hop_writer_queue *s_wq;
 
-static hop_rx_writer_queue s_wq;
-
-/* Reusable bounded RX payload pool. Called with s_wq.lock held.
- * Retained capacity is capped by RX_Q_MAX_BYTES, independently of queue
- * occupancy, so repeated small/large chunks do not churn malloc/free. */
-
-
-
-
-static void wq_task_run(hop_rx_writer_queue *queue, rx_task *t) {
-    int error = 0;
-    switch (t->kind) {
-        case RX_OPEN:
-            if (!hop_writer_io_open(&queue->io, t->path, &error)) {
-                hop_log(HOP_LOG_WARN, "xfer: cannot create %s (%s)", t->path, strerror(error));
-                queue->err = 1;
-            }
-            break;
-        case RX_WRITE:
-            if (!hop_writer_io_write_at(&queue->io, t->off, t->data, t->len, &error)) {
-                hop_log(HOP_LOG_WARN, "xfer: write failed at %llu (%s)",
-                        (unsigned long long)t->off, strerror(error));
-                queue->err = 1;
-            }
-            break;
-        case RX_CLOSE:
-            hop_writer_io_close(&queue->io);
-            break;
-    }
+static int wq_reserve_task_rx(void *context, void *owner, uint32_t bytes) {
+    (void)context;
+    return hop_xfer_task_reserve_rx_buffer((hop_xfer_task *)owner, bytes);
 }
-
-static int wq_worker_take(void *context, void *task_out) {
-    hop_rx_writer_queue *queue = (hop_rx_writer_queue *)context;
-    pthread_mutex_lock(&queue->lock);
-    while (queue->accounting.queued_slots == 0 && !queue->stop)
-        pthread_cond_wait(&queue->cv_work, &queue->lock);
-    if (queue->accounting.queued_slots == 0 && queue->stop) {
-        pthread_mutex_unlock(&queue->lock);
-        return 0;
-    }
-    rx_task *task = (rx_task *)task_out;
-    *task = queue->ring[queue->head];
-    queue->head = (queue->head + 1) % RX_Q_SLOTS;
-    (void)hop_xfer_rx_queue_dequeue(&queue->accounting);
-    pthread_mutex_unlock(&queue->lock);
-    return 1;
+static void wq_release_task_rx(void *context, void *owner, uint32_t bytes) {
+    (void)context;
+    (void)hop_xfer_task_release_rx_buffer((hop_xfer_task *)owner, bytes);
 }
-
-static void wq_worker_run(void *context, const void *task_data) {
-    hop_rx_writer_queue *queue = (hop_rx_writer_queue *)context;
-    rx_task *task = (rx_task *)task_data;
-    int disk_guard = hop_watchdog_begin("disk writer task", HOP_IO_DEADLINE_MS);
-    uint64_t write_started_ns = rate_now_ns();
-    wq_task_run(queue, task);
-    uint64_t write_elapsed_ns = rate_now_ns() - write_started_ns;
-    if (task->kind == RX_WRITE && task->budget_owner) {
-        hop_xfer_task_snapshot snapshot;
-        if (hop_xfer_task_get_snapshot(task->budget_owner->id, &snapshot))
-            status_stage_time(HOP_XFER_DIR_RECEIVE, snapshot.transfer_id,
-                              HOP_XFER_TIME_WRITE, write_elapsed_ns);
-    }
-    hop_watchdog_end(disk_guard);
+static int wq_watchdog_begin(void *context, const char *label, uint32_t deadline) {
+    (void)context;
+    return hop_watchdog_begin(label, deadline);
 }
-
-static void wq_worker_complete(void *context, const void *task_data) {
-    hop_rx_writer_queue *queue = (hop_rx_writer_queue *)context;
-    const rx_task *task = (const rx_task *)task_data;
-    if (task->kind == RX_WRITE && task->budget_owner)
-        (void)hop_xfer_task_release_rx_buffer(task->budget_owner, task->len);
-    pthread_mutex_lock(&queue->lock);
-    if (task->kind == RX_WRITE)
-        hop_xfer_buffer_pool_release_locked(&queue->pool, task->pool_slot);
-    hop_xfer_rx_queue_complete(&queue->accounting,
-                               task->kind == RX_WRITE ? task->len : 0);
-    pthread_cond_broadcast(&queue->cv_space);
-    pthread_mutex_unlock(&queue->lock);
+static void wq_watchdog_end(void *context, int guard) {
+    (void)context;
+    hop_watchdog_end(guard);
 }
-
-static void wq_worker_exit(void *context) {
-    hop_rx_writer_queue *queue = (hop_rx_writer_queue *)context;
-    hop_writer_io_close(&queue->io);
+static uint64_t wq_now_ns(void *context) {
+    (void)context;
+    return rate_now_ns();
 }
-
-/* 入队。队列满时阻塞 —— 这就是背压的着力点。 */
-static int wq_push(const rx_task *t) {
-    uint64_t add_bytes = t && t->kind == RX_WRITE ? t->len : 0;
-    if (!t || add_bytes > RX_Q_MAX_BYTES) return 0;
-    int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
-    pthread_mutex_lock(&s_wq.lock);
-    while (!hop_xfer_rx_queue_can_push(&s_wq.accounting, add_bytes) && !s_wq.stop)
-        pthread_cond_wait(&s_wq.cv_space, &s_wq.lock);
-    if (s_wq.stop) {
-        pthread_mutex_unlock(&s_wq.lock);
-        hop_watchdog_end(queue_guard);
-        return 0;
-    }
-    if (!hop_xfer_rx_queue_push(&s_wq.accounting, add_bytes)) {
-        pthread_mutex_unlock(&s_wq.lock);
-        hop_watchdog_end(queue_guard);
-        return 0;
-    }
-    s_wq.ring[s_wq.tail] = *t;
-    s_wq.tail = (s_wq.tail + 1) % RX_Q_SLOTS;
-    pthread_cond_signal(&s_wq.cv_work);
-    pthread_mutex_unlock(&s_wq.lock);
-    hop_watchdog_end(queue_guard);
-    return 1;
+static void wq_write_time(void *context, void *owner, uint64_t elapsed_ns) {
+    (void)context;
+    hop_xfer_task_snapshot snapshot;
+    if (owner && hop_xfer_task_get_snapshot(((hop_xfer_task *)owner)->id, &snapshot))
+        status_stage_time(HOP_XFER_DIR_RECEIVE, snapshot.transfer_id,
+                          HOP_XFER_TIME_WRITE, elapsed_ns);
 }
-
-static int wq_push_data(hop_xfer_task *owner, uint64_t off, const uint8_t *data, uint32_t len) {
-    if (!owner || !data || !len || len > RX_Q_MAX_BYTES) return 0;
-    int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
-    pthread_mutex_lock(&s_wq.lock);
-    while (!hop_xfer_rx_queue_can_push(&s_wq.accounting, len) && !s_wq.stop)
-        pthread_cond_wait(&s_wq.cv_space, &s_wq.lock);
-    if (s_wq.stop) {
-        pthread_mutex_unlock(&s_wq.lock);
-        hop_watchdog_end(queue_guard);
-        return 0;
-    }
-    if (!hop_xfer_rx_queue_reserve(&s_wq.accounting, len)) {
-        pthread_mutex_unlock(&s_wq.lock);
-        hop_watchdog_end(queue_guard);
-        return 0;
-    }
-    pthread_mutex_unlock(&s_wq.lock);
-
-    if (!hop_xfer_task_reserve_rx_buffer(owner, len)) {
-        pthread_mutex_lock(&s_wq.lock);
-        hop_xfer_rx_queue_rollback(&s_wq.accounting, len);
-        pthread_cond_broadcast(&s_wq.cv_space);
-        pthread_mutex_unlock(&s_wq.lock);
-        hop_watchdog_end(queue_guard);
-        return 0;
-    }
-
-    rx_task t;
-    memset(&t, 0, sizeof(t));
-    t.kind = RX_WRITE;
-    t.off = off;
-    t.len = len;
-    t.budget_owner = owner;
-    t.pool_slot = -1;
-
-    pthread_mutex_lock(&s_wq.lock);
-    int pool_result = 0;
-    while (!s_wq.stop && (pool_result = hop_xfer_buffer_pool_acquire_locked(&s_wq.pool,len, &t.pool_slot, &t.data)) == 0)
-        pthread_cond_wait(&s_wq.cv_space, &s_wq.lock);
-    if (s_wq.stop || pool_result != 1) {
-        hop_xfer_rx_queue_rollback(&s_wq.accounting, len);
-        pthread_cond_broadcast(&s_wq.cv_space);
-        pthread_mutex_unlock(&s_wq.lock);
-        (void)hop_xfer_task_release_rx_buffer(owner, len);
-        hop_watchdog_end(queue_guard);
-        return 0;
-    }
-    pthread_mutex_unlock(&s_wq.lock);
-    memcpy(t.data, data, len);
-
-    pthread_mutex_lock(&s_wq.lock);
-    if (s_wq.stop) {
-        hop_xfer_rx_queue_rollback(&s_wq.accounting, len);
-        hop_xfer_buffer_pool_release_locked(&s_wq.pool,t.pool_slot);
-        pthread_cond_broadcast(&s_wq.cv_space);
-        pthread_mutex_unlock(&s_wq.lock);
-        (void)hop_xfer_task_release_rx_buffer(owner, len);
-        hop_watchdog_end(queue_guard);
-        return 0;
-    }
-    if (!hop_xfer_rx_queue_commit_reserved(&s_wq.accounting)) {
-        hop_xfer_rx_queue_rollback(&s_wq.accounting, len);
-        hop_xfer_buffer_pool_release_locked(&s_wq.pool, t.pool_slot);
-        pthread_cond_broadcast(&s_wq.cv_space);
-        pthread_mutex_unlock(&s_wq.lock);
-        (void)hop_xfer_task_release_rx_buffer(owner, len);
-        hop_watchdog_end(queue_guard);
-        return 0;
-    }
-    s_wq.ring[s_wq.tail] = t;
-    s_wq.tail = (s_wq.tail + 1) % RX_Q_SLOTS;
-    pthread_cond_signal(&s_wq.cv_work);
-    pthread_mutex_unlock(&s_wq.lock);
-    hop_watchdog_end(queue_guard);
-    return 1;
+static void wq_open_error(void *context, const char *path, int error) {
+    (void)context;
+    hop_log(HOP_LOG_WARN, "xfer: cannot create %s (%s)", path, strerror(error));
 }
-
-/* 等队列排空且写线程空闲。关文件、比对文件 CRC 之前必须调用。 */
-static void wq_drain(void) {
-    int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
-    pthread_mutex_lock(&s_wq.lock);
-    while (!hop_xfer_rx_queue_drained(&s_wq.accounting))
-        pthread_cond_wait(&s_wq.cv_space, &s_wq.lock);
-    pthread_mutex_unlock(&s_wq.lock);
-    hop_watchdog_end(queue_guard);
+static void wq_write_error(void *context, uint64_t offset, int error) {
+    (void)context;
+    hop_log(HOP_LOG_WARN, "xfer: write failed at %llu (%s)",
+            (unsigned long long)offset, strerror(error));
 }
 
 static int wq_start(void) {
-    /* A previous join timeout leaves a live worker; never erase its state. */
-    if (s_wq.worker.state == 1) return 0;
-    memset(&s_wq, 0, sizeof(s_wq));
-    atomic_init(&s_wq.err, 0);
-    hop_xfer_buffer_pool_init(&s_wq.pool);
-    hop_xfer_rx_queue_init(&s_wq.accounting, RX_Q_SLOTS, RX_Q_MAX_BYTES);
-    hop_writer_io_init(&s_wq.io);
-    if (pthread_mutex_init(&s_wq.lock, NULL) != 0) {
-        hop_xfer_buffer_pool_dispose(&s_wq.pool);
-        return 0;
-    }
-    if (pthread_cond_init(&s_wq.cv_work, NULL) != 0) {
-        pthread_mutex_destroy(&s_wq.lock);
-        hop_xfer_buffer_pool_dispose(&s_wq.pool);
-        return 0;
-    }
-    if (pthread_cond_init(&s_wq.cv_space, NULL) != 0) {
-        pthread_cond_destroy(&s_wq.cv_work);
-        pthread_mutex_destroy(&s_wq.lock);
-        hop_xfer_buffer_pool_dispose(&s_wq.pool);
-        return 0;
-    }
-    const hop_writer_worker_callbacks callbacks = {
-        wq_worker_take, wq_worker_run, wq_worker_complete, wq_worker_exit
+    if (s_wq) return 0;
+    const hop_writer_queue_callbacks callbacks = {
+        HOP_IO_DEADLINE_MS,
+        wq_reserve_task_rx, wq_release_task_rx,
+        wq_watchdog_begin, wq_watchdog_end, wq_now_ns,
+        wq_write_time, wq_open_error, wq_write_error
     };
-    if (!hop_writer_worker_start(&s_wq.worker, &s_wq, sizeof(rx_task), &callbacks)) {
-        pthread_cond_destroy(&s_wq.cv_space);
-        pthread_cond_destroy(&s_wq.cv_work);
-        pthread_mutex_destroy(&s_wq.lock);
-        hop_xfer_buffer_pool_dispose(&s_wq.pool);
-        return 0;
-    }
-    return 1;
+    s_wq = hop_writer_queue_create(NULL, &callbacks);
+    return s_wq != NULL;
 }
 
-/* 停写线程：先让它把队列里的活干完（数据已经收下来了，丢了就是损坏），
- * 再置 stop 唤醒，最后 join。 */
-static void wq_stop(void) {
-    if (s_wq.worker.state != 1) return;
-    wq_drain();
-    pthread_mutex_lock(&s_wq.lock);
-    s_wq.stop = 1;
-    pthread_cond_broadcast(&s_wq.cv_work);
-    pthread_cond_broadcast(&s_wq.cv_space);
-    pthread_mutex_unlock(&s_wq.lock);
+static int wq_push(const rx_task *task) {
+    if (!s_wq || !task) return 0;
+    if (task->kind == RX_OPEN)
+        return hop_writer_queue_enqueue_open(s_wq, task->path);
+    if (task->kind == RX_CLOSE)
+        return hop_writer_queue_enqueue_close(s_wq);
+    return 0;
+}
 
-    if (!hop_writer_worker_join(&s_wq.worker)) {
+static int wq_push_data(hop_xfer_task *owner, uint64_t offset,
+                        const uint8_t *data, uint32_t length) {
+    return s_wq && hop_writer_queue_enqueue_write(s_wq, owner, offset, data, length);
+}
+
+static void wq_drain(void) {
+    hop_writer_queue_drain(s_wq);
+}
+static int wq_error_get(void) {
+    return hop_writer_queue_error(s_wq);
+}
+
+static void wq_stop(void) {
+    if (!s_wq) return;
+    if (!hop_writer_queue_stop(s_wq)) {
         hop_log(HOP_LOG_WARN, "xfer: writer worker join failed; retain queue state");
         return;
     }
-    hop_xfer_buffer_pool_dispose(&s_wq.pool);
-    pthread_mutex_destroy(&s_wq.lock);
-    pthread_cond_destroy(&s_wq.cv_work);
-    pthread_cond_destroy(&s_wq.cv_space);
+    hop_writer_queue_destroy(s_wq);
+    s_wq = NULL;
 }
 
 /* ---------------- 接收 ---------------- */
@@ -675,7 +483,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             s_rx.cur_size     = 0;
             s_rx.cur_received = 0;
             s_rx.fcrc         = 0;
-            s_wq.err          = 0;
+            hop_writer_queue_error_reset(s_wq);
 
             char rel[HOP_PATH_LEN_MAX + 1];
             if (!hop_xfer_relpath_bytes_safe(msg.relpath, plen)) {
@@ -918,7 +726,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             if (s_rx.cur_fail >= 0) {
                 ack = s_rx.cur_fail;
             } else {
-                if (s_wq.err) {
+                if (wq_error_get()) {
                     hop_log(HOP_LOG_ERROR, "xfer: disk error, %s incomplete",
                             s_rx.cur_path ? s_rx.cur_path : "?");
                     ack = HOP_FILE_ACK_DISK;

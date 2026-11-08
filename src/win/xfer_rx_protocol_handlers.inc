@@ -62,7 +62,7 @@ hop_xfer_file_begin_msg msg;
             }
 
             if (s_rx.file_state.is_directory) {
-                if (!hop_xfer_rx_fs_hop_xfer_rx_fs_ensure_dirs(path) || !hop_xfer_rx_fs_hop_xfer_rx_fs_create_directory_if_missing(path)) {
+                if (!hop_xfer_rx_fs_ensure_dirs(path) || !hop_xfer_rx_fs_create_directory_if_missing(path)) {
                     hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_DISK);
                     return;
                 }

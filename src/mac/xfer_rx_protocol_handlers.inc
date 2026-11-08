@@ -42,7 +42,7 @@ hop_xfer_file_begin_msg msg;
 
 
             s_rx.cur_path = hop_xfer_rx_fs_path_for(s_rx.dir, rel);
-            const char *path = s_rx.cur_path;
+            char *path = s_rx.cur_path;
             hop_xfer_rx_file_state_set_size(&s_rx.file_state, size);
             if (!s_rx.cur_path) { hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_DISK); return; }
             rx_remove_top(s_rx.cur_path);

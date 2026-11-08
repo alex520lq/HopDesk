@@ -1,10 +1,25 @@
+static void rx_handler_terminate(xfer_rx_context *rx, uint32_t batch, uint8_t reason, int notify_peer) {
+    if (rx && rx->services.terminate_batch)
+        rx->services.terminate_batch(rx->services.context, batch, reason, notify_peer);
+}
+
+static void rx_handler_begin_batch(xfer_rx_context *rx, uint32_t batch) {
+    if (rx && rx->services.begin_batch)
+        rx->services.begin_batch(rx->services.context, batch);
+}
+
+static int rx_handler_finish_batch(xfer_rx_context *rx, uint32_t batch, uint32_t ok, uint32_t total) {
+    if (!rx || !rx->services.finish_batch) return -1;
+    return rx->services.finish_batch(rx->services.context, batch, ok, total);
+}
+
 static void rx_dispatch_file_begin(void *context, const uint8_t *p, uint32_t len) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx) return;
 hop_xfer_file_begin_msg msg;
             if (!hop_xfer_decode_file_begin(p, len, &msg)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed FILE_BEGIN rejected");
-                if (rx->batch_state.active) rx_terminate(rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
+                if (rx->batch_state.active) rx_handler_terminate(rx, rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
                 if (rx->services.shutdown_data_channel)
                     rx->services.shutdown_data_channel(rx->services.context);
                 return;
@@ -15,11 +30,11 @@ hop_xfer_file_begin_msg msg;
             uint32_t flags = msg.flags;
             uint32_t plen = msg.relpath_len;
 
-            rx_begin_batch(batch);
+            rx_handler_begin_batch(rx, batch);
             if (!rx->batch_state.active || rx->batch_state.batch != batch) return;
             (void)hop_xfer_task_set_kind(&rx->task,HOP_TASK_KIND_FILES);
             if (id == 0 || id > HOP_XFER_FILE_LIMIT) {
-                rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
+                rx_handler_terminate(rx, batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
 
@@ -50,7 +65,7 @@ hop_xfer_file_begin_msg msg;
                     rx_reserve_entry_budget, &rx->task);
             if (reservation != HOP_RX_ENTRY_RESERVE_NEW &&
                 reservation != HOP_RX_ENTRY_RESERVE_ALREADY_HELD) {
-                rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
+                rx_handler_terminate(rx, batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
             status_add_received_file(batch,id,rel,size,rx->file_state.is_directory);
@@ -97,11 +112,11 @@ static void rx_dispatch_image_begin(void *context, const uint8_t *p, uint32_t le
 hop_xfer_image_begin_msg msg;
             if (!hop_xfer_decode_image_begin(p, len, &msg)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed IMAGE_BEGIN rejected");
-                if (rx->batch_state.active) rx_terminate(rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
+                if (rx->batch_state.active) rx_handler_terminate(rx, rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
             uint32_t batch = msg.batch;
-            rx_begin_batch(batch);
+            rx_handler_begin_batch(rx, batch);
             if (!rx->batch_state.active || rx->batch_state.batch != batch) return;
             (void)hop_xfer_task_set_kind(&rx->task,HOP_TASK_KIND_IMAGE);
 
@@ -114,25 +129,25 @@ hop_xfer_image_begin_msg msg;
             if (!hop_xfer_image_valid(w, h, stride)) {
                 hop_log(HOP_LOG_ERROR,
                         "xfer: image %dx%d stride %d rejected (over cap)", w, h, stride);
-                rx_terminate(rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
+                rx_handler_terminate(rx, rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
 
             size_t expected = (size_t)stride * (size_t)h;
             if (!rx->file_state.is_image) {
                 if (!hop_xfer_task_reserve_image(&rx->task,(uint64_t)expected)) {
-                    rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
+                    rx_handler_terminate(rx, batch,HOP_ABORT_TOO_LARGE,1);
                     return;
                 }
             } else if (rx->image_state.expected != expected) {
-                rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
+                rx_handler_terminate(rx, batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
             hop_xfer_rx_file_state_begin(&rx->file_state, msg.id);
             hop_xfer_rx_file_state_set_kind(&rx->file_state, 1, 0);
             if (!hop_xfer_rx_image_state_begin(&rx->image_state,
                     (uint32_t)w, (uint32_t)h, (uint32_t)stride, (uint64_t)expected)) {
-                rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
+                rx_handler_terminate(rx, batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
             if (rx->image_buffer.data) hop_xfer_rx_image_state_set_capacity(
@@ -152,14 +167,14 @@ if (!rx->batch_state.active) return; /* late data after termination */
                         (rx->file_state.failure >= 0 ? UINT64_MAX : rx->file_state.declared_size),
                     rx->file_state.is_image, &chunk)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed or out-of-range chunk; aborting receive");
-                rx_terminate(rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
+                rx_handler_terminate(rx, rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
             uint64_t off = chunk.offset;
             uint32_t n = chunk.length;
             uint32_t crc = chunk.crc;
             if (chunk.id != rx->file_state.id) {
-                rx_terminate(rx->batch_state.batch,HOP_ABORT_CRC,1);
+                rx_handler_terminate(rx, rx->batch_state.batch,HOP_ABORT_CRC,1);
                 return;
             }
             const uint8_t *data = chunk.data;
@@ -180,7 +195,7 @@ if (!rx->batch_state.active) return; /* late data after termination */
                         "xfer: CHUNK CRC MISMATCH off=%llu len=%u (expect %08x)",
                         (unsigned long long)off, n, crc);
                 if (rx->file_state.is_image) {
-                    rx_terminate(rx->batch_state.batch,HOP_ABORT_CRC,1);
+                    rx_handler_terminate(rx, rx->batch_state.batch,HOP_ABORT_CRC,1);
                 } else {
                     hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_CRC);
                 }
@@ -191,7 +206,7 @@ if (!rx->batch_state.active) return; /* late data after termination */
                 if (hop_xfer_rx_image_state_check_chunk(
                         &rx->image_state, off, n) != HOP_RX_IMAGE_CHUNK_ACCEPT) {
                     hop_log(HOP_LOG_ERROR, "xfer: image chunk gap/overlap or length overflow");
-                    rx_terminate(rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
+                    rx_handler_terminate(rx, rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
                     return;
                 }
                 size_t need = (size_t)(off + n);
@@ -201,19 +216,19 @@ if (!rx->batch_state.active) return; /* late data after termination */
                  * transiently keep both old and new buffers alive during realloc. */
                 if (!hop_xfer_rx_image_buffer_ensure(&rx->image_buffer,
                         (uint64_t)rx->image_state.expected)) {
-                    rx_terminate(rx->batch_state.batch,HOP_ABORT_DISK,1);
+                    rx_handler_terminate(rx, rx->batch_state.batch,HOP_ABORT_DISK,1);
                     return;
                 }
                 hop_xfer_rx_image_state_set_capacity(
                     &rx->image_state, rx->image_buffer.capacity);
                 if (need > rx->image_state.capacity) {
                     hop_log(HOP_LOG_ERROR, "xfer: image buffer capacity exceeded");
-                    rx_terminate(rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
+                    rx_handler_terminate(rx, rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
                     return;
                 }
                 memcpy(rx->image_buffer.data + off, data, n);
                 if (!hop_xfer_rx_image_state_record_chunk(&rx->image_state, off, n)) {
-                    rx_terminate(rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
+                    rx_handler_terminate(rx, rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
                     return;
                 }
                 uint64_t receive_elapsed_ns=rate_now_ns()-receive_started_ns;
@@ -346,7 +361,7 @@ hop_xfer_abort_msg abort_msg;
                     batch, reason);
 
             /* 对端不要这一批了：关文件、删掉已落盘的半成品、立墓碑。 */
-            if (abort_msg.target == HOP_ABORT_TO_RECEIVER) rx_terminate(batch,reason,0);
+            if (abort_msg.target == HOP_ABORT_TO_RECEIVER) rx_handler_terminate(rx, batch,reason,0);
             return;
 }
 
@@ -366,7 +381,7 @@ hop_xfer_done_msg done;
                 if (!hop_xfer_rx_done_receipt_matches_payload(receipt, &done)) return;
                 result=receipt->status; /* repeat ACK without repeating clipboard effects */
             } else {
-                result=rx_finish_batch(done.batch,done.ok,done.total);
+                result=rx_handler_finish_batch(rx, done.batch, done.ok, done.total);
                 if (result<0) return;
                 hop_xfer_rx_done_receipt_record(rx->done_receipt, hop_xfer_rx_lifecycle_session(rx->lifecycle),
                                                 &done, (uint8_t)result);

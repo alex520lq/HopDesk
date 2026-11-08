@@ -94,5 +94,8 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
 
 clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-rx-image-state-tests" \
-  "$ROOT/tests/xfer_rx_image_state_tests.c" "$ROOT/src/core/xfer_rx_image_state.c"
+  "$ROOT/tests/xfer_rx_image_state_tests.c" "$ROOT/src/core/xfer_rx_image_state.c" "$ROOT/src/core/xfer_rx_image_buffer.c"
 "$BUILD/hopdesk-rx-image-state-tests"
+clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer -I "$ROOT/src/core" \\
+  -o "$BUILD/hopdesk-rx-image-buffer-tests" "$ROOT/tests/xfer_rx_image_buffer_tests.c" "$ROOT/src/core/xfer_rx_image_buffer.c"
+"$BUILD/hopdesk-rx-image-buffer-tests"

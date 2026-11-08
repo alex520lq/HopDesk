@@ -611,4 +611,4 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 新增 `tests/xfer_rx_fs_tests.c`，直接链接两端生产 Adapter，覆盖路径拼接、父目录创建、文件删除、递归清理和拒绝不匹配根路径；接入 macOS ASan/UBSan 与 Windows MSVC/GCC Core 测试脚本。
 - 更新 Receiver 源码结构回归断言，并将 Windows HA 集成目标链接新的 filesystem 编译单元。
 - 本切片不代表 Receiver Protocol Handler 已完全依赖注入：handler 仍通过当前翻译单元的 `s_rx`、`s_x` 及 status/clipboard/wire helper 访问平台能力。下一切片继续定义完整 Receiver Context/Services contract，把协议 handler 移到独立 `.c` 并显式注入这些依赖。
-- CI：待本切片最终 head 对应的 Windows/macOS Actions 完成后补录；在此之前不标记验证通过。
+- CI 证据：GitHub Actions Run #770（ID `42496114953`，head `e2ded11254c7472a894d715f836dce8a9ac2ad42`）Windows MSVC build、portable Core/regression（含真实 filesystem Adapter 测试）、transfer protocol、TCP loopback、native control/data role + reconnect、updater syntax、package 全部 PASS；macOS build、portable Core/regression（含 ASan/UBSan filesystem Adapter 测试）、transfer protocol、TCP loopback、control/listener loopback、bundle verification、package 全部 PASS；Release publication skipped（PR 预期）。前序 Run #766/#767/#769 分别暴露了 fixture 未更新新 FS API、macOS mkdtemp feature macro 和清理根目录测试路径断言问题；均已修复，Run #770 验证最终切片通过。

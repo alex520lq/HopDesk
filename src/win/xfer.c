@@ -7,6 +7,7 @@
 
 #include "app.h"
 #include "xfer.h"
+#include "xfer_writer_io.h"
 #include "../core/update_state.h"
 #include "../core/xfer_tracking.h"
 #include "../core/xfer_budget.h"

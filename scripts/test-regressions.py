@@ -755,8 +755,8 @@ int main(void){
         assert 'status > HOP_DONE_ACK_FAILED' in shared_ack
         lifecycle=extract(receiver,'rx_begin_batch')
         assert 'hop_xfer_rx_fs_mkdir_p(s_rx.dir)' in lifecycle if platform=='mac' else 'hop_xfer_rx_fs_ensure_dirs(s_rx.dir)' in lifecycle
-        assert 'rx_remove_top(s_rx.cur_path)' in begin
-        assert '!rx_add_top(path)' in begin or '!rx_add_top(s_rx.cur_path)' in end
+        assert 'rx_remove_top(rx->cur_path)' in begin
+        assert '!rx_add_top(path)' in begin or '!rx_add_top(rx->cur_path)' in end
         if platform=='mac':
             assert 'hop_xfer_rx_fs_mkdir_p(path) != 0' in begin
             fs=(ROOT/'src/mac/xfer_rx_fs.c').read_text(encoding='utf-8')

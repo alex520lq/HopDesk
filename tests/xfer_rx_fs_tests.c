@@ -1,3 +1,6 @@
+#ifndef _WIN32
+#define _DARWIN_C_SOURCE 1
+#endif
 #include "xfer_rx_fs.h"
 
 #include <assert.h>

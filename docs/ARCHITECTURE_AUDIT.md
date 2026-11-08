@@ -124,6 +124,12 @@ Windows/macOS writer worker 原先直接操作各自平台文件句柄。现已�
 
 平台 writer worker 仍负责 watchdog、耗时统计、Task Reservation 释放和队列状态；adapter 不触碰这些生命周期。Windows `SetFilePointerEx` 失败现在会正确返回错误，不再忽略 seek 失败。
 
-## 10. 审计结论
+### RX Queue Accounting
+
+新增 `src/core/xfer_rx_queue.c/.h`，将两端 writer queue 的纯容量策略与平台同步机制分离。Core 状态包含 queued/busy/reserved slots 和 queued bytes；`can_push` 同时计算三类 slot 并以减法形式检查 byte 上限，`reserve/rollback/commit_reserved` 管理数据入队前的两阶段预留，`dequeue/complete` 表示唯一 writer 的任务生命周期，`drained` 用于安全 drain 判断。平台层仍持有锁并在锁内调用 API；Core 不等待、不分配内存、不接触 OS 线程。
+
+测试 `test_xfer_rx_queue` 验证 busy 写盘期间仍占用 slot/bytes、预留不能超限、回滚恢复预算、提交与完成、drained 状态。该队列策略当前按单 writer 设计（`busy_slots` 最大为 1），与两端实际 worker 拓扑一致。
+
+## 11. 审计结论
 
 第一项真正的生产代码拆分应从 writer queue 开始：其职责相对独立、slot/bytes/pool 所有权可明确建模，而且能通过慢盘、满队列、取消、shutdown drain 等测试验证。不要先拆 UI，也不要直接把整个 `.inc` 改名为 `.c`；后者只会把隐式依赖变成编译/链接错误。

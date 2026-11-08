@@ -1,4 +1,5 @@
 #include "hop.h"
+#include "xfer_status.h"
 #include "xfer_rx_ack_handler.h"
 
 #include <assert.h>

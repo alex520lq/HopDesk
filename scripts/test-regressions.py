@@ -53,7 +53,7 @@ int main(void) {
     puts("PASS: only contiguous ACK-confirmed entries advance resume checkpoint");
     return 0;
 }
-''')
+''',['src/core/xfer_ack_window.c'])
 
     # Cards are painted by the page, never sibling HWNDs obscuring its controls.
     ui=(ROOT/'src/win/main_ui.c').read_text(encoding='utf-8')

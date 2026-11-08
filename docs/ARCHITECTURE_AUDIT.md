@@ -106,6 +106,15 @@ Writer queue 当前通过 include 访问 task/budget、status timing、watchdog 
 - 全部静态变量和所有动态分配的完整所有权闭环：需要阶段 0 后续对 writer/receiver/sender 按线程和资源逐项审计，当前只完成了主要模块和状态入口的识别。
 - 行数与函数簇来自代码快照，不能替代动态调用图或 sanitizer/线程压力验证。
 
-## 9. 审计结论
+## 9. 首个模块拆分记录
+
+`src/core/xfer_ack_window.h` 原先包含 11 个 `static inline` 函数，Windows/macOS 发送端都直接包含该头文件。已拆为：
+- `src/core/xfer_ack_window.h`：ACK window 数据结构、常量和公开函数声明。
+- `src/core/xfer_ack_window.c`：reset/count/register/mark-sent/deadline/deliver/take/unregister/checkpoint 规则实现。
+- `scripts/test-core.ps1` 与 `scripts/test-core.sh`：将新生产编译单元链接进两端 Core 测试。
+
+该拆分不改变 ACK window 的同步约定（调用方仍持有平台 ACK lock），也不把平台锁引入 Core。原有 `test_xfer_ack_window` 覆盖窗口容量、重复 ACK、deadline race、RTT 和连续 checkpoint，保留原测试向量。
+
+## 10. 审计结论
 
 第一项真正的生产代码拆分应从 writer queue 开始：其职责相对独立、slot/bytes/pool 所有权可明确建模，而且能通过慢盘、满队列、取消、shutdown drain 等测试验证。不要先拆 UI，也不要直接把整个 `.inc` 改名为 `.c`；后者只会把隐式依赖变成编译/链接错误。

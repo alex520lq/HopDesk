@@ -517,6 +517,8 @@ static void fixture_finish_clipboard(void *context,uint32_t batch,const void *im
     }
 }
 static int paste_success_calls,paste_failure_calls;
+static void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n,int success);
+static void clipboard_complete_remote_paste(uint32_t batch,const char *const *paths,int n,int success);
 static void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n,int success){
     (void)batch;(void)paths;(void)n;
     if(success)paste_success_calls++;else paste_failure_calls++;

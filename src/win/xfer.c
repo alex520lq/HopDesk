@@ -7,6 +7,7 @@
 
 #include "app.h"
 #include "xfer.h"
+#include "xfer_rx_fs.h"
 #include "../core/xfer_rx_receipt.h"
 #include "../core/xfer_rx_lifecycle.h"
 #include "../core/xfer_rx_batch_rules.h"

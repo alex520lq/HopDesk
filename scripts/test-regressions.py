@@ -741,8 +741,11 @@ int main(void){
         end=extract(receiver,'rx_dispatch_file_end')
         file_ack_handler=extract(receiver,'rx_dispatch_file_ack')
         done_ack_handler=extract(receiver,'rx_dispatch_done_ack')
-        assert 'hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, NULL)' in file_ack_handler
-        assert 'hop_xfer_rx_handle_done_ack(p, len, rx_ack_deliver_done, NULL)' in done_ack_handler
+        assert 'hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, rx)' in file_ack_handler
+        assert 'hop_xfer_rx_handle_done_ack(p, len, rx_ack_deliver_done, rx)' in done_ack_handler
+        done_handler=extract(receiver,'rx_dispatch_done')
+        assert 'hop_xfer_rx_done_receipt_find(rx->done_receipt,' in done_handler
+        assert 'hop_xfer_rx_done_receipt_find(&rx->done_receipt,' not in done_handler
         shared_ack=(ROOT/'src/core/xfer_rx_ack_handler.c').read_text(encoding='utf-8')
         assert 'ack.id < 1u' in shared_ack and 'ack.id > HOP_XFER_FILE_LIMIT' in shared_ack
         assert 'status > HOP_DONE_ACK_FAILED' in shared_ack

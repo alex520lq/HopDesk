@@ -376,7 +376,7 @@ int main(void){
     for platform in ['win','mac']:
         rx='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_batch_lifecycle.inc','xfer_rx_protocol_handlers.inc'))
         if platform=='win':
-            assert 'clip_complete_remote_paste(batch,(const wchar_t *const *)s_rx.tops,s_rx.ntop,1)' in rx
+            assert 'clip_complete_remote_paste(batch, (const wchar_t *const *)top_paths, top_count, 1)' in rx
             assert 'clip_complete_remote_paste(batch,NULL,0,0)' in rx
             clip=(ROOT/'src/win/clipboard.c').read_text(encoding='utf-8')
             assert 'GetClipboardSequenceNumber()!=expected' in clip
@@ -384,7 +384,7 @@ int main(void){
             assert 'SendInput(' not in paste_message
             assert 'apply_global_expected(CF_HDROP,h,expected_sequence,1,1)' in paste_message
         else:
-            assert 'clipboard_complete_remote_paste(batch,(const char *const *)s_rx.tops,s_rx.ntop,1)' in rx
+            assert 'clipboard_complete_remote_paste(batch, (const char *const *)top_paths, top_count, 1)' in rx
             assert 'clipboard_complete_remote_paste(batch,NULL,0,0)' in rx
             clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
             assert '[pb changeCount] != expected_count' in clip

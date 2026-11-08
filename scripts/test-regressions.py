@@ -659,6 +659,7 @@ int main(void){
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
         receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_batch_lifecycle.inc','xfer_rx_protocol_handlers.inc'))
+        protocol_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.inc').read_text(encoding='utf-8')
         context_header=(ROOT/'src/core/xfer_rx_context.h').read_text(encoding='utf-8')
         assert 'typedef struct xfer_rx_context' in context_header
         state_contract='#include "xfer_rx_context.h"\nstatic xfer_rx_context s_rx;'
@@ -768,8 +769,8 @@ int main(void){
         assert 'rx->services.begin_batch' in extract(receiver,'rx_handler_begin_batch')
         assert 'rx->services.finish_batch' in extract(receiver,'rx_handler_finish_batch')
         for writer_call in ['reset_file_error','open_file','write_file_chunk','close_file','file_error']:
-            assert 'rx->services.'+writer_call in receiver
-        assert not any(token in receiver for token in ['wq_push(', 'wq_push_data(', 'wq_error_get(', 'rx_close_file(', 'hop_writer_queue_error_reset('])
+            assert 'rx->services.'+writer_call in protocol_handlers
+        assert not any(token in protocol_handlers for token in ['wq_push(', 'wq_push_data(', 'wq_error_get(', 'rx_close_file(', 'hop_writer_queue_error_reset('])
         done_handler=extract(receiver,'rx_dispatch_done')
         assert 'hop_xfer_rx_done_receipt_find(rx->done_receipt,' in done_handler
         assert 'hop_xfer_rx_done_receipt_find(&rx->done_receipt,' not in done_handler

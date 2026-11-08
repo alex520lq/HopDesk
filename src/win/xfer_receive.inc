@@ -113,6 +113,7 @@ typedef struct xfer_rx_context {
     wchar_t **tops;
     int       ntop;
     void *platform_context;
+    hop_writer_queue *writer;
     hop_xfer_rx_lifecycle *lifecycle;
     hop_xfer_rx_done_receipt *done_receipt;
     void (*shutdown_data_channel)(void *context);
@@ -168,6 +169,7 @@ static void rx_context_deliver_ack(void *context, uint32_t batch, uint32_t id, i
 
 static void rx_context_configure(void) {
     s_rx.platform_context = NULL;
+    s_rx.writer = s_wq;
     s_rx.lifecycle = &s_rx_lifecycle;
     s_rx.done_receipt = &s_done_receipt;
     s_rx.shutdown_data_channel = rx_context_shutdown_data;

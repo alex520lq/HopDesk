@@ -420,7 +420,8 @@ int main(void){
     run('image_budget_permanent',image_limits_preamble+extract(clip,'image_conversion_fits_budget')+image_limits_main)
 
     for platform in ['win','mac']:
-        source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', (ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8'))
+        rx_sources='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_batch_lifecycle.inc','xfer_rx_protocol_handlers.inc'))
+        source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', rx_sources)
         common=r'''
 #include "hop.h"
 #include "xfer_rx_batch_rules.h"

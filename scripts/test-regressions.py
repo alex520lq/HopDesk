@@ -687,7 +687,7 @@ int main(void){
         for handler_name in ['file_begin','image_begin','file_chunk','file_end','file_ack','abort_message','done','done_ack']:
             handler=extract(receiver,'rx_dispatch_'+handler_name)
             assert 'xfer_rx_context *rx = (xfer_rx_context *)context;' in handler
-            assert 's_rx.' not in handler, f'{platform} {handler_name} still reads receiver global state'
+            assert 's_rx.' not in handler and 's_x.' not in handler and 's_ack.' not in handler, f'{platform} {handler_name} still reads platform globals'
         assert 'rx_begin_batch(batch)' in extract(receiver,'rx_dispatch_image_begin')
         if platform=='win':fixture='#define FIXTURE_WINDOWS 1\n'+fixture
         run('abort_'+platform,fixture,['src/core/protocol.c','src/core/crc32.c','src/core/xfer_validate.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_dispatch.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_file_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_image_buffer.c'],threads=True)

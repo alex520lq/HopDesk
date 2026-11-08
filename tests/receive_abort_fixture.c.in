@@ -74,14 +74,14 @@ static void history_save(void){assert(closed); if(s_receive_status.status.phase!
 #define XFER_RX_ROOT L"HopDesk"
 #define ERROR_ALREADY_EXISTS 183
 static DWORD GetTempPathW(DWORD n,wchar_t*p){(void)n;wcscpy(p,L"tmp\\");return 4;}
-static int ensure_dirs(wchar_t*p){(void)p;return !fail_directory;}
-static int create_directory_if_missing(const wchar_t*p){(void)p;return !fail_directory;}
+static int hop_xfer_rx_fs_ensure_dirs(wchar_t*p){(void)p;return !fail_directory;}
+static int hop_xfer_rx_fs_create_directory_if_missing(const wchar_t*p){(void)p;return !fail_directory;}
 #define ERROR_FILE_NOT_FOUND 2
 #define ERROR_PATH_NOT_FOUND 3
 static DWORD GetLongPathNameW(const wchar_t*p,wchar_t*q,DWORD n){(void)p;(void)q;(void)n;return 0;}
 #else
 static const char*temp_root(void){return "/tmp";}
-static int mkdir_p(const char*p){(void)p;return fail_directory?-1:0;}
+static int hop_xfer_rx_fs_mkdir_p(const char*p){(void)p;return fail_directory?-1:0;}
 #endif
 @WIRE_SEND@
 @STATUS_FUNCTIONS@

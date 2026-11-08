@@ -113,8 +113,13 @@ typedef struct xfer_rx_context {
     wchar_t **tops;
     int       ntop;
     void *platform_context;
+    hop_xfer_rx_lifecycle *lifecycle;
+    hop_xfer_rx_done_receipt *done_receipt;
     void (*shutdown_data_channel)(void *context);
     void (*mark_sender_aborted)(void *context, uint32_t batch, uint8_t reason);
+    void (*send_file_ack)(void *context, uint32_t batch, uint32_t id, int status);
+    void (*send_done_ack)(void *context, uint32_t batch, const uint8_t *payload, uint32_t length);
+    void (*deliver_ack)(void *context, uint32_t batch, uint32_t id, int status);
 } xfer_rx_context;
 
 static xfer_rx_context s_rx;
@@ -138,10 +143,38 @@ static void rx_context_mark_sender_aborted(void *context, uint32_t batch, uint8_
     SetEvent(s_ack.ev);
 }
 
+static void rx_context_send_file_ack(void *context, uint32_t batch, uint32_t id, int status) {
+    (void)context;
+    EnterCriticalSection(&s_x.lock);
+    SOCKET active = s_x.client;
+    LeaveCriticalSection(&s_x.lock);
+    if (active != INVALID_SOCKET) (void)send_ack(active, batch, id, (uint8_t)status);
+}
+
+static void rx_context_send_done_ack(void *context, uint32_t batch,
+                                    const uint8_t *payload, uint32_t length) {
+    (void)context;
+    EnterCriticalSection(&s_x.lock);
+    SOCKET active = s_x.client;
+    LeaveCriticalSection(&s_x.lock);
+    if (active != INVALID_SOCKET)
+        (void)send_small(active, HOP_MSG_XFER_DONE_ACK, payload, length, batch);
+}
+
+static void rx_context_deliver_ack(void *context, uint32_t batch, uint32_t id, int status) {
+    (void)context;
+    ack_deliver(batch, id, status);
+}
+
 static void rx_context_configure(void) {
     s_rx.platform_context = NULL;
+    s_rx.lifecycle = &s_rx_lifecycle;
+    s_rx.done_receipt = &s_done_receipt;
     s_rx.shutdown_data_channel = rx_context_shutdown_data;
     s_rx.mark_sender_aborted = rx_context_mark_sender_aborted;
+    s_rx.send_file_ack = rx_context_send_file_ack;
+    s_rx.send_done_ack = rx_context_send_done_ack;
+    s_rx.deliver_ack = rx_context_deliver_ack;
 }
 
 static int rx_reserve_entry_budget(void *context, uint64_t bytes) {

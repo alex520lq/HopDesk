@@ -396,7 +396,7 @@ tests/
 
 ## 11. 当前执行切片
 
-已完成第一个真实模块拆分：ACK Window 从 `xfer_ack_window.h` 的 header-only `static inline` 实现迁移为 `xfer_ack_window.c` + 公开声明头文件；Windows/macOS app 递归源发现自动纳入新文件，两个 Core 测试脚本显式链接该生产模块。原有 ACK 状态、窗口容量、deadline race 和 checkpoint 测试保留。
+已完成第一个真实模块拆分：ACK Window 从 `xfer_ack_window.h` 的 header-only `static inline` 实现迁移为 `xfer_ack_window.c` + 公开声明头文件；Windows/macOS app 递归源发现自动纳入新文件，两个 Core 测试脚本显式链接该生产模块。原有 ACK 状态、窗口容量、deadline race 和 checkpoint 测试保留。首轮 CI 暴露出独立 HA 测试目标仍显式链接 `xfer.c` 却未链接新 ACK 模块；已同步修正 `scripts/test-ha.ps1`，并将该类显式测试目标纳入后续模块迁移检查。
 
 下一项执行：补齐 Core include 边界检查与模块源清单验证，然后进入阶段 2。Writer Queue 仍与 Receiver 状态、Task/Reservation 生命周期、watchdog/status 回调和平台文件句柄交织，不能直接把 `.inc` 改成 `.c`；先定义 writer adapter contract，再按 Windows → macOS 对称提取。
 

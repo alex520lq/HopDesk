@@ -99,3 +99,8 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
 clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer -I "$ROOT/src/core" \
   -o "$BUILD/hopdesk-rx-image-buffer-tests" "$ROOT/tests/xfer_rx_image_buffer_tests.c" "$ROOT/src/core/xfer_rx_image_buffer.c"
 "$BUILD/hopdesk-rx-image-buffer-tests"
+
+clang -std=c11 -Wall -Wextra -Werror -D_XOPEN_SOURCE=700 -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I "$ROOT/src/mac" -o "$BUILD/hopdesk-rx-fs-tests" \
+  "$ROOT/tests/xfer_rx_fs_tests.c" "$ROOT/src/mac/xfer_rx_fs.c"
+"$BUILD/hopdesk-rx-fs-tests"

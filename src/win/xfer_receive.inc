@@ -759,7 +759,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             s_rx.cur_size     = 0;   /* 0 = 任何分块都越界被拒，坏条目不落盘 */
             s_rx.cur_received = 0;
             s_rx.fcrc         = 0;
-            wq_error_set(0);
+            wq_error_set_for(&s_wq, 0);
 
             char *relz = (char *)malloc((size_t)plen + 1);
             if (!relz) { s_rx.cur_fail = HOP_FILE_ACK_DISK; break; }

@@ -30,7 +30,7 @@ static struct {
     hop_xfer_rx_queue accounting;
     CRITICAL_SECTION   lock;
     CONDITION_VARIABLE cv_work, cv_space;
-    HANDLE             th;
+    hop_writer_worker worker;
     hop_writer_io      io;       /* 写线程独占 */
     volatile LONG      err;      /* 写盘失败标记，主路径读 */
     int                stop;
@@ -68,48 +68,56 @@ static void wq_task_run(rx_task *t) {
     }
 }
 
-static DWORD WINAPI writer_thread(LPVOID arg) {
-    (void)arg;
-    /* 写盘也是后台工作，同样降级，别跟输入路径抢 CPU */
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-
-    for (;;) {
-        EnterCriticalSection(&s_wq.lock);
-        while (s_wq.accounting.queued_slots == 0 && !s_wq.stop)
-            SleepConditionVariableCS(&s_wq.cv_work, &s_wq.lock, INFINITE);
-        if (s_wq.accounting.queued_slots == 0 && s_wq.stop) {
-            LeaveCriticalSection(&s_wq.lock);
-            break;
-        }
-        rx_task t = s_wq.ring[s_wq.head];
-        s_wq.head = (s_wq.head + 1) % RX_Q_SLOTS;
-        (void)hop_xfer_rx_queue_dequeue(&s_wq.accounting);
+static int wq_worker_take(void *context, void *task_out) {
+    (void)context;
+    EnterCriticalSection(&s_wq.lock);
+    while (s_wq.accounting.queued_slots == 0 && !s_wq.stop)
+        SleepConditionVariableCS(&s_wq.cv_work, &s_wq.lock, INFINITE);
+    if (s_wq.accounting.queued_slots == 0 && s_wq.stop) {
         LeaveCriticalSection(&s_wq.lock);
-
-        int disk_guard = hop_watchdog_begin("disk writer task", HOP_IO_DEADLINE_MS);
-        uint64_t write_started_ns=rate_now_ns();
-        wq_task_run(&t);
-        uint64_t write_elapsed_ns=rate_now_ns()-write_started_ns;
-        if(t.kind==RX_WRITE && t.budget_owner) {
-            hop_xfer_task_snapshot task_snapshot;
-            if (hop_xfer_task_get_snapshot(t.budget_owner->id,&task_snapshot))
-                status_stage_time(HOP_XFER_DIR_RECEIVE,task_snapshot.transfer_id,
-                                  HOP_XFER_TIME_WRITE,write_elapsed_ns);
-        }
-        hop_watchdog_end(disk_guard);
-
-        if (t.kind == RX_WRITE && t.budget_owner)
-            (void)hop_xfer_task_release_rx_buffer(t.budget_owner, t.len);
-        EnterCriticalSection(&s_wq.lock);
-        if (t.kind == RX_WRITE) {
-            hop_xfer_buffer_pool_release_locked(&s_wq.pool,t.pool_slot);
-            }
-        hop_xfer_rx_queue_complete(&s_wq.accounting, t.kind == RX_WRITE ? t.len : 0);
-        WakeConditionVariable(&s_wq.cv_space);
-        LeaveCriticalSection(&s_wq.lock);
+        return 0;
     }
+    rx_task *task = (rx_task *)task_out;
+    *task = s_wq.ring[s_wq.head];
+    s_wq.head = (s_wq.head + 1) % RX_Q_SLOTS;
+    (void)hop_xfer_rx_queue_dequeue(&s_wq.accounting);
+    LeaveCriticalSection(&s_wq.lock);
+    return 1;
+}
+
+static void wq_worker_run(void *context, const void *task_data) {
+    (void)context;
+    rx_task *task = (rx_task *)task_data;
+    int disk_guard = hop_watchdog_begin("disk writer task", HOP_IO_DEADLINE_MS);
+    uint64_t write_started_ns = rate_now_ns();
+    wq_task_run(task);
+    uint64_t write_elapsed_ns = rate_now_ns() - write_started_ns;
+    if (task->kind == RX_WRITE && task->budget_owner) {
+        hop_xfer_task_snapshot snapshot;
+        if (hop_xfer_task_get_snapshot(task->budget_owner->id, &snapshot))
+            status_stage_time(HOP_XFER_DIR_RECEIVE, snapshot.transfer_id,
+                              HOP_XFER_TIME_WRITE, write_elapsed_ns);
+    }
+    hop_watchdog_end(disk_guard);
+}
+
+static void wq_worker_complete(void *context, const void *task_data) {
+    (void)context;
+    const rx_task *task = (const rx_task *)task_data;
+    if (task->kind == RX_WRITE && task->budget_owner)
+        (void)hop_xfer_task_release_rx_buffer(task->budget_owner, task->len);
+    EnterCriticalSection(&s_wq.lock);
+    if (task->kind == RX_WRITE)
+        hop_xfer_buffer_pool_release_locked(&s_wq.pool, task->pool_slot);
+    hop_xfer_rx_queue_complete(&s_wq.accounting,
+                               task->kind == RX_WRITE ? task->len : 0);
+    WakeConditionVariable(&s_wq.cv_space);
+    LeaveCriticalSection(&s_wq.lock);
+}
+
+static void wq_worker_exit(void *context) {
+    (void)context;
     hop_writer_io_close(&s_wq.io);
-    return 0;
 }
 
 /* 入队。队列满时阻塞 —— 这就是背压的着力点。 */
@@ -233,8 +241,10 @@ static int wq_start(void) {
     InitializeCriticalSection(&s_wq.lock);
     InitializeConditionVariable(&s_wq.cv_work);
     InitializeConditionVariable(&s_wq.cv_space);
-    s_wq.th = CreateThread(NULL, 0, writer_thread, NULL, 0, NULL);
-    if (!s_wq.th) {
+    const hop_writer_worker_callbacks callbacks = {
+        wq_worker_take, wq_worker_run, wq_worker_complete, wq_worker_exit
+    };
+    if (!hop_writer_worker_start(&s_wq.worker, &s_wq, sizeof(rx_task), &callbacks)) {
         DeleteCriticalSection(&s_wq.lock);
         return 0;
     }
@@ -244,7 +254,7 @@ static int wq_start(void) {
 /* 停写线程：先让它把队列里的活干完（数据已经收下来了，丢了就是损坏），
  * 再置 stop 唤醒，最后 join。没 join 成功就保留临界区。 */
 static void wq_stop(void) {
-    if (!s_wq.th) return;
+    if (s_wq.worker.state != 1) return;
     wq_drain();
     EnterCriticalSection(&s_wq.lock);
     s_wq.stop = 1;
@@ -252,16 +262,12 @@ static void wq_stop(void) {
     WakeAllConditionVariable(&s_wq.cv_space);
     LeaveCriticalSection(&s_wq.lock);
 
-    if (WaitForSingleObject(s_wq.th, 3000) == WAIT_OBJECT_0) {
-        CloseHandle(s_wq.th);
-        s_wq.th = NULL;
-        hop_xfer_buffer_pool_dispose(&s_wq.pool);
-        DeleteCriticalSection(&s_wq.lock);
-    } else {
-        hop_log(HOP_LOG_WARN, "xfer: writer thread did not exit, keep lock");
-        CloseHandle(s_wq.th);
-        s_wq.th = NULL;
+    if (!hop_writer_worker_join(&s_wq.worker)) {
+        hop_log(HOP_LOG_WARN, "xfer: writer worker did not exit, retain thread and queue state");
+        return;
     }
+    hop_xfer_buffer_pool_dispose(&s_wq.pool);
+    DeleteCriticalSection(&s_wq.lock);
 }
 
 /* ---------------- 接收 ---------------- */

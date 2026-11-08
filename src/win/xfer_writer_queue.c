@@ -93,7 +93,7 @@ static int worker_take(void *context, void *task_out) {
 static void worker_run(void *context, const void *task_data) {
     hop_writer_queue *queue = (hop_writer_queue *)context;
     writer_command *command = (writer_command *)task_data;
-    int guard = watchdog_begin(queue, "disk writer task", 30000);
+    int guard = watchdog_begin(queue, "disk writer task", queue->callbacks.io_deadline_ms);
     uint64_t started = queue->callbacks.now_ns
         ? queue->callbacks.now_ns(queue->callback_context) : 0;
     run_command(queue, command);
@@ -138,7 +138,7 @@ static int enqueue_control(hop_writer_queue *queue, int kind, const wchar_t *pat
         if (length >= MAX_PATH) return 0;
         memcpy(command.path, path, (length + 1) * sizeof(wchar_t));
     }
-    int guard = watchdog_begin(queue, "disk queue wait", 35000);
+    int guard = watchdog_begin(queue, "disk queue wait", queue->callbacks.io_deadline_ms + 5000);
     EnterCriticalSection(&queue->lock);
     while (!hop_xfer_rx_queue_can_push(&queue->accounting, 0) && !queue->stop)
         SleepConditionVariableCS(&queue->cv_space, &queue->lock, INFINITE);
@@ -157,7 +157,7 @@ static int enqueue_control(hop_writer_queue *queue, int kind, const wchar_t *pat
 
 hop_writer_queue *hop_writer_queue_create(
     void *callback_context, const hop_writer_queue_callbacks *callbacks) {
-    if (!callbacks) return NULL;
+    if (!callbacks || !callbacks->reserve_task_rx || !callbacks->release_task_rx) return NULL;
     hop_writer_queue *queue = (hop_writer_queue *)calloc(1, sizeof(*queue));
     if (!queue) return NULL;
     queue->callback_context = callback_context;

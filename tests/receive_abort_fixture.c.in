@@ -80,7 +80,6 @@ static int create_directory_if_missing(const wchar_t*p){(void)p;return !fail_dir
 #define ERROR_PATH_NOT_FOUND 3
 static DWORD GetLongPathNameW(const wchar_t*p,wchar_t*q,DWORD n){(void)p;(void)q;(void)n;return 0;}
 #else
-static int unlink(const char*p){(void)p;return 0;}
 static const char*temp_root(void){return "/tmp";}
 static int mkdir_p(const char*p){(void)p;return fail_directory?-1:0;}
 #endif

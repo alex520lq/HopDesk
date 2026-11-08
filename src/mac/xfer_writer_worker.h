@@ -18,6 +18,10 @@ typedef struct {
     void *task_storage;
     int state;
     pthread_t thread;
+    pthread_mutex_t exit_lock;
+    pthread_cond_t exit_cv;
+    int exit_sync_initialized;
+    int exited;
 } hop_writer_worker;
 
 /* Zero-initialize before first start. Callback context and referenced state must
@@ -25,6 +29,8 @@ typedef struct {
 int hop_writer_worker_start(hop_writer_worker *worker, void *context,
                             size_t task_size,
                             const hop_writer_worker_callbacks *callbacks);
+/* Waits up to 3 seconds. A timeout preserves the live thread and all worker state
+ * so callers can retry join; storage is released only after a successful join. */
 int hop_writer_worker_join(hop_writer_worker *worker);
 
 #endif

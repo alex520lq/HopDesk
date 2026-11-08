@@ -8,6 +8,7 @@
 #include "app.h"
 #include "xfer.h"
 #include "../core/xfer_rx_receipt.h"
+#include "../core/xfer_rx_lifecycle.h"
 #include "xfer_writer_queue.h"
 #include "../core/xfer_rx_queue.h"
 #include "../core/update_state.h"

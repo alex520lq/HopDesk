@@ -83,3 +83,14 @@ if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
 if ($LASTEXITCODE -ne 0) { throw "RX queue test compilation failed ($LASTEXITCODE)" }
 & $rxQueueTests
 if ($LASTEXITCODE -ne 0) { throw "RX queue tests failed ($LASTEXITCODE)" }
+
+$writerWorker = Join-Path $build 'hopdesk-writer-worker-tests.exe'
+$writerWorkerSources = @((Join-Path $root 'tests/writer_worker_tests.c'), (Join-Path $root 'src/win/xfer_writer_worker.c'))
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I (Join-Path $root 'src/win') /Fe:$writerWorker @writerWorkerSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I (Join-Path $root 'src/win') -o $writerWorker @writerWorkerSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Writer worker compilation failed ($LASTEXITCODE)" }
+& $writerWorker
+if ($LASTEXITCODE -ne 0) { throw "Writer worker lifecycle tests failed ($LASTEXITCODE)" }

@@ -424,6 +424,7 @@ int main(void){
         common=r'''
 #include "hop.h"
 #include "xfer_rx_batch_rules.h"
+#include "xfer_rx_batch_state.h"
 #include "xfer_rx_image_state.h"
 #include "xfer_rx_image_buffer.h"
 #include "xfer_rx_file_state.h"
@@ -447,11 +448,11 @@ typedef xf_job xfer_job;
 typedef struct {int kind;} rx_task;
 static int s_status_lock,applied;static uint8_t wire[20];
 static hop_xfer_tracking s_receive_status;
-static struct {int active,ntop;uint32_t batch;char *dir;hop_xfer_rx_image_buffer image_buffer;hop_xfer_rx_image_state image_state;hop_xfer_rx_file_state file_state;void **tops;hop_xfer_task task;} s_rx;
+static struct {hop_xfer_rx_batch_state batch_state;int ntop;char *dir;hop_xfer_rx_image_buffer image_buffer;hop_xfer_rx_image_state image_state;hop_xfer_rx_file_state file_state;void **tops;hop_xfer_task task;} s_rx;
 static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t batch){(void)batch;(void)fd;(void)type;assert(n==20);memcpy(wire,p,n);return 1;}
 static void wq_push(rx_task*t){(void)t;}
 static void wq_drain(void){}
-static void rx_reset(void){s_rx.active=0;hop_xfer_task_dispose(&s_rx.task);}
+static void rx_reset(void){hop_xfer_rx_batch_state_reset(&s_rx.batch_state);hop_xfer_task_dispose(&s_rx.task);}
 static void rx_terminate(uint32_t batch,uint8_t reason,int notify){(void)batch;(void)reason;(void)notify;assert(!"unexpected cancellation in successful fixture");}
 static void status_file_phase(int d,uint32_t b,int i,int p,uint32_t a){assert(d==HOP_XFER_DIR_RECEIVE);hop_xfer_tracking_phase(&s_receive_status,b,i,p,a);}
 static void status_end(int d,uint32_t b,int p,const char*s){assert(d==HOP_XFER_DIR_RECEIVE);hop_xfer_tracking_end(&s_receive_status,b,p,s);}
@@ -486,7 +487,7 @@ int main(void){
     assert(hop_xfer_task_init(&s_rx.task,0,0,j.batch));
     assert(hop_xfer_task_reserve_job(&s_rx.task));
     assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
-    s_rx.active=1;s_rx.batch=j.batch;hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,1,0);
+    assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,j.batch));hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,1,0);
     s_rx.image_buffer.data=pixel;s_rx.image_buffer.capacity=4;assert(hop_xfer_rx_image_state_begin(&s_rx.image_state,1,1,4,4));s_rx.image_state.received=4;s_rx.image_state.capacity=4;
     hop_xfer_tracking_begin(&s_receive_status,j.batch,HOP_XFER_DIR_RECEIVE,0,0,"Image",HOP_XFER_RECEIVING);
     hop_xfer_tracking_file(&s_receive_status,j.batch,1,"Image",4,0,HOP_XFER_FILE_RECEIVING);
@@ -497,7 +498,7 @@ int main(void){
     assert(hop_xfer_task_init(&s_rx.task,0,0,11));
     assert(hop_xfer_task_reserve_job(&s_rx.task));
     assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
-    s_rx.active=1;s_rx.batch=11;hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,1,0);assert(hop_xfer_rx_image_state_begin(&s_rx.image_state,1,1,4,4));s_rx.image_state.received=3;s_rx.image_state.capacity=4;
+    assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,11));hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,1,0);assert(hop_xfer_rx_image_state_begin(&s_rx.image_state,1,1,4,4));s_rx.image_state.received=3;s_rx.image_state.capacity=4;
     hop_xfer_tracking_begin(&s_receive_status,11,HOP_XFER_DIR_RECEIVE,1,4,"Image",HOP_XFER_RECEIVING);
     rx_finish_batch(11,1,1);assert(applied==1 && s_receive_status.status.phase==HOP_XFER_FAILED);
 
@@ -507,7 +508,7 @@ int main(void){
     assert(hop_xfer_task_init(&s_rx.task,0,0,paste_batch));
     assert(hop_xfer_task_reserve_job(&s_rx.task));
     assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
-    s_rx.active=1;s_rx.batch=paste_batch;hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,0,0);s_rx.ntop=1;s_rx.tops=tops;
+    assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,paste_batch));hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,0,0);s_rx.ntop=1;s_rx.tops=tops;
     hop_xfer_tracking_begin(&s_receive_status,paste_batch,HOP_XFER_DIR_RECEIVE,1,0,"File",HOP_XFER_RECEIVING);
     rx_finish_batch(paste_batch,1,1);
     assert(paste_success_calls==1 && paste_failure_calls==0);
@@ -516,14 +517,14 @@ int main(void){
     assert(hop_xfer_task_init(&s_rx.task,0,0,paste_batch));
     assert(hop_xfer_task_reserve_job(&s_rx.task));
     assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
-    s_rx.active=1;s_rx.batch=paste_batch;hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,0,0);s_rx.ntop=1;s_rx.tops=tops;
+    assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,paste_batch));hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,0,0);s_rx.ntop=1;s_rx.tops=tops;
     hop_xfer_tracking_begin(&s_receive_status,paste_batch,HOP_XFER_DIR_RECEIVE,1,0,"File",HOP_XFER_RECEIVING);
     rx_finish_batch(paste_batch,0,1);
     assert(paste_success_calls==1 && paste_failure_calls==1);
     puts("PASS: production IMAGE DONE and validated file-paste completion paths");return 0;
 }
 '''
-        run('image_'+platform,common+extract(source,'send_done')+'\n'+extract(source,'rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_rx_image_buffer.c'],threads=True)
+        run('image_'+platform,common+extract(source,'send_done')+'\n'+extract(source,'rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_rx_image_buffer.c'],threads=True)
     # Run the actual per-platform state wrappers, not only a reimplemented model.
     for platform in ['win','mac']:
         source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', (ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8'))

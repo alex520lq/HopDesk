@@ -106,9 +106,7 @@ typedef struct {
     hop_xfer_rx_entry_reservations entry_reservations;
     wchar_t   dir[MAX_PATH];
     wchar_t  *cur_path;
-    int       cur_is_image;
-    int       cur_is_dir;    /* 目录在 BEGIN 时已登记，FILE_END 不能再登记一次 */
-    hop_xfer_rx_file_state file_state;
+        hop_xfer_rx_file_state file_state;
     /* 图片累积 */
     uint8_t  *img;
     hop_xfer_rx_image_state image_state;
@@ -148,7 +146,7 @@ static void rx_clear_state(void) {
     s_rx.active = 0;
     s_rx.batch = 0;
     hop_xfer_rx_file_state_reset(&s_rx.file_state);
-    s_rx.cur_is_image = s_rx.cur_is_dir = 0;
+    s_rx.file_state.is_image = s_rx.file_state.is_directory = 0;
     
     hop_xfer_rx_entry_reservations_reset(&s_rx.entry_reservations);
     hop_xfer_task_dispose(&s_rx.task);

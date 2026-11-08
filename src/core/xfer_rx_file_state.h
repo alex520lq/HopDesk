@@ -9,6 +9,8 @@ extern "C" {
 
 typedef struct {
     uint32_t id;
+    int is_image;
+    int is_directory;
     int failure;              /* -1 while valid; otherwise FILE_ACK status */
     uint64_t declared_size;
     uint64_t received;
@@ -23,6 +25,7 @@ typedef enum {
 
 void hop_xfer_rx_file_state_reset(hop_xfer_rx_file_state *state);
 void hop_xfer_rx_file_state_begin(hop_xfer_rx_file_state *state, uint32_t id);
+void hop_xfer_rx_file_state_set_kind(hop_xfer_rx_file_state *state, int is_image, int is_directory);
 void hop_xfer_rx_file_state_set_size(hop_xfer_rx_file_state *state, uint64_t size);
 void hop_xfer_rx_file_state_fail(hop_xfer_rx_file_state *state, uint8_t ack_status);
 int hop_xfer_rx_file_state_matches(const hop_xfer_rx_file_state *state, uint32_t id);

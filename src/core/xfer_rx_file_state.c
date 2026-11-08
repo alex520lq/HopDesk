@@ -13,6 +13,12 @@ void hop_xfer_rx_file_state_begin(hop_xfer_rx_file_state *state, uint32_t id) {
     state->id = id;
 }
 
+void hop_xfer_rx_file_state_set_kind(hop_xfer_rx_file_state *state, int is_image, int is_directory) {
+    if (!state) return;
+    state->is_image = is_image ? 1 : 0;
+    state->is_directory = is_directory ? 1 : 0;
+}
+
 void hop_xfer_rx_file_state_set_size(hop_xfer_rx_file_state *state, uint64_t size) {
     if (state) state->declared_size = size;
 }

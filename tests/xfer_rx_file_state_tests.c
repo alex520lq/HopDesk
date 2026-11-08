@@ -8,6 +8,8 @@ int main(void) {
     assert(state.failure == -1 && state.id == 0);
     hop_xfer_rx_file_state_begin(&state, 9);
     hop_xfer_rx_file_state_set_size(&state, 9);
+    hop_xfer_rx_file_state_set_kind(&state, 1, 0);
+    assert(state.is_image && !state.is_directory);
     assert(hop_xfer_rx_file_state_matches(&state, 9));
     assert(!hop_xfer_rx_file_state_matches(&state, 8));
 
@@ -37,6 +39,7 @@ int main(void) {
     assert(!hop_xfer_rx_file_state_record_chunk(&state, 9, 0, 0));
 
     hop_xfer_rx_file_state_begin(&state, 10);
+    assert(!state.is_image && !state.is_directory);
     assert(state.id == 10 && state.failure == -1 && state.received == 0 &&
            state.declared_size == 0 && state.crc == 0);
     puts("PASS: receiver file state contiguous offsets, CRC fold and failure gating");

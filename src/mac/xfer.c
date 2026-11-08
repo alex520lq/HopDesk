@@ -12,6 +12,7 @@
 #include "mac_app.h"
 #include "xfer.h"
 #include "xfer_writer_io.h"
+#include "xfer_writer_worker.h"
 #include "../core/xfer_rx_queue.h"
 #include "../core/update_state.h"
 #include "../core/xfer_tracking.h"

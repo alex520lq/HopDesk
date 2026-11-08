@@ -142,7 +142,7 @@ static void rx_clear_state(void) {
     s_rx.active = 0;
     s_rx.batch = 0;
     hop_xfer_rx_file_state_reset(&s_rx.file_state);
-    s_rx.file_state.is_image = s_rx.file_state.is_directory = 0;
+    hop_xfer_rx_file_state_set_kind(&s_rx.file_state, 0, 0);
     
     hop_xfer_rx_entry_reservations_reset(&s_rx.entry_reservations);
     hop_xfer_task_dispose(&s_rx.task);
@@ -350,7 +350,7 @@ static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
     int completion_claimed = hop_xfer_task_begin_completion(&s_rx.task);
     if (!completion_claimed) {
         hop_xfer_rx_batch_finish_action cancelled = hop_xfer_rx_batch_finish_decide(
-            batch, s_rx.active, s_rx.batch, 0, ok, total, s_rx.cur_is_image, 0);
+            batch, s_rx.active, s_rx.batch, 0, ok, total, s_rx.file_state.is_image, 0);
         if (cancelled == HOP_RX_BATCH_FINISH_CANCELLED)
             rx_terminate(batch,HOP_ABORT_CANCEL,1);
         return -1;
@@ -368,7 +368,7 @@ static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
         hop_log(HOP_LOG_ERROR,
                 "xfer: batch %u incomplete (%u/%u entries); staged data kept at %s; clipboard not updated",
                 batch, ok, total, s_rx.dir);
-    } else if (s_rx.cur_is_image) {
+    } else if (s_rx.file_state.is_image) {
         if (s_rx.img && s_rx.image_state.received == s_rx.image_state.expected) {
             uint64_t clipboard_started_ns=rate_now_ns();
             clipboard_apply_image(s_rx.img, s_rx.image_state.width, s_rx.image_state.height, s_rx.image_state.stride);
@@ -397,15 +397,15 @@ static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
     pthread_mutex_lock(&s_status_lock);
     s_receive_status.status.files_total=total;
     pthread_mutex_unlock(&s_status_lock);
-    if(s_rx.cur_is_image && ok==total && s_rx.image_state.received==s_rx.image_state.expected)
+    if(s_rx.file_state.is_image && ok==total && s_rx.image_state.received==s_rx.image_state.expected)
         status_file_phase(HOP_XFER_DIR_RECEIVE,batch,0,HOP_XFER_FILE_COMPLETED,1);
     int image_valid = s_rx.img && s_rx.image_state.received == s_rx.image_state.expected;
     hop_xfer_rx_batch_finish_action finish_action = hop_xfer_rx_batch_finish_decide(
-        batch, s_rx.active, s_rx.batch, 1, ok, total, s_rx.cur_is_image, image_valid);
+        batch, s_rx.active, s_rx.batch, 1, ok, total, s_rx.file_state.is_image, image_valid);
     int complete = finish_action == HOP_RX_BATCH_FINISH_COMPLETE;
-    hop_xfer_task_finish(&s_rx.task,complete?HOP_XFER_TASK_COMPLETED:(s_rx.cur_is_image?HOP_XFER_TASK_FAILED:HOP_XFER_TASK_PARTIAL));
+    hop_xfer_task_finish(&s_rx.task,complete?HOP_XFER_TASK_COMPLETED:(s_rx.file_state.is_image?HOP_XFER_TASK_FAILED:HOP_XFER_TASK_PARTIAL));
     status_end(HOP_XFER_DIR_RECEIVE,batch,complete?HOP_XFER_COMPLETED:
-               (s_rx.cur_is_image?HOP_XFER_FAILED:HOP_XFER_PARTIAL),
+               (s_rx.file_state.is_image?HOP_XFER_FAILED:HOP_XFER_PARTIAL),
                complete?"Receive completed":"Receive incomplete; clipboard not updated");
     int result=finish_action==HOP_RX_BATCH_FINISH_COMPLETE?HOP_DONE_ACK_COMPLETE:
                (finish_action==HOP_RX_BATCH_FINISH_IMAGE_FAILED?HOP_DONE_ACK_FAILED:HOP_DONE_ACK_PARTIAL);
@@ -479,8 +479,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             free(s_rx.cur_path);
             s_rx.cur_path     = NULL;
             hop_xfer_rx_file_state_begin(&s_rx.file_state, id);
-            s_rx.cur_is_image = 0;
-            s_rx.cur_is_dir   = (flags & HOP_FILE_FLAG_DIR) ? 1 : 0;
+            hop_xfer_rx_file_state_set_kind(&s_rx.file_state, 0, (flags & HOP_FILE_FLAG_DIR) != 0);
             hop_writer_queue_error_reset(s_wq);
 
             char rel[HOP_PATH_LEN_MAX + 1];
@@ -508,9 +507,9 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
-            status_add_received_file(batch,id,rel,size,s_rx.cur_is_dir);
+            status_add_received_file(batch,id,rel,size,s_rx.file_state.is_directory);
 
-            if (s_rx.cur_is_dir) {
+            if (s_rx.file_state.is_directory) {
                 if (mkdir_p(path) != 0) {
                     hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_DISK);
                     break;
@@ -572,7 +571,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             }
 
             size_t expected = (size_t)stride * (size_t)h;
-            if (!s_rx.cur_is_image) {
+            if (!s_rx.file_state.is_image) {
                 if (!hop_xfer_task_reserve_image(&s_rx.task,(uint64_t)expected)) {
                     rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
                     return;
@@ -581,8 +580,8 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
-            s_rx.cur_is_image = 1;
             hop_xfer_rx_file_state_begin(&s_rx.file_state, msg.id);
+            hop_xfer_rx_file_state_set_kind(&s_rx.file_state, 1, 0);
             if (!hop_xfer_rx_image_state_begin(&s_rx.image_state,
                     (uint32_t)w, (uint32_t)h, (uint32_t)stride, (uint64_t)expected)) {
                 rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
@@ -599,9 +598,9 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             uint64_t receive_started_ns=rate_now_ns();
             hop_xfer_file_chunk_msg chunk;
             if (!hop_xfer_decode_file_chunk(p, len,
-                    s_rx.cur_is_image ? s_rx.image_state.expected :
+                    s_rx.file_state.is_image ? s_rx.image_state.expected :
                         (s_rx.file_state.failure >= 0 ? UINT64_MAX : s_rx.file_state.declared_size),
-                    s_rx.cur_is_image, &chunk)) {
+                    s_rx.file_state.is_image, &chunk)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed or out-of-range chunk; aborting receive");
                 rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
                 return;
@@ -630,7 +629,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 hop_log(HOP_LOG_ERROR,
                         "xfer: CHUNK CRC MISMATCH off=%llu len=%u (expect %08x)",
                         (unsigned long long)off, n, crc);
-                if (s_rx.cur_is_image) {
+                if (s_rx.file_state.is_image) {
                     rx_terminate(s_rx.batch,HOP_ABORT_CRC,1);
                 } else {
                     hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_CRC);
@@ -638,7 +637,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 return;
             }
 
-            if (s_rx.cur_is_image) {
+            if (s_rx.file_state.is_image) {
                 if (hop_xfer_rx_image_state_check_chunk(
                         &s_rx.image_state, off, n) != HOP_RX_IMAGE_CHUNK_ACCEPT) {
                     hop_log(HOP_LOG_ERROR, "xfer: image chunk gap/overlap or length overflow");
@@ -711,11 +710,11 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             uint8_t status = end_msg.status;
 
             /* 图片整批走，没有逐文件回执：发送端不会等 */
-            if (s_rx.cur_is_image) break;
+            if (s_rx.file_state.is_image) break;
 
             status_file_phase(HOP_XFER_DIR_RECEIVE,s_rx.batch,(int)id-1,HOP_XFER_FILE_VERIFYING,0);
             /* Always drain and close before deciding the per-file ACK. */
-            if (!s_rx.cur_is_dir) rx_close_file();
+            if (!s_rx.file_state.is_directory) rx_close_file();
 
             int writer_error = wq_error_get();
             int ack = hop_xfer_rx_file_state_ack(
@@ -738,7 +737,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                             s_rx.cur_path ? s_rx.cur_path : "?", want, s_rx.file_state.crc);
                 }
             }
-            if (ack == HOP_FILE_ACK_OK && s_rx.cur_path && !s_rx.cur_is_dir) {
+            if (ack == HOP_FILE_ACK_OK && s_rx.cur_path && !s_rx.file_state.is_directory) {
                 /* Only verified top-level files are exposed through clipboard. */
                 const char *tail = s_rx.cur_path + strlen(s_rx.dir) + 1;
                 if (!strchr(tail, '/') && !rx_add_top(s_rx.cur_path))
@@ -746,7 +745,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             }
 
 
-            if (ack != HOP_FILE_ACK_OK && !s_rx.cur_is_dir && s_rx.cur_path) {
+            if (ack != HOP_FILE_ACK_OK && !s_rx.file_state.is_directory && s_rx.cur_path) {
                 if (unlink(s_rx.cur_path) != 0 && errno != ENOENT)
                     hop_log(HOP_LOG_WARN, "xfer: failed to remove incomplete file %s (%s)",
                             s_rx.cur_path, strerror(errno));

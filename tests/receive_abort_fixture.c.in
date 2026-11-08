@@ -65,6 +65,16 @@ static int wq_push_data(hop_xfer_task *owner,uint64_t off,const uint8_t *data,ui
     return hop_xfer_task_release_rx_buffer(owner,len);
 }
 @RX_STATE@
+static void fixture_shutdown_data(void *context){(void)context;}
+static void fixture_mark_sender_aborted(void *context,uint32_t batch,uint8_t reason){
+    (void)context;
+    if(s_x.cur_batch==batch){s_x.abort_batch=batch;s_x.abort_reason=reason;}
+}
+static void fixture_configure_rx_context(void){
+    s_rx.platform_context=NULL;
+    s_rx.shutdown_data_channel=fixture_shutdown_data;
+    s_rx.mark_sender_aborted=fixture_mark_sender_aborted;
+}
 static hop_xfer_rx_lifecycle s_rx_lifecycle;
 static hop_xfer_rx_done_receipt s_done_receipt;
 static int ack_deliveries;static uint32_t ack_id;
@@ -131,7 +141,7 @@ static int try_image_buffer_ensure(hop_xfer_rx_image_buffer *buffer,uint64_t exp
 }
 #define hop_xfer_rx_image_buffer_ensure try_image_buffer_ensure
 @DISPATCH_HANDLERS@
-static void dispatch(uint8_t type,const uint8_t*p,uint32_t len){(void)hop_xfer_rx_dispatch_message(type,p,len,&s_rx_dispatch_handlers,&s_rx);}
+static void dispatch(uint8_t type,const uint8_t*p,uint32_t len){fixture_configure_rx_context();(void)hop_xfer_rx_dispatch_message(type,p,len,&s_rx_dispatch_handlers,&s_rx);}
 #undef hop_xfer_rx_image_buffer_ensure
 static void image_begin(uint32_t batch,uint32_t width){
     uint8_t p[20];hop_put_be32(p,batch);hop_put_be32(p+4,1);hop_put_be32(p+8,width);

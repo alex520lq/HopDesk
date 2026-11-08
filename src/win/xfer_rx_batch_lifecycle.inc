@@ -163,7 +163,6 @@ static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
     ReleaseSRWLockExclusive(&s_status_lock);
     if(s_rx.file_state.is_image && ok==total && s_rx.image_state.received==s_rx.image_state.expected)
         status_file_phase(HOP_XFER_DIR_RECEIVE,batch,0,HOP_XFER_FILE_COMPLETED,1);
-    int image_valid = s_rx.image_buffer.data && s_rx.image_state.received == s_rx.image_state.expected;
     hop_xfer_rx_batch_finish_action finish_action = hop_xfer_rx_batch_finish_decide(
         batch, s_rx.batch_state.active, s_rx.batch_state.batch, 1, ok, total, s_rx.file_state.is_image, image_valid);
     int complete = finish_action == HOP_RX_BATCH_FINISH_COMPLETE;

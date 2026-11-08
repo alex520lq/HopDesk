@@ -190,8 +190,8 @@ const hop_xfer_rx_dispatch_handlers hop_xfer_rx_platform_dispatch_handlers = {
     hop_xfer_rx_handle_image_begin,
     hop_xfer_rx_handle_file_chunk,
     rx_dispatch_file_end,
-    hop_xfer_rx_handle_file_ack,
+    hop_xfer_rx_dispatch_file_ack_message,
     hop_xfer_rx_handle_abort,
     hop_xfer_rx_handle_done,
-    hop_xfer_rx_handle_done_ack
+    hop_xfer_rx_dispatch_done_ack_message
 };

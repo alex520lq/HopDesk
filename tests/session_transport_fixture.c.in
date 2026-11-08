@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include "xfer_tracking.h"
 #include "xfer_task.h"
+#include "xfer_rx_receipt.h"
 #define SD_BOTH 2
 #define SHUT_RDWR 2
 #define INVALID_SOCKET -1
@@ -13,7 +14,7 @@ typedef int SOCKET;
 static struct {int client,sock,lock,slock;hop_session_id session;hop_xfer_rate_limiter rate;} s_x;
 static struct {int active;uint32_t batch,dead_batch;uint8_t dead_reason;hop_xfer_task task;} s_rx;
 static hop_session_id s_rx_session;
-static struct {int valid;} s_done_receipt;
+static hop_xfer_rx_done_receipt s_done_receipt;
 static struct {int marker;} s_send_status,s_receive_status;
 static int s_status_lock,resets,closes,discarded,paste_cancelled;
 static void rx_reset(void){s_rx.active=0;resets++;}

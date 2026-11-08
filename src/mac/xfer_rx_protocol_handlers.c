@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <time.h>
 #include "xfer.h"
+#include "../core/xfer_tracking.h"
 #include "xfer_rx_fs.h"
 #include "../core/xfer_rx_context.h"
 #include "../core/xfer_rx_ack_handler.h"

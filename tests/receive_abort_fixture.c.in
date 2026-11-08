@@ -142,7 +142,7 @@ static int try_image_buffer_ensure(hop_xfer_rx_image_buffer *buffer,uint64_t exp
     return fail_alloc?0:hop_xfer_rx_image_buffer_ensure(buffer,expected);
 }
 #define hop_xfer_rx_image_buffer_ensure try_image_buffer_ensure
-static void dispatch(uint8_t type,const uint8_t*p,uint32_t len){switch(type){
+static void dispatch(uint8_t type,const uint8_t*p,uint32_t len){switch(hop_xfer_rx_dispatch_classify(type)){
 @RECEIVE_CASES@
 default:break;
 }}

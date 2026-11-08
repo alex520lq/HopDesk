@@ -165,7 +165,7 @@ static void assert_terminal(uint32_t batch,uint8_t reason,int before){
            hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,batch,&tombstone_reason) &&
            tombstone_reason==reason);
     assert(!s_rx.cur_path && !s_rx.img && !s_rx.tops && !s_rx.ntop && !s_rx.img_cap && !s_rx.img_expected);
-    assert(!s_rx.cur_is_image && !s_rx.cur_id && !s_rx.cur_size && !s_rx.dir[0]);
+    assert(!s_rx.cur_is_image && !s_rx.file_state.id && !s_rx.file_state.declared_size && !s_rx.dir[0]);
     assert(!s_rx.task.initialized);
     hop_xfer_budget_snapshot budget_snapshot;
     hop_xfer_budget_get_snapshot(&budget_snapshot);

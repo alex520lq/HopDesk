@@ -13,7 +13,7 @@ int main(void) {
     hop_xfer_rx_done_receipt_record(&receipt, &session_a, &done, HOP_DONE_ACK_COMPLETE);
     const hop_xfer_rx_done_receipt *found =
         hop_xfer_rx_done_receipt_find(&receipt, &session_a, 42);
-    assert(found && found->status == HOP_DONE_ACK_OK);
+    assert(found && found->status == HOP_DONE_ACK_COMPLETE);
     assert(hop_xfer_rx_done_receipt_matches_payload(found, &done));
 
     hop_xfer_done_msg changed = done;

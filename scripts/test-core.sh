@@ -36,3 +36,8 @@ print("PASS: watchdog tolerates progress and exits 70 on an injected hang")
 PYTEST
 
 python3 "$ROOT/scripts/test-updates.py"
+
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I "$ROOT/src/mac" -o "$BUILD/hopdesk-writer-io-tests" \
+  "$ROOT/tests/writer_io_tests.c" "$ROOT/src/mac/xfer_writer_io.c"
+"$BUILD/hopdesk-writer-io-tests"

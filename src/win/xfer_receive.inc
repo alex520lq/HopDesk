@@ -162,17 +162,7 @@ static void rx_context_deliver_ack(void *context, uint32_t batch, uint32_t id, i
     ack_deliver(batch, id, status);
 }
 
-static void rx_context_configure(void) {
-    s_rx.writer = s_wq;
-    s_rx.lifecycle = &s_rx_lifecycle;
-    s_rx.done_receipt = &s_done_receipt;
-    s_rx.services.context = NULL;
-    s_rx.services.shutdown_data_channel = rx_context_shutdown_data;
-    s_rx.services.mark_sender_aborted = rx_context_mark_sender_aborted;
-    s_rx.services.send_file_ack = rx_context_send_file_ack;
-    s_rx.services.send_done_ack = rx_context_send_done_ack;
-    s_rx.services.deliver_ack = rx_context_deliver_ack;
-}
+
 
 static int rx_reserve_entry_budget(void *context, uint64_t bytes) {
     return hop_xfer_task_reserve_entry((hop_xfer_task *)context, bytes);
@@ -221,6 +211,18 @@ static hop_xfer_rx_lifecycle s_rx_lifecycle;
 /* One FIFO sender batch can be awaiting DONE_ACK per session. This is only
  * wire idempotency metadata, not another task or reservation owner. */
 static hop_xfer_rx_done_receipt s_done_receipt;
+
+static void rx_context_configure(void) {
+    s_rx.writer = s_wq;
+    s_rx.lifecycle = &s_rx_lifecycle;
+    s_rx.done_receipt = &s_done_receipt;
+    s_rx.services.context = NULL;
+    s_rx.services.shutdown_data_channel = rx_context_shutdown_data;
+    s_rx.services.mark_sender_aborted = rx_context_mark_sender_aborted;
+    s_rx.services.send_file_ack = rx_context_send_file_ack;
+    s_rx.services.send_done_ack = rx_context_send_done_ack;
+    s_rx.services.deliver_ack = rx_context_deliver_ack;
+}
 static void rx_discard_dir(void);
 static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer);
 static void rx_bind_session(const hop_session_id *session) {

@@ -512,46 +512,9 @@ static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
     return result;
 }
 
-static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
-    (void)user;
-
-    if (type == HOP_MSG_XFER_HELLO) {
-        size_t want = strlen(s_x.cfg.token);
-        int valid = hop_xfer_hello_bound(p, len, s_x.cfg.token, &s_x.session) && hop_session_matches(&s_x.session);
-        if (!valid) {
-            hop_log(HOP_LOG_ERROR,
-                    "xfer: peer handshake rejected (protocol/token mismatch)");
-            EnterCriticalSection(&s_x.lock);
-            SOCKET active = s_x.client;
-            s_x.peer_ready = 0;
-            LeaveCriticalSection(&s_x.lock);
-            if (active != INVALID_SOCKET) shutdown(active, SD_BOTH);
-            return;
-        }
-        EnterCriticalSection(&s_x.lock);
-        s_x.peer_ready = 1;
-        LeaveCriticalSection(&s_x.lock);
-        hop_log(HOP_LOG_INFO,
-                want ? "xfer: authenticated peer data channel (v%u)" :
-                       "xfer: peer data channel ready (v%u)",
-                (unsigned)HOP_XFER_PROTO_VER);
-        return;
-    }
-
-    EnterCriticalSection(&s_x.lock);
-    int ready = s_x.peer_ready;
-    SOCKET active = s_x.client;
-    LeaveCriticalSection(&s_x.lock);
-    if (!ready) {
-        hop_log(HOP_LOG_WARN, "xfer: frame received before handshake; closing peer");
-        if (active != INVALID_SOCKET) shutdown(active, SD_BOTH);
-        return;
-    }
-
-    switch (hop_xfer_rx_dispatch_classify(type)) {
-
-        case HOP_RX_DISPATCH_FILE_BEGIN: {
-            hop_xfer_file_begin_msg msg;
+static void rx_dispatch_file_begin(void *context, const uint8_t *p, uint32_t len) {
+    (void)context;
+hop_xfer_file_begin_msg msg;
             if (!hop_xfer_decode_file_begin(p, len, &msg)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed FILE_BEGIN rejected");
                 if (s_rx.batch_state.active) rx_terminate(s_rx.batch_state.batch,HOP_ABORT_TOO_LARGE,1);
@@ -585,7 +548,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             hop_writer_queue_error_reset(s_wq);
 
             char *relz = (char *)malloc((size_t)plen + 1);
-            if (!relz) { hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_DISK); break; }
+            if (!relz) { hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_DISK); return; }
             memcpy(relz, rel, plen);
             relz[plen] = '\0';
 
@@ -593,12 +556,12 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 hop_log(HOP_LOG_WARN, "xfer: unsafe rel path rejected: %s", relz);
                 free(relz);
                 hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_BADPATH);
-                break;
+                return;
             }
             status_add_received_file(batch,id,relz,size,s_rx.file_state.is_directory);
             wchar_t *path = rx_path_for(relz);
             free(relz);
-            if (!path) { hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_BADPATH); break; }
+            if (!path) { hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_BADPATH); return; }
 
             s_rx.cur_path = path;
             rx_remove_top(s_rx.cur_path);
@@ -615,7 +578,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             if (s_rx.file_state.is_directory) {
                 if (!ensure_dirs(path) || !create_directory_if_missing(path)) {
                     hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_DISK);
-                    break;
+                    return;
                 }
                 /* 顶层目录才进剪贴板清单 */
                 if (!wcschr(path + wcslen(s_rx.dir) + 1, L'\\') &&
@@ -631,7 +594,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                     *sep = save;
                     if (!parent_ok) {
                         hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_DISK);
-                        break;
+                        return;
                     }
                 }
                 /* 打开交给写线程 —— 句柄归它独占 */
@@ -646,11 +609,12 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                  * 否则用户粘贴到的是一份截断的、看起来完全正常的文件。
                  * 由 FILE_END 的成功分支决定是否登记。 */
             }
-            break;
-        }
+            return;
+}
 
-        case HOP_RX_DISPATCH_IMAGE_BEGIN: {
-            hop_xfer_image_begin_msg msg;
+static void rx_dispatch_image_begin(void *context, const uint8_t *p, uint32_t len) {
+    (void)context;
+hop_xfer_image_begin_msg msg;
             if (!hop_xfer_decode_image_begin(p, len, &msg)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed IMAGE_BEGIN rejected");
                 if (s_rx.batch_state.active) rx_terminate(s_rx.batch_state.batch,HOP_ABORT_TOO_LARGE,1);
@@ -694,11 +658,12 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             if (s_rx.image_buffer.data) hop_xfer_rx_image_state_set_capacity(
                 &s_rx.image_state, s_rx.image_buffer.capacity);
             status_image(batch,HOP_XFER_DIR_RECEIVE,s_rx.image_state.expected);
-            break;
-        }
+            return;
+}
 
-        case HOP_RX_DISPATCH_FILE_CHUNK: {
-            if (!s_rx.batch_state.active) return; /* late data after termination */
+static void rx_dispatch_file_chunk(void *context, const uint8_t *p, uint32_t len) {
+    (void)context;
+if (!s_rx.batch_state.active) return; /* late data after termination */
             uint64_t receive_started_ns=rate_now_ns();
             hop_xfer_file_chunk_msg chunk;
             if (!hop_xfer_decode_file_chunk(p, len,
@@ -773,41 +738,42 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 uint64_t receive_elapsed_ns=rate_now_ns()-receive_started_ns;
                 status_chunk_timed(HOP_XFER_DIR_RECEIVE,s_rx.batch_state.batch,s_rx.file_state.id,off,n,
                                    0,crc_elapsed_ns,0,receive_elapsed_ns);
-                break;
+                return;
             }
 
             /* TCP is ordered: reject gaps, overlaps and chunks after a prior
              * file failure instead of creating sparse or truncated files. */
             hop_xfer_rx_file_chunk_check chunk_check =
                 hop_xfer_rx_file_state_check_chunk(&s_rx.file_state, off, n);
-            if (chunk_check == HOP_RX_FILE_CHUNK_ALREADY_FAILED) break;
+            if (chunk_check == HOP_RX_FILE_CHUNK_ALREADY_FAILED) return;
             if (chunk_check != HOP_RX_FILE_CHUNK_ACCEPT) {
                 hop_log(HOP_LOG_ERROR, "xfer: non-contiguous file chunk rejected (off=%llu received=%llu size=%llu)",
                         (unsigned long long)off, (unsigned long long)s_rx.file_state.received,
                         (unsigned long long)s_rx.file_state.declared_size);
                 hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_CRC);
-                break;
+                return;
             }
 
             /* 校验通过才入队。拷贝一份交给写线程 —— 解码器的缓冲
              * 在回调返回后就被释放了，不能把指针递出去。 */
             if (!wq_push_data(&s_rx.task, off, data, n)) {
                 hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_DISK);
-                break;
+                return;
             }
             /* Queue admission succeeded; only now commit offset and file CRC. */
             if (!hop_xfer_rx_file_state_record_chunk(&s_rx.file_state, off, n, crc)) {
                 hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_CRC);
-                break;
+                return;
             }
             uint64_t receive_elapsed_ns=rate_now_ns()-receive_started_ns;
             status_chunk_timed(HOP_XFER_DIR_RECEIVE,s_rx.batch_state.batch,s_rx.file_state.id,off,n,
                                0,crc_elapsed_ns,0,receive_elapsed_ns);
-            break;
-        }
+            return;
+}
 
-        case HOP_RX_DISPATCH_FILE_END: {
-            hop_xfer_file_end_msg end_msg;
+static void rx_dispatch_file_end(void *context, const uint8_t *p, uint32_t len) {
+    (void)context;
+hop_xfer_file_end_msg end_msg;
             if (!hop_xfer_decode_file_end(p, len, &end_msg)) return;
             uint32_t id = end_msg.id;
             if (!s_rx.batch_state.active || !hop_xfer_rx_file_state_matches(&s_rx.file_state, id)) return;
@@ -815,7 +781,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             uint8_t status = end_msg.status;
 
             /* 图片整批走，没有逐文件回执：发送端不会等 */
-            if (s_rx.file_state.is_image) break;
+            if (s_rx.file_state.is_image) return;
 
             status_file_phase(HOP_XFER_DIR_RECEIVE,s_rx.batch_state.batch,(int)id-1,HOP_XFER_FILE_VERIFYING,0);
             /* Always drain and close before deciding the per-file ACK. */
@@ -864,18 +830,20 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             /* 回执是发送端判断"这个文件成没成"的唯一依据。
              * 以前这里发的是批量级 ABORT，等于一个文件坏了就把整批判死。 */
             send_ack(s_x.client, s_rx.batch_state.batch, id, ack);
-            break;
-        }
+            return;
+}
 
-        case HOP_RX_DISPATCH_FILE_ACK: {
-            hop_xfer_file_ack_msg ack;
+static void rx_dispatch_file_ack(void *context, const uint8_t *p, uint32_t len) {
+    (void)context;
+hop_xfer_file_ack_msg ack;
             if (hop_xfer_decode_file_ack(p, len, &ack) && ack.id >= 1 && ack.id <= HOP_XFER_FILE_LIMIT)
                 ack_deliver(ack.batch, ack.id, ack.status);
-            break;
-        }
+            return;
+}
 
-        case HOP_RX_DISPATCH_ABORT: {
-            hop_xfer_abort_msg abort_msg;
+static void rx_dispatch_abort_message(void *context, const uint8_t *p, uint32_t len) {
+    (void)context;
+hop_xfer_abort_msg abort_msg;
             if (!hop_xfer_decode_abort(p, len, &abort_msg)) return;
             uint32_t batch = abort_msg.batch;
             uint8_t reason = abort_msg.reason;
@@ -893,11 +861,12 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             /* 对端不要这一批了：关文件、删掉已落盘的半成品、立墓碑。
              * 墓碑必须立 —— 否则对端再发一帧 FILE_BEGIN 就把目录又建回来了。 */
             if (abort_msg.target == HOP_ABORT_TO_RECEIVER) rx_terminate(batch,reason,0);
-            break;
-        }
+            return;
+}
 
-        case HOP_RX_DISPATCH_DONE: {
-            hop_xfer_done_msg done;
+static void rx_dispatch_done(void *context, const uint8_t *p, uint32_t len) {
+    (void)context;
+hop_xfer_done_msg done;
             if (!hop_xfer_decode_done(p, len, &done)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed XFER_DONE ignored");
                 return;
@@ -920,17 +889,64 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             SOCKET fd=s_x.client;
             LeaveCriticalSection(&s_x.lock);
             if (fd != INVALID_SOCKET) (void)send_small(fd,HOP_MSG_XFER_DONE_ACK,reply,sizeof(reply),done.batch);
-            break;
-        }
+            return;
+}
 
-        case HOP_RX_DISPATCH_DONE_ACK:
-            if (len==5 && hop_get_be32(p)!=0 && p[4]<=HOP_DONE_ACK_FAILED)
+static void rx_dispatch_done_ack(void *context, const uint8_t *p, uint32_t len) {
+    (void)context;
+if (len==5 && hop_get_be32(p)!=0 && p[4]<=HOP_DONE_ACK_FAILED)
                 ack_deliver(hop_get_be32(p),HOP_DONE_ACK_SLOT,p[4]);
-            break;
+            return;
+}
 
-        default:
-            break;
+static const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = {
+    rx_dispatch_file_begin,
+    rx_dispatch_image_begin,
+    rx_dispatch_file_chunk,
+    rx_dispatch_file_end,
+    rx_dispatch_file_ack,
+    rx_dispatch_abort_message,
+    rx_dispatch_done,
+    rx_dispatch_done_ack
+};
+
+static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
+    (void)user;
+
+    if (type == HOP_MSG_XFER_HELLO) {
+        size_t want = strlen(s_x.cfg.token);
+        int valid = hop_xfer_hello_bound(p, len, s_x.cfg.token, &s_x.session) && hop_session_matches(&s_x.session);
+        if (!valid) {
+            hop_log(HOP_LOG_ERROR,
+                    "xfer: peer handshake rejected (protocol/token mismatch)");
+            EnterCriticalSection(&s_x.lock);
+            SOCKET active = s_x.client;
+            s_x.peer_ready = 0;
+            LeaveCriticalSection(&s_x.lock);
+            if (active != INVALID_SOCKET) shutdown(active, SD_BOTH);
+            return;
+        }
+        EnterCriticalSection(&s_x.lock);
+        s_x.peer_ready = 1;
+        LeaveCriticalSection(&s_x.lock);
+        hop_log(HOP_LOG_INFO,
+                want ? "xfer: authenticated peer data channel (v%u)" :
+                       "xfer: peer data channel ready (v%u)",
+                (unsigned)HOP_XFER_PROTO_VER);
+        return;
     }
+
+    EnterCriticalSection(&s_x.lock);
+    int ready = s_x.peer_ready;
+    SOCKET active = s_x.client;
+    LeaveCriticalSection(&s_x.lock);
+    if (!ready) {
+        hop_log(HOP_LOG_WARN, "xfer: frame received before handshake; closing peer");
+        if (active != INVALID_SOCKET) shutdown(active, SD_BOTH);
+        return;
+    }
+
+    (void)hop_xfer_rx_dispatch_message(type, p, len, &s_rx_dispatch_handlers, NULL);
 }
 
 /* Transport gate: typed handlers only see frames bound to this control session.

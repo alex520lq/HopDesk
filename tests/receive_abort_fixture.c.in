@@ -165,7 +165,7 @@ static void assert_terminal(uint32_t batch,uint8_t reason,int before){
     assert(!s_rx.active && !s_rx.batch &&
            hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,batch,&tombstone_reason) &&
            tombstone_reason==reason);
-    assert(!s_rx.cur_path && !s_rx.img && !s_rx.tops && !s_rx.ntop && !s_rx.img_cap && !s_rx.img_expected);
+    assert(!s_rx.cur_path && !s_rx.img && !s_rx.tops && !s_rx.ntop && !s_rx.image_state.capacity && !s_rx.image_state.expected && !s_rx.image_state.received);
     assert(!s_rx.cur_is_image && !s_rx.file_state.id && !s_rx.file_state.declared_size && !s_rx.dir[0]);
     assert(!s_rx.task.initialized);
     hop_xfer_budget_snapshot budget_snapshot;
@@ -189,7 +189,7 @@ int main(void){
         /* Allocate an actual partial image before CRC, overlap and bounds failures. */
         if(scenario==1 || scenario==3 || scenario==4){
             chunk(1,0,0);
-            assert(s_rx.img && s_rx.img_cap==s_rx.img_expected);
+            assert(s_rx.img && s_rx.image_state.capacity==s_rx.image_state.expected);
         }
         uint8_t reason=HOP_ABORT_TOO_LARGE;fail_send=1; /* failed wire send must still clean up */
         switch(scenario){
@@ -261,7 +261,7 @@ int main(void){
     assert(ack_deliveries==2 && ack_id==HOP_DONE_ACK_SLOT);
     /* Lost ACK can be retried without re-applying the image or duplicating history. */
     int old_applied=applied, old_acks=done_acks;before=saved;
-    image_begin(205,1);chunk(1,0,0);chunk(1,4,0);assert(s_rx.img_len==s_rx.img_expected);
+    image_begin(205,1);chunk(1,0,0);chunk(1,4,0);assert(s_rx.image_state.received==s_rx.image_state.expected);
     late_done(205);assert(!s_rx.active && applied==old_applied+1 && saved==before+1);
     assert(done_acks==old_acks+1 && last_done_status==HOP_DONE_ACK_COMPLETE);
     late_done(205);assert(applied==old_applied+1 && saved==before+1 && done_acks==old_acks+2);

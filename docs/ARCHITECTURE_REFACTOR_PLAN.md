@@ -555,3 +555,16 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - CI 证据：Run #644（ID `42482474497`，head `f641997d5d70fb46037bcf8e83934ba43c96228b`）Windows/macOS 完整通过：app build、Core/regression（含新 reservation 测试和 Receiver fixture）、transfer protocol、TCP loopback、Windows native reconnect/control、macOS control/listener、updater syntax、package 全部 PASS。
 - 早期 Run #643 发现新 header 引用了错误的公共头；已改为 include 定义 `HOP_XFER_FILE_LIMIT` 的 `xfer_status.h`，Run #644 验证修复通过。
 - 下一步继续提取当前文件的 offset/received/CRC/failure 状态，之后再处理消息 dispatch 和更完整的 batch/file 生命周期编排。
+
+
+### 2026-11-08：Receiver 当前文件 offset/CRC 状态抽离为 Core
+
+- 新增 `src/core/xfer_rx_file_state.[ch]`，集中拥有当前 FILE/IMAGE ID、失败 ACK 状态、声明大小、连续接收字节数和文件 CRC fold。
+- Windows/macOS Receiver 状态不再分别维护 `cur_id/cur_fail/cur_size/cur_received/fcrc` 五组重复字段；统一嵌入 `hop_xfer_rx_file_state`。
+- Core API 统一 reset/begin、size 设置、failure 标记、ID 匹配、连续 offset/length 检查和 chunk commit。
+- Chunk 状态只在 Writer Queue enqueue 成功后推进 received 与 CRC；CRC 错误、队列写入失败和 offset gap 仍保持原有失败语义。图片数据仍由平台层按已预留的 image buffer 独立累积。
+- 新增 `tests/xfer_rx_file_state_tests.c`，覆盖 ID、连续偏移、overlap/gap、越界/溢出、CRC fold、failure gate 和新文件 reset。
+- Core tests、Receiver ABORT fixture、Windows HA target 均直接链接生产模块；独立测试链接 `xfer_validate.c` 以复用真实 `hop_xfer_file_crc_step`。
+- CI 证据：Run #652（ID `42483467036`，head `a6f39aa54ed5d6029658eaa77873fdbbcda91865`）Windows/macOS 全套通过：应用构建、Core/regression（含文件状态、entry reservation、batch rules 测试）、Transfer protocol、TCP loopback、Windows native role/reconnect、macOS control/listener、更新脚本检查和打包全部 PASS。
+- 过程中发现并修复两项测试集成遗漏：ABORT fixture 仍断言旧 Receiver 字段；独立 file-state 测试未链接定义 CRC fold 的 `xfer_validate.c`。Run #652 验证最终修复通过。
+- 下一步应将 FILE_BEGIN/CHUNK/FILE_END 的 ACK 决策提取成共享 Core policy，再逐步把协议 dispatch 从平台 include 拆出；平台文件系统、剪贴板和 writer IO 仍保持 adapter 边界。

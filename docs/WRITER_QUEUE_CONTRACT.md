@@ -161,3 +161,11 @@ This is a shared transition-policy extraction, not completion of the full Receiv
 - New IDs call an injected Task-budget reservation callback before committing the table entry. Duplicate ID+size is idempotent; conflicting size, invalid ID, and budget rejection are distinct results.
 - Task Manager remains the budget owner. The table is only the per-batch identity/once-only guard and resets with batch state.
 - Production tests and both platforms' regression fixtures link the Core module. Run #644 (ID `42482474497`, commit `f641997d5d70fb46037bcf8e83934ba43c96228b`) passed complete Windows and macOS CI.
+
+
+## 2026-11-08 Receiver current-file state
+
+- Added `src/core/xfer_rx_file_state.[ch]` to own current entry ID, failure ACK, declared size, contiguous received offset, and file CRC fold.
+- Windows/macOS Receiver no longer duplicate `cur_id`, `cur_fail`, `cur_size`, `cur_received`, or `fcrc`; each embeds the shared Core state.
+- Chunk validation rejects gaps/overlaps/out-of-range lengths using overflow-safe subtraction. State advances only after successful writer-queue admission, preserving the existing no-advance-on-queue-rejection behavior.
+- The module's standalone tests link the production CRC-fold implementation from `xfer_validate.c`. Run #652 (ID `42483467036`, commit `a6f39aa54ed5d6029658eaa77873fdbbcda91865`) passed complete Windows/macOS CI.

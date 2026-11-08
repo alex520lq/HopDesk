@@ -735,6 +735,8 @@ int main(void){
 
         begin=extract(receiver,'rx_dispatch_file_begin')
         end=extract(receiver,'rx_dispatch_file_end')
+        lifecycle=extract(receiver,'rx_begin_batch')
+        assert 'hop_xfer_rx_fs_mkdir_p(s_rx.dir)' in lifecycle if platform=='mac' else 'hop_xfer_rx_fs_ensure_dirs(s_rx.dir)' in lifecycle
         assert 'rx_remove_top(s_rx.cur_path)' in begin
         assert '!rx_add_top(path)' in begin or '!rx_add_top(s_rx.cur_path)' in end
         if platform=='mac':

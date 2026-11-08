@@ -316,23 +316,27 @@ hop_xfer_file_end_msg end_msg;
 
             /* 回执是发送端判断"这个文件成没成"的唯一依据。
              * 以前这里发的是批量级 ABORT，等于一个文件坏了就把整批判死。 */
-            send_ack(s_x.client, rx->batch_state.batch, id, ack);
+            if (rx->send_file_ack)
+                rx->send_file_ack(rx->platform_context, rx->batch_state.batch, id, ack);
             return;
 }
 
 static void rx_ack_deliver_file(void *context, uint32_t batch, uint32_t id, uint8_t status) {
-    (void)context;
-    ack_deliver(batch, id, status);
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (rx && rx->deliver_ack)
+        rx->deliver_ack(rx->platform_context, batch, id, status);
 }
 
 static void rx_ack_deliver_done(void *context, uint32_t batch, uint32_t status) {
-    (void)context;
-    ack_deliver(batch, HOP_DONE_ACK_SLOT, (int)status);
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (rx && rx->deliver_ack)
+        rx->deliver_ack(rx->platform_context, batch, HOP_DONE_ACK_SLOT, (int)status);
 }
 
 static void rx_dispatch_file_ack(void *context, const uint8_t *p, uint32_t len) {
-    (void)context;
-    (void)hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, NULL);
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (!rx) return;
+    (void)hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, rx);
 }
 
 static void rx_dispatch_abort_message(void *context, const uint8_t *p, uint32_t len) {
@@ -366,27 +370,26 @@ hop_xfer_done_msg done;
             if (!done.batch || !done.total || done.total > HOP_XFER_FILE_LIMIT || done.ok > done.total) return;
             int result;
             const hop_xfer_rx_done_receipt *receipt =
-                hop_xfer_rx_done_receipt_find(&s_done_receipt, hop_xfer_rx_lifecycle_session(&s_rx_lifecycle), done.batch);
+                hop_xfer_rx_done_receipt_find(&rx->done_receipt, hop_xfer_rx_lifecycle_session(rx->lifecycle), done.batch);
             if (receipt) {
                 if (!hop_xfer_rx_done_receipt_matches_payload(receipt, &done)) return;
                 result=receipt->status; /* repeat ACK without repeating clipboard effects */
             } else {
                 result=rx_finish_batch(done.batch,done.ok,done.total);
                 if (result<0) return;
-                hop_xfer_rx_done_receipt_record(&s_done_receipt, hop_xfer_rx_lifecycle_session(&s_rx_lifecycle),
+                hop_xfer_rx_done_receipt_record(rx->done_receipt, hop_xfer_rx_lifecycle_session(rx->lifecycle),
                                                 &done, (uint8_t)result);
             }
             uint8_t reply[5]; hop_put_be32(reply,done.batch); reply[4]=(uint8_t)result;
-            EnterCriticalSection(&s_x.lock);
-            SOCKET fd=s_x.client;
-            LeaveCriticalSection(&s_x.lock);
-            if (fd != INVALID_SOCKET) (void)send_small(fd,HOP_MSG_XFER_DONE_ACK,reply,sizeof(reply),done.batch);
+            if (rx->send_done_ack)
+                rx->send_done_ack(rx->platform_context, done.batch, reply, sizeof(reply));
             return;
 }
 
 static void rx_dispatch_done_ack(void *context, const uint8_t *p, uint32_t len) {
-    (void)context;
-    (void)hop_xfer_rx_handle_done_ack(p, len, rx_ack_deliver_done, NULL);
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (!rx) return;
+    (void)hop_xfer_rx_handle_done_ack(p, len, rx_ack_deliver_done, rx);
 }
 
 static const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = {

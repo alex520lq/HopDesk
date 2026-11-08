@@ -445,3 +445,12 @@ tests/
 - Windows Worker 创建失败时同步释放已初始化的临界区和 buffer pool。
 - 此切片仍保留 Receiver 兼容入口 `wq_push / wq_push_data / wq_drain / wq_start / wq_stop`，未改变协议和任务状态机。
 - 尚需通过最新 Windows/macOS 原生 CI 与压力测试；在此之前不把本切片视为验收完成。
+
+
+### 2026-11-08：Windows HA 链接依赖修复与双平台 CI 通过
+
+- 新增 Worker 模块后，Windows 应用本身可以成功构建，但 HA 集成测试仍直接编译 `xfer.c`，未链接独立的 `src/win/xfer_writer_worker.c`，导致 `hop_writer_worker_start/join` 的 LNK2019。
+- 已在 `scripts/test-ha.ps1` 将 Worker 生产编译单元加入 HA 测试目标；没有绕过或删除该集成测试。
+- 修复提交：`4374782a359ec6ed24a54fa1b0f903afe06a4c3d`。
+- GitHub Actions run `42471596814`（run #580）：Windows MSVC build、Core/regression、transfer protocol、TCP loopback、native control/data role + reconnect、updater syntax、package 全部成功；macOS build、Core/regression、transfer protocol、TCP loopback、control/listener loopback、bundle verification、package 全部成功。
+- 该结果证明本次 Writer Worker 与 HA 测试链接修复通过 CI；不代表 Writer Queue 已独立模块化，也不替代真实双机/慢盘/长时压力验收。

@@ -23,15 +23,8 @@ typedef struct {
     hop_xfer_task *budget_owner;
 } rx_task;
 
-typedef struct {
-    uint8_t *data;
-    uint32_t capacity;
-    int in_use;
-} rx_buffer_slot;
-
 static struct {
-    rx_buffer_slot buffers[RX_Q_SLOTS];
-    uint64_t pool_capacity;
+    hop_xfer_buffer_pool pool;
     rx_task            ring[RX_Q_SLOTS];
     int                head, tail, count, busy, reserved_slots;
     uint64_t           queued_bytes;
@@ -46,66 +39,9 @@ static struct {
 /* Reusable bounded RX payload pool. Called with s_wq.lock held.
  * Retained capacity is capped by RX_Q_MAX_BYTES, independently of queue
  * occupancy, so repeated small/large chunks do not churn malloc/free. */
-static int wq_pool_acquire_locked(uint32_t len, int *slot_out, uint8_t **data_out) {
-    int chosen = -1;
-    /* First pass: best-fit among buffers that already satisfy the request.
-     * Only if none fit do we select an undersized idle slot for growth.
-     * Never let an early small slot hide a later reusable large buffer. */
-    for (int i = 0; i < RX_Q_SLOTS; ++i) {
-        rx_buffer_slot *b = &s_wq.buffers[i];
-        if (b->in_use || !b->data || b->capacity < len) continue;
-        if (chosen < 0 || b->capacity < s_wq.buffers[chosen].capacity)
-            chosen = i;
-    }
-    if (chosen < 0) {
-        for (int i = 0; i < RX_Q_SLOTS; ++i) {
-            rx_buffer_slot *b = &s_wq.buffers[i];
-            if (b->in_use) continue;
-            if (chosen < 0 || b->capacity < s_wq.buffers[chosen].capacity)
-                chosen = i;
-        }
-    }
-    if (chosen < 0) return 0;
 
-    rx_buffer_slot *target = &s_wq.buffers[chosen];
-    if (target->capacity < len) {
-        /* Drop every other idle block first; busy writer blocks stay pinned. */
-        for (int i = 0; i < RX_Q_SLOTS; ++i) {
-            rx_buffer_slot *b = &s_wq.buffers[i];
-            if (i == chosen || b->in_use || !b->data) continue;
-            free(b->data);
-            s_wq.pool_capacity -= b->capacity;
-            b->data = NULL;
-            b->capacity = 0;
-        }
-        (void)hop_xfer_budget_set_rx_pool_bytes(s_wq.pool_capacity);
-        if (s_wq.pool_capacity - target->capacity + len > RX_Q_MAX_BYTES)
-            return 0; /* an in-flight writer owns the remaining pool budget */
-        if (target->data) {
-            free(target->data);
-            s_wq.pool_capacity -= target->capacity;
-            target->data = NULL;
-            target->capacity = 0;
-            (void)hop_xfer_budget_set_rx_pool_bytes(s_wq.pool_capacity);
-        }
-        target->data = (uint8_t *)malloc(len);
-        if (!target->data) return -1;
-        target->capacity = len;
-        s_wq.pool_capacity += len;
-        (void)hop_xfer_budget_set_rx_pool_bytes(s_wq.pool_capacity);
-    }
-    target->in_use = 1;
-    *slot_out = chosen;
-    *data_out = target->data;
-    return 1;
-}
 
-static void wq_pool_release_locked(int slot) {
-    if (slot < 0 || slot >= RX_Q_SLOTS) return;
-    rx_buffer_slot *b = &s_wq.buffers[slot];
-    if (!b->in_use) return;
-    b->in_use = 0;
-}
+
 
 static void wq_error_set(int value) { InterlockedExchange(&s_wq.err, value); }
 static int wq_error_get(void) { return InterlockedCompareExchange(&s_wq.err, 0, 0); }
@@ -182,7 +118,7 @@ static DWORD WINAPI writer_thread(LPVOID arg) {
             (void)hop_xfer_task_release_rx_buffer(t.budget_owner, t.len);
         EnterCriticalSection(&s_wq.lock);
         if (t.kind == RX_WRITE) {
-            wq_pool_release_locked(t.pool_slot);
+            hop_xfer_buffer_pool_release_locked(&s_wq.pool,t.pool_slot);
             s_wq.queued_bytes = t.len > s_wq.queued_bytes ? 0 : s_wq.queued_bytes - t.len;
         }
         s_wq.busy = 0;
@@ -256,7 +192,7 @@ static int wq_push_data(hop_xfer_task *owner, uint64_t off, const uint8_t *data,
 
     EnterCriticalSection(&s_wq.lock);
     int pool_result = 0;
-    while (!s_wq.stop && (pool_result = wq_pool_acquire_locked(len, &t.pool_slot, &t.data)) == 0)
+    while (!s_wq.stop && (pool_result = hop_xfer_buffer_pool_acquire_locked(&s_wq.pool,len, &t.pool_slot, &t.data)) == 0)
         SleepConditionVariableCS(&s_wq.cv_space, &s_wq.lock, INFINITE);
     if (s_wq.stop || pool_result != 1) {
         s_wq.reserved_slots--;
@@ -274,7 +210,7 @@ static int wq_push_data(hop_xfer_task *owner, uint64_t off, const uint8_t *data,
     if (s_wq.stop) {
         s_wq.reserved_slots--;
         s_wq.queued_bytes -= len;
-        wq_pool_release_locked(t.pool_slot);
+        hop_xfer_buffer_pool_release_locked(&s_wq.pool,t.pool_slot);
         WakeAllConditionVariable(&s_wq.cv_space);
         LeaveCriticalSection(&s_wq.lock);
         (void)hop_xfer_task_release_rx_buffer(owner, len);
@@ -303,6 +239,7 @@ static void wq_drain(void) {
 
 static int wq_start(void) {
     memset(&s_wq, 0, sizeof(s_wq));
+    hop_xfer_buffer_pool_init(&s_wq.pool);
     s_wq.f = INVALID_HANDLE_VALUE;
     InitializeCriticalSection(&s_wq.lock);
     InitializeConditionVariable(&s_wq.cv_work);
@@ -329,14 +266,7 @@ static void wq_stop(void) {
     if (WaitForSingleObject(s_wq.th, 3000) == WAIT_OBJECT_0) {
         CloseHandle(s_wq.th);
         s_wq.th = NULL;
-        for (int i = 0; i < RX_Q_SLOTS; ++i) {
-            free(s_wq.buffers[i].data);
-            s_wq.buffers[i].data = NULL;
-            s_wq.buffers[i].capacity = 0;
-            s_wq.buffers[i].in_use = 0;
-        }
-        s_wq.pool_capacity = 0;
-        (void)hop_xfer_budget_set_rx_pool_bytes(0);
+        hop_xfer_buffer_pool_dispose(&s_wq.pool);
         DeleteCriticalSection(&s_wq.lock);
     } else {
         hop_log(HOP_LOG_WARN, "xfer: writer thread did not exit, keep lock");

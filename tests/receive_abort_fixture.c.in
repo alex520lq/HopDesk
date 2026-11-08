@@ -13,6 +13,7 @@
 #include "xfer_rx_file_state.h"
 #include "xfer_rx_image_state.h"
 #include "xfer_rx_image_buffer.h"
+#include "xfer_rx_services.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>

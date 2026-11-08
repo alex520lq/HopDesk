@@ -23,7 +23,7 @@ typedef struct {
     hop_xfer_task *budget_owner;
 } rx_task;
 
-static struct {
+typedef struct {
     hop_xfer_buffer_pool pool;
     rx_task            ring[RX_Q_SLOTS];
     int head, tail;
@@ -43,54 +43,54 @@ static struct {
 
 
 
-static void wq_error_set(int value) { InterlockedExchange(&s_wq.err, value); }
+static void wq_error_set_for(hop_rx_writer_queue *queue, int value) { InterlockedExchange(&queue->err, value); }
 static int wq_error_get(void) { return InterlockedCompareExchange(&s_wq.err, 0, 0); }
 
-static void wq_task_run(rx_task *t) {
+static void wq_task_run(hop_rx_writer_queue *queue, rx_task *t) {
     unsigned long error = 0;
     switch (t->kind) {
         case RX_OPEN:
-            if (!hop_writer_io_open(&s_wq.io, t->path, &error)) {
+            if (!hop_writer_io_open(&queue->io, t->path, &error)) {
                 hop_log(HOP_LOG_WARN, "xfer: cannot create %ls (err %lu)", t->path, error);
-                wq_error_set(1);
+                wq_error_set_for(queue, 1);
             }
             break;
         case RX_WRITE:
-            if (!hop_writer_io_write_at(&s_wq.io, t->off, t->data, t->len, &error)) {
+            if (!hop_writer_io_write_at(&queue->io, t->off, t->data, t->len, &error)) {
                 hop_log(HOP_LOG_WARN, "xfer: write failed at %llu (err %lu)",
                         (unsigned long long)t->off, error);
                 wq_error_set(1);
             }
             break;
         case RX_CLOSE:
-            hop_writer_io_close(&s_wq.io);
+            hop_writer_io_close(&queue->io);
             break;
     }
 }
 
 static int wq_worker_take(void *context, void *task_out) {
-    (void)context;
-    EnterCriticalSection(&s_wq.lock);
-    while (s_wq.accounting.queued_slots == 0 && !s_wq.stop)
-        SleepConditionVariableCS(&s_wq.cv_work, &s_wq.lock, INFINITE);
-    if (s_wq.accounting.queued_slots == 0 && s_wq.stop) {
-        LeaveCriticalSection(&s_wq.lock);
+    hop_rx_writer_queue *queue = (hop_rx_writer_queue *)context;
+    EnterCriticalSection(&queue->lock);
+    while (queue->accounting.queued_slots == 0 && !queue->stop)
+        SleepConditionVariableCS(&s_wq.cv_work, &queue->lock, INFINITE);
+    if (queue->accounting.queued_slots == 0 && queue->stop) {
+        LeaveCriticalSection(&queue->lock);
         return 0;
     }
     rx_task *task = (rx_task *)task_out;
-    *task = s_wq.ring[s_wq.head];
-    s_wq.head = (s_wq.head + 1) % RX_Q_SLOTS;
-    (void)hop_xfer_rx_queue_dequeue(&s_wq.accounting);
-    LeaveCriticalSection(&s_wq.lock);
+    *task = queue->ring[queue->head];
+    queue->head = (queue->head + 1) % RX_Q_SLOTS;
+    (void)hop_xfer_rx_queue_dequeue(&queue->accounting);
+    LeaveCriticalSection(&queue->lock);
     return 1;
 }
 
 static void wq_worker_run(void *context, const void *task_data) {
-    (void)context;
+    hop_rx_writer_queue *queue = (hop_rx_writer_queue *)context;
     rx_task *task = (rx_task *)task_data;
     int disk_guard = hop_watchdog_begin("disk writer task", HOP_IO_DEADLINE_MS);
     uint64_t write_started_ns = rate_now_ns();
-    wq_task_run(task);
+    wq_task_run(queue, task);
     uint64_t write_elapsed_ns = rate_now_ns() - write_started_ns;
     if (task->kind == RX_WRITE && task->budget_owner) {
         hop_xfer_task_snapshot snapshot;
@@ -102,22 +102,22 @@ static void wq_worker_run(void *context, const void *task_data) {
 }
 
 static void wq_worker_complete(void *context, const void *task_data) {
-    (void)context;
+    hop_rx_writer_queue *queue = (hop_rx_writer_queue *)context;
     const rx_task *task = (const rx_task *)task_data;
     if (task->kind == RX_WRITE && task->budget_owner)
         (void)hop_xfer_task_release_rx_buffer(task->budget_owner, task->len);
-    EnterCriticalSection(&s_wq.lock);
+    EnterCriticalSection(&queue->lock);
     if (task->kind == RX_WRITE)
-        hop_xfer_buffer_pool_release_locked(&s_wq.pool, task->pool_slot);
-    hop_xfer_rx_queue_complete(&s_wq.accounting,
+        hop_xfer_buffer_pool_release_locked(&queue->pool, task->pool_slot);
+    hop_xfer_rx_queue_complete(&queue->accounting,
                                task->kind == RX_WRITE ? task->len : 0);
     WakeConditionVariable(&s_wq.cv_space);
-    LeaveCriticalSection(&s_wq.lock);
+    LeaveCriticalSection(&queue->lock);
 }
 
 static void wq_worker_exit(void *context) {
-    (void)context;
-    hop_writer_io_close(&s_wq.io);
+    hop_rx_writer_queue *queue = (hop_rx_writer_queue *)context;
+    hop_writer_io_close(&queue->io);
 }
 
 /* 入队。队列满时阻塞 —— 这就是背压的着力点。 */

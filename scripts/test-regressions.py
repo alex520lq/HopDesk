@@ -663,7 +663,7 @@ int main(void){
         assert 'typedef struct xfer_rx_context' in context_header
         state_contract='#include "xfer_rx_context.h"\nstatic xfer_rx_context s_rx;'
         dispatch_names=['image_begin','file_chunk','file_ack','abort_message','done','done_ack']
-        dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_ack_deliver_file','rx_ack_deliver_done'])+'\n'+'\n'.join(extract(receiver,'rx_dispatch_'+name) for name in dispatch_names)
+        dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_handler_terminate','rx_handler_begin_batch','rx_handler_finish_batch','rx_ack_deliver_file','rx_ack_deliver_done'])+'\n'+'\n'.join(extract(receiver,'rx_dispatch_'+name) for name in dispatch_names)
         dispatch_handlers+='\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { NULL, rx_dispatch_image_begin, rx_dispatch_file_chunk, NULL, rx_dispatch_file_ack, rx_dispatch_abort_message, rx_dispatch_done, rx_dispatch_done_ack };\n'
         fixture=(ROOT/'tests/receive_abort_fixture.c.in').read_text(encoding='utf-8')
         values={
@@ -676,6 +676,11 @@ int main(void){
             'TERMINATE':extract(receiver,'rx_terminate'),
             'BEGIN_BATCH':extract(receiver,'rx_begin_batch'),
             'FINISH_BATCH':extract(receiver,'rx_finish_batch'),
+            'RX_SERVICE_CALLBACKS':'\n'.join([
+                'static void fixture_terminate_batch(void *context,uint32_t batch,uint8_t reason,int notify_peer){(void)context;rx_terminate(batch,reason,notify_peer);}',
+                'static void fixture_begin_batch(void *context,uint32_t batch){(void)context;rx_begin_batch(batch);}',
+                'static int fixture_finish_batch(void *context,uint32_t batch,uint32_t ok,uint32_t total){(void)context;return rx_finish_batch(batch,ok,total);}'
+            ]),
             'CANCEL_LOCAL':extract(receiver,'rx_cancel_local'),
             'BIND_SESSION':extract(receiver,'rx_bind_session'),
             'POLL_CANCEL':extract(receiver,'rx_poll_cancel'),

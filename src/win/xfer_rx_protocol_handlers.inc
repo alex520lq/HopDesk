@@ -322,13 +322,19 @@ hop_xfer_file_end_msg end_msg;
             return;
 }
 
+static void rx_ack_deliver_file(void *context, uint32_t batch, uint32_t id, uint8_t status) {
+    (void)context;
+    ack_deliver(batch, id, status);
+}
+
+static void rx_ack_deliver_done(void *context, uint32_t batch, uint32_t status) {
+    (void)context;
+    ack_deliver(batch, HOP_DONE_ACK_SLOT, (int)status);
+}
+
 static void rx_dispatch_file_ack(void *context, const uint8_t *p, uint32_t len) {
-    xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (!rx) return;
-hop_xfer_file_ack_msg ack;
-            if (hop_xfer_decode_file_ack(p, len, &ack) && ack.id >= 1 && ack.id <= HOP_XFER_FILE_LIMIT)
-                ack_deliver(ack.batch, ack.id, ack.status);
-            return;
+    (void)context;
+    (void)hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, NULL);
 }
 
 static void rx_dispatch_abort_message(void *context, const uint8_t *p, uint32_t len) {
@@ -385,11 +391,8 @@ hop_xfer_done_msg done;
 }
 
 static void rx_dispatch_done_ack(void *context, const uint8_t *p, uint32_t len) {
-    xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (!rx) return;
-if (len==5 && hop_get_be32(p)!=0 && p[4]<=HOP_DONE_ACK_FAILED)
-                ack_deliver(hop_get_be32(p),HOP_DONE_ACK_SLOT,p[4]);
-            return;
+    (void)context;
+    (void)hop_xfer_rx_handle_done_ack(p, len, rx_ack_deliver_done, NULL);
 }
 
 static const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = {

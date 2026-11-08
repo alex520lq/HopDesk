@@ -23,6 +23,7 @@ int main(void) {
     assert(WriteFile(file, payload, (DWORD)(sizeof(payload) - 1), &written, NULL));
     assert(written == sizeof(payload) - 1);
     CloseHandle(file);
+    assert(hop_xfer_rx_fs_remove_file(path, NULL) == 1);
     assert(hop_xfer_rx_fs_remove_tree(root, L"HopDesk") == 0);
     assert(hop_xfer_rx_fs_remove_tree(temporary, L"__no_such_root_marker__") == -2);
     free(path);
@@ -52,6 +53,7 @@ int main(void) {
     const char payload[] = "receiver-fs";
     assert(fwrite(payload, 1, sizeof(payload) - 1, file) == sizeof(payload) - 1);
     assert(fclose(file) == 0);
+    assert(hop_xfer_rx_fs_remove_file(path) == 0);
     assert(hop_xfer_rx_fs_remove_tree(root, "/HopDesk/") == 0);
     assert(hop_xfer_rx_fs_remove_tree(temporary, "/__no_such_root_marker__/") == -2);
     free(path);

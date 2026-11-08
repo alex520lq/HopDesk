@@ -582,9 +582,10 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 
 ### 2026-11-08：Receiver Dispatch 与 Batch Lifecycle 独立化（第一批）
 
-- 新增 `src/core/xfer_rx_dispatch.[ch]`：将 FILE_BEGIN、IMAGE_BEGIN、FILE_CHUNK、FILE_END、FILE_ACK、ABORT、DONE、DONE_ACK 统一映射为平台无关的 Dispatch Action；未知类型返回 UNKNOWN。Windows/macOS 的 `on_data_msg` 均先经共享分类器，再由平台 adapter 执行解码、文件 IO、ACK、Task、剪贴板和状态副作用。
+- 新增 `src/core/xfer_rx_dispatch.[ch]`：将 FILE_BEGIN、IMAGE_BEGIN、FILE_CHUNK、FILE_END、FILE_ACK、ABORT、DONE、DONE_ACK 统一映射为平台无关的 Dispatch Action，并通过注入的 handler table 完成回调路由；未知类型或缺少 handler 安全返回。Windows/macOS 的 `on_data_msg` 在握手/会话 gate 后只调用 Core dispatcher。
 - 新增 `src/core/xfer_rx_batch_state.[ch]`：将 Receiver 中分散的 `active` / `batch` 字段收敛为单一 batch state owner；begin/end/reset/matches 规则统一。每次成功 begin 推进 generation，reset 保留 generation，拒绝活动批次重入及非当前 batch 的 end。
 - Windows/macOS 接收实现均迁移到 `hop_xfer_rx_batch_state`；现有 Session/Tombstone、DONE receipt、Entry Reservation、File State 继续保持各自独立所有权。
-- 新增 Dispatch 与 Batch State 独立回归测试；更新 ABORT、session transport、IMAGE DONE 等生产代码提取夹具，确保测试执行真实 Core 与平台 wrapper，而非复制一套模型。
+- 将两端 FILE_BEGIN、IMAGE_BEGIN、FILE_CHUNK、FILE_END、FILE_ACK、ABORT、DONE、DONE_ACK 处理体拆成独立的 platform handler 函数，通过相同 callback contract 接入 Core；文件/目录/剪贴板/Task/ACK 副作用仍由平台 adapter 拥有。
+- 新增 Dispatch 与 Batch State 独立回归测试；更新 ABORT、session transport、IMAGE DONE 等生产代码提取夹具，确保测试执行真实 Core dispatcher、平台 handler 和状态模块，而非复制一套模型。
 - 验证：GitHub Actions Run #713（ID `42490803474`，提交 `cf8a47e23af4f7d01ac21d361b11eeb45d13cc0b) Windows/macOS 全部通过：应用构建、portable core/regression、文件传输协议、TCP loopback、macOS control/listener、Windows native role/reconnect、打包及产物上传。
 - 本批只完成 Dispatch 分类和 Batch identity owner 的第一步；FILE_BEGIN/CHUNK/FILE_END 的完整平台副作用 handler 仍在 `xfer_receive.inc`，后续继续提取为可注入依赖的协议 handler；File State 已共享，但文件路径/文件句柄/目录创建与文件终结副作用仍属于平台 adapter，不能误标为全部完成。

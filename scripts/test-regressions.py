@@ -74,6 +74,26 @@ int main(void) {
 }
 ''',['src/core/xfer_rx_dispatch.c'])
 
+    run('rx_batch_state',r'''
+#include "xfer_rx_batch_state.h"
+#include <assert.h>
+int main(void) {
+    hop_xfer_rx_batch_state s;
+    hop_xfer_rx_batch_state_init(&s);
+    assert(hop_xfer_rx_batch_state_begin(&s,7));
+    assert(hop_xfer_rx_batch_state_matches(&s,7));
+    assert(!hop_xfer_rx_batch_state_begin(&s,8));
+    assert(!hop_xfer_rx_batch_state_end(&s,8));
+    assert(hop_xfer_rx_batch_state_end(&s,7));
+    assert(!s.active && !s.batch && s.generation==1);
+    assert(hop_xfer_rx_batch_state_begin(&s,7));
+    assert(s.generation==2);
+    hop_xfer_rx_batch_state_reset(&s);
+    assert(!s.active && !s.batch && s.generation==2);
+    return 0;
+}
+''',['src/core/xfer_rx_batch_state.c'])
+
     # Cards are painted by the page, never sibling HWNDs obscuring its controls.
     ui=(ROOT/'src/win/main_ui.c').read_text(encoding='utf-8')
     group_fn=extract(ui,'group')

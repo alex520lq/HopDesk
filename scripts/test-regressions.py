@@ -793,7 +793,7 @@ int main(void){
             fs=(ROOT/'src/win/xfer_rx_fs.c').read_text(encoding='utf-8')
             assert 'GetFileAttributesW(path)' in fs
             assert 'hop_xfer_rx_fs_path_for' in fs and 'hop_xfer_rx_fs_remove_tree' in fs
-        close=end.index('rx_close_file()')
+        close=end.index('rx->services.close_file(')
         cleanup=end.index('hop_xfer_rx_fs_remove_file(')
         assert close < cleanup, 'failed receive cleanup must wait for writer close'
 

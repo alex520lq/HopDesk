@@ -623,3 +623,15 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 生产构建通过递归收集 `src/core/*.c` 自动包含新模块，无需增加平台专属链接清单。
 - 下一切片继续将 FILE_BEGIN/IMAGE_BEGIN/CHUNK/END 处理依赖收敛到明确的 Receiver Context/Services；不直接把当前依赖全局状态的 400 行 handler 整体搬进独立文件，以免制造隐藏依赖或改变线程/生命周期语义。
 - CI：本切片提交后等待 Windows/macOS 全量构建与测试。
+
+
+### 2026-11-08：Receiver Protocol Handler 显式 Context / Services 注入（第一切片）
+
+- Windows/macOS Receiver state 均命名为 `xfer_rx_context`，Protocol Adapter dispatch 将该 context 明确传给每个 handler；handler 不再直接读取 `s_rx.*`。
+- 新增共享纯 C 契约 `src/core/xfer_rx_services.h`。Context 通过同一 services table 注入数据通道关闭、发送端 ABORT 唤醒、FILE_ACK、DONE_ACK 发送与 ACK 结果交付；Windows/macOS 仅在 callback 实现中处理各自锁、socket 与 event/condition。
+- DONE receipt、Session lifecycle 与 Writer Queue handle 均由 context 显式持有/引用；Writer handle 在业务 context 中保持 opaque，平台调用边界再转换为各自 Queue 类型。
+- Protocol handlers 不再直接引用 `s_rx`、`s_x`、`s_ack`、`s_wq`、`s_done_receipt` 或 `s_rx_lifecycle`；唯一保留的静态符号是不可变 handler table `s_rx_dispatch_handlers`。
+- 更新 ABORT/Protocol fixture，使测试同样通过 context 注入 callback，而不是依赖 NULL context 或另外模拟隐式全局访问；源码回归断言禁止 handler 再读取这些平台全局。
+- 当前边界仍是第一切片：handler 仍调用同一翻译单元中的 `rx_begin_batch`、`rx_terminate`、`rx_finish_batch`、Writer/Status/Clipboard helper；这些 helper 自身还需要进一步 context 化，handler 文件也尚未迁移为独立 `.c`。不可将完整依赖倒置或独立编译标记完成。
+- 提交：共享 services 契约 `c8f3d8b554fb13b795a5e343f6c750eb6e78add6`；Windows/macOS Context 注入与 handler 接入见分支后续提交。
+- 验证：当前切片 Windows/macOS CI 待运行。下一步先把 Batch Lifecycle、Writer、Status、Clipboard、ACK 发送这些 helper 包装成同一 services contract 的回调，再将 handler 编译单元独立化，并以同一套共享行为测试验证两端。

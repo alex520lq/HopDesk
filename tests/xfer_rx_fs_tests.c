@@ -8,7 +8,7 @@
 #ifdef _WIN32
 #include <windows.h>
 int main(void) {
-    wchar_t temporary[MAX_PATH], root[MAX_PATH], file_path[MAX_PATH * 2];
+    wchar_t temporary[MAX_PATH], root[MAX_PATH];
     assert(GetTempPathW(MAX_PATH, temporary) > 0);
     swprintf(root, MAX_PATH, L"%lsHopDesk-rx-fs-%lu", temporary, (unsigned long)GetCurrentProcessId());
     assert(CreateDirectoryW(root, NULL));

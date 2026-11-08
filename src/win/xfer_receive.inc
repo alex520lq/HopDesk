@@ -112,7 +112,7 @@ typedef struct xfer_rx_context {
     /* 本批顶层条目（用于最后设置剪贴板） */
     wchar_t **tops;
     int       ntop;
-    hop_writer_queue *writer;
+    void *writer;
     hop_xfer_rx_lifecycle *lifecycle;
     hop_xfer_rx_done_receipt *done_receipt;
     hop_xfer_rx_services services;

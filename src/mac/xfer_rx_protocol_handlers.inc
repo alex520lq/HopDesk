@@ -308,12 +308,8 @@ hop_xfer_file_end_msg end_msg;
 
             /* 回执是发送端判断"这个文件成没成"的唯一依据。
              * 以前这里发的是批量级 ABORT，等于一个文件坏了就把整批判死。 */
-            {
-                pthread_mutex_lock(&s_x.slock);
-                int fd = s_x.sock;
-                pthread_mutex_unlock(&s_x.slock);
-                if (fd >= 0) send_ack(fd, rx->batch_state.batch, id, ack);
-            }
+            if (rx->send_file_ack)
+                rx->send_file_ack(rx->platform_context, rx->batch_state.batch, id, ack);
             return;
 }
 

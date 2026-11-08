@@ -67,6 +67,9 @@ static int wq_push_data(hop_xfer_task *owner,uint64_t off,const uint8_t *data,ui
 }
 @RX_STATE@
 static void fixture_shutdown_data(void *context){(void)context;}
+static void fixture_terminate_batch(void *context,uint32_t batch,uint8_t reason,int notify_peer);
+static void fixture_begin_batch(void *context,uint32_t batch);
+static int fixture_finish_batch(void *context,uint32_t batch,uint32_t ok,uint32_t total);
 static void fixture_mark_sender_aborted(void *context,uint32_t batch,uint8_t reason){
     (void)context;
     if(s_x.cur_batch==batch){s_x.abort_batch=batch;s_x.abort_reason=reason;}
@@ -96,6 +99,9 @@ static void fixture_configure_rx_context(void){
     s_rx.services.send_file_ack=fixture_send_file_ack;
     s_rx.services.send_done_ack=fixture_send_done_ack;
     s_rx.services.deliver_ack=fixture_deliver_ack;
+    s_rx.services.terminate_batch=fixture_terminate_batch;
+    s_rx.services.begin_batch=fixture_begin_batch;
+    s_rx.services.finish_batch=fixture_finish_batch;
 }
 static void history_save(void){assert(closed); if(s_receive_status.status.phase!=HOP_XFER_COMPLETED) assert(!s_rx.image_buffer.data && !s_rx.cur_path && !s_rx.tops && !s_rx.batch_state.active); saved++;}
 #ifdef FIXTURE_WINDOWS
@@ -149,6 +155,7 @@ static void apply_paths(const void*p,int n){(void)p;(void)n;applied++;}
 #define clip_apply_remote_paths apply_paths
 #define clipboard_apply_paths apply_paths
 @FINISH_BATCH@
+@RX_SERVICE_CALLBACKS@
 @CANCEL_LOCAL@
 @BIND_SESSION@
 static void rx_expire_stale_session(void){}

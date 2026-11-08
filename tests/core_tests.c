@@ -10,6 +10,7 @@
 #include "xfer_tracking.h"
 #include "xfer_rate.h"
 #include "xfer_ack_window.h"
+#include "xfer_buffer_pool.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -842,6 +843,38 @@ static void test_xfer_ack_window(void) {
     CHECK(hop_xfer_ack_window_count(&window)==0);
 }
 
+static void test_xfer_buffer_pool(void) {
+    hop_xfer_buffer_pool pool;
+    hop_xfer_buffer_pool_init(&pool);
+
+    /* A later larger idle slot must win over an earlier undersized slot. */
+    pool.slots[0].data = (uint8_t *)malloc(8);
+    pool.slots[0].capacity = 8;
+    pool.slots[1].data = (uint8_t *)malloc(64);
+    pool.slots[1].capacity = 64;
+    pool.capacity = 72;
+    CHECK(pool.slots[0].data != NULL && pool.slots[1].data != NULL);
+    int slot = -1;
+    uint8_t *data = NULL;
+    CHECK(hop_xfer_buffer_pool_acquire_locked(&pool, 32, &slot, &data) == 1);
+    CHECK(slot == 1 && data == pool.slots[1].data && pool.capacity == 72);
+    hop_xfer_buffer_pool_release_locked(&pool, slot);
+    CHECK(!pool.slots[1].in_use);
+    hop_xfer_buffer_pool_dispose(&pool);
+    CHECK(pool.capacity == 0);
+
+    /* Growth replaces retained idle storage and remains inside the pool cap. */
+    hop_xfer_buffer_pool_init(&pool);
+    slot = -1; data = NULL;
+    CHECK(hop_xfer_buffer_pool_acquire_locked(&pool, 128, &slot, &data) == 1);
+    CHECK(slot >= 0 && data != NULL && pool.capacity == 128);
+    hop_xfer_buffer_pool_release_locked(&pool, slot);
+    hop_xfer_buffer_pool_dispose(&pool);
+    hop_xfer_budget_snapshot snapshot;
+    hop_xfer_budget_get_snapshot(&snapshot);
+    CHECK(snapshot.rx_pool_bytes == 0);
+}
+
 static void test_xfer_rate_limiter(void) {
     hop_xfer_rate_limiter rate;
     hop_xfer_rate_init(&rate,1000,100,2000,100,0);
@@ -1473,6 +1506,7 @@ int main(void) {
     RUN_TEST(test_update_manifest_validation);
     RUN_TEST(test_xfer_global_budget);
     RUN_TEST(test_xfer_ack_window);
+    RUN_TEST(test_xfer_buffer_pool);
     RUN_TEST(test_xfer_rate_limiter);
     RUN_TEST(test_xfer_tracking_stage_timing);
     RUN_TEST(test_xfer_tracking_duplex_snapshot);

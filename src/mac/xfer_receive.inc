@@ -240,13 +240,32 @@ static int wq_start(void) {
     hop_xfer_buffer_pool_init(&s_wq.pool);
     hop_xfer_rx_queue_init(&s_wq.accounting, RX_Q_SLOTS, RX_Q_MAX_BYTES);
     hop_writer_io_init(&s_wq.io);
-    pthread_mutex_init(&s_wq.lock, NULL);
-    pthread_cond_init(&s_wq.cv_work, NULL);
-    pthread_cond_init(&s_wq.cv_space, NULL);
+    if (pthread_mutex_init(&s_wq.lock, NULL) != 0) {
+        hop_xfer_buffer_pool_dispose(&s_wq.pool);
+        return 0;
+    }
+    if (pthread_cond_init(&s_wq.cv_work, NULL) != 0) {
+        pthread_mutex_destroy(&s_wq.lock);
+        hop_xfer_buffer_pool_dispose(&s_wq.pool);
+        return 0;
+    }
+    if (pthread_cond_init(&s_wq.cv_space, NULL) != 0) {
+        pthread_cond_destroy(&s_wq.cv_work);
+        pthread_mutex_destroy(&s_wq.lock);
+        hop_xfer_buffer_pool_dispose(&s_wq.pool);
+        return 0;
+    }
     const hop_writer_worker_callbacks callbacks = {
         wq_worker_take, wq_worker_run, wq_worker_complete, wq_worker_exit
     };
-    return hop_writer_worker_start(&s_wq.worker, &s_wq, sizeof(rx_task), &callbacks);
+    if (!hop_writer_worker_start(&s_wq.worker, &s_wq, sizeof(rx_task), &callbacks)) {
+        pthread_cond_destroy(&s_wq.cv_space);
+        pthread_cond_destroy(&s_wq.cv_work);
+        pthread_mutex_destroy(&s_wq.lock);
+        hop_xfer_buffer_pool_dispose(&s_wq.pool);
+        return 0;
+    }
+    return 1;
 }
 
 /* 停写线程：先让它把队列里的活干完（数据已经收下来了，丢了就是损坏），

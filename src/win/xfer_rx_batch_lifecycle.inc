@@ -111,7 +111,7 @@ static void rx_begin_batch(uint32_t batch) {
     wcscat(s_rx.dir, sub);
 
 
-    if (!ensure_dirs(s_rx.dir) || !create_directory_if_missing(s_rx.dir)) {
+    if (!hop_xfer_rx_fs_ensure_dirs(s_rx.dir) || !hop_xfer_rx_fs_create_directory_if_missing(s_rx.dir)) {
         rx_terminate(batch,HOP_ABORT_DISK,1);
         return;
     }

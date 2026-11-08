@@ -100,8 +100,7 @@ static void wq_stop(void) {
 /* ---------------- 接收 ---------------- */
 
 typedef struct {
-    uint32_t  batch;
-    int       active;
+    hop_xfer_rx_batch_state batch_state;
     hop_xfer_task task;
     hop_xfer_rx_entry_reservations entry_reservations;
     wchar_t   dir[MAX_PATH];
@@ -142,8 +141,7 @@ static void rx_clear_state(void) {
     free(s_rx.tops);
     s_rx.tops = NULL;
     s_rx.ntop = 0;
-    s_rx.active = 0;
-    s_rx.batch = 0;
+    hop_xfer_rx_batch_state_reset(&s_rx.batch_state);
     hop_xfer_rx_file_state_reset(&s_rx.file_state);
     hop_xfer_rx_file_state_set_kind(&s_rx.file_state, 0, 0);
     
@@ -153,7 +151,7 @@ static void rx_clear_state(void) {
 }
 
 static void rx_reset(void) {
-    if(s_rx.active)status_end(HOP_XFER_DIR_RECEIVE,s_rx.batch,HOP_XFER_FAILED,"Receive interrupted");
+    if(s_rx.batch_state.active)status_end(HOP_XFER_DIR_RECEIVE,s_rx.batch_state.batch,HOP_XFER_FAILED,"Receive interrupted");
     /* 先把队列排空并关掉文件，再清状态 —— 否则写线程可能还在用旧路径 */
     rx_close_file();
     rx_clear_state();
@@ -173,16 +171,16 @@ static void rx_bind_session(const hop_session_id *session) {
         /* A new control session cannot resume the old batch. Its staging files
          * were never published; close the writer before removing them. Completed
          * or deliberately retained partial batches are not active here. */
-        if (s_rx.active && !hop_xfer_task_begin_completion(&s_rx.task) &&
+        if (s_rx.batch_state.active && !hop_xfer_task_begin_completion(&s_rx.task) &&
             hop_xfer_task_cancel_requested(s_rx.task.id))
             /* The current socket may already belong to the new session. Never
              * send an old-session ABORT through it, even if batch IDs collide. */
-            rx_terminate(s_rx.batch,HOP_ABORT_CANCEL,0);
-        if (s_rx.active) {
+            rx_terminate(s_rx.batch_state.batch,HOP_ABORT_CANCEL,0);
+        if (s_rx.batch_state.active) {
             rx_close_file();
             rx_discard_dir();
-            if (s_rx.batch & HOP_XFER_PASTE_BATCH_FLAG)
-                clip_complete_remote_paste(s_rx.batch,NULL,0,0);
+            if (s_rx.batch_state.batch & HOP_XFER_PASTE_BATCH_FLAG)
+                clip_complete_remote_paste(s_rx.batch_state.batch,NULL,0,0);
         }
         rx_reset();
         AcquireSRWLockExclusive(&s_status_lock);
@@ -321,7 +319,7 @@ static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
     if (batch & HOP_XFER_PASTE_BATCH_FLAG)
         clip_complete_remote_paste(batch,NULL,0,0);
     if (notify_peer) { send_abort_msg(s_x.client,batch,reason,HOP_ABORT_TO_SENDER); }
-    if (!hop_xfer_rx_batch_is_active(batch, s_rx.active, s_rx.batch)) return;
+    if (!hop_xfer_rx_batch_is_active(batch, s_rx.batch_state.active, s_rx.batch_state.batch)) return;
     rx_close_file();
     rx_discard_dir();
     hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle, batch, reason);
@@ -339,7 +337,7 @@ static void rx_begin_batch(uint32_t batch) {
         &s_done_receipt, hop_xfer_rx_lifecycle_session(&s_rx_lifecycle), batch) != NULL;
     (void)hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle, batch, &dead_reason);
     hop_xfer_rx_batch_begin_action begin_action = hop_xfer_rx_batch_begin_decide(
-        batch, committed, dead_reason, s_rx.active, s_rx.batch, &dead_reason);
+        batch, committed, dead_reason, s_rx.batch_state.active, s_rx.batch_state.batch, &dead_reason);
     switch (begin_action) {
         case HOP_RX_BATCH_BEGIN_IGNORE_COMMITTED:
             return; /* already committed in this session; never recreate its task */
@@ -385,8 +383,14 @@ static void rx_begin_batch(uint32_t batch) {
         return;
     }
     /* Keep the last tombstone: a late old BEGIN must not replace a newer task. */
-    s_rx.active = 1;
-    s_rx.batch = batch;
+    if (!hop_xfer_rx_batch_state_begin(&s_rx.batch_state, batch)) {
+        hop_log(HOP_LOG_ERROR, "xfer: receiver batch state rejected begin for %u", batch);
+        hop_xfer_task_finish(&s_rx.task, HOP_XFER_TASK_FAILED);
+        hop_xfer_task_dispose(&s_rx.task);
+        hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle, batch, HOP_ABORT_DISK);
+        send_abort_msg(s_x.client, batch, HOP_ABORT_DISK, HOP_ABORT_TO_SENDER);
+        return;
+    }
     hop_log(HOP_LOG_INFO,"xfer: receive batch %u task=%llu",
             batch,(unsigned long long)s_rx.task.id);
     status_begin(batch,HOP_XFER_DIR_RECEIVE,0,0,"Incoming files",HOP_XFER_RECEIVING);
@@ -437,16 +441,16 @@ static void rx_begin_batch(uint32_t batch) {
 
 /* 收完后把顶层条目放进剪贴板（CF_HDROP），Mac 那边就能直接粘贴 */
 static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
-    if (!hop_xfer_rx_batch_is_active(batch, s_rx.active, s_rx.batch)) {
+    if (!hop_xfer_rx_batch_is_active(batch, s_rx.batch_state.active, s_rx.batch_state.batch)) {
         hop_log(HOP_LOG_WARN, "xfer: stale DONE for batch %u ignored (active=%u)",
-                batch, s_rx.active ? s_rx.batch : 0);
+                batch, s_rx.batch_state.active ? s_rx.batch_state.batch : 0);
         return -1;
     }
     /* Completion and per-task cancellation serialize before clipboard effects. */
     int completion_claimed = hop_xfer_task_begin_completion(&s_rx.task);
     if (!completion_claimed) {
         hop_xfer_rx_batch_finish_action cancelled = hop_xfer_rx_batch_finish_decide(
-            batch, s_rx.active, s_rx.batch, 0, ok, total, s_rx.file_state.is_image, 0);
+            batch, s_rx.batch_state.active, s_rx.batch_state.batch, 0, ok, total, s_rx.file_state.is_image, 0);
         if (cancelled == HOP_RX_BATCH_FINISH_CANCELLED)
             rx_terminate(batch,HOP_ABORT_CANCEL,1);
         return -1;
@@ -496,7 +500,7 @@ static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
         status_file_phase(HOP_XFER_DIR_RECEIVE,batch,0,HOP_XFER_FILE_COMPLETED,1);
     int image_valid = s_rx.image_buffer.data && s_rx.image_state.received == s_rx.image_state.expected;
     hop_xfer_rx_batch_finish_action finish_action = hop_xfer_rx_batch_finish_decide(
-        batch, s_rx.active, s_rx.batch, 1, ok, total, s_rx.file_state.is_image, image_valid);
+        batch, s_rx.batch_state.active, s_rx.batch_state.batch, 1, ok, total, s_rx.file_state.is_image, image_valid);
     int complete = finish_action == HOP_RX_BATCH_FINISH_COMPLETE;
     hop_xfer_task_finish(&s_rx.task,complete?HOP_XFER_TASK_COMPLETED:(s_rx.file_state.is_image?HOP_XFER_TASK_FAILED:HOP_XFER_TASK_PARTIAL));
     status_end(HOP_XFER_DIR_RECEIVE,batch,complete?HOP_XFER_COMPLETED:
@@ -550,7 +554,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             hop_xfer_file_begin_msg msg;
             if (!hop_xfer_decode_file_begin(p, len, &msg)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed FILE_BEGIN rejected");
-                if (s_rx.active) rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
+                if (s_rx.batch_state.active) rx_terminate(s_rx.batch_state.batch,HOP_ABORT_TOO_LARGE,1);
                 EnterCriticalSection(&s_x.lock);
                 SOCKET active = s_x.client;
                 LeaveCriticalSection(&s_x.lock);
@@ -565,7 +569,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             const uint8_t *rel = msg.relpath;
 
             rx_begin_batch(batch);
-            if (!s_rx.active || s_rx.batch != batch) return;
+            if (!s_rx.batch_state.active || s_rx.batch_state.batch != batch) return;
             (void)hop_xfer_task_set_kind(&s_rx.task,HOP_TASK_KIND_FILES);
             if (id == 0 || id > HOP_XFER_FILE_LIMIT) {
                 rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
@@ -649,12 +653,12 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             hop_xfer_image_begin_msg msg;
             if (!hop_xfer_decode_image_begin(p, len, &msg)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed IMAGE_BEGIN rejected");
-                if (s_rx.active) rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
+                if (s_rx.batch_state.active) rx_terminate(s_rx.batch_state.batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
             uint32_t batch = msg.batch;
             rx_begin_batch(batch);
-            if (!s_rx.active || s_rx.batch != batch) return;
+            if (!s_rx.batch_state.active || s_rx.batch_state.batch != batch) return;
             (void)hop_xfer_task_set_kind(&s_rx.task,HOP_TASK_KIND_IMAGE);
 
             int w = (int)msg.width;
@@ -694,7 +698,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
         }
 
         case HOP_RX_DISPATCH_FILE_CHUNK: {
-            if (!s_rx.active) return; /* late data after termination */
+            if (!s_rx.batch_state.active) return; /* late data after termination */
             uint64_t receive_started_ns=rate_now_ns();
             hop_xfer_file_chunk_msg chunk;
             if (!hop_xfer_decode_file_chunk(p, len,
@@ -702,14 +706,14 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                         (s_rx.file_state.failure >= 0 ? UINT64_MAX : s_rx.file_state.declared_size),
                     s_rx.file_state.is_image, &chunk)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed or out-of-range chunk; aborting receive");
-                rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
+                rx_terminate(s_rx.batch_state.batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
             uint64_t off = chunk.offset;
             uint32_t n = chunk.length;
             uint32_t crc = chunk.crc;
             if (chunk.id != s_rx.file_state.id) {
-                rx_terminate(s_rx.batch,HOP_ABORT_CRC,1);
+                rx_terminate(s_rx.batch_state.batch,HOP_ABORT_CRC,1);
                 return;
             }
             const uint8_t *data = chunk.data;
@@ -723,14 +727,14 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             int crc_ok=(hop_crc32(0, data, n) == crc);
             uint64_t crc_elapsed_ns=rate_now_ns()-crc_started_ns;
             if (!crc_ok) {
-                status_stage_time(HOP_XFER_DIR_RECEIVE,s_rx.batch,HOP_XFER_TIME_CRC,crc_elapsed_ns);
-                status_stage_time(HOP_XFER_DIR_RECEIVE,s_rx.batch,HOP_XFER_TIME_RECEIVE,
+                status_stage_time(HOP_XFER_DIR_RECEIVE,s_rx.batch_state.batch,HOP_XFER_TIME_CRC,crc_elapsed_ns);
+                status_stage_time(HOP_XFER_DIR_RECEIVE,s_rx.batch_state.batch,HOP_XFER_TIME_RECEIVE,
                                   rate_now_ns()-receive_started_ns);
                 hop_log(HOP_LOG_ERROR,
                         "xfer: CHUNK CRC MISMATCH off=%llu len=%u (expect %08x)",
                         (unsigned long long)off, n, crc);
                 if (s_rx.file_state.is_image) {
-                    rx_terminate(s_rx.batch,HOP_ABORT_CRC,1);
+                    rx_terminate(s_rx.batch_state.batch,HOP_ABORT_CRC,1);
                 } else {
                     hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_CRC);
                 }
@@ -741,7 +745,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 if (hop_xfer_rx_image_state_check_chunk(
                         &s_rx.image_state, off, n) != HOP_RX_IMAGE_CHUNK_ACCEPT) {
                     hop_log(HOP_LOG_ERROR, "xfer: image chunk gap/overlap or length overflow");
-                    rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
+                    rx_terminate(s_rx.batch_state.batch,HOP_ABORT_TOO_LARGE,1);
                     return;
                 }
                 size_t need = (size_t)(off + n);
@@ -751,23 +755,23 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                  * transiently keep both old and new buffers alive during realloc. */
                 if (!hop_xfer_rx_image_buffer_ensure(&s_rx.image_buffer,
                         (uint64_t)s_rx.image_state.expected)) {
-                    rx_terminate(s_rx.batch,HOP_ABORT_DISK,1);
+                    rx_terminate(s_rx.batch_state.batch,HOP_ABORT_DISK,1);
                     return;
                 }
                 hop_xfer_rx_image_state_set_capacity(
                     &s_rx.image_state, s_rx.image_buffer.capacity);
                 if (need > s_rx.image_state.capacity) {
                     hop_log(HOP_LOG_ERROR, "xfer: image buffer capacity exceeded");
-                    rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
+                    rx_terminate(s_rx.batch_state.batch,HOP_ABORT_TOO_LARGE,1);
                     return;
                 }
                 memcpy(s_rx.image_buffer.data + off, data, n);
                 if (!hop_xfer_rx_image_state_record_chunk(&s_rx.image_state, off, n)) {
-                    rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
+                    rx_terminate(s_rx.batch_state.batch,HOP_ABORT_TOO_LARGE,1);
                     return;
                 }
                 uint64_t receive_elapsed_ns=rate_now_ns()-receive_started_ns;
-                status_chunk_timed(HOP_XFER_DIR_RECEIVE,s_rx.batch,s_rx.file_state.id,off,n,
+                status_chunk_timed(HOP_XFER_DIR_RECEIVE,s_rx.batch_state.batch,s_rx.file_state.id,off,n,
                                    0,crc_elapsed_ns,0,receive_elapsed_ns);
                 break;
             }
@@ -797,7 +801,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 break;
             }
             uint64_t receive_elapsed_ns=rate_now_ns()-receive_started_ns;
-            status_chunk_timed(HOP_XFER_DIR_RECEIVE,s_rx.batch,s_rx.file_state.id,off,n,
+            status_chunk_timed(HOP_XFER_DIR_RECEIVE,s_rx.batch_state.batch,s_rx.file_state.id,off,n,
                                0,crc_elapsed_ns,0,receive_elapsed_ns);
             break;
         }
@@ -806,14 +810,14 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             hop_xfer_file_end_msg end_msg;
             if (!hop_xfer_decode_file_end(p, len, &end_msg)) return;
             uint32_t id = end_msg.id;
-            if (!s_rx.active || !hop_xfer_rx_file_state_matches(&s_rx.file_state, id)) return;
+            if (!s_rx.batch_state.active || !hop_xfer_rx_file_state_matches(&s_rx.file_state, id)) return;
             uint32_t want = end_msg.file_crc;
             uint8_t status = end_msg.status;
 
             /* 图片整批走，没有逐文件回执：发送端不会等 */
             if (s_rx.file_state.is_image) break;
 
-            status_file_phase(HOP_XFER_DIR_RECEIVE,s_rx.batch,(int)id-1,HOP_XFER_FILE_VERIFYING,0);
+            status_file_phase(HOP_XFER_DIR_RECEIVE,s_rx.batch_state.batch,(int)id-1,HOP_XFER_FILE_VERIFYING,0);
             /* Always drain and close before deciding the per-file ACK. */
             if (!s_rx.file_state.is_directory) rx_close_file();
 
@@ -855,11 +859,11 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 }
             }
 
-            status_file_phase(HOP_XFER_DIR_RECEIVE,s_rx.batch,(int)id-1,ack==HOP_FILE_ACK_OK?HOP_XFER_FILE_COMPLETED:HOP_XFER_FILE_FAILED,0);
+            status_file_phase(HOP_XFER_DIR_RECEIVE,s_rx.batch_state.batch,(int)id-1,ack==HOP_FILE_ACK_OK?HOP_XFER_FILE_COMPLETED:HOP_XFER_FILE_FAILED,0);
 
             /* 回执是发送端判断"这个文件成没成"的唯一依据。
              * 以前这里发的是批量级 ABORT，等于一个文件坏了就把整批判死。 */
-            send_ack(s_x.client, s_rx.batch, id, ack);
+            send_ack(s_x.client, s_rx.batch_state.batch, id, ack);
             break;
         }
 
@@ -945,7 +949,7 @@ static void on_data_frame_checked(void *user, uint8_t type, const uint8_t *p, ui
         return;
     }
     if ((type == HOP_MSG_FILE_CHUNK || type == HOP_MSG_FILE_END) &&
-        (!s_rx.active || batch != s_rx.batch)) return;
+        (!s_rx.batch_state.active || batch != s_rx.batch_state.batch)) return;
     on_data_msg(user, type, body, body_len);
 }
 
@@ -963,18 +967,18 @@ static void on_data_frame(void *user, uint8_t type, const uint8_t *p, uint32_t l
 /* 用户在本端取消接收：通知对端、删掉半成品、立墓碑。
  * 由 listen 线程执行 —— s_rx 只归它所有，别的线程直接碰就是竞态。 */
 static void rx_cancel_local(void) {
-    if (!s_rx.active) return;
-    uint32_t batch = s_rx.batch;
+    if (!s_rx.batch_state.active) return;
+    uint32_t batch = s_rx.batch_state.batch;
     rx_terminate(batch,HOP_ABORT_CANCEL,1);
     hop_log(HOP_LOG_INFO, "xfer: batch %u cancelled locally", batch);
 }
 static void rx_poll_cancel(void) {
     rx_expire_stale_session();
-    if (InterlockedExchange(&s_x.cancel_rx, 0) || (s_rx.active && hop_xfer_task_cancel_requested(s_rx.task.id))) rx_cancel_local();
+    if (InterlockedExchange(&s_x.cancel_rx, 0) || (s_rx.batch_state.active && hop_xfer_task_cancel_requested(s_rx.task.id))) rx_cancel_local();
     EnterCriticalSection(&s_x.lock); int connected=s_x.peer_ready; LeaveCriticalSection(&s_x.lock);
-    if (s_rx.active && hop_xfer_task_rx_disconnect_expired(&s_rx.task,connected,hop_monotonic_ms(),HOP_XFER_RX_DISCONNECT_BUDGET_MS)) {
-        hop_log(HOP_LOG_WARN,"xfer: receive batch %u expired while disconnected",s_rx.batch);
-        rx_terminate(s_rx.batch,HOP_ABORT_TIMEOUT,0);
+    if (s_rx.batch_state.active && hop_xfer_task_rx_disconnect_expired(&s_rx.task,connected,hop_monotonic_ms(),HOP_XFER_RX_DISCONNECT_BUDGET_MS)) {
+        hop_log(HOP_LOG_WARN,"xfer: receive batch %u expired while disconnected",s_rx.batch_state.batch);
+        rx_terminate(s_rx.batch_state.batch,HOP_ABORT_TIMEOUT,0);
     }
 }
 

@@ -10,7 +10,7 @@ static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
     hop_xfer_task_finish(&s_rx.task,reason==HOP_ABORT_CANCEL?
                          HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
     rx_clear_state();
-    status_end(HOP_XFER_DIR_RECEIVE,batch,
+    if (s_rx.services.status_end) s_rx.services.status_end(s_rx.services.context,batch,
                reason==HOP_ABORT_CANCEL?HOP_XFER_CANCELLED:HOP_XFER_FAILED,
                reason==HOP_ABORT_CANCEL?"Receive cancelled":"Receive aborted");
 }
@@ -77,7 +77,7 @@ static void rx_begin_batch(uint32_t batch) {
     }
     hop_log(HOP_LOG_INFO,"xfer: receive batch %u task=%llu",
             batch,(unsigned long long)s_rx.task.id);
-    status_begin(batch,HOP_XFER_DIR_RECEIVE,0,0,"Incoming files",HOP_XFER_RECEIVING);
+    if (s_rx.services.status_begin) s_rx.services.status_begin(s_rx.services.context,batch,0,0,"Incoming files",HOP_XFER_RECEIVING);
 
     char session_hex[33]; hop_session_hex(&s_x.session, session_hex);
     snprintf(s_rx.dir, sizeof(s_rx.dir), "%s/HopDesk/%s/%u", temp_root(), session_hex, batch);
@@ -120,16 +120,14 @@ static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
 
     hop_log(HOP_LOG_INFO, "xfer: batch %u done (%d items, %u/%u ACKed)",
             batch, s_rx.ntop, ok, total);
-    pthread_mutex_lock(&s_status_lock);
-    s_receive_status.status.files_total=total;
-    pthread_mutex_unlock(&s_status_lock);
+    if (s_rx.services.status_set_files_total) s_rx.services.status_set_files_total(s_rx.services.context,total);
     if(s_rx.file_state.is_image && ok==total && s_rx.image_state.received==s_rx.image_state.expected)
-        status_file_phase(HOP_XFER_DIR_RECEIVE,batch,0,HOP_XFER_FILE_COMPLETED,1);
+        if (s_rx.services.status_file_phase) s_rx.services.status_file_phase(s_rx.services.context,batch,0,HOP_XFER_FILE_COMPLETED,1);
     hop_xfer_rx_batch_finish_action finish_action = hop_xfer_rx_batch_finish_decide(
         batch, s_rx.batch_state.active, s_rx.batch_state.batch, 1, ok, total, s_rx.file_state.is_image, image_valid);
     int complete = finish_action == HOP_RX_BATCH_FINISH_COMPLETE;
     hop_xfer_task_finish(&s_rx.task,complete?HOP_XFER_TASK_COMPLETED:(s_rx.file_state.is_image?HOP_XFER_TASK_FAILED:HOP_XFER_TASK_PARTIAL));
-    status_end(HOP_XFER_DIR_RECEIVE,batch,complete?HOP_XFER_COMPLETED:
+    if (s_rx.services.status_end) s_rx.services.status_end(s_rx.services.context,batch,complete?HOP_XFER_COMPLETED:
                (s_rx.file_state.is_image?HOP_XFER_FAILED:HOP_XFER_PARTIAL),
                complete?"Receive completed":"Receive incomplete; clipboard not updated");
     int result=finish_action==HOP_RX_BATCH_FINISH_COMPLETE?HOP_DONE_ACK_COMPLETE:

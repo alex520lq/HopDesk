@@ -527,3 +527,17 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - ABORT 与 session-transport 源码回归夹具已改为链接真实 Core lifecycle 模块，不再 mock 这部分状态。
 - CI 证据：GitHub Actions Run #632，run ID `42480893287`，head `5b6984299a6b2aae617fd8e727fdaf9e091054b5`：Windows MSVC build、Core/regression（含 DONE receipt 与 RX lifecycle 独立测试）、transfer protocol、TCP loopback、native control/data reconnect、updater syntax、package 全部 PASS；macOS build、Core/regression（含 ASan/UBSan）、transfer protocol、TCP loopback、control/listener loopback、bundle verification、package 全部 PASS；Release publication skipped（PR 预期）。
 - 这只抽离了 Receiver 的 Session/Tombstone 数据所有权；`rx_begin_batch`、`rx_terminate`、`rx_finish_batch` 的状态转换编排仍在平台 include。下一切片应将可共享的 batch transition decisions 抽成 Core 规则，并让平台层只执行目录/文件/clipboard/ACK side effects。
+
+
+### 2026-11-08：Receiver Batch 转换决策抽离为共享 Core 规则
+
+- 新增 `src/core/xfer_rx_batch_rules.[ch]`，将两端重复的批次状态决策收敛到纯 Core 函数，不承载文件系统、剪贴板、网络或 Task manager 副作用。
+- BEGIN 决策统一优先级：无效 batch -> 忽略已提交 DONE receipt -> 拒绝 tombstone batch（保留原 ABORT reason）-> 同批次 active resume -> 启动新 batch。
+- ABORT/终止路径统一通过 `hop_xfer_rx_batch_is_active` 判断事件是否属于当前活动批次，避免旧 batch 误清理新 batch。
+- DONE 决策统一区分 stale、cancel-won、complete、partial、image-failed；Task completion 的原子 claim 仍由 Task manager 执行，Core 规则只根据 claim 结果决定后续分支。
+- Windows/macOS 的 `rx_begin_batch`、`rx_terminate`、`rx_finish_batch` 已接入同一套决策 API；平台仍负责 Task 状态落地、目录处理、clipboard commit、status/history 和 wire ACK。
+- 新增 `tests/xfer_rx_batch_rules_tests.c`，覆盖 BEGIN 优先级、墓碑原因透传、active matching、DONE stale/cancel/complete/partial/image-failed。
+- 真实平台回归夹具和 IMAGE DONE fixture 均直接链接生产 Core 模块；Windows HA target、Windows/macOS Core 测试脚本已纳入新模块。
+- CI 证据：Run #638（ID `42481821345`，head `d2800e9bd88d853cc20201d23146f224635a4c0a`）Windows 与 macOS 全部通过：应用构建、Core/regression（含新规则测试及真实 Receiver/IMAGE fixture）、Transfer protocol、TCP loopback、Windows native role/reconnect、macOS control/listener loopback、更新脚本检查和打包均 PASS；PR 发布步骤按预期 skipped。
+- 中间 Run #637 暴露 IMAGE DONE 独立 fixture 未包含新 Core header/link；已补齐 fixture include 和生产模块链接，Run #638 验证通过。
+- 本切片只抽取了共享 Batch transition policy，不代表 Receiver 协议/批次生命周期整体拆完。下一步仍需提取接收协议消息处理和 batch/file state ownership，并补齐 stop-vs-producer、cancel-vs-finish、late frame、disconnect/reconnect 等并发和故障注入测试。

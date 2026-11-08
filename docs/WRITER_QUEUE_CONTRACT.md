@@ -140,3 +140,15 @@ This closes the Writer Queue extraction slice on both platforms, not the whole r
 Session-bound DONE idempotency is now a shared Core module in `src/core/xfer_rx_receipt.[ch]`. Windows and macOS use the same lookup, exact-payload comparison, clear-on-session-change, and record operations. The module does not own file IO, clipboard effects, or Task terminal state; those remain Receiver/Application responsibilities.
 
 A standalone production-linked test covers session and batch isolation, exact replay, conflicting payload rejection, and invalidation. The ABORT and session-transport regression fixtures link the real Core module rather than recreating its logic. Latest validation run #621 is pending; do not treat the extraction as CI-accepted until both native jobs complete.
+
+
+## 2026-11-08 Receiver batch transition rules
+
+The cross-platform Receiver now calls shared pure policy functions in `src/core/xfer_rx_batch_rules.[ch]`:
+- BEGIN precedence: invalid -> already committed receipt ignored -> tombstoned batch rejected with its stored reason -> same active batch resumed -> new batch started.
+- ABORT/termination cleanup is allowed only when the event batch matches the currently active batch.
+- DONE outcomes are classified as stale, cancellation-won, complete, partial, or image-failed. The Task manager remains the atomic authority for claiming completion against cancellation; the Core policy receives that result and does not duplicate task ownership.
+- Platform adapters still execute all side effects: task state transitions, filesystem cleanup, clipboard publication, status/history updates, and wire ACKs.
+- Production-linked unit and regression fixtures cover both platforms. Run #638 (ID `42481821345`, commit `d2800e9bd88d853cc20201d23146f224635a4c0a`) passed the complete Windows and macOS CI pipelines.
+
+This is a shared transition-policy extraction, not completion of the full Receiver protocol/batch lifecycle refactor. Remaining acceptance includes protocol message dispatch extraction, batch/file state ownership, and race/failure injection around cancellation, finish, late frames, and reconnect.

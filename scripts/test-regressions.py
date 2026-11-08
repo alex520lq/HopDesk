@@ -329,6 +329,10 @@ int main(void){
         pool_source=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
         assert 'hop_xfer_buffer_pool_acquire_locked(&s_wq.pool' in pool_source
         assert 'hop_xfer_buffer_pool_release_locked(&s_wq.pool' in pool_source
+        assert 'hop_xfer_rx_queue_can_push(&s_wq.accounting' in pool_source
+        assert 'hop_xfer_rx_queue_reserve(&s_wq.accounting' in pool_source
+        assert 'hop_xfer_rx_queue_commit_reserved(&s_wq.accounting)' in pool_source
+        assert 'hop_xfer_rx_queue_drained(&s_wq.accounting)' in pool_source
         assert 'rx_buffer_slot' not in pool_source and 'wq_pool_acquire_locked' not in pool_source
     clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
     assert 'send_image_data_async(imageType, cc, previous_change)' in clip

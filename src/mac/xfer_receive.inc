@@ -197,6 +197,23 @@ static hop_xfer_rx_lifecycle s_rx_lifecycle;
  * wire idempotency metadata, not another task or reservation owner. */
 static hop_xfer_rx_done_receipt s_done_receipt;
 
+static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer);
+static void rx_begin_batch(uint32_t batch);
+static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total);
+
+static void rx_context_terminate_batch(void *context, uint32_t batch, uint8_t reason, int notify_peer) {
+    (void)context;
+    rx_terminate(batch, reason, notify_peer);
+}
+static void rx_context_begin_batch(void *context, uint32_t batch) {
+    (void)context;
+    rx_begin_batch(batch);
+}
+static int rx_context_finish_batch(void *context, uint32_t batch, uint32_t ok, uint32_t total) {
+    (void)context;
+    return rx_finish_batch(batch, ok, total);
+}
+
 static void rx_context_configure(void) {
     s_rx.writer = s_wq;
     s_rx.lifecycle = &s_rx_lifecycle;
@@ -207,9 +224,11 @@ static void rx_context_configure(void) {
     s_rx.services.send_file_ack = rx_context_send_file_ack;
     s_rx.services.send_done_ack = rx_context_send_done_ack;
     s_rx.services.deliver_ack = rx_context_deliver_ack;
+    s_rx.services.terminate_batch = rx_context_terminate_batch;
+    s_rx.services.begin_batch = rx_context_begin_batch;
+    s_rx.services.finish_batch = rx_context_finish_batch;
 }
 static void rx_discard_dir(void);
-static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer);
 static void rx_bind_session(const hop_session_id *session) {
     if (!hop_session_id_equal(hop_xfer_rx_lifecycle_session(&s_rx_lifecycle), session)) {
         hop_xfer_rx_done_receipt_clear(&s_done_receipt);

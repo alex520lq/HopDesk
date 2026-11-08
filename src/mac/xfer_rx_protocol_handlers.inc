@@ -57,7 +57,7 @@ hop_xfer_file_begin_msg msg;
             status_add_received_file(batch,id,rel,size,s_rx.file_state.is_directory);
 
             if (s_rx.file_state.is_directory) {
-                if (hop_xfer_rx_fs_hop_xfer_rx_fs_mkdir_p(path) != 0) {
+                if (hop_xfer_rx_fs_mkdir_p(path) != 0) {
                     hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_DISK);
                     return;
                 }

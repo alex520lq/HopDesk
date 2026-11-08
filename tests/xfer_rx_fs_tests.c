@@ -46,7 +46,7 @@ int main(void) {
     assert(mkdir(root, 0755) == 0);
     char *path = hop_xfer_rx_fs_path_for(root, "sub/receiver-测试.txt");
     assert(path != NULL);
-    assert(strstr(path, "/HopDesk/sub/receiver-测试.txt") != NULL);
+    assert(strstr(path, "/HopDesk/Batch/sub/receiver-测试.txt") != NULL);
     char parent[4096];
     snprintf(parent, sizeof(parent), "%s", path);
     char *separator = strrchr(parent, '/');

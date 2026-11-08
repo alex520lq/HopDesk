@@ -645,3 +645,13 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 回归脚本验证 Context 类型只在共享头文件定义，且包含服务接口；后续可以让协议 handler 独立编译，而不再依赖 include 顺序中的局部 struct 声明。
 - 本切片仍未把协议 handler 移出原翻译单元；handler 还依赖批次生命周期、状态统计和 Writer/Clipboard 操作。下一步会继续把这些依赖纳入 Context/Services，而不是用 extern 暴露更多全局变量。
 - CI：等待本切片提交后的 Windows/macOS 全量验证。
+
+
+### 2026-11-08：Receiver 批次生命周期回调进入 Services 契约（第四切片）
+
+- 扩展 `hop_xfer_rx_services`，增加 `terminate_batch`、`begin_batch`、`finish_batch` 三个显式生命周期入口。
+- FILE_BEGIN / IMAGE_BEGIN / CHUNK / END / ABORT / DONE Handler 不再直接调用平台翻译单元中的批次生命周期函数；统一经由 Context Services 分发。
+- Windows/macOS 仍由各自 Receiver Adapter 实现这些回调，暂时复用原有生命周期函数，保持批次墓碑、Task 完成、目录清理、Clipboard 提交和状态统计语义不变。
+- 中止/重连 fixture 已注入相同服务回调，继续执行真实生产 Handler 与生命周期函数；回归断言确保 Handler 不再直接调用这些平台生命周期入口。
+- 下一步继续把 Writer、路径列表和状态遥测操作纳入服务接口，待 Handler 不再依赖 include-local helper 后，再把两端协议 handler 移为独立生产 `.c` 编译单元。
+- CI：等待本切片 Windows/macOS 全量验证。

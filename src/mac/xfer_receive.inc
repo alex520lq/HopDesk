@@ -107,7 +107,7 @@ static struct {
     char     dir[4096];
     char    *cur_path;
         hop_xfer_rx_file_state file_state;
-    uint8_t *img;
+    hop_xfer_rx_image_buffer image_buffer;
     hop_xfer_rx_image_state image_state;
     char   **tops;
     int      ntop;
@@ -132,8 +132,7 @@ static void rx_close_file(void) {
 static void rx_clear_state(void) {
     free(s_rx.cur_path);
     s_rx.cur_path = NULL;
-    free(s_rx.img);
-    s_rx.img = NULL;
+    hop_xfer_rx_image_buffer_dispose(&s_rx.image_buffer);
     hop_xfer_rx_image_state_reset(&s_rx.image_state);
     for (int i = 0; i < s_rx.ntop; ++i) free(s_rx.tops[i]);
     free(s_rx.tops);
@@ -369,9 +368,9 @@ static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
                 "xfer: batch %u incomplete (%u/%u entries); staged data kept at %s; clipboard not updated",
                 batch, ok, total, s_rx.dir);
     } else if (s_rx.file_state.is_image) {
-        if (s_rx.img && s_rx.image_state.received == s_rx.image_state.expected) {
+        if (s_rx.image_buffer.data && s_rx.image_state.received == s_rx.image_state.expected) {
             uint64_t clipboard_started_ns=rate_now_ns();
-            clipboard_apply_image(s_rx.img, s_rx.image_state.width, s_rx.image_state.height, s_rx.image_state.stride);
+            clipboard_apply_image(s_rx.image_buffer.data, s_rx.image_state.width, s_rx.image_state.height, s_rx.image_state.stride);
             status_stage_time(HOP_XFER_DIR_RECEIVE,batch,HOP_XFER_TIME_CLIPBOARD_DISPATCH,
                               rate_now_ns()-clipboard_started_ns);
         } else
@@ -399,7 +398,7 @@ static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
     pthread_mutex_unlock(&s_status_lock);
     if(s_rx.file_state.is_image && ok==total && s_rx.image_state.received==s_rx.image_state.expected)
         status_file_phase(HOP_XFER_DIR_RECEIVE,batch,0,HOP_XFER_FILE_COMPLETED,1);
-    int image_valid = s_rx.img && s_rx.image_state.received == s_rx.image_state.expected;
+    int image_valid = s_rx.image_buffer.data && s_rx.image_state.received == s_rx.image_state.expected;
     hop_xfer_rx_batch_finish_action finish_action = hop_xfer_rx_batch_finish_decide(
         batch, s_rx.active, s_rx.batch, 1, ok, total, s_rx.file_state.is_image, image_valid);
     int complete = finish_action == HOP_RX_BATCH_FINISH_COMPLETE;
@@ -587,8 +586,8 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
-            if (s_rx.img) hop_xfer_rx_image_state_set_capacity(
-                &s_rx.image_state, (uint64_t)s_rx.image_state.expected);
+            if (s_rx.image_buffer.data) hop_xfer_rx_image_state_set_capacity(
+                &s_rx.image_state, s_rx.image_buffer.capacity);
             status_image(batch,HOP_XFER_DIR_RECEIVE,s_rx.image_state.expected);
             break;
         }
@@ -649,18 +648,19 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                  * task ledger. Allocate that exact amount once: geometric growth
                  * would make the real capacity exceed the reservation and may
                  * transiently keep both old and new buffers alive during realloc. */
-                if (!s_rx.img) {
-                    s_rx.img = (uint8_t *)realloc(NULL, s_rx.image_state.expected);
-                    if (!s_rx.img) { rx_terminate(s_rx.batch,HOP_ABORT_DISK,1); return; }
-                    hop_xfer_rx_image_state_set_capacity(
-                        &s_rx.image_state, (uint64_t)s_rx.image_state.expected);
+                if (!hop_xfer_rx_image_buffer_ensure(&s_rx.image_buffer,
+                        (uint64_t)s_rx.image_state.expected)) {
+                    rx_terminate(s_rx.batch,HOP_ABORT_DISK,1);
+                    return;
                 }
+                hop_xfer_rx_image_state_set_capacity(
+                    &s_rx.image_state, s_rx.image_buffer.capacity);
                 if (need > s_rx.image_state.capacity) {
                     hop_log(HOP_LOG_ERROR, "xfer: image buffer capacity exceeded");
                     rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
                     return;
                 }
-                memcpy(s_rx.img + off, data, n);
+                memcpy(s_rx.image_buffer.data + off, data, n);
                 if (!hop_xfer_rx_image_state_record_chunk(&s_rx.image_state, off, n)) {
                     rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
                     return;

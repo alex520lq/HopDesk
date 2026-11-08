@@ -133,3 +133,10 @@ Both Queues own their ring commands, slot/byte accounting, reusable payload pool
 Production-linked tests exist for both platforms and verify FIFO OPEN/WRITE/CLOSE, actual disk bytes, budget admission rollback/release, drain, and stop. Run #609 (commit `33ec53b9d49c4d2dcb3c0bbe52119c9f3a34e574`) passed the full Windows and macOS CI pipelines, including these tests.
 
 This closes the Writer Queue extraction slice on both platforms, not the whole receive-side refactor. Receiver Protocol / Batch Lifecycle remains in the legacy include and must be extracted separately. Additional stop-vs-producer race, allocation-failure, slow-disk, persistent-error, and sanitizer stress coverage remains required before phase 2 acceptance.
+
+
+## 2026-11-08 Receiver DONE receipt extraction
+
+Session-bound DONE idempotency is now a shared Core module in `src/core/xfer_rx_receipt.[ch]`. Windows and macOS use the same lookup, exact-payload comparison, clear-on-session-change, and record operations. The module does not own file IO, clipboard effects, or Task terminal state; those remain Receiver/Application responsibilities.
+
+A standalone production-linked test covers session and batch isolation, exact replay, conflicting payload rejection, and invalidation. The ABORT and session-transport regression fixtures link the real Core module rather than recreating its logic. Latest validation run #621 is pending; do not treat the extraction as CI-accepted until both native jobs complete.

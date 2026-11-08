@@ -506,3 +506,13 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - CI 证据：GitHub Actions Run #609，run ID `42478897342`，head `33ec53b9d49c4d2dcb3c0bbe52119c9f3a34e574`：Windows MSVC build、Core/regression（含独立 Writer Queue 测试）、transfer protocol、TCP loopback、native control/data reconnect、updater syntax、package 全部 PASS；macOS build、Core/regression（含 ASan/UBSan Writer Queue 测试）、transfer protocol、TCP loopback、control/listener loopback、bundle verification、package 全部 PASS；Release publication skipped（PR 预期）。
 - 中途 CI 揭示并修复了测试集成问题：源码布局断言、fixture error accessor、Writer Queue 测试缺失 RX budget 链接，以及 POSIX feature macro 隐藏 Apple QoS API。最新 Run #609 全部通过。
 - 阶段 2 尚未完成：Receiver Protocol / Batch Lifecycle 仍在 `xfer_receive.inc`，后续要从 include 中提取独立模块；还需增加更完整的 stop-vs-producer race、buffer allocation failure、slow-disk/error persistence 和 sanitizer stress tests。不得将整个阶段 2 标记完成。
+
+
+### 2026-11-08：Receiver DONE 幂等回执提取为 Core 模块（下一阶段切片）
+
+- 新增 `src/core/xfer_rx_receipt.[ch]`，将单批次 DONE 回执的 session 绑定、批次查找、payload 完全匹配和状态记录从平台 Receiver include 中提取为纯 C Core 模块。
+- Windows/macOS 的 `rx_begin_batch` 与 `HOP_MSG_XFER_DONE` 处理现在通过同一组 Core API 判断已完成批次、拒绝同批次但不同计数/字节的冲突重放，并对完全相同的重放复用原 DONE_ACK 状态，不重复触发剪贴板副作用。
+- 新增 `tests/xfer_rx_receipt_tests.c`，覆盖 session 隔离、batch 隔离、完全相同重放、payload 冲突和 receipt 清除。
+- 更新 ABORT 与 session-transport 源码夹具，直接链接该生产 Core 模块；Windows HA 目标也链接该模块。
+- CI：Run #621（ID `42479841137`，commit `97e7433fd66d36065bb6f3dbc581ca8edc06098e`）当前排队/等待执行；前序 Run #618 暴露的 fixture 链接遗漏已补齐，Run #621 才是包含全部修正的验证依据。未取得最终结果前不标记通过。
+- 下一步继续提取 tombstone / batch lifecycle 状态，确保 session rollover、late BEGIN、duplicate DONE 和 cancel/abort 的状态只由一个 Core owner 管理。

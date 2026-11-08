@@ -207,60 +207,20 @@ static void rx_discard_dir(void) {
     if (!s_rx.dir[0]) return;
     /* 路径是我们自己拼的，但删除是不可逆操作 —— 仍然验一次根目录，
      * 免得哪天拼错了把用户目录端掉。 */
-    if (!wcsstr(s_rx.dir, XFER_RX_ROOT)) {
+    int result = hop_xfer_rx_fs_remove_tree(s_rx.dir, XFER_RX_ROOT);
+    if (result == -2)
         hop_log(HOP_LOG_ERROR, "xfer: refuse to delete %ls", s_rx.dir);
-        return;
-    }
-    wchar_t buf[MAX_PATH + 2];
-    size_t n = wcslen(s_rx.dir);
-    if (n + 2 > MAX_PATH + 2) return;
-    wcscpy(buf, s_rx.dir);
-    buf[n + 1] = L'\0';                 /* SHFileOperationW 要双 null 结尾 */
-
-    SHFILEOPSTRUCTW op;
-    memset(&op, 0, sizeof(op));
-    op.wFunc  = FO_DELETE;
-    op.pFrom  = buf;
-    op.fFlags = FOF_SILENT | FOF_NOCONFIRMATION | FOF_NOERRORUI;
-    if (SHFileOperationW(&op) != 0)
+    else if (result != 0)
         hop_log(HOP_LOG_WARN, "xfer: failed to remove %ls", s_rx.dir);
     s_rx.dir[0] = L'\0';
 }
 
 /* Create a directory, accepting ERROR_ALREADY_EXISTS only when the path
  * is actually a directory (a regular file at a parent path is an error). */
-static int create_directory_if_missing(const wchar_t *path) {
-    if (CreateDirectoryW(path, NULL)) return 1;
-    if (GetLastError() != ERROR_ALREADY_EXISTS) return 0;
-    DWORD attributes = GetFileAttributesW(path);
-    return attributes != INVALID_FILE_ATTRIBUTES &&
-           (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-}
+
 
 /* Create parent components without attempting to create a drive/UNC root. */
-static int ensure_dirs(wchar_t *path) {
-    wchar_t *p = path;
-    if (((*p >= L'A' && *p <= L'Z') || (*p >= L'a' && *p <= L'z')) && p[1] == L':') {
-        p += 2;
-        if (*p == L'\\' || *p == L'/') ++p;
-    } else if (p[0] == L'\\' && p[1] == L'\\') {
-        p += 2;
-        while (*p && *p != L'\\' && *p != L'/') ++p; /* server */
-        if (*p) ++p;
-        while (*p && *p != L'\\' && *p != L'/') ++p; /* share */
-        if (*p) ++p;
-    }
-    for (; *p; ++p) {
-        if (*p == L'\\' || *p == L'/') {
-            wchar_t save = *p;
-            *p = L'\0';
-            int ok = create_directory_if_missing(path);
-            *p = save;
-            if (!ok) return 0;
-        }
-    }
-    return 1;
-}
+
 
 static int rx_add_top(const wchar_t *p) {
     /* 重发会让同一个顶层条目再来一次（比如 ACK 超时但文件其实写成功了），
@@ -296,20 +256,7 @@ static void rx_remove_top(const wchar_t *p) {
 
 
 /* 把 UTF-8 相对路径拼到本批目录下，返回 malloc 的宽路径 */
-static wchar_t *rx_path_for(const char *rel) {
-    wchar_t *w = u2w(rel, (int)strlen(rel));
-    if (!w) return NULL;
-    for (wchar_t *p = w; *p; ++p) if (*p == L'/') *p = L'\\';
 
-    size_t dl = wcslen(s_rx.dir), wl = wcslen(w);
-    wchar_t *o = (wchar_t *)malloc((dl + wl + 2) * sizeof(wchar_t));
-    if (!o) { free(w); return NULL; }
-    wcscpy(o, s_rx.dir);
-    if (dl && o[dl - 1] != L'\\') wcscat(o, L"\\");
-    wcscat(o, w);
-    free(w);
-    return o;
-}
 
 /* Receiver-thread only. Wire notification has no status side effects. Close the
  * writer before freeing paths/buffers or deleting staging files. Terminal state

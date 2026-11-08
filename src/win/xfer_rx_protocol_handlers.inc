@@ -5,10 +5,8 @@ hop_xfer_file_begin_msg msg;
             if (!hop_xfer_decode_file_begin(p, len, &msg)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed FILE_BEGIN rejected");
                 if (rx->batch_state.active) rx_terminate(rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
-                EnterCriticalSection(&s_x.lock);
-                SOCKET active = s_x.client;
-                LeaveCriticalSection(&s_x.lock);
-                if (active != INVALID_SOCKET) shutdown(active, SD_BOTH);
+                if (rx->shutdown_data_channel)
+                    rx->shutdown_data_channel(rx->platform_context);
                 return;
             }
             uint32_t batch = msg.batch;
@@ -345,12 +343,8 @@ hop_xfer_abort_msg abort_msg;
             uint32_t batch = abort_msg.batch;
             uint8_t reason = abort_msg.reason;
 
-            if (abort_msg.target == HOP_ABORT_TO_SENDER) {
-                EnterCriticalSection(&s_x.lock);
-                if (s_x.cur_batch == batch) { s_x.abort_batch = batch; s_x.abort_reason = reason; }
-                LeaveCriticalSection(&s_x.lock);
-                SetEvent(s_ack.ev);
-            }
+            if (abort_msg.target == HOP_ABORT_TO_SENDER && rx->mark_sender_aborted)
+                rx->mark_sender_aborted(rx->platform_context, batch, reason);
 
             hop_log(HOP_LOG_ERROR, "xfer: peer aborted batch %u (reason %u)",
                     batch, reason);

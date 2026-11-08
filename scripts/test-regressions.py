@@ -743,6 +743,8 @@ int main(void){
         done_ack_handler=extract(receiver,'rx_dispatch_done_ack')
         services=(ROOT/'src/core/xfer_rx_services.h').read_text(encoding='utf-8')
         assert all(name in services for name in ['shutdown_data_channel','mark_sender_aborted','send_file_ack','send_done_ack','deliver_ack'])
+        on_data_msg=extract(receiver,'on_data_msg')
+        assert 'rx_context_configure();' in on_data_msg and 's_rx_dispatch_handlers, &s_rx' in on_data_msg
         assert 'hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, rx)' in file_ack_handler
         assert 'hop_xfer_rx_handle_done_ack(p, len, rx_ack_deliver_done, rx)' in done_ack_handler
         done_handler=extract(receiver,'rx_dispatch_done')

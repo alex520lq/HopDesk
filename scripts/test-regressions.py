@@ -631,11 +631,9 @@ int main(void){
         receiver=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
         state_start=receiver.index('typedef struct {',receiver.index('/* ---------------- 接收')) if platform=='win' else receiver.index('static struct {',receiver.index('/* ---------------- 接收'))
         state_end=receiver.index('static xfer_rx s_rx;',state_start)+len('static xfer_rx s_rx;') if platform=='win' else receiver.index('} s_rx;',state_start)+len('} s_rx;')
-        handler=extract(receiver,'on_data_msg')
-        def cases(first,after):
-            return handler[handler.index('        case '+first+':'):handler.index('        case '+after+':')]
-        selected=cases('HOP_RX_DISPATCH_IMAGE_BEGIN','HOP_RX_DISPATCH_ABORT')+cases('HOP_RX_DISPATCH_ABORT','HOP_RX_DISPATCH_DONE')
-        selected+=handler[handler.index('        case HOP_RX_DISPATCH_DONE:'):handler.index('        default:')]
+        dispatch_names=['file_begin','image_begin','file_chunk','file_end','file_ack','abort_message','done','done_ack']
+        dispatch_handlers='\\n'.join(extract(receiver,'rx_dispatch_'+name) for name in dispatch_names)
+        dispatch_handlers+='\\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { '+', '.join('rx_dispatch_'+name for name in dispatch_names)+' };\\n'
         fixture=(ROOT/'tests/receive_abort_fixture.c.in').read_text(encoding='utf-8')
         values={
             'RX_STATE':receiver[state_start:state_end],
@@ -651,12 +649,12 @@ int main(void){
             'BIND_SESSION':extract(receiver,'rx_bind_session'),
             'POLL_CANCEL':extract(receiver,'rx_poll_cancel'),
             'BUSY':extract(sender,'xfer_busy'),
-            'RECEIVE_CASES':selected,
+            'DISPATCH_HANDLERS':dispatch_handlers,
         }
         for key,value in values.items():fixture=fixture.replace('@'+key+'@',value)
         assert '@' not in fixture
-        assert 'if (!s_rx.batch_state.active || s_rx.batch_state.batch != batch) return;' in cases('HOP_RX_DISPATCH_FILE_BEGIN','HOP_RX_DISPATCH_IMAGE_BEGIN')
-        assert 'if (!s_rx.batch_state.active || s_rx.batch_state.batch != batch) return;' in cases('HOP_RX_DISPATCH_IMAGE_BEGIN','HOP_RX_DISPATCH_FILE_CHUNK')
+        assert 'if (!s_rx.batch_state.active || s_rx.batch_state.batch != batch) return;' in extract(receiver,'rx_dispatch_file_begin')
+        assert 'rx_begin_batch(batch)' in extract(receiver,'rx_dispatch_image_begin')
         if platform=='win':fixture='#define FIXTURE_WINDOWS 1\n'+fixture
         run('abort_'+platform,fixture,['src/core/protocol.c','src/core/crc32.c','src/core/xfer_validate.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_dispatch.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_file_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_image_buffer.c'],threads=True)
 
@@ -705,9 +703,8 @@ int main(void){
         kick_fn=extract(sender,'xfer_kick')
         assert 'peer_ready = 0' in kick_fn or 'peer_ready=0' in kick_fn
 
-        handler=extract(receiver,'on_data_msg')
-        begin=handler[handler.index('case HOP_RX_DISPATCH_FILE_BEGIN:'):handler.index('case HOP_RX_DISPATCH_IMAGE_BEGIN:')]
-        end=handler[handler.index('case HOP_RX_DISPATCH_FILE_END:'):handler.index('case HOP_RX_DISPATCH_FILE_ACK:')]
+        begin=extract(receiver,'rx_dispatch_file_begin')
+        end=extract(receiver,'rx_dispatch_file_end')
         assert 'rx_remove_top(s_rx.cur_path)' in begin
         assert '!rx_add_top(path)' in begin or '!rx_add_top(s_rx.cur_path)' in end
         if platform=='mac':

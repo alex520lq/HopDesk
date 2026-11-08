@@ -43,7 +43,6 @@ uint64_t hop_wallclock_ms(void){return 1700000000000ull+fake_ms;}
 typedef unsigned long DWORD;
 typedef int SOCKET;
 static struct {int lock,slock,qlock,client,sock,cancel_rx,peer_ready;uint32_t cur_batch,abort_batch;uint8_t abort_reason;void*q_head;hop_session_id session;} s_x;
-static struct {int lock,cond,ev;} s_ack;
 static int s_status_lock;
 static uint64_t s_status_revision;
 static hop_xfer_tracking s_send_status,s_receive_status;

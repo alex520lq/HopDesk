@@ -738,12 +738,17 @@ int main(void){
         assert 'rx_remove_top(s_rx.cur_path)' in begin
         assert '!rx_add_top(path)' in begin or '!rx_add_top(s_rx.cur_path)' in end
         if platform=='mac':
-            assert 'if (mkdir_p(path) != 0)' in begin
+            assert 'hop_xfer_rx_fs_mkdir_p(path) != 0' in begin
+            fs=(ROOT/'src/mac/xfer_rx_fs.c').read_text(encoding='utf-8')
+            assert 'hop_xfer_rx_fs_path_for' in fs and 'hop_xfer_rx_fs_remove_tree' in fs
             assert 'if (!parent_ok)' in begin
         else:
-            assert 'create_directory_if_missing(path)' in begin
+            assert 'hop_xfer_rx_fs_create_directory_if_missing(path)' in begin
+            assert 'hop_xfer_rx_fs_ensure_dirs(path)' in begin
             assert 'if (!parent_ok)' in begin
-            assert 'GetFileAttributesW(path)' in extract(receiver,'create_directory_if_missing')
+            fs=(ROOT/'src/win/xfer_rx_fs.c').read_text(encoding='utf-8')
+            assert 'GetFileAttributesW(path)' in fs
+            assert 'hop_xfer_rx_fs_path_for' in fs and 'hop_xfer_rx_fs_remove_tree' in fs
         close=end.index('rx_close_file()')
         cleanup=end.index('unlink(' if platform=='mac' else 'DeleteFileW(')
         assert close < cleanup, 'failed receive cleanup must wait for writer close'

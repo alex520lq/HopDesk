@@ -34,7 +34,9 @@ typedef struct {
     hop_writer_io      io;       /* 写线程独占 */
     volatile LONG      err;      /* 写盘失败标记，主路径读 */
     int                stop;
-} s_wq;
+} hop_rx_writer_queue;
+
+static hop_rx_writer_queue s_wq;
 
 /* Reusable bounded RX payload pool. Called with s_wq.lock held.
  * Retained capacity is capped by RX_Q_MAX_BYTES, independently of queue
@@ -59,7 +61,7 @@ static void wq_task_run(hop_rx_writer_queue *queue, rx_task *t) {
             if (!hop_writer_io_write_at(&queue->io, t->off, t->data, t->len, &error)) {
                 hop_log(HOP_LOG_WARN, "xfer: write failed at %llu (err %lu)",
                         (unsigned long long)t->off, error);
-                wq_error_set(1);
+                wq_error_set_for(queue, 1);
             }
             break;
         case RX_CLOSE:
@@ -72,7 +74,7 @@ static int wq_worker_take(void *context, void *task_out) {
     hop_rx_writer_queue *queue = (hop_rx_writer_queue *)context;
     EnterCriticalSection(&queue->lock);
     while (queue->accounting.queued_slots == 0 && !queue->stop)
-        SleepConditionVariableCS(&s_wq.cv_work, &queue->lock, INFINITE);
+        SleepConditionVariableCS(&queue->cv_work, &queue->lock, INFINITE);
     if (queue->accounting.queued_slots == 0 && queue->stop) {
         LeaveCriticalSection(&queue->lock);
         return 0;
@@ -111,7 +113,7 @@ static void wq_worker_complete(void *context, const void *task_data) {
         hop_xfer_buffer_pool_release_locked(&queue->pool, task->pool_slot);
     hop_xfer_rx_queue_complete(&queue->accounting,
                                task->kind == RX_WRITE ? task->len : 0);
-    WakeConditionVariable(&s_wq.cv_space);
+    WakeConditionVariable(&queue->cv_space);
     LeaveCriticalSection(&queue->lock);
 }
 

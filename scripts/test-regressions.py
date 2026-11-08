@@ -528,7 +528,7 @@ int main(void){
         run('image_'+platform,common+extract(source,'send_done')+'\n'+extract(source,'rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_rx_image_buffer.c'],threads=True)
     # Run the actual per-platform state wrappers, not only a reimplemented model.
     for platform in ['win','mac']:
-        source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', (ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8'))
+        source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', '\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_batch_lifecycle.inc','xfer_rx_protocol_handlers.inc')))
         preamble=r'''
 #include "hop.h"
 #include "xfer_tracking.h"
@@ -667,7 +667,7 @@ int main(void){
 
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
-        receiver=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_batch_lifecycle.inc','xfer_rx_protocol_handlers.inc'))
         fixture=(ROOT/'tests/session_transport_fixture.c.in').read_text(encoding='utf-8')
         functions='\n'.join([extract(sender,'job_bind_session'),extract(sender,'send_small'),extract(sender,'send_chunk'),extract(receiver,'rx_bind_session'),extract(receiver,'rx_expire_stale_session'),extract(receiver,'on_data_frame_checked'),extract(receiver,'on_data_frame')])
         fixture=fixture.replace('@FUNCTIONS@',functions)
@@ -685,7 +685,7 @@ int main(void){
     # batch/file ID is reused; the unresolved file remains the resume point.
     for platform in ['mac','win']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
-        receiver=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_batch_lifecycle.inc','xfer_rx_protocol_handlers.inc'))
         entry=extract(sender,'send_file_entry')
         assert 'tx + CHUNK_HDR' in entry
         assert 'malloc(blen)' not in entry and 'free(bp)' not in entry

@@ -57,6 +57,7 @@ static void wq_write_error(void *context, uint64_t offset, unsigned long error) 
 static int wq_start(void) {
     if (s_wq) return 0;
     const hop_writer_queue_callbacks callbacks = {
+        HOP_IO_DEADLINE_MS,
         wq_reserve_task_rx, wq_release_task_rx,
         wq_watchdog_begin, wq_watchdog_end, wq_now_ns,
         wq_write_time, wq_open_error, wq_write_error

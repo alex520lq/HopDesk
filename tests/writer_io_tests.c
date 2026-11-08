@@ -1,4 +1,7 @@
 /* Native writer file-IO adapter tests. */
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -44,7 +47,8 @@ int main(void) {
     hop_writer_io_close(&io);
     int f=open(path,O_RDONLY); uint8_t actual[4]={0};
     ssize_t got=f>=0?read(f,actual,sizeof(actual)):-1;
-    if(f>=0)close(f); unlink(path);
+    if(f>=0) close(f);
+    unlink(path);
     if(got!=4||actual[0]!=1||actual[1]!=9||actual[2]!=8||actual[3]!=4)return 5;
     puts("PASS: macOS writer IO open/write-at/close");
     return 0;

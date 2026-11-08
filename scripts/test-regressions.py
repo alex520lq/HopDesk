@@ -324,34 +324,12 @@ int main(void){
             assert 'inject_paste_shortcut()' not in apply_objects
             assert 'statusbar_notify_paste_ready()' in apply_objects
 
-        # Exercise the actual production selector with a small slot before a
-        # later fitting slot. The later slot must be reused without allocation.
+        # Both native receivers delegate reusable RX storage to the same
+        # production core pool; platform includes must not carry private copies.
         pool_source=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
-        pool_preamble=r'''
-#include <stdint.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <assert.h>
-#define RX_Q_SLOTS 4
-#define RX_Q_MAX_BYTES 1024
-typedef struct { uint8_t *data; uint32_t capacity; int in_use; } rx_buffer_slot;
-static struct { rx_buffer_slot buffers[RX_Q_SLOTS]; uint64_t pool_capacity; } s_wq;
-static int hop_xfer_budget_set_rx_pool_bytes(uint64_t bytes) { (void)bytes; return 1; }
-'''
-        pool_main=r'''
-int main(void) {
-    uint8_t small[8], large[64], *selected=NULL;
-    int slot=-1;
-    s_wq.buffers[0].data=small; s_wq.buffers[0].capacity=8;
-    s_wq.buffers[1].data=large; s_wq.buffers[1].capacity=64;
-    s_wq.pool_capacity=72;
-    assert(wq_pool_acquire_locked(32,&slot,&selected)==1);
-    assert(slot==1 && selected==large && s_wq.pool_capacity==72);
-    puts("PASS: best-fit RX pool selector reuses later fitting slot");
-    return 0;
-}
-'''
-        run('rx_pool_best_fit_'+platform,pool_preamble+extract(pool_source,'wq_pool_acquire_locked')+pool_main)
+        assert 'hop_xfer_buffer_pool_acquire_locked(&s_wq.pool' in pool_source
+        assert 'hop_xfer_buffer_pool_release_locked(&s_wq.pool' in pool_source
+        assert 'rx_buffer_slot' not in pool_source and 'wq_pool_acquire_locked' not in pool_source
     clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
     assert 'send_image_data_async(imageType, cc, previous_change)' in clip
     assert 'budget_deferred = 1' in clip

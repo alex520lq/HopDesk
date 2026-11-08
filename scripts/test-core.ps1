@@ -154,7 +154,7 @@ if ($LASTEXITCODE -ne 0) { throw "RX entry reservation test compilation failed (
 if ($LASTEXITCODE -ne 0) { throw "RX entry reservation tests failed ($LASTEXITCODE)" }
 
 $rxFileState = Join-Path $build 'hopdesk-rx-file-state-tests.exe'
-$rxFileStateSources = @((Join-Path $root 'tests/xfer_rx_file_state_tests.c'), (Join-Path $root 'src/core/xfer_rx_file_state.c'), (Join-Path $root 'src/core/protocol.c'), (Join-Path $root 'src/core/crc32.c'))
+$rxFileStateSources = @((Join-Path $root 'tests/xfer_rx_file_state_tests.c'), (Join-Path $root 'src/core/xfer_rx_file_state.c'), (Join-Path $root 'src/core/xfer_validate.c'), (Join-Path $root 'src/core/protocol.c'), (Join-Path $root 'src/core/crc32.c'))
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
     & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$rxFileState @rxFileStateSources
 } else {

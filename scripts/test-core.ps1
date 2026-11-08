@@ -105,3 +105,14 @@ if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
 if ($LASTEXITCODE -ne 0) { throw "Writer queue compilation failed ($LASTEXITCODE)" }
 & $writerQueue
 if ($LASTEXITCODE -ne 0) { throw "Writer queue ownership/IO tests failed ($LASTEXITCODE)" }
+
+$rxReceipt = Join-Path $build 'hopdesk-rx-receipt-tests.exe'
+$rxReceiptSources = @((Join-Path $root 'tests/xfer_rx_receipt_tests.c'), (Join-Path $root 'src/core/xfer_rx_receipt.c'), (Join-Path $root 'src/core/protocol.c'), (Join-Path $root 'src/core/crc32.c'))
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$rxReceipt @rxReceiptSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $rxReceipt @rxReceiptSources
+}
+if ($LASTEXITCODE -ne 0) { throw "RX receipt test compilation failed ($LASTEXITCODE)" }
+& $rxReceipt
+if ($LASTEXITCODE -ne 0) { throw "RX receipt tests failed ($LASTEXITCODE)" }

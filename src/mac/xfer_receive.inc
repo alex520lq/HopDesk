@@ -26,8 +26,8 @@ typedef struct {
 static struct {
     hop_xfer_buffer_pool pool;
     rx_task         ring[RX_Q_SLOTS];
-    int             head, tail, count, busy, reserved_slots;
-    uint64_t        queued_bytes;
+    int head, tail;
+    hop_xfer_rx_queue accounting;
     pthread_mutex_t lock;
     pthread_cond_t  cv_work, cv_space;
     pthread_t       th;
@@ -72,16 +72,15 @@ static void *writer_thread(void *arg) {
 
     for (;;) {
         pthread_mutex_lock(&s_wq.lock);
-        while (s_wq.count == 0 && !s_wq.stop)
+        while (s_wq.accounting.queued_slots == 0 && !s_wq.stop)
             pthread_cond_wait(&s_wq.cv_work, &s_wq.lock);
-        if (s_wq.count == 0 && s_wq.stop) {
+        if (s_wq.accounting.queued_slots == 0 && s_wq.stop) {
             pthread_mutex_unlock(&s_wq.lock);
             break;
         }
         rx_task t = s_wq.ring[s_wq.head];
         s_wq.head = (s_wq.head + 1) % RX_Q_SLOTS;
-        s_wq.count--;
-        s_wq.busy = 1;
+        (void)hop_xfer_rx_queue_dequeue(&s_wq.accounting);
         pthread_mutex_unlock(&s_wq.lock);
 
         int disk_guard = hop_watchdog_begin("disk writer task", HOP_IO_DEADLINE_MS);
@@ -101,9 +100,8 @@ static void *writer_thread(void *arg) {
         pthread_mutex_lock(&s_wq.lock);
         if (t.kind == RX_WRITE) {
             hop_xfer_buffer_pool_release_locked(&s_wq.pool,t.pool_slot);
-            s_wq.queued_bytes = t.len > s_wq.queued_bytes ? 0 : s_wq.queued_bytes - t.len;
-        }
-        s_wq.busy = 0;
+            }
+        hop_xfer_rx_queue_complete(&s_wq.accounting, t.kind == RX_WRITE ? t.len : 0);
         pthread_cond_broadcast(&s_wq.cv_space);
         pthread_mutex_unlock(&s_wq.lock);
     }
@@ -117,8 +115,7 @@ static int wq_push(const rx_task *t) {
     if (!t || add_bytes > RX_Q_MAX_BYTES) return 0;
     int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
     pthread_mutex_lock(&s_wq.lock);
-    while ((s_wq.count + s_wq.busy + s_wq.reserved_slots >= RX_Q_SLOTS ||
-             s_wq.queued_bytes > RX_Q_MAX_BYTES - add_bytes) && !s_wq.stop)
+    while (!hop_xfer_rx_queue_can_push(&s_wq.accounting, add_bytes) && !s_wq.stop)
         pthread_cond_wait(&s_wq.cv_space, &s_wq.lock);
     if (s_wq.stop) {
         pthread_mutex_unlock(&s_wq.lock);
@@ -127,8 +124,7 @@ static int wq_push(const rx_task *t) {
     }
     s_wq.ring[s_wq.tail] = *t;
     s_wq.tail = (s_wq.tail + 1) % RX_Q_SLOTS;
-    s_wq.count++;
-    s_wq.queued_bytes += add_bytes;
+    (void)hop_xfer_rx_queue_push(&s_wq.accounting, add_bytes);
     pthread_cond_signal(&s_wq.cv_work);
     pthread_mutex_unlock(&s_wq.lock);
     hop_watchdog_end(queue_guard);
@@ -139,22 +135,19 @@ static int wq_push_data(hop_xfer_task *owner, uint64_t off, const uint8_t *data,
     if (!owner || !data || !len || len > RX_Q_MAX_BYTES) return 0;
     int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
     pthread_mutex_lock(&s_wq.lock);
-    while ((s_wq.count + s_wq.busy + s_wq.reserved_slots >= RX_Q_SLOTS ||
-            s_wq.queued_bytes > RX_Q_MAX_BYTES - len) && !s_wq.stop)
+    while (!hop_xfer_rx_queue_can_push(&s_wq.accounting, len) && !s_wq.stop)
         pthread_cond_wait(&s_wq.cv_space, &s_wq.lock);
     if (s_wq.stop) {
         pthread_mutex_unlock(&s_wq.lock);
         hop_watchdog_end(queue_guard);
         return 0;
     }
-    s_wq.reserved_slots++;
-    s_wq.queued_bytes += len;
+    (void)hop_xfer_rx_queue_reserve(&s_wq.accounting, len);
     pthread_mutex_unlock(&s_wq.lock);
 
     if (!hop_xfer_task_reserve_rx_buffer(owner, len)) {
         pthread_mutex_lock(&s_wq.lock);
-        s_wq.reserved_slots--;
-        s_wq.queued_bytes -= len;
+        hop_xfer_rx_queue_rollback(&s_wq.accounting, len);
         pthread_cond_broadcast(&s_wq.cv_space);
         pthread_mutex_unlock(&s_wq.lock);
         hop_watchdog_end(queue_guard);
@@ -174,8 +167,7 @@ static int wq_push_data(hop_xfer_task *owner, uint64_t off, const uint8_t *data,
     while (!s_wq.stop && (pool_result = hop_xfer_buffer_pool_acquire_locked(&s_wq.pool,len, &t.pool_slot, &t.data)) == 0)
         pthread_cond_wait(&s_wq.cv_space, &s_wq.lock);
     if (s_wq.stop || pool_result != 1) {
-        s_wq.reserved_slots--;
-        s_wq.queued_bytes -= len;
+        hop_xfer_rx_queue_rollback(&s_wq.accounting, len);
         pthread_cond_broadcast(&s_wq.cv_space);
         pthread_mutex_unlock(&s_wq.lock);
         (void)hop_xfer_task_release_rx_buffer(owner, len);
@@ -187,8 +179,7 @@ static int wq_push_data(hop_xfer_task *owner, uint64_t off, const uint8_t *data,
 
     pthread_mutex_lock(&s_wq.lock);
     if (s_wq.stop) {
-        s_wq.reserved_slots--;
-        s_wq.queued_bytes -= len;
+        hop_xfer_rx_queue_rollback(&s_wq.accounting, len);
         hop_xfer_buffer_pool_release_locked(&s_wq.pool,t.pool_slot);
         pthread_cond_broadcast(&s_wq.cv_space);
         pthread_mutex_unlock(&s_wq.lock);
@@ -196,10 +187,9 @@ static int wq_push_data(hop_xfer_task *owner, uint64_t off, const uint8_t *data,
         hop_watchdog_end(queue_guard);
         return 0;
     }
-    s_wq.reserved_slots--;
+    (void)hop_xfer_rx_queue_commit_reserved(&s_wq.accounting);
     s_wq.ring[s_wq.tail] = t;
     s_wq.tail = (s_wq.tail + 1) % RX_Q_SLOTS;
-    s_wq.count++;
     pthread_cond_signal(&s_wq.cv_work);
     pthread_mutex_unlock(&s_wq.lock);
     hop_watchdog_end(queue_guard);
@@ -210,7 +200,7 @@ static int wq_push_data(hop_xfer_task *owner, uint64_t off, const uint8_t *data,
 static void wq_drain(void) {
     int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
     pthread_mutex_lock(&s_wq.lock);
-    while (s_wq.count > 0 || s_wq.busy || s_wq.reserved_slots > 0)
+    while (!hop_xfer_rx_queue_drained(&s_wq.accounting))
         pthread_cond_wait(&s_wq.cv_space, &s_wq.lock);
     pthread_mutex_unlock(&s_wq.lock);
     hop_watchdog_end(queue_guard);
@@ -219,6 +209,7 @@ static void wq_drain(void) {
 static int wq_start(void) {
     memset(&s_wq, 0, sizeof(s_wq));
     hop_xfer_buffer_pool_init(&s_wq.pool);
+    hop_xfer_rx_queue_init(&s_wq.accounting, RX_Q_SLOTS, RX_Q_MAX_BYTES);
     hop_writer_io_init(&s_wq.io);
     pthread_mutex_init(&s_wq.lock, NULL);
     pthread_cond_init(&s_wq.cv_work, NULL);

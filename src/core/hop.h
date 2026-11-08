@@ -438,7 +438,10 @@ int hop_xfer_decode_file_begin(const uint8_t *payload, uint32_t len,
                                hop_xfer_file_begin_msg *out);
 int hop_xfer_decode_image_begin(const uint8_t *payload, uint32_t len,
                                 hop_xfer_image_begin_msg *out);
-int hop_xfer_decode_file_chunk(const uint8_t *payload, uint32_t len,\n                               uint64_t declared_size, int is_image,\n                               hop_xfer_file_chunk_msg *out);\nint hop_xfer_decode_file_end(const uint8_t *payload, uint32_t len,
+int hop_xfer_decode_file_chunk(const uint8_t *payload, uint32_t len,
+                               uint64_t declared_size, int is_image,
+                               hop_xfer_file_chunk_msg *out);
+int hop_xfer_decode_file_end(const uint8_t *payload, uint32_t len,
                              hop_xfer_file_end_msg *out);
 int hop_xfer_decode_file_ack(const uint8_t *payload, uint32_t len,
                              hop_xfer_file_ack_msg *out);

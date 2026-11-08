@@ -40,7 +40,9 @@ static uint64_t now_ns(void *opaque) {
     (void)opaque;
     QueryPerformanceCounter(&value);
     QueryPerformanceFrequency(&frequency);
-    return (uint64_t)((value.QuadPart * 1000000000ULL) / frequency.QuadPart);
+    uint64_t ticks = (uint64_t)value.QuadPart;
+    uint64_t hz = (uint64_t)frequency.QuadPart;
+    return (ticks / hz) * 1000000000ULL + (ticks % hz) * 1000000000ULL / hz;
 }
 static void write_time(void *opaque, void *owner, uint64_t elapsed) {
     test_context *ctx = (test_context *)opaque;
@@ -74,7 +76,7 @@ int main(void) {
     test_context ctx;
     memset(&ctx, 0, sizeof(ctx));
     const hop_writer_queue_callbacks callbacks = {
-        reserve_rx, release_rx, watchdog_begin, watchdog_end,
+        30000, reserve_rx, release_rx, watchdog_begin, watchdog_end,
         now_ns, write_time, open_error, write_error
     };
     int task_token = 1;

@@ -1,3 +1,4 @@
+#define _XOPEN_SOURCE 700
 #include "xfer_rx_fs.h"
 
 #include <errno.h>

@@ -103,8 +103,7 @@ typedef struct {
     uint32_t  batch;
     int       active;
     hop_xfer_task task;
-    uint8_t   reserved_entries[HOP_XFER_FILE_LIMIT];
-    uint64_t  reserved_entry_sizes[HOP_XFER_FILE_LIMIT];
+    hop_xfer_rx_entry_reservations entry_reservations;
     wchar_t   dir[MAX_PATH];
     uint32_t  cur_id;
     wchar_t  *cur_path;
@@ -126,6 +125,11 @@ typedef struct {
 } xfer_rx;
 
 static xfer_rx s_rx;
+
+static int rx_reserve_entry_budget(void *context, uint64_t bytes) {
+    return hop_xfer_task_reserve_entry((hop_xfer_task *)context, bytes);
+}
+
 
 /* 关掉当前文件（排空写队列后）。断线时也要调，但不能清批次状态 ——
  * 发送端会带着同一个 batch 号回来重发剩下的条目。 */
@@ -157,8 +161,7 @@ static void rx_clear_state(void) {
     s_rx.cur_is_image = s_rx.cur_is_dir = 0;
     s_rx.img_w = s_rx.img_h = s_rx.img_stride = 0;
     s_rx.cur_fail = -1;
-    memset(s_rx.reserved_entries,0,sizeof(s_rx.reserved_entries));
-    memset(s_rx.reserved_entry_sizes,0,sizeof(s_rx.reserved_entry_sizes));
+    hop_xfer_rx_entry_reservations_reset(&s_rx.entry_reservations);
     hop_xfer_task_dispose(&s_rx.task);
     s_rx.dir[0] = L'\0';
 }
@@ -615,14 +618,11 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             s_rx.cur_path = path;
             rx_remove_top(s_rx.cur_path);
             s_rx.cur_size = size;
-            if (!s_rx.reserved_entries[id - 1]) {
-                if (!hop_xfer_task_reserve_entry(&s_rx.task,size)) {
-                    rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
-                    return;
-                }
-                s_rx.reserved_entries[id - 1] = 1;
-                s_rx.reserved_entry_sizes[id - 1] = size;
-            } else if (s_rx.reserved_entry_sizes[id - 1] != size) {
+            hop_xfer_rx_entry_reserve_result reservation =
+                hop_xfer_rx_entry_reservations_reserve(&s_rx.entry_reservations, id, size,
+                    rx_reserve_entry_budget, &s_rx.task);
+            if (reservation != HOP_RX_ENTRY_RESERVE_NEW &&
+                reservation != HOP_RX_ENTRY_RESERVE_ALREADY_HELD) {
                 rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }

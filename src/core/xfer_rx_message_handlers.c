@@ -199,7 +199,7 @@ static void rx_ack_deliver_done(void *context, uint32_t batch, uint32_t status) 
         rx->services.deliver_ack(rx->services.context, batch, HOP_DONE_ACK_SLOT, (int)status);
 }
 
-void hop_xfer_rx_handle_file_ack(void *context, const uint8_t *p, uint32_t len) {
+void hop_xfer_rx_dispatch_file_ack_message(void *context, const uint8_t *p, uint32_t len) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx) return;
     (void)hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, rx);
@@ -252,7 +252,7 @@ hop_xfer_done_msg done;
             return;
 }
 
-void hop_xfer_rx_handle_done_ack(void *context, const uint8_t *p, uint32_t len) {
+void hop_xfer_rx_dispatch_done_ack_message(void *context, const uint8_t *p, uint32_t len) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx) return;
     (void)hop_xfer_rx_handle_done_ack(p, len, rx_ack_deliver_done, rx);

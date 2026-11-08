@@ -659,14 +659,15 @@ int main(void){
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
         receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_batch_lifecycle.inc','xfer_rx_protocol_handlers.inc'))
-        state_start=receiver.index('typedef struct xfer_rx_context {',receiver.index('/* ---------------- 接收'))
-        state_end=receiver.index('static xfer_rx_context s_rx;',state_start)+len('static xfer_rx_context s_rx;')
+        context_header=(ROOT/'src/core/xfer_rx_context.h').read_text(encoding='utf-8')
+        assert 'typedef struct xfer_rx_context' in context_header
+        state_contract='#include "xfer_rx_context.h"\\nstatic xfer_rx_context s_rx;'
         dispatch_names=['image_begin','file_chunk','file_ack','abort_message','done','done_ack']
         dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_ack_deliver_file','rx_ack_deliver_done'])+'\n'+'\n'.join(extract(receiver,'rx_dispatch_'+name) for name in dispatch_names)
         dispatch_handlers+='\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { NULL, rx_dispatch_image_begin, rx_dispatch_file_chunk, NULL, rx_dispatch_file_ack, rx_dispatch_abort_message, rx_dispatch_done, rx_dispatch_done_ack };\n'
         fixture=(ROOT/'tests/receive_abort_fixture.c.in').read_text(encoding='utf-8')
         values={
-            'RX_STATE':receiver[state_start:state_end],
+            'RX_STATE':state_contract,
             'WIRE_SEND':extract(sender,'send_abort_msg' if platform=='win' else 'send_abort'),
             'STATUS_FUNCTIONS':'\n'.join(extract(sender,n) for n in ['status_for','status_begin','status_end']),
             'CLOSE_FILE':extract(receiver,'rx_close_file'),

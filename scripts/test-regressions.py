@@ -752,11 +752,14 @@ int main(void){
         assert 'typedef struct xfer_rx_context' in context_header
         assert 'hop_xfer_rx_services services;' in context_header
         assert 'typedef struct xfer_rx_context' not in receiver
-        assert all(name in services for name in ['shutdown_data_channel','mark_sender_aborted','send_file_ack','send_done_ack','deliver_ack'])
+        assert all(name in services for name in ['shutdown_data_channel','mark_sender_aborted','send_file_ack','send_done_ack','deliver_ack','terminate_batch','begin_batch','finish_batch'])
         on_data_msg=extract(receiver,'on_data_msg')
         assert 'rx_context_configure();' in on_data_msg and 's_rx_dispatch_handlers, &s_rx' in on_data_msg
         assert 'hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, rx)' in file_ack_handler
         assert 'hop_xfer_rx_handle_done_ack(p, len, rx_ack_deliver_done, rx)' in done_ack_handler
+        assert 'rx->services.terminate_batch' in extract(receiver,'rx_handler_terminate')
+        assert 'rx->services.begin_batch' in extract(receiver,'rx_handler_begin_batch')
+        assert 'rx->services.finish_batch' in extract(receiver,'rx_handler_finish_batch')
         done_handler=extract(receiver,'rx_dispatch_done')
         assert 'hop_xfer_rx_done_receipt_find(rx->done_receipt,' in done_handler
         assert 'hop_xfer_rx_done_receipt_find(&rx->done_receipt,' not in done_handler

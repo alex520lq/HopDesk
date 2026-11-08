@@ -70,15 +70,31 @@ static void fixture_mark_sender_aborted(void *context,uint32_t batch,uint8_t rea
     (void)context;
     if(s_x.cur_batch==batch){s_x.abort_batch=batch;s_x.abort_reason=reason;}
 }
-static void fixture_configure_rx_context(void){
-    s_rx.platform_context=NULL;
-    s_rx.shutdown_data_channel=fixture_shutdown_data;
-    s_rx.mark_sender_aborted=fixture_mark_sender_aborted;
-}
 static hop_xfer_rx_lifecycle s_rx_lifecycle;
 static hop_xfer_rx_done_receipt s_done_receipt;
 static int ack_deliveries;static uint32_t ack_id;
 static void ack_deliver(uint32_t batch,uint32_t id,int status){(void)batch;(void)status;ack_deliveries++;ack_id=id;}
+static void fixture_send_file_ack(void *context,uint32_t batch,uint32_t id,int status){
+    (void)context;(void)batch;(void)id;(void)status;
+}
+static void fixture_send_done_ack(void *context,uint32_t batch,const uint8_t *payload,uint32_t length){
+    (void)context;
+    assert(length==5 && hop_get_be32(payload)==batch);
+    assert(send_small(-1,HOP_MSG_XFER_DONE_ACK,payload,length,batch));
+}
+static void fixture_deliver_ack(void *context,uint32_t batch,uint32_t id,int status){
+    (void)context;ack_deliver(batch,id,status);
+}
+static void fixture_configure_rx_context(void){
+    s_rx.platform_context=NULL;
+    s_rx.lifecycle=&s_rx_lifecycle;
+    s_rx.done_receipt=&s_done_receipt;
+    s_rx.shutdown_data_channel=fixture_shutdown_data;
+    s_rx.mark_sender_aborted=fixture_mark_sender_aborted;
+    s_rx.send_file_ack=fixture_send_file_ack;
+    s_rx.send_done_ack=fixture_send_done_ack;
+    s_rx.deliver_ack=fixture_deliver_ack;
+}
 static void history_save(void){assert(closed); if(s_receive_status.status.phase!=HOP_XFER_COMPLETED) assert(!s_rx.image_buffer.data && !s_rx.cur_path && !s_rx.tops && !s_rx.batch_state.active); saved++;}
 #ifdef FIXTURE_WINDOWS
 #define XFER_RX_ROOT L"HopDesk"

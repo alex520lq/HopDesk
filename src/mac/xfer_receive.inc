@@ -110,8 +110,7 @@ static struct {
     int      cur_is_dir;    /* 目录在 BEGIN 时已登记，FILE_END 不能再登记一次 */
     hop_xfer_rx_file_state file_state;
     uint8_t *img;
-    size_t   img_cap, img_len, img_expected;
-    int      img_w, img_h, img_stride;
+    hop_xfer_rx_image_state image_state;
     char   **tops;
     int      ntop;
 } s_rx;
@@ -137,7 +136,7 @@ static void rx_clear_state(void) {
     s_rx.cur_path = NULL;
     free(s_rx.img);
     s_rx.img = NULL;
-    s_rx.img_cap = s_rx.img_len = s_rx.img_expected = 0;
+    hop_xfer_rx_image_state_reset(&s_rx.image_state);
     for (int i = 0; i < s_rx.ntop; ++i) free(s_rx.tops[i]);
     free(s_rx.tops);
     s_rx.tops = NULL;
@@ -146,7 +145,7 @@ static void rx_clear_state(void) {
     s_rx.batch = 0;
     hop_xfer_rx_file_state_reset(&s_rx.file_state);
     s_rx.cur_is_image = s_rx.cur_is_dir = 0;
-    s_rx.img_w = s_rx.img_h = s_rx.img_stride = 0;
+    
     hop_xfer_rx_entry_reservations_reset(&s_rx.entry_reservations);
     hop_xfer_task_dispose(&s_rx.task);
     s_rx.dir[0] = '\0';
@@ -372,14 +371,14 @@ static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
                 "xfer: batch %u incomplete (%u/%u entries); staged data kept at %s; clipboard not updated",
                 batch, ok, total, s_rx.dir);
     } else if (s_rx.cur_is_image) {
-        if (s_rx.img && s_rx.img_len == s_rx.img_expected) {
+        if (s_rx.img && s_rx.image_state.received == s_rx.image_state.expected) {
             uint64_t clipboard_started_ns=rate_now_ns();
-            clipboard_apply_image(s_rx.img, s_rx.img_w, s_rx.img_h, s_rx.img_stride);
+            clipboard_apply_image(s_rx.img, s_rx.image_state.width, s_rx.image_state.height, s_rx.image_state.stride);
             status_stage_time(HOP_XFER_DIR_RECEIVE,batch,HOP_XFER_TIME_CLIPBOARD_DISPATCH,
                               rate_now_ns()-clipboard_started_ns);
         } else
             hop_log(HOP_LOG_ERROR, "xfer: incomplete image rejected (%llu/%llu bytes)",
-                    (unsigned long long)s_rx.img_len, (unsigned long long)s_rx.img_expected);
+                    (unsigned long long)s_rx.image_state.received, (unsigned long long)s_rx.image_state.expected);
     } else if (s_rx.ntop > 0) {
         uint64_t clipboard_started_ns=rate_now_ns();
         if (batch & HOP_XFER_PASTE_BATCH_FLAG) {
@@ -400,9 +399,9 @@ static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
     pthread_mutex_lock(&s_status_lock);
     s_receive_status.status.files_total=total;
     pthread_mutex_unlock(&s_status_lock);
-    if(s_rx.cur_is_image && ok==total && s_rx.img_len==s_rx.img_expected)
+    if(s_rx.cur_is_image && ok==total && s_rx.image_state.received==s_rx.image_state.expected)
         status_file_phase(HOP_XFER_DIR_RECEIVE,batch,0,HOP_XFER_FILE_COMPLETED,1);
-    int image_valid = s_rx.img && s_rx.img_len == s_rx.img_expected;
+    int image_valid = s_rx.img && s_rx.image_state.received == s_rx.image_state.expected;
     hop_xfer_rx_batch_finish_action finish_action = hop_xfer_rx_batch_finish_decide(
         batch, s_rx.active, s_rx.batch, 1, ok, total, s_rx.cur_is_image, image_valid);
     int complete = finish_action == HOP_RX_BATCH_FINISH_COMPLETE;
@@ -580,18 +579,20 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                     rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
                     return;
                 }
-            } else if (s_rx.img_expected != expected) {
+            } else if (s_rx.image_state.expected != expected) {
                 rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
             s_rx.cur_is_image = 1;
             hop_xfer_rx_file_state_begin(&s_rx.file_state, msg.id);
-            s_rx.img_w = w;
-            s_rx.img_h = h;
-            s_rx.img_stride = stride;
-            s_rx.img_expected = expected;
-            status_image(batch,HOP_XFER_DIR_RECEIVE,s_rx.img_expected);
-            s_rx.img_len = 0;
+            if (!hop_xfer_rx_image_state_begin(&s_rx.image_state,
+                    (uint32_t)w, (uint32_t)h, (uint32_t)stride, (uint64_t)expected)) {
+                rx_terminate(batch,HOP_ABORT_TOO_LARGE,1);
+                return;
+            }
+            if (s_rx.img) hop_xfer_rx_image_state_set_capacity(
+                &s_rx.image_state, (uint64_t)s_rx.image_state.expected);
+            status_image(batch,HOP_XFER_DIR_RECEIVE,s_rx.image_state.expected);
             break;
         }
 
@@ -603,7 +604,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             uint32_t n   = hop_get_be32(p + 12);
             uint32_t crc = hop_get_be32(p + 16);
             if (!hop_xfer_chunk_valid(p, len,
-                    s_rx.cur_is_image ? s_rx.img_expected :
+                    s_rx.cur_is_image ? s_rx.image_state.expected :
                         (s_rx.file_state.failure >= 0 ? UINT64_MAX : s_rx.file_state.declared_size),
                     s_rx.cur_is_image)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed or out-of-range chunk; aborting receive");
@@ -640,28 +641,33 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             }
 
             if (s_rx.cur_is_image) {
-                size_t need = (size_t)off + n;
-                if (off != s_rx.img_len || need > s_rx.img_expected) {
+                if (hop_xfer_rx_image_state_check_chunk(
+                        &s_rx.image_state, off, n) != HOP_RX_IMAGE_CHUNK_ACCEPT) {
                     hop_log(HOP_LOG_ERROR, "xfer: image chunk gap/overlap or length overflow");
                     rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
                     return;
                 }
+                size_t need = (size_t)(off + n);
                 /* IMAGE_BEGIN already reserved img_expected bytes in the
                  * task ledger. Allocate that exact amount once: geometric growth
                  * would make the real capacity exceed the reservation and may
                  * transiently keep both old and new buffers alive during realloc. */
                 if (!s_rx.img) {
-                    s_rx.img = (uint8_t *)realloc(NULL, s_rx.img_expected);
+                    s_rx.img = (uint8_t *)realloc(NULL, s_rx.image_state.expected);
                     if (!s_rx.img) { rx_terminate(s_rx.batch,HOP_ABORT_DISK,1); return; }
-                    s_rx.img_cap = s_rx.img_expected;
+                    hop_xfer_rx_image_state_set_capacity(
+                        &s_rx.image_state, (uint64_t)s_rx.image_state.expected);
                 }
-                if (need > s_rx.img_cap) {
+                if (need > s_rx.image_state.capacity) {
                     hop_log(HOP_LOG_ERROR, "xfer: image buffer capacity exceeded");
                     rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
                     return;
                 }
                 memcpy(s_rx.img + off, data, n);
-                if (need > s_rx.img_len) s_rx.img_len = need;
+                if (!hop_xfer_rx_image_state_record_chunk(&s_rx.image_state, off, n)) {
+                    rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
+                    return;
+                }
                 uint64_t receive_elapsed_ns=rate_now_ns()-receive_started_ns;
                 status_chunk_timed(HOP_XFER_DIR_RECEIVE,s_rx.batch,s_rx.file_state.id,off,n,
                                    0,crc_elapsed_ns,0,receive_elapsed_ns);

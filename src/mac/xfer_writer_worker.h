@@ -20,7 +20,8 @@ typedef struct {
     pthread_t thread;
 } hop_writer_worker;
 
-/* Callback context and its referenced state must outlive a successful join. */
+/* Zero-initialize before first start. Callback context and referenced state must
+ * outlive a successful join. A joined worker may be started again. */
 int hop_writer_worker_start(hop_writer_worker *worker, void *context,
                             size_t task_size,
                             const hop_writer_worker_callbacks *callbacks);

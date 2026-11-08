@@ -19,10 +19,10 @@ static hop_xfer_rx_done_receipt s_done_receipt;
 static hop_xfer_rx_lifecycle s_rx_lifecycle;
 static struct {int marker;} s_send_status,s_receive_status;
 static int s_status_lock,resets,closes,discarded,paste_cancelled;
-static void rx_reset(void){hop_xfer_rx_batch_state_reset(&s_rx.batch_state.batch_state);resets++;}
+static void rx_reset(void){hop_xfer_rx_batch_state_reset(&s_rx.batch_state);resets++;}
 static void rx_close_file(void){closes++;}
 static void rx_discard_dir(void){assert(closes>0);discarded++;}
-static void rx_terminate(uint32_t batch,uint8_t reason,int notify){(void)reason;assert(!notify);(void)hop_xfer_rx_batch_state_end(&s_rx.batch_state.batch_state,batch);}
+static void rx_terminate(uint32_t batch,uint8_t reason,int notify){(void)reason;assert(!notify);(void)hop_xfer_rx_batch_state_end(&s_rx.batch_state,batch);}
 static int test_begin_completion(const hop_xfer_task *t){(void)t;return 1;}
 static int test_cancel_requested(hop_xfer_task_id t){(void)t;return 0;}
 #define hop_xfer_task_begin_completion test_begin_completion
@@ -57,15 +57,15 @@ int main(void){
  s_x.session.bytes[0]=1;s_x.client=s_x.sock=7;hop_session_publish(&s_x.session);
  hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle,42,HOP_ABORT_CANCEL);s_receive_status.marker=9;rx_bind_session(&s_x.session);
  assert(resets==1 && !hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,42,NULL) && !s_receive_status.marker);
- assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state.batch_state,HOP_XFER_PASTE_BATCH_FLAG|42));hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle,42,HOP_ABORT_DISK);rx_bind_session(&s_x.session);
+ assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,HOP_XFER_PASTE_BATCH_FLAG|42));hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle,42,HOP_ABORT_DISK);rx_bind_session(&s_x.session);
  assert(resets==1 && closes==1 && !discarded && !paste_cancelled && hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,42,NULL));
  hop_session_id next={{2}};rx_bind_session(&next);assert(resets==2 && !hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,42,NULL) && discarded==1 && paste_cancelled==1);
- rx_bind_session(&s_x.session);s_rx.batch_state.batch=42;s_rx.active=1;
- rx_expire_stale_session();assert(s_rx.active && discarded==1);
+ rx_bind_session(&s_x.session);assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,42));
+ rx_expire_stale_session();assert(s_rx.batch_state.active && discarded==1);
  hop_session_clear(&s_x.session);rx_expire_stale_session();
- assert(!s_rx.active && discarded==2 && paste_cancelled==1);
+ assert(!s_rx.batch_state.active && discarded==2 && paste_cancelled==1);
  rx_expire_stale_session();assert(discarded==2);
- hop_session_publish(&s_x.session);rx_bind_session(&s_x.session);s_rx.batch_state.batch=42;s_rx.active=1;
+ hop_session_publish(&s_x.session);rx_bind_session(&s_x.session);assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,42));
  xf_job job={0};job.session=next;job.next_i=3;job.ok=3;s_send_status.marker=9;
  job_bind_session(&job, &s_x.session);assert(!job.next_i && !job.ok && !s_send_status.marker);
  job.next_i=2;job.ok=2;job_bind_session(&job, &s_x.session);assert(job.next_i==2 && job.ok==2);
@@ -76,17 +76,17 @@ int main(void){
  const uint8_t *body;uint32_t batch,n;
  assert(hop_data_unwrap(HOP_MSG_FILE_END,captured+HOP_HEADER_SIZE,(uint32_t)captured_len-HOP_HEADER_SIZE,&s_x.session,&batch,&body,&n));
  assert(batch==42 && n==sizeof(end) && !memcmp(body,end,n));
- assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state.batch_state,43));
+ assert(hop_xfer_rx_batch_state_end(&s_rx.batch_state,42));assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,43));
  on_data_frame(NULL,HOP_MSG_FILE_END,captured+HOP_HEADER_SIZE,(uint32_t)captured_len-HOP_HEADER_SIZE);
  assert(delivered==0 && !closed); /* old END cannot finalize the new batch */
- s_rx.batch_state.batch=42;on_data_frame(NULL,HOP_MSG_FILE_END,captured+HOP_HEADER_SIZE,(uint32_t)captured_len-HOP_HEADER_SIZE);
+ assert(hop_xfer_rx_batch_state_end(&s_rx.batch_state,43));assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,42));on_data_frame(NULL,HOP_MSG_FILE_END,captured+HOP_HEADER_SIZE,(uint32_t)captured_len-HOP_HEADER_SIZE);
  assert(delivered==1 && !closed);
  captured_len=0;uint8_t tx[CHUNK_HDR+2],pixels[2]={4,5};
  assert(send_chunk(7,tx,42,3,9,pixels,2,123,0,0));
  assert(captured_len==CHUNK_HDR+2 && hop_get_be32(captured+1)==40+2);
  assert(hop_data_unwrap(HOP_MSG_FILE_CHUNK,captured+5,(uint32_t)captured_len-5,&s_x.session,&batch,&body,&n));
  assert(batch==42 && n==22 && hop_get_be32(body)==3 && hop_get_be64(body+4)==9 && !memcmp(body+20,pixels,2));
- s_rx.batch_state.batch=43;on_data_frame(NULL,HOP_MSG_FILE_CHUNK,captured+5,(uint32_t)captured_len-5);assert(delivered==1);
+ assert(hop_xfer_rx_batch_state_end(&s_rx.batch_state,42));assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,43));on_data_frame(NULL,HOP_MSG_FILE_CHUNK,captured+5,(uint32_t)captured_len-5);assert(delivered==1);
  captured[5]^=2;on_data_frame(NULL,HOP_MSG_FILE_CHUNK,captured+5,(uint32_t)captured_len-5);assert(closed==1 && delivered==1);
  captured[5]^=2;hop_session_clear(&s_x.session);
  on_data_frame(NULL,HOP_MSG_FILE_CHUNK,captured+5,(uint32_t)captured_len-5);assert(closed==2);

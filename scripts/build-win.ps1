@@ -19,8 +19,8 @@ $root = Split-Path -Parent $PSScriptRoot
 $build = Join-Path $root 'build'
 New-Item -ItemType Directory -Force -Path $build | Out-Null
 
-$core = Get-ChildItem -LiteralPath (Join-Path $root 'src/core') -Filter *.c
-$win = Get-ChildItem -LiteralPath (Join-Path $root 'src/win') -Filter *.c
+$core = Get-ChildItem -LiteralPath (Join-Path $root 'src/core') -Recurse -File -Filter *.c | Sort-Object FullName
+$win = Get-ChildItem -LiteralPath (Join-Path $root 'src/win') -Recurse -File -Filter *.c | Sort-Object FullName
 $src = @($core.FullName) + @($win.FullName)
 $inc = Join-Path $root 'src/core'
 $iconInc = Join-Path $root 'assets/appicon'

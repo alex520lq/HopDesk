@@ -387,7 +387,7 @@ tests/
 | 基线核对 | 完成 | `68818b3f093af20385c3fba5785405eb4ac8d634` | 已核实 main HEAD、PR/分支状态；完成主要模块与函数簇审计附件。动态调用图、全量资源所有权追踪仍作为阶段 0 深度审计待办。 |
 | 阶段 0：深度审计 | 进行中 | `eaf8488b21c87201297aaf9edcdad2660bab76f2` | 已建立模块/函数簇和平台差异清单；仍需逐项追踪所有资源 owner、锁顺序、线程退出与回调迟到路径。PR 基线双平台 CI 已通过。 |
 | 阶段 1：构建与模块边界 | 进行中 | `6a994e691c844c60b3b15615f299633531283c13` | app 构建递归发现已完成；ACK Window、Transfer Tracking、RX Buffer Pool 已成为独立生产编译单元并接入两端测试。Core 平台 include 检查、显式 source manifest/重复源检查仍待完成。 |
-| 阶段 2：接收端/Writer | 进行中 | `36162735527a9cf43628f6baa33e91f1d24640dc` | 两端重复的 RX best-fit buffer pool 已抽取为共享 Core 模块；writer thread、队列接口与 receiver lifecycle 尚未拆完；文件 IO adapter 已提取并增加原生写入偏移/覆盖行为测试，当前最新 CI 正在验证。 |
+| 阶段 2：接收端/Writer | 进行中 | `54496ab83eb5f3caa61a5b3f5a6b7379a461c56e` | 在既有共享 RX Queue accounting 与平台 Writer IO adapter 之上，将队列容量/预留/忙碌写入/排空测试拆为独立 `tests/xfer_rx_queue_tests.c` 目标，并接入 macOS/Windows 测试脚本。Writer thread、队列同步和 receiver lifecycle 仍未拆完；本切片新增 CI 尚待运行。 |
 | 阶段 3：Sender/Service | 待完成 | — | 待实施。 |
 | 阶段 4：共享 Transfer Domain | 待完成 | — | 待实施。 |
 | 阶段 5：Clipboard | 待完成 | — | 待实施。 |
@@ -398,8 +398,18 @@ tests/
 
 ## 11. 当前执行切片
 
-已完成三个 Core 领域模块拆分：ACK Window、Transfer Tracking、RX Buffer Pool。最新又将 Windows/macOS 接收端重复的队列容量与 slot/byte accounting 抽取为 `xfer_rx_queue.c/.h`；平台层保留 ring storage、锁/条件变量和线程调度，Core 统一负责 slot/bytes admission、reservation/rollback/commit、dequeue/complete 和 drained 判断。新增 Core 单元测试覆盖满队列、busy writer、预留回滚、提交和排空。最新提交的 Windows/macOS CI 正在执行，尚未以通过状态结案。
+已完成三个 Core 领域模块拆分：ACK Window、Transfer Tracking、RX Buffer Pool。另将 RX Queue accounting 的边界与生命周期用例独立为单独测试目标，避免所有队列回归都依赖大型 `core_tests.c`。最新又将 Windows/macOS 接收端重复的队列容量与 slot/byte accounting 抽取为 `xfer_rx_queue.c/.h`；平台层保留 ring storage、锁/条件变量和线程调度，Core 统一负责 slot/bytes admission、reservation/rollback/commit、dequeue/complete 和 drained 判断。新增 Core 单元测试覆盖满队列、busy writer、预留回滚、提交和排空。最新提交的 Windows/macOS CI 正在执行，尚未以通过状态结案。
 
 下一项执行：定义 Writer Queue 的显式 adapter contract，将队列/缓冲区所有权、Task Reservation、watchdog/status 观察接口分开；平台文件写入已先提取。接下来先提取 Windows writer worker，再按相同契约提取 macOS。与此同时补齐 Core include 边界检查与构建源清单重复检查。
 
 此顺序是为了先确保新模块会被本地构建和 CI 正确编译，再拆解最有隐式依赖、最容易引入生命周期回归的接收端代码。
+
+
+### 2026-11-08：RX Queue 测试目标独立化
+
+- 新增 `tests/xfer_rx_queue_tests.c`，直接链接生产 `src/core/xfer_rx_queue.c`，覆盖 slot/byte 上限边界、零 slot 队列、reservation commit/rollback、busy writer 与 queued slot 同时计费、drain 归零。
+- macOS `scripts/test-core.sh` 使用 Clang + AddressSanitizer + UndefinedBehaviorSanitizer 编译并运行独立目标。
+- Windows `scripts/test-core.ps1` 使用 MSVC（可用时）或 GCC 编译并运行同一测试源。
+- 该切片只拆分测试组织，不改变队列生产行为；此前 `core_tests.c` 中的原有 RX Queue 测试暂时保留，作为交叉回归覆盖。
+- 提交：`8edde5c`（初始测试文件）、`abf6d7c`（补齐独立测试）、`7806336`（诊断输出修正）、`192b7a1`（macOS 脚本接入）、`54496ab`（Windows 脚本接入）。
+- 当前状态：代码已推送到活动分支；本切片双平台 CI 结果待 Actions 实际执行。不得据此声称 Writer Worker 已独立化。

@@ -18,7 +18,7 @@ char *hop_xfer_rx_fs_path_for(const char *root, const char *relative_path) {
     size_t offset = root_length;
     if (separator) path[offset++] = '/';
     memcpy(path + offset, relative_path, relative_length);
-    path[offset + relative_length] = '\\0';
+    path[offset + relative_length] = '\0';
     return path;
 }
 
@@ -37,7 +37,7 @@ int hop_xfer_rx_fs_mkdir_p(const char *path) {
     memcpy(temporary, path, length + 1u);
     for (char *p = temporary + 1; *p; ++p) {
         if (*p == '/') {
-            *p = '\\0';
+            *p = '\0';
             int result = mkdir_component(temporary);
             *p = '/';
             if (result != 0) return -1;

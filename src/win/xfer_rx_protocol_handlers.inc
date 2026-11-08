@@ -64,7 +64,7 @@ hop_xfer_file_begin_msg msg;
             if (!path) { hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_BADPATH); return; }
 
             rx->cur_path = path;
-            rx_remove_top(rx->cur_path);
+            if (rx->services.remove_top_path) rx->services.remove_top_path(rx->services.context, rx->cur_path);
             hop_xfer_rx_file_state_set_size(&rx->file_state, size);
             hop_xfer_rx_entry_reserve_result reservation =
                 hop_xfer_rx_entry_reservations_reserve(&rx->entry_reservations, id, size,
@@ -82,7 +82,7 @@ hop_xfer_file_begin_msg msg;
                 }
                 /* 顶层目录才进剪贴板清单 */
                 if (!wcschr(path + wcslen(rx->dir) + 1, L'\\') &&
-                    !rx_add_top(path))
+                    !(rx->services.add_top_path && rx->services.add_top_path(rx->services.context, path)))
                     hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_DISK);
             } else {
                 /* 建父目录；失败时不能把后续文件错误地 ACK 成功。 */
@@ -312,7 +312,7 @@ hop_xfer_file_end_msg end_msg;
             if (ack == HOP_FILE_ACK_OK && rx->cur_path && !rx->file_state.is_directory) {
                 /* Only verified top-level files are exposed through clipboard. */
                 const wchar_t *tail = rx->cur_path + wcslen(rx->dir) + 1;
-                if (!wcschr(tail, L'\\') && !rx_add_top(rx->cur_path))
+                if (!wcschr(tail, L'\\') && !(rx->services.add_top_path && rx->services.add_top_path(rx->services.context, rx->cur_path)))
                     ack = HOP_FILE_ACK_DISK;
             }
 

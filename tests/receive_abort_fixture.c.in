@@ -1,5 +1,3 @@
-#define wq_error_set(v) (s_wq.err=(v))
-#define wq_error_get() (s_wq.err)
 /* Generated with verbatim production receive cases/functions by test-regressions.py.
  * OS/network/filesystem doubles isolate lifecycle, not real desktop integration. */
 #include "hop.h"
@@ -59,7 +57,6 @@ static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t ba
     assert(type==HOP_MSG_XFER_ABORT && n==6 && p[5]==HOP_ABORT_TO_SENDER);last_reason=p[4];notified++;return !fail_send;
 }
 typedef struct {int kind;uint64_t off;uint32_t len;uint8_t*data;} rx_task;
-static struct {int err;} s_wq;
 static void wq_drain(void){}
 static int wq_push(rx_task*t){if(t->kind==RX_CLOSE){closed=1;closes++;}else free(t->data);return 1;}
 static int wq_push_data(hop_xfer_task *owner,uint64_t off,const uint8_t *data,uint32_t len){
@@ -70,8 +67,6 @@ static int wq_push_data(hop_xfer_task *owner,uint64_t off,const uint8_t *data,ui
 @RX_STATE@
 static hop_xfer_rx_lifecycle s_rx_lifecycle;
 static hop_xfer_rx_done_receipt s_done_receipt;
-static int ack_deliveries;static uint32_t ack_id;
-static void ack_deliver(uint32_t batch,uint32_t id,int status){(void)batch;(void)status;ack_deliveries++;ack_id=id;}
 static void history_save(void){assert(closed); if(s_receive_status.status.phase!=HOP_XFER_COMPLETED) assert(!s_rx.image_buffer.data && !s_rx.cur_path && !s_rx.tops && !s_rx.batch_state.active); saved++;}
 #ifdef FIXTURE_WINDOWS
 #define XFER_RX_ROOT L"HopDesk"
@@ -81,8 +76,6 @@ static int ensure_dirs(wchar_t*p){(void)p;return !fail_directory;}
 static int create_directory_if_missing(const wchar_t*p){(void)p;return !fail_directory;}
 #define ERROR_FILE_NOT_FOUND 2
 #define ERROR_PATH_NOT_FOUND 3
-static int DeleteFileW(const wchar_t*p){(void)p;return 1;}
-static DWORD GetLastError(void){return 5;}
 static DWORD GetLongPathNameW(const wchar_t*p,wchar_t*q,DWORD n){(void)p;(void)q;(void)n;return 0;}
 #else
 static int unlink(const char*p){(void)p;return 0;}
@@ -126,12 +119,6 @@ static void apply_paths(const void*p,int n){(void)p;(void)n;applied++;}
 #define clipboard_apply_image apply_image
 #define clip_apply_remote_paths apply_paths
 #define clipboard_apply_paths apply_paths
-static void send_ack(int fd,uint32_t b,uint32_t id,int ack){(void)fd;(void)b;(void)id;(void)ack;assert(!"late FILE_END produced ACK");}
-#ifdef FIXTURE_WINDOWS
-static int rx_add_top(const wchar_t*p){(void)p;return 1;}
-#else
-static int rx_add_top(const char*p){(void)p;return 1;}
-#endif
 @FINISH_BATCH@
 @CANCEL_LOCAL@
 @BIND_SESSION@

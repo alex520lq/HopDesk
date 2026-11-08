@@ -11,6 +11,7 @@
  * ===================================================================== */
 #include "mac_app.h"
 #include "xfer.h"
+#include "xfer_rx_fs.h"
 #include "../core/xfer_rx_receipt.h"
 #include "../core/xfer_rx_lifecycle.h"
 #include "../core/xfer_rx_batch_rules.h"
@@ -444,29 +445,9 @@ static int send_small(int fd, uint8_t type, const uint8_t *p, uint32_t len, uint
  * 这里让一次是给同优先级的其他工作减压。 */
 static void yield_cpu(void) { sched_yield(); }
 
-static int mkdir_component(const char *path) {
-    if (mkdir(path, 0755) == 0) return 0;
-    if (errno != EEXIST) return -1;
-    struct stat st;
-    return stat(path, &st) == 0 && S_ISDIR(st.st_mode) ? 0 : -1;
-}
 
-static int mkdir_p(const char *path) {
-    char tmp[4096];
-    size_t n = strlen(path);
-    if (n == 0 || n >= sizeof(tmp)) return -1;
-    memcpy(tmp, path, n + 1);
 
-    for (char *p = tmp + 1; *p; ++p) {
-        if (*p == '/') {
-            *p = '\0';
-            int ok = mkdir_component(tmp);
-            *p = '/';
-            if (ok != 0) return -1;
-        }
-    }
-    return mkdir_component(tmp);
-}
+
 
 /* $TMPDIR 在 macOS 上带尾部斜杠（/var/folders/…/T/），直接拼 "/HopDesk"
  * 就得到 "T//HopDesk"。POSIX 下双斜杠无害，但日志和剪贴板里的路径

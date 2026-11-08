@@ -354,7 +354,9 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
         return;
     }
 
-    (void)hop_xfer_rx_dispatch_message(type, p, len, &s_rx_dispatch_handlers, NULL);
+    static hop_xfer_rx_protocol_adapter adapter;
+    hop_xfer_rx_protocol_adapter_init(&adapter, &s_rx_dispatch_handlers, &s_rx);
+    (void)hop_xfer_rx_protocol_adapter_dispatch(&adapter, type, p, len);
 }
 
 /* Transport gate: typed handlers only see frames bound to this control session.

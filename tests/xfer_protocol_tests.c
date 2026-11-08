@@ -269,12 +269,41 @@ static void test_image_transfer_protocol(void){
     run_image_case(4,0); /* beyond declared image size */
 }
 
+static void test_file_chunk_decoder(void) {
+    uint8_t payload[24] = {0};
+    hop_put_be32(payload, 17);
+    hop_put_be64(payload + 4, 0);
+    hop_put_be32(payload + 12, 4);
+    hop_put_be32(payload + 16, 0x12345678u);
+    memcpy(payload + 20, "data", 4);
+
+    hop_xfer_file_chunk_msg chunk;
+    memset(&chunk, 0, sizeof(chunk));
+    CHECK(hop_xfer_decode_file_chunk(payload, sizeof(payload), 4, 0, &chunk));
+    CHECK(chunk.id == 17);
+    CHECK(chunk.offset == 0);
+    CHECK(chunk.length == 4);
+    CHECK(chunk.crc == 0x12345678u);
+    CHECK(chunk.data == payload + 20);
+    CHECK(memcmp(chunk.data, "data", 4) == 0);
+
+    CHECK(!hop_xfer_decode_file_chunk(payload, sizeof(payload) - 1, 4, 0, &chunk));
+    CHECK(!hop_xfer_decode_file_chunk(payload, sizeof(payload), 3, 0, &chunk));
+    CHECK(!hop_xfer_decode_file_chunk(payload, sizeof(payload), 4, 1, &chunk) == 0);
+    hop_put_be64(payload + 4, UINT64_MAX - 1);
+    CHECK(!hop_xfer_decode_file_chunk(payload, sizeof(payload), UINT64_MAX, 0, &chunk));
+    hop_put_be64(payload + 4, 0);
+    hop_put_be32(payload + 12, 0);
+    CHECK(!hop_xfer_decode_file_chunk(payload, 20, 4, 0, &chunk));
+}
+
 int main(void){
     hop_crc32_init();
     test_lazy_file_clipboard_protocol();
     test_file_transfer_wire_roundtrip();
     test_directory_entry();
     test_image_transfer_protocol();
+    test_file_chunk_decoder();
     if(failures){fprintf(stderr,"HopDesk xfer protocol tests: %d failure(s)\n",failures);return 1;}
     puts("HopDesk xfer protocol tests: all tests passed");return 0;
 }

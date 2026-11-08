@@ -7,6 +7,7 @@
 #include "xfer_budget.h"
 #include "xfer_task.h"
 #include "xfer_rx_receipt.h"
+#include "xfer_rx_lifecycle.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -60,7 +61,7 @@ static int wq_push_data(hop_xfer_task *owner,uint64_t off,const uint8_t *data,ui
     return hop_xfer_task_release_rx_buffer(owner,len);
 }
 @RX_STATE@
-static hop_session_id s_rx_session = {{1}};
+static hop_xfer_rx_lifecycle s_rx_lifecycle;
 static hop_xfer_rx_done_receipt s_done_receipt;
 static int ack_deliveries;static uint32_t ack_id;
 static void ack_deliver(uint32_t batch,uint32_t id,int status){(void)batch;(void)status;ack_deliveries++;ack_id=id;}
@@ -156,7 +157,10 @@ static void seed_resources(void){
     closed=0;
 }
 static void assert_terminal(uint32_t batch,uint8_t reason,int before){
-    assert(!s_rx.active && !s_rx.batch && s_rx.dead_batch==batch && s_rx.dead_reason==reason);
+    uint8_t tombstone_reason=0;
+    assert(!s_rx.active && !s_rx.batch &&
+           hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,batch,&tombstone_reason) &&
+           tombstone_reason==reason);
     assert(!s_rx.cur_path && !s_rx.img && !s_rx.tops && !s_rx.ntop && !s_rx.img_cap && !s_rx.img_expected);
     assert(!s_rx.cur_is_image && !s_rx.cur_id && !s_rx.cur_size && !s_rx.dir[0]);
     assert(!s_rx.task.initialized);
@@ -170,6 +174,9 @@ static void assert_terminal(uint32_t batch,uint8_t reason,int before){
     assert(s_send_status.status.active); /* receiving ABORT cannot end outgoing state */
 }
 int main(void){
+    hop_xfer_rx_lifecycle_init(&s_rx_lifecycle);
+    hop_session_id initial_session={{1}};
+    (void)hop_xfer_rx_lifecycle_bind_session(&s_rx_lifecycle,&initial_session);
     hop_xfer_tracking_begin(&s_send_status,999,HOP_XFER_DIR_SEND,1,0,"out",HOP_XFER_SENDING);
     for(int scenario=0;scenario<9;scenario++){
         uint32_t batch=100u+(uint32_t)scenario*2u;int before=saved;

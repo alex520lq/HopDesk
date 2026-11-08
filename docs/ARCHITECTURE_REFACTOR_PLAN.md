@@ -600,3 +600,15 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 新增 Dispatch 与 Batch State 独立回归测试；更新 ABORT、session transport、IMAGE DONE 等生产代码提取夹具，确保测试执行真实 Core dispatcher、平台 handler 和状态模块，而非复制一套模型。
 - 验证：GitHub Actions Run #713（ID `42490803474`，提交 `cf8a47e23af4f7d01ac21d361b11eeb45d13cc0b) Windows/macOS 全部通过：应用构建、portable core/regression、文件传输协议、TCP loopback、macOS control/listener、Windows native role/reconnect、打包及产物上传。
 - 本批只完成 Dispatch 分类和 Batch identity owner 的第一步；FILE_BEGIN/CHUNK/FILE_END 的完整平台副作用 handler 仍在 `xfer_receive.inc`，后续继续提取为可注入依赖的协议 handler；File State 已共享，但文件路径/文件句柄/目录创建与文件终结副作用仍属于平台 adapter，不能误标为全部完成。
+
+
+### 2026-11-08：Receiver 文件系统 Adapter 独立生产编译单元（第一切片）
+
+- 新增平台专属独立生产模块 `src/win/xfer_rx_fs.[ch]` 与 `src/mac/xfer_rx_fs.[ch]`；平台 API 保持原生类型，但接收业务层调用职责一致的路径生成、目录创建、文件删除、临时目录递归清理接口。
+- Windows Adapter 拥有 UTF-8 相对路径到 UTF-16 路径转换、路径拼接、CreateDirectoryW/GetFileAttributesW 目录创建、SHFileOperationW 安全清理；macOS Adapter 拥有路径拼接、mkdir/stat 目录创建、unlink 与 nftw 递归清理。
+- 两端 FILE_BEGIN handler 不再内嵌路径拼接和目录创建；FILE_END 失败文件清理通过同一语义的 `hop_xfer_rx_fs_remove_file` 接口执行。ABORT/session rollover 临时目录清理也委托给 Adapter。
+- 保留原有路径安全检查、目录已存在时必须确认为目录、文件写线程 drain/close 后才删除失败文件，以及临时根目录 marker 防误删规则。
+- 新增 `tests/xfer_rx_fs_tests.c`，直接链接两端生产 Adapter，覆盖路径拼接、父目录创建、文件删除、递归清理和拒绝不匹配根路径；接入 macOS ASan/UBSan 与 Windows MSVC/GCC Core 测试脚本。
+- 更新 Receiver 源码结构回归断言，并将 Windows HA 集成目标链接新的 filesystem 编译单元。
+- 本切片不代表 Receiver Protocol Handler 已完全依赖注入：handler 仍通过当前翻译单元的 `s_rx`、`s_x` 及 status/clipboard/wire helper 访问平台能力。下一切片继续定义完整 Receiver Context/Services contract，把协议 handler 移到独立 `.c` 并显式注入这些依赖。
+- CI：待本切片最终 head 对应的 Windows/macOS Actions 完成后补录；在此之前不标记验证通过。

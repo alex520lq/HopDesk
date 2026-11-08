@@ -665,3 +665,14 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 中止/重连 fixture 注入 writer service doubles，继续覆盖 Handler 与生命周期行为；源码断言阻止未来 Handler 直接访问队列内部。
 - 下一切片优先处理路径列表（top-level clipboard paths）和状态/计时遥测服务；完成后可把协议 Handler 移到独立平台编译单元，并继续将纯协议校验迁入 Core。
 - CI：本切片提交后等待 Windows/macOS 全量验证。
+
+
+### 2026-11-09：Receiver 路径/剪贴板/遥测服务化与独立协议编译（第六切片）
+
+- `hop_xfer_rx_services` 增加顶层路径加入/移除、Clipboard 完成/取消、单调时钟、接收状态开始/结束、文件/图片统计、分块计时、阶段耗时、文件阶段和文件总数更新接口。
+- Windows/macOS Adapter 实现平台回调；协议 Handler 不再调用 `rx_add_top`/`rx_remove_top`、Clipboard API、状态统计函数或平台计时函数。
+- 原 `xfer_rx_protocol_handlers.inc` 已拆为 `src/win/xfer_rx_protocol_handlers.c` 与 `src/mac/xfer_rx_protocol_handlers.c`，通过共享 `xfer_rx_platform_dispatch.h` 导出 Handler 表；构建脚本自动枚举平台目录下的 C 文件，无需手工维护项目文件列表。
+- 新增 Core `xfer_rx_message_handlers.c`：跨平台共享 IMAGE_BEGIN、FILE_CHUNK、FILE_ACK、ABORT、DONE、DONE_ACK 六类处理；平台 C 文件仅保留 FILE_BEGIN/FILE_END 的本机路径与文件系统适配，以及消息表组装。
+- Core Handler 只接收 `xfer_rx_context` 与协议 payload，通过 Services 完成批次生命周期、写盘、路径、剪贴板和遥测；不读取 `s_rx`、`s_x`、`s_wq` 等平台全局变量。
+- 更新 abort/重连回归夹具，注入 Writer、Clipboard、Telemetry doubles，并验证 Core Handler 不依赖平台全局状态。
+- CI：等待最新提交的 Windows/macOS 全量构建、Core 测试、传输协议测试、TCP/双角色集成及打包。

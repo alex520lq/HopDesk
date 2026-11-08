@@ -70,6 +70,13 @@ int hop_xfer_rx_fs_ensure_dirs(wchar_t *path) {
     return 1;
 }
 
+int hop_xfer_rx_fs_remove_file(const wchar_t *path, unsigned long *error_code) {
+    if (!path) return 0;
+    if (DeleteFileW(path)) { if (error_code) *error_code = ERROR_SUCCESS; return 1; }
+    if (error_code) *error_code = GetLastError();
+    return 0;
+}
+
 int hop_xfer_rx_fs_remove_tree(const wchar_t *path, const wchar_t *required_path_fragment) {
     if (!path || !*path || !required_path_fragment ||
         !wcsstr(path, required_path_fragment)) return -2;

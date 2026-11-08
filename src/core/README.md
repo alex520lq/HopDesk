@@ -7,6 +7,7 @@
 - `xfer_ack_window.c/.h`：ACK window、deadline/RTT 和连续 checkpoint 规则。
 - `xfer_tracking.c/.h`：每方向传输状态、文件进度、阶段耗时、速度/ETA 和快照规则；调用方负责加锁。
 - `xfer_buffer_pool.c/.h`：Windows/macOS 接收端共用的有界 best-fit 缓冲池；调用方在 writer queue lock 下调用，pool 自身负责 slot 和全局 pool-byte ledger。
+- `src/win/xfer_writer_io.c/.h`、`src/mac/xfer_writer_io.c/.h`：平台文件句柄和随机偏移写入 adapter；不持有 Task/Reservation，不负责 watchdog/status。
 
 职责：
 

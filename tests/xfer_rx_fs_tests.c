@@ -39,8 +39,10 @@ int main(void) {
 int main(void) {
     char temporary[] = "/tmp/hopdesk-rx-fs-XXXXXX";
     assert(mkdtemp(temporary) != NULL);
-    char root[4096];
-    snprintf(root, sizeof(root), "%s/HopDesk", temporary);
+    char parent_root[4096], root[4096];
+    snprintf(parent_root, sizeof(parent_root), "%s/HopDesk", temporary);
+    assert(mkdir(parent_root, 0755) == 0);
+    snprintf(root, sizeof(root), "%s/Batch", parent_root);
     assert(mkdir(root, 0755) == 0);
     char *path = hop_xfer_rx_fs_path_for(root, "sub/receiver-测试.txt");
     assert(path != NULL);
@@ -60,6 +62,7 @@ int main(void) {
     assert(hop_xfer_rx_fs_remove_tree(root, "/HopDesk/") == 0);
     assert(hop_xfer_rx_fs_remove_tree(temporary, "/__no_such_root_marker__/") == -2);
     free(path);
+    assert(rmdir(parent_root) == 0);
     assert(rmdir(temporary) == 0);
     puts("PASS: macOS receiver filesystem adapter path, mkdir and guarded cleanup");
     return 0;

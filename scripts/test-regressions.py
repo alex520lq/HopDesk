@@ -694,7 +694,7 @@ int main(void){
         source=(ROOT/'tests/done_ack_wait_fixture.c.in').read_text(encoding='utf-8')
         source=source.replace('@FUNCTION@',extract(sender,'send_done_result'))
         if platform=='win':source='#define FIXTURE_WINDOWS 1\n'+source
-        run('done_ack_'+platform,source,['src/core/protocol.c'])
+        run('done_ack_'+platform,source,['src/core/protocol.c','src/core/xfer_tracking.c'])
         thread=extract(sender,'send_thread')
         assert 'send_done_result(' in thread and 'HOP_XFER_TASK_INTERRUPTED' in thread
         assert 'Completion delivery uncertain' in thread and 'completion_path' in thread

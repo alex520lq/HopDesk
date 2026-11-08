@@ -18,7 +18,8 @@ $sources = @(
     (Join-Path $root 'src/core/xfer_rate.c'),
     (Join-Path $root 'src/core/xfer_ack_window.c'),
     (Join-Path $root 'src/core/xfer_tracking.c'),
-    (Join-Path $root 'src/core/xfer_buffer_pool.c')
+    (Join-Path $root 'src/core/xfer_buffer_pool.c'),
+    (Join-Path $root 'src/core/xfer_rx_queue.c')
 )
 $inc = Join-Path $root 'src/core'
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {

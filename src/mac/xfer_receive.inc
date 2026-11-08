@@ -58,7 +58,7 @@ static void wq_task_run(hop_rx_writer_queue *queue, rx_task *t) {
             if (!hop_writer_io_write_at(&queue->io, t->off, t->data, t->len, &error)) {
                 hop_log(HOP_LOG_WARN, "xfer: write failed at %llu (%s)",
                         (unsigned long long)t->off, strerror(error));
-                s_wq.err = 1;
+                queue->err = 1;
             }
             break;
         case RX_CLOSE:
@@ -71,7 +71,7 @@ static int wq_worker_take(void *context, void *task_out) {
     hop_rx_writer_queue *queue = (hop_rx_writer_queue *)context;
     pthread_mutex_lock(&queue->lock);
     while (queue->accounting.queued_slots == 0 && !queue->stop)
-        pthread_cond_wait(&s_wq.cv_work, &queue->lock);
+        pthread_cond_wait(&queue->cv_work, &queue->lock);
     if (queue->accounting.queued_slots == 0 && queue->stop) {
         pthread_mutex_unlock(&queue->lock);
         return 0;
@@ -110,7 +110,7 @@ static void wq_worker_complete(void *context, const void *task_data) {
         hop_xfer_buffer_pool_release_locked(&queue->pool, task->pool_slot);
     hop_xfer_rx_queue_complete(&queue->accounting,
                                task->kind == RX_WRITE ? task->len : 0);
-    pthread_cond_broadcast(&s_wq.cv_space);
+    pthread_cond_broadcast(&queue->cv_space);
     pthread_mutex_unlock(&queue->lock);
 }
 

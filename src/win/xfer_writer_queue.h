@@ -7,6 +7,7 @@
 typedef struct hop_writer_queue hop_writer_queue;
 
 typedef struct {
+    uint32_t io_deadline_ms;
     int (*reserve_task_rx)(void *context, void *task_owner, uint32_t bytes);
     void (*release_task_rx)(void *context, void *task_owner, uint32_t bytes);
     int (*watchdog_begin)(void *context, const char *label, uint32_t deadline_ms);

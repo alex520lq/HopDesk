@@ -339,13 +339,16 @@ int main(void){
             assert 'static int wq_worker_take' not in rx
             assert 'hop_writer_queue_enqueue_write' in rx
         else:
-            pool_source=rx
-            assert 'hop_xfer_buffer_pool_acquire_locked(&s_wq.pool' in pool_source
-            assert 'hop_xfer_buffer_pool_release_locked(&s_wq.pool' in pool_source
-            assert 'hop_xfer_rx_queue_can_push(&s_wq.accounting' in pool_source
-            assert 'hop_xfer_rx_queue_reserve(&s_wq.accounting' in pool_source
-            assert 'hop_xfer_rx_queue_commit_reserved(&s_wq.accounting)' in pool_source
-            assert 'hop_xfer_rx_queue_drained(&s_wq.accounting)' in pool_source
+            writer=(ROOT/'src/mac/xfer_writer_queue.c').read_text(encoding='utf-8')
+            assert 'hop_xfer_buffer_pool_acquire_locked(' in writer and '&queue->pool' in writer
+            assert 'hop_xfer_buffer_pool_release_locked(&queue->pool' in writer
+            assert 'hop_xfer_rx_queue_can_push(&queue->accounting' in writer
+            assert 'hop_xfer_rx_queue_reserve(&queue->accounting' in writer
+            assert 'hop_xfer_rx_queue_commit_reserved(&queue->accounting)' in writer
+            assert 'hop_xfer_rx_queue_drained(&queue->accounting)' in writer
+            assert 'hop_xfer_buffer_pool_acquire_locked' not in rx
+            assert 'static int wq_worker_take' not in rx
+            assert 'hop_writer_queue_enqueue_write' in rx
         assert 'rx_buffer_slot' not in rx and 'wq_pool_acquire_locked' not in rx
     clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
     assert 'send_image_data_async(imageType, cc, previous_change)' in clip

@@ -303,12 +303,11 @@ hop_xfer_file_end_msg end_msg;
 
 
             if (ack != HOP_FILE_ACK_OK && !s_rx.file_state.is_directory && s_rx.cur_path) {
-                if (!DeleteFileW(s_rx.cur_path)) {
-                    DWORD error = GetLastError();
-                    if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
-                        hop_log(HOP_LOG_WARN, "xfer: failed to remove incomplete file %ls (err %lu)",
-                                s_rx.cur_path, error);
-                }
+                DWORD error = ERROR_SUCCESS;
+                if (!hop_xfer_rx_fs_remove_file(s_rx.cur_path, &error) &&
+                    error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+                    hop_log(HOP_LOG_WARN, "xfer: failed to remove incomplete file %ls (err %lu)",
+                            s_rx.cur_path, error);
             }
 
             status_file_phase(HOP_XFER_DIR_RECEIVE,s_rx.batch_state.batch,(int)id-1,ack==HOP_FILE_ACK_OK?HOP_XFER_FILE_COMPLETED:HOP_XFER_FILE_FAILED,0);

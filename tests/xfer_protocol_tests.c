@@ -289,7 +289,7 @@ static void test_file_chunk_decoder(void) {
 
     CHECK(!hop_xfer_decode_file_chunk(payload, sizeof(payload) - 1, 4, 0, &chunk));
     CHECK(!hop_xfer_decode_file_chunk(payload, sizeof(payload), 3, 0, &chunk));
-    CHECK(!hop_xfer_decode_file_chunk(payload, sizeof(payload), 4, 1, &chunk) == 0);
+    CHECK(hop_xfer_decode_file_chunk(payload, sizeof(payload), 4, 1, &chunk));
     hop_put_be64(payload + 4, UINT64_MAX - 1);
     CHECK(!hop_xfer_decode_file_chunk(payload, sizeof(payload), UINT64_MAX, 0, &chunk));
     hop_put_be64(payload + 4, 0);

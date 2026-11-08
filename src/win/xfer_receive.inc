@@ -179,12 +179,12 @@ static void rx_reset(void) {
 static hop_session_id s_rx_session;
 /* One FIFO sender batch can be awaiting DONE_ACK per session. This is only
  * wire idempotency metadata, not another task or reservation owner. */
-static struct { int valid; hop_session_id session; hop_xfer_done_msg done; uint8_t status; } s_done_receipt;
+static hop_xfer_rx_done_receipt s_done_receipt;
 static void rx_discard_dir(void);
 static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer);
 static void rx_bind_session(const hop_session_id *session) {
     if (!hop_session_id_equal(&s_rx_session, session)) {
-        memset(&s_done_receipt,0,sizeof(s_done_receipt));
+        hop_xfer_rx_done_receipt_clear(&s_done_receipt);
         /* A new control session cannot resume the old batch. Its staging files
          * were never published; close the writer before removing them. Completed
          * or deliberately retained partial batches are not active here. */
@@ -350,8 +350,7 @@ static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
 }
 
 static void rx_begin_batch(uint32_t batch) {
-    if (s_done_receipt.valid && s_done_receipt.done.batch == batch &&
-        hop_session_id_equal(&s_done_receipt.session,&s_rx_session)) {
+    if (hop_xfer_rx_done_receipt_find(&s_done_receipt, &s_rx_session, batch)) {
         return; /* already committed in this session; never recreate its task */
     }
     /* 作废过的批次又来了（对端还没收到取消）：回一个 ABORT 让它立刻放手，
@@ -909,16 +908,16 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             }
             if (!done.batch || !done.total || done.total > HOP_XFER_FILE_LIMIT || done.ok > done.total) return;
             int result;
-            if (s_done_receipt.valid && s_done_receipt.done.batch==done.batch &&
-                hop_session_id_equal(&s_done_receipt.session,&s_rx_session)) {
-                if (s_done_receipt.done.ok!=done.ok || s_done_receipt.done.total!=done.total ||
-                    s_done_receipt.done.bytes!=done.bytes) return;
-                result=s_done_receipt.status; /* repeat ACK without repeating clipboard effects */
+            const hop_xfer_rx_done_receipt *receipt =
+                hop_xfer_rx_done_receipt_find(&s_done_receipt, &s_rx_session, done.batch);
+            if (receipt) {
+                if (!hop_xfer_rx_done_receipt_matches_payload(receipt, &done)) return;
+                result=receipt->status; /* repeat ACK without repeating clipboard effects */
             } else {
                 result=rx_finish_batch(done.batch,done.ok,done.total);
                 if (result<0) return;
-                s_done_receipt.valid=1; s_done_receipt.session=s_rx_session;
-                s_done_receipt.done=done; s_done_receipt.status=(uint8_t)result;
+                hop_xfer_rx_done_receipt_record(&s_done_receipt, &s_rx_session,
+                                                &done, (uint8_t)result);
             }
             uint8_t reply[5]; hop_put_be32(reply,done.batch); reply[4]=(uint8_t)result;
             EnterCriticalSection(&s_x.lock);

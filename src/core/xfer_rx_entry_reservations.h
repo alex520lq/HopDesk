@@ -1,7 +1,7 @@
 #ifndef HOP_XFER_RX_ENTRY_RESERVATIONS_H
 #define HOP_XFER_RX_ENTRY_RESERVATIONS_H
 
-#include "hop.h"
+#include "xfer_status.h"
 
 #ifdef __cplusplus
 extern "C" {

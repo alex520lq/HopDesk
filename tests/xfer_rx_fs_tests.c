@@ -12,9 +12,9 @@ int main(void) {
     assert(GetTempPathW(MAX_PATH, temporary) > 0);
     swprintf(root, MAX_PATH, L"%lsHopDesk-rx-fs-%lu", temporary, (unsigned long)GetCurrentProcessId());
     assert(CreateDirectoryW(root, NULL));
-    wchar_t *path = hop_xfer_rx_fs_path_for(root, "sub/receiver-test.txt");
+    wchar_t *path = hop_xfer_rx_fs_path_for(root, "sub/receiver-测试.txt");
     assert(path != NULL);
-    assert(wcsstr(path, L"sub\\receiver-test.txt") != NULL);
+    assert(wcsstr(path, L"sub\\receiver-测试.txt") != NULL);
     assert(hop_xfer_rx_fs_ensure_dirs(path));
     HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     assert(file != INVALID_HANDLE_VALUE);
@@ -39,9 +39,9 @@ int main(void) {
     char root[4096];
     snprintf(root, sizeof(root), "%s/HopDesk", temporary);
     assert(mkdir(root, 0755) == 0);
-    char *path = hop_xfer_rx_fs_path_for(root, "sub/receiver-test.txt");
+    char *path = hop_xfer_rx_fs_path_for(root, "sub/receiver-测试.txt");
     assert(path != NULL);
-    assert(strstr(path, "/HopDesk/sub/receiver-test.txt") != NULL);
+    assert(strstr(path, "/HopDesk/sub/receiver-测试.txt") != NULL);
     char parent[4096];
     snprintf(parent, sizeof(parent), "%s", path);
     char *separator = strrchr(parent, '/');

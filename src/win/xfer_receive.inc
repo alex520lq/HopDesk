@@ -83,6 +83,9 @@ static int wq_push_data(hop_xfer_task *owner, uint64_t offset,
 static void wq_drain(void) {
     hop_writer_queue_drain(s_wq);
 }
+static int wq_error_get(void) {
+    return hop_writer_queue_error(s_wq);
+}
 
 static void wq_stop(void) {
     if (!s_wq) return;
@@ -824,7 +827,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             if (s_rx.cur_fail >= 0) {
                 ack = s_rx.cur_fail;
             } else {
-                if (hop_writer_queue_error(s_wq)) {
+                if (wq_error_get()) {
                     hop_log(HOP_LOG_ERROR, "xfer: disk error, %ls incomplete",
                             s_rx.cur_path ? s_rx.cur_path : L"?");
                     ack = HOP_FILE_ACK_DISK;

@@ -153,12 +153,7 @@ static void rx_reset(void) {
     rx_clear_state();
 }
 
-static int rm_entry(const char *path, const struct stat *sb, int flag, struct FTW *ftw) {
-    (void)sb; (void)ftw;
-    if (flag == FTW_DP) rmdir(path);
-    else                unlink(path);
-    return 0;
-}
+
 
 /* Receiver-owned lifecycle boundary. Only a data reconnect in the SAME control
  * session may retain ACKs/tombstones; a new control session starts cleanly. */
@@ -209,11 +204,10 @@ static void rx_expire_stale_session(void) {
 static void rx_discard_dir(void) {
     if (!s_rx.dir[0]) return;
     /* 路径是我们自己拼的，但删除是不可逆操作 —— 仍然验一次根目录 */
-    if (!strstr(s_rx.dir, "/HopDesk/")) {
+    int result = hop_xfer_rx_fs_remove_tree(s_rx.dir, "/HopDesk/");
+    if (result == -2)
         hop_log(HOP_LOG_ERROR, "xfer: refuse to delete %s", s_rx.dir);
-        return;
-    }
-    if (nftw(s_rx.dir, rm_entry, 16, FTW_DEPTH | FTW_PHYS) != 0)
+    else if (result != 0)
         hop_log(HOP_LOG_WARN, "xfer: failed to remove %s (%s)", s_rx.dir, strerror(errno));
     s_rx.dir[0] = '\0';
 }

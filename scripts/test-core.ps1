@@ -15,7 +15,8 @@ $sources = @(
     (Join-Path $root 'src/core/xfer_task.c'),
     (Join-Path $root 'src/core/xfer_task_history.c'),
     (Join-Path $root 'src/core/clock.c'),
-    (Join-Path $root 'src/core/xfer_rate.c')
+    (Join-Path $root 'src/core/xfer_rate.c'),
+    (Join-Path $root 'src/core/xfer_ack_window.c')
 )
 $inc = Join-Path $root 'src/core'
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {

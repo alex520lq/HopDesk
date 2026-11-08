@@ -661,7 +661,7 @@ int main(void){
         receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_batch_lifecycle.inc','xfer_rx_protocol_handlers.inc'))
         context_header=(ROOT/'src/core/xfer_rx_context.h').read_text(encoding='utf-8')
         assert 'typedef struct xfer_rx_context' in context_header
-        state_contract='#include "xfer_rx_context.h"\\nstatic xfer_rx_context s_rx;'
+        state_contract='#include "xfer_rx_context.h"\nstatic xfer_rx_context s_rx;'
         dispatch_names=['image_begin','file_chunk','file_ack','abort_message','done','done_ack']
         dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_ack_deliver_file','rx_ack_deliver_done'])+'\n'+'\n'.join(extract(receiver,'rx_dispatch_'+name) for name in dispatch_names)
         dispatch_handlers+='\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { NULL, rx_dispatch_image_begin, rx_dispatch_file_chunk, NULL, rx_dispatch_file_ack, rx_dispatch_abort_message, rx_dispatch_done, rx_dispatch_done_ack };\n'

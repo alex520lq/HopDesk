@@ -32,6 +32,11 @@ hop_xfer_rx_file_chunk_check hop_xfer_rx_file_state_check_chunk(
 int hop_xfer_rx_file_state_record_chunk(
     hop_xfer_rx_file_state *state, uint64_t offset, uint32_t length,
     uint32_t chunk_crc);
+/* Shared FILE_END ACK precedence: stored failure, writer error, peer status,
+ * incomplete byte count, file CRC mismatch, then success. */
+uint8_t hop_xfer_rx_file_state_ack(const hop_xfer_rx_file_state *state,
+                                   uint8_t peer_status, int writer_error,
+                                   uint32_t expected_file_crc);
 
 #ifdef __cplusplus
 }

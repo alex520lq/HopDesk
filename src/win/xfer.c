@@ -15,6 +15,7 @@
 #include "../core/xfer_rx_file_state.h"
 #include "../core/xfer_rx_dispatch.h"
 #include "../core/xfer_rx_services.h"
+#include "../core/xfer_rx_context.h"
 #include "../core/xfer_rx_ack_handler.h"
 #include "../core/xfer_rx_protocol_adapter.h"
 #include "../core/xfer_rx_batch_state.h"

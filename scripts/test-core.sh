@@ -42,3 +42,8 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
   -I "$ROOT/src/mac" -o "$BUILD/hopdesk-writer-io-tests" \
   "$ROOT/tests/writer_io_tests.c" "$ROOT/src/mac/xfer_writer_io.c"
 "$BUILD/hopdesk-writer-io-tests"
+
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I "$ROOT/src/core" -o "$BUILD/hopdesk-rx-queue-tests" \
+  "$ROOT/tests/xfer_rx_queue_tests.c" "$ROOT/src/core/xfer_rx_queue.c"
+"$BUILD/hopdesk-rx-queue-tests"

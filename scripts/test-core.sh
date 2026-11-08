@@ -26,7 +26,7 @@ clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-
   "$ROOT/src/core/xfer_rx_file_state.c"
 "$BUILD/hopdesk-core-tests"
 python3 "$ROOT/scripts/test-regressions.py"
-clang -std=c11 -Wall -Wextra -Werror -pthread -I "$ROOT/src/core" \
+clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer -I "$ROOT/src/core" \
   -o "$BUILD/hopdesk-resilience-tests" "$ROOT/tests/resilience_tests.c" \
   "$ROOT/src/core/protocol.c" "$ROOT/src/core/clock.c" "$ROOT/src/core/log.c" "$ROOT/src/core/session.c" "$ROOT/src/core/watchdog.c"
 "$BUILD/hopdesk-resilience-tests" "$BUILD/resilience-test.log"
@@ -94,8 +94,8 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
 
 clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-rx-image-state-tests" \
-  "$ROOT/tests/xfer_rx_image_state_tests.c" "$ROOT/src/core/xfer_rx_image_state.c" "$ROOT/src/core/xfer_rx_image_buffer.c"
+  "$ROOT/tests/xfer_rx_image_state_tests.c" "$ROOT/src/core/xfer_rx_image_state.c"
 "$BUILD/hopdesk-rx-image-state-tests"
-clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer -I "$ROOT/src/core" \\
+clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer -I "$ROOT/src/core" \
   -o "$BUILD/hopdesk-rx-image-buffer-tests" "$ROOT/tests/xfer_rx_image_buffer_tests.c" "$ROOT/src/core/xfer_rx_image_buffer.c"
 "$BUILD/hopdesk-rx-image-buffer-tests"

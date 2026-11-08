@@ -12,6 +12,7 @@
 #include "xfer_rx_entry_reservations.h"
 #include "xfer_rx_file_state.h"
 #include "xfer_rx_image_state.h"
+#include "xfer_rx_image_buffer.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -69,7 +70,7 @@ static hop_xfer_rx_lifecycle s_rx_lifecycle;
 static hop_xfer_rx_done_receipt s_done_receipt;
 static int ack_deliveries;static uint32_t ack_id;
 static void ack_deliver(uint32_t batch,uint32_t id,int status){(void)batch;(void)status;ack_deliveries++;ack_id=id;}
-static void history_save(void){assert(closed); if(s_receive_status.status.phase!=HOP_XFER_COMPLETED) assert(!s_rx.img && !s_rx.cur_path && !s_rx.tops && !s_rx.active); saved++;}
+static void history_save(void){assert(closed); if(s_receive_status.status.phase!=HOP_XFER_COMPLETED) assert(!s_rx.image_buffer.data && !s_rx.cur_path && !s_rx.tops && !s_rx.active); saved++;}
 #ifdef FIXTURE_WINDOWS
 #define XFER_RX_ROOT L"HopDesk"
 #define ERROR_ALREADY_EXISTS 183
@@ -165,7 +166,7 @@ static void assert_terminal(uint32_t batch,uint8_t reason,int before){
     assert(!s_rx.active && !s_rx.batch &&
            hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,batch,&tombstone_reason) &&
            tombstone_reason==reason);
-    assert(!s_rx.cur_path && !s_rx.img && !s_rx.tops && !s_rx.ntop && !s_rx.image_state.capacity && !s_rx.image_state.expected && !s_rx.image_state.received);
+    assert(!s_rx.cur_path && !s_rx.image_buffer.data && !s_rx.tops && !s_rx.ntop && !s_rx.image_buffer.capacity && !s_rx.image_state.expected && !s_rx.image_state.received);
     assert(!s_rx.file_state.is_image && !s_rx.file_state.id && !s_rx.file_state.declared_size && !s_rx.dir[0]);
     assert(!s_rx.task.initialized);
     hop_xfer_budget_snapshot budget_snapshot;
@@ -189,7 +190,7 @@ int main(void){
         /* Allocate an actual partial image before CRC, overlap and bounds failures. */
         if(scenario==1 || scenario==3 || scenario==4){
             chunk(1,0,0);
-            assert(s_rx.img && s_rx.image_state.capacity==s_rx.image_state.expected);
+            assert(s_rx.image_buffer.data && s_rx.image_buffer.capacity==s_rx.image_state.expected);
         }
         uint8_t reason=HOP_ABORT_TOO_LARGE;fail_send=1; /* failed wire send must still clean up */
         switch(scenario){

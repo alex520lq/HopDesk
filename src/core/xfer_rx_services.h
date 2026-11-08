@@ -35,6 +35,20 @@ typedef struct {
                              uint32_t height, uint32_t stride, int image_valid,
                              const void *const *top_paths, int top_count, int allow_publish);
     void (*cancel_clipboard)(void *context, uint32_t batch);
+    uint64_t (*now_ns)(void *context);
+    int (*status_begin)(void *context, uint32_t batch, uint32_t files,
+                        uint64_t bytes, const char *name, int phase);
+    void (*status_end)(void *context, uint32_t batch, int phase, const char *detail);
+    void (*status_add_received_file)(void *context, uint32_t batch, uint32_t id,
+                                     const char *path, uint64_t size, int directory);
+    void (*status_image)(void *context, uint32_t batch, uint64_t size);
+    void (*status_stage_time)(void *context, uint32_t batch, int stage, uint64_t elapsed_ns);
+    void (*status_chunk_received)(void *context, uint32_t batch, uint32_t id,
+                                  uint64_t offset, uint32_t length,
+                                  uint64_t crc_ns, uint64_t receive_ns);
+    void (*status_file_phase)(void *context, uint32_t batch, int index,
+                              int phase, uint32_t attempts);
+    void (*status_set_files_total)(void *context, uint32_t total);
 } hop_xfer_rx_services;
 
 #ifdef __cplusplus

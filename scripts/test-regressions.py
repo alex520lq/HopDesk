@@ -739,6 +739,13 @@ int main(void){
 
         begin=extract(receiver,'rx_dispatch_file_begin')
         end=extract(receiver,'rx_dispatch_file_end')
+        file_ack_handler=extract(receiver,'rx_dispatch_file_ack')
+        done_ack_handler=extract(receiver,'rx_dispatch_done_ack')
+        assert 'hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, NULL)' in file_ack_handler
+        assert 'hop_xfer_rx_handle_done_ack(p, len, rx_ack_deliver_done, NULL)' in done_ack_handler
+        shared_ack=(ROOT/'src/core/xfer_rx_ack_handler.c').read_text(encoding='utf-8')
+        assert 'ack.id < 1u' in shared_ack and 'ack.id > HOP_XFER_FILE_LIMIT' in shared_ack
+        assert 'status > HOP_DONE_ACK_FAILED' in shared_ack
         lifecycle=extract(receiver,'rx_begin_batch')
         assert 'hop_xfer_rx_fs_mkdir_p(s_rx.dir)' in lifecycle if platform=='mac' else 'hop_xfer_rx_fs_ensure_dirs(s_rx.dir)' in lifecycle
         assert 'rx_remove_top(s_rx.cur_path)' in begin

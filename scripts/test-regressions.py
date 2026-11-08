@@ -391,6 +391,7 @@ int main(void){
 #include "xfer_task.h"
 #include <assert.h>
 #include <wchar.h>
+#include <string.h>
 #define hop_log(...) ((void)0)
 #define HOP_MSG_XFER_DONE 54
 #define RX_CLOSE 1
@@ -491,6 +492,8 @@ int main(void){
 #include <assert.h>
 #include <stdlib.h>
 #include <time.h>
+#include <stdio.h>
+#include <string.h>
 #define AcquireSRWLockExclusive(p) ((void)(p))
 #define ReleaseSRWLockExclusive(p) ((void)(p))
 #define pthread_mutex_lock(p) ((void)(p))
@@ -613,7 +616,7 @@ int main(void){
         assert 'if (!s_rx.active || s_rx.batch != batch) return;' in cases('HOP_MSG_FILE_BEGIN','HOP_MSG_IMAGE_BEGIN')
         assert 'if (!s_rx.active || s_rx.batch != batch) return;' in cases('HOP_MSG_IMAGE_BEGIN','HOP_MSG_FILE_CHUNK')
         if platform=='win':fixture='#define FIXTURE_WINDOWS 1\n'+fixture
-        run('abort_'+platform,fixture,['src/core/protocol.c','src/core/crc32.c','src/core/xfer_validate.c','src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+        run('abort_'+platform,fixture,['src/core/protocol.c','src/core/crc32.c','src/core/xfer_validate.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c'],threads=True)
 
     inject=(ROOT/'src/mac/inject.c').read_text(encoding='utf-8')
     fixture=(ROOT/'tests/inject_release_fixture.c.in').read_text(encoding='utf-8')

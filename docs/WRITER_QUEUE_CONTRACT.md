@@ -111,3 +111,12 @@ The platform worker adapters now share the same bounded join behavior:
 - `tests/writer_worker_tests.c` now exercises a deliberate >3-second callback, verifies the first join times out without clearing live state, retries join successfully, and verifies restart afterward on both platforms.
 
 This closes a platform lifecycle mismatch in the worker adapter; it does not yet extract the complete Writer Queue from the Receiver include.
+
+
+## 2026-11-08 Windows production extraction status
+
+The Windows implementation now exists as `src/win/xfer_writer_queue.[ch]` with an opaque queue handle. The Receiver passes Task-budget reserve/release, watchdog, monotonic clock, write-time reporting, and logging through callbacks. The queue owns ring commands, slot/byte accounting, payload pool, worker, IO handle, and stop/join lifecycle.
+
+The Receiver compatibility layer exposes only its existing local operations and no longer reaches into queue internals. `tests/writer_queue_tests.c` links the production queue/worker/IO/Core modules and checks disk bytes plus budget rollback/release.
+
+This is one platform slice only. macOS still uses the previous queue implementation in `xfer_receive.inc`; API and semantic parity plus macOS native tests are required before removing both legacy implementations or declaring phase 2 complete.

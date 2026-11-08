@@ -461,6 +461,7 @@ int main(void){
 #include "xfer_tracking.h"
 #include "xfer_budget.h"
 #include "xfer_task.h"
+#include "xfer_rx_services.h"
 #include <assert.h>
 #include <wchar.h>
 #include <string.h>
@@ -478,7 +479,7 @@ typedef xf_job xfer_job;
 typedef struct {int kind;} rx_task;
 static int s_status_lock,applied;static uint8_t wire[20];
 static hop_xfer_tracking s_receive_status;
-static struct {hop_xfer_rx_batch_state batch_state;int ntop;char *dir;hop_xfer_rx_image_buffer image_buffer;hop_xfer_rx_image_state image_state;hop_xfer_rx_file_state file_state;void **tops;hop_xfer_task task;} s_rx;
+static struct {hop_xfer_rx_batch_state batch_state;int ntop;char *dir;hop_xfer_rx_image_buffer image_buffer;hop_xfer_rx_image_state image_state;hop_xfer_rx_file_state file_state;void **tops;hop_xfer_task task;hop_xfer_rx_services services;} s_rx;
 static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t batch){(void)batch;(void)fd;(void)type;assert(n==20);memcpy(wire,p,n);return 1;}
 static void wq_push(rx_task*t){(void)t;}
 static void wq_drain(void){}
@@ -491,6 +492,29 @@ static void apply_paths(const void*p,int n){(void)p;(void)n;}
 static uint64_t rate_now_ns(void){static uint64_t now=100;return ++now;}
 static void status_stage_time(int direction,uint32_t batch,int stage,uint64_t elapsed_ns){
     (void)batch;(void)stage;(void)elapsed_ns;assert(direction==HOP_XFER_DIR_RECEIVE);
+}
+static void fixture_close_file(void *context){(void)context;wq_drain();}
+static void fixture_status_end(void *context,uint32_t batch,int phase,const char *detail){(void)context;status_end(HOP_XFER_DIR_RECEIVE,batch,phase,detail);}
+static void fixture_status_file_phase(void *context,uint32_t batch,int index,int phase,uint32_t attempts){(void)context;status_file_phase(HOP_XFER_DIR_RECEIVE,batch,index,phase,attempts);}
+static void fixture_status_total(void *context,uint32_t total){(void)context;(void)total;}
+static void fixture_finish_clipboard(void *context,uint32_t batch,const void *image_data,uint32_t width,uint32_t height,uint32_t stride,int image_valid,const void *const *paths,int count,int allow_publish){
+    (void)context;
+    if(allow_publish && image_valid && image_data){apply_image((const uint8_t *)image_data,(int)width,(int)height,(int)stride);return;}
+    if(allow_publish && count>0){
+        if(batch&HOP_XFER_PASTE_BATCH_FLAG){
+#ifdef FIXTURE_WINDOWS
+            clip_complete_remote_paste(batch,(const wchar_t *const *)paths,count,1);
+#else
+            clipboard_complete_remote_paste(batch,(const char *const *)paths,count,1);
+#endif
+        } else apply_paths(paths,count);
+    } else if(batch&HOP_XFER_PASTE_BATCH_FLAG){
+#ifdef FIXTURE_WINDOWS
+        clip_complete_remote_paste(batch,NULL,0,0);
+#else
+        clipboard_complete_remote_paste(batch,NULL,0,0);
+#endif
+    }
 }
 static int paste_success_calls,paste_failure_calls;
 static void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n,int success){
@@ -508,6 +532,11 @@ static void clipboard_complete_remote_paste(uint32_t batch,const char *const *pa
 '''
         main=r'''
 int main(void){
+    s_rx.services.close_file=fixture_close_file;
+    s_rx.services.finish_clipboard=fixture_finish_clipboard;
+    s_rx.services.status_end=fixture_status_end;
+    s_rx.services.status_file_phase=fixture_status_file_phase;
+    s_rx.services.status_set_files_total=fixture_status_total;
     /* Both platform callbacks are linked in each host compiler's fixture. */
     (void)&clip_complete_remote_paste;
     (void)&clipboard_complete_remote_paste;
@@ -554,6 +583,7 @@ int main(void){
     puts("PASS: production IMAGE DONE and validated file-paste completion paths");return 0;
 }
 '''
+        if platform=='win': common='#define FIXTURE_WINDOWS 1\n'+common
         run('image_'+platform,common+extract(source,'send_done')+'\n'+extract(source,'rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_protocol_adapter.c','src/core/xfer_rx_dispatch.c'],threads=True)
     # Run the actual per-platform state wrappers, not only a reimplemented model.
     for platform in ['win','mac']:

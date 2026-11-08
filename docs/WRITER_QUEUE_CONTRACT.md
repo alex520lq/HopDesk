@@ -169,3 +169,16 @@ This is a shared transition-policy extraction, not completion of the full Receiv
 - Windows/macOS Receiver no longer duplicate `cur_id`, `cur_fail`, `cur_size`, `cur_received`, or `fcrc`; each embeds the shared Core state.
 - Chunk validation rejects gaps/overlaps/out-of-range lengths using overflow-safe subtraction. State advances only after successful writer-queue admission, preserving the existing no-advance-on-queue-rejection behavior.
 - The module's standalone tests link the production CRC-fold implementation from `xfer_validate.c`. Run #652 (ID `42483467036`, commit `a6f39aa54ed5d6029658eaa77873fdbbcda91865`) passed complete Windows/macOS CI.
+
+
+## 2026-11-08 FILE_END ACK policy
+
+The shared `hop_xfer_rx_file_state_ack` now owns the FILE_END ACK precedence used by both Receivers:
+1. Return a previously recorded per-entry failure (BADPATH/CRC/DISK) unchanged.
+2. Reject Writer Queue IO failure as DISK.
+3. Reject peer-reported FILE_END status as DISK.
+4. Reject incomplete received byte count as CRC.
+5. Reject file CRC mismatch as CRC.
+6. Otherwise return ACK_OK.
+
+The platform adapters still drain/close the file, log the specific diagnostic, remove failed files, register verified top-level clipboard paths, update status, and send FILE_ACK. Run #658 (ID `42483891419`, commit `c7f072d8527461d73a7d4c0907b7d39dce330565`) passed full Windows/macOS CI.

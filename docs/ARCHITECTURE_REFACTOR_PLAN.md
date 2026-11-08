@@ -568,3 +568,13 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - CI 证据：Run #652（ID `42483467036`，head `a6f39aa54ed5d6029658eaa77873fdbbcda91865`）Windows/macOS 全套通过：应用构建、Core/regression（含文件状态、entry reservation、batch rules 测试）、Transfer protocol、TCP loopback、Windows native role/reconnect、macOS control/listener、更新脚本检查和打包全部 PASS。
 - 过程中发现并修复两项测试集成遗漏：ABORT fixture 仍断言旧 Receiver 字段；独立 file-state 测试未链接定义 CRC fold 的 `xfer_validate.c`。Run #652 验证最终修复通过。
 - 下一步应将 FILE_BEGIN/CHUNK/FILE_END 的 ACK 决策提取成共享 Core policy，再逐步把协议 dispatch 从平台 include 拆出；平台文件系统、剪贴板和 writer IO 仍保持 adapter 边界。
+
+
+### 2026-11-08：FILE_END ACK 决策归并至 Receiver File State Core
+
+- 扩展 `hop_xfer_rx_file_state_ack`，统一 FILE_END 的 ACK precedence：先返回已记录的 entry failure；再检查 Writer Queue 写盘错误；再检查 peer FILE_END status；再检查实际接收字节数；最后比较整文件 CRC；全部通过才返回 ACK_OK。
+- Windows/macOS FILE_END handler 均改为调用同一 Core 决策函数；平台层只负责 drain/close、诊断日志、删除失败文件、剪贴板顶层路径登记和发送 FILE_ACK。
+- 保留原有优先级：坏路径/块 CRC/入队失败等已记录失败优先于后续错误；Writer IO error 优先于 peer status；字节数不足优先于整文件 CRC；顶层路径登记失败仍覆盖为 ACK_DISK。
+- 扩展 `tests/xfer_rx_file_state_tests.c`，覆盖成功、peer IO error、writer error、整文件 CRC 不符、未收满、已记录 BADPATH 对后续错误的优先级。
+- CI 证据：Run #658（ID `42483891419`，head `c7f072d8527461d73a7d4c0907b7d39dce330565`）Windows/macOS 完整通过：应用构建、Core/regression、Transfer protocol、TCP loopback、Windows native reconnect/control、macOS control/listener、updater syntax 和 packaging 全部 PASS。
+- FILE_BEGIN/CHUNK/FILE_END 的主要数据校验和 ACK 结果现在已由 Core 持有；平台层仍保留消息 dispatch、文件/目录副作用和 clipboard path commit。下一步应拆分 protocol dispatch 与批次资源生命周期，而不是继续把平台 IO 抽进 Core。

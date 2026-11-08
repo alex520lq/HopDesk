@@ -105,10 +105,6 @@ typedef struct {
     hop_xfer_task task;
     uint8_t   reserved_entries[HOP_XFER_FILE_LIMIT];
     uint64_t  reserved_entry_sizes[HOP_XFER_FILE_LIMIT];
-    uint32_t  dead_batch;    /* 已作废的批次（本地取消 / 对端中止）。
-                              * 它之后的帧一律忽略，且不再为它建目录 ——
-                              * 否则取消之后对端再发一帧就把目录又建回来了。 */
-    uint8_t dead_reason;   /* Preserve the original failure when rejecting a late BEGIN. */
     wchar_t   dir[MAX_PATH];
     uint32_t  cur_id;
     wchar_t  *cur_path;
@@ -176,14 +172,14 @@ static void rx_reset(void) {
 
 /* Receiver-owned lifecycle boundary. Only a data reconnect in the SAME control
  * session may retain ACKs/tombstones; a new control session starts cleanly. */
-static hop_session_id s_rx_session;
+static hop_xfer_rx_lifecycle s_rx_lifecycle;
 /* One FIFO sender batch can be awaiting DONE_ACK per session. This is only
  * wire idempotency metadata, not another task or reservation owner. */
 static hop_xfer_rx_done_receipt s_done_receipt;
 static void rx_discard_dir(void);
 static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer);
 static void rx_bind_session(const hop_session_id *session) {
-    if (!hop_session_id_equal(&s_rx_session, session)) {
+    if (!hop_session_id_equal(hop_xfer_rx_lifecycle_session(&s_rx_lifecycle), session)) {
         hop_xfer_rx_done_receipt_clear(&s_done_receipt);
         /* A new control session cannot resume the old batch. Its staging files
          * were never published; close the writer before removing them. Completed
@@ -199,19 +195,19 @@ static void rx_bind_session(const hop_session_id *session) {
             if (s_rx.batch & HOP_XFER_PASTE_BATCH_FLAG)
                 clip_complete_remote_paste(s_rx.batch,NULL,0,0);
         }
-        rx_reset(); s_rx.dead_batch=0; s_rx.dead_reason=0;
+        rx_reset();
         AcquireSRWLockExclusive(&s_status_lock);
         memset(&s_receive_status,0,sizeof(s_receive_status));
         ReleaseSRWLockExclusive(&s_status_lock);
     } else rx_close_file();
-    s_rx_session=*session;
+    (void)hop_xfer_rx_lifecycle_bind_session(&s_rx_lifecycle, session);
 }
 
 /* The control session may vanish permanently before a new data connection is
  * established. Poll only on the receiver thread; keep a same-session data
  * reconnect resumable, but promptly retire an invalidated control session. */
 static void rx_expire_stale_session(void) {
-    if (hop_session_id_valid(&s_rx_session) && !hop_session_matches(&s_rx_session)) {
+    if (hop_session_id_valid(hop_xfer_rx_lifecycle_session(&s_rx_lifecycle)) && !hop_session_matches(hop_xfer_rx_lifecycle_session(&s_rx_lifecycle))) {
         hop_session_id empty = {{0}};
         rx_bind_session(&empty);
     }
@@ -339,8 +335,7 @@ static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
     if (!s_rx.active || s_rx.batch != batch) return;
     rx_close_file();
     rx_discard_dir();
-    s_rx.dead_batch = batch;
-    s_rx.dead_reason = reason;
+    hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle, batch, reason);
     hop_xfer_task_finish(&s_rx.task,reason==HOP_ABORT_CANCEL?
                          HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
     rx_clear_state();
@@ -350,13 +345,14 @@ static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
 }
 
 static void rx_begin_batch(uint32_t batch) {
-    if (hop_xfer_rx_done_receipt_find(&s_done_receipt, &s_rx_session, batch)) {
+    if (hop_xfer_rx_done_receipt_find(&s_done_receipt, hop_xfer_rx_lifecycle_session(&s_rx_lifecycle), batch)) {
         return; /* already committed in this session; never recreate its task */
     }
     /* 作废过的批次又来了（对端还没收到取消）：回一个 ABORT 让它立刻放手，
      * 千万别为它重建目录 —— 用户已经说过不要了。 */
-    if (batch == s_rx.dead_batch) {
-        rx_terminate(batch,s_rx.dead_reason,1);
+    uint8_t dead_reason = 0;
+    if (hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle, batch, &dead_reason)) {
+        rx_terminate(batch,dead_reason,1);
         return;
     }
     if (s_rx.active && s_rx.batch == batch) return;   /* 重发同一个批次：接着用 */
@@ -370,20 +366,20 @@ static void rx_begin_batch(uint32_t batch) {
 
     rx_reset();
     if (!hop_xfer_task_init_classified(&s_rx.task,0,(batch & HOP_XFER_PASTE_BATCH_FLAG)?batch:0,batch,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_UNSPECIFIED)) {
-        s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_DISK;
+        hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle,batch,HOP_ABORT_DISK);
         send_abort_msg(s_x.client,batch,HOP_ABORT_DISK,HOP_ABORT_TO_SENDER);
         return;
     }
-    (void)hop_xfer_task_bind_session(&s_rx.task,s_rx_session.bytes);
+    (void)hop_xfer_task_bind_session(&s_rx.task,hop_xfer_rx_lifecycle_session(&s_rx_lifecycle)->bytes);
     if (!hop_xfer_task_reserve_job(&s_rx.task)) {
-        s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_TOO_LARGE;
+        hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle,batch,HOP_ABORT_TOO_LARGE);
         hop_xfer_task_finish(&s_rx.task,HOP_XFER_TASK_FAILED);
         hop_xfer_task_dispose(&s_rx.task);
         send_abort_msg(s_x.client,batch,HOP_ABORT_TOO_LARGE,HOP_ABORT_TO_SENDER);
         return;
     }
     if (!hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE)) {
-        s_rx.dead_batch=batch;s_rx.dead_reason=HOP_ABORT_DISK;
+        hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle,batch,HOP_ABORT_DISK);
         hop_xfer_task_finish(&s_rx.task,HOP_XFER_TASK_FAILED);
         hop_xfer_task_dispose(&s_rx.task);
         send_abort_msg(s_x.client,batch,HOP_ABORT_DISK,HOP_ABORT_TO_SENDER);
@@ -909,14 +905,14 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             if (!done.batch || !done.total || done.total > HOP_XFER_FILE_LIMIT || done.ok > done.total) return;
             int result;
             const hop_xfer_rx_done_receipt *receipt =
-                hop_xfer_rx_done_receipt_find(&s_done_receipt, &s_rx_session, done.batch);
+                hop_xfer_rx_done_receipt_find(&s_done_receipt, hop_xfer_rx_lifecycle_session(&s_rx_lifecycle), done.batch);
             if (receipt) {
                 if (!hop_xfer_rx_done_receipt_matches_payload(receipt, &done)) return;
                 result=receipt->status; /* repeat ACK without repeating clipboard effects */
             } else {
                 result=rx_finish_batch(done.batch,done.ok,done.total);
                 if (result<0) return;
-                hop_xfer_rx_done_receipt_record(&s_done_receipt, &s_rx_session,
+                hop_xfer_rx_done_receipt_record(&s_done_receipt, hop_xfer_rx_lifecycle_session(&s_rx_lifecycle),
                                                 &done, (uint8_t)result);
             }
             uint8_t reply[5]; hop_put_be32(reply,done.batch); reply[4]=(uint8_t)result;

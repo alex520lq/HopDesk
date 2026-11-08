@@ -2,6 +2,11 @@
 
 #include <stdio.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <time.h>
+#endif
 
 typedef struct {
     int next;
@@ -33,6 +38,34 @@ static void on_exit(void *opaque) {
     ctx->exited++;
 }
 
+static void sleep_ms(unsigned ms) {
+#ifdef _WIN32
+    Sleep(ms);
+#else
+    struct timespec delay = {(time_t)(ms / 1000), (long)(ms % 1000) * 1000000L};
+    while (nanosleep(&delay, &delay) != 0) { }
+#endif
+}
+
+static int take_slow(void *opaque, void *task_out) {
+    (void)opaque;
+    (void)task_out;
+    sleep_ms(3200);
+    return 0;
+}
+
+static int run_timeout_retry(hop_writer_worker *worker) {
+    test_context ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    const hop_writer_worker_callbacks callbacks = {
+        take_slow, run_one, complete_one, on_exit
+    };
+    if (!hop_writer_worker_start(worker, &ctx, sizeof(int), &callbacks)) return 0;
+    if (hop_writer_worker_join(worker) != 0 || worker->state != 1 || !worker->task_storage) return 0;
+    if (!hop_writer_worker_join(worker) || worker->state != 2 || worker->task_storage) return 0;
+    return ctx.exited == 1;
+}
+
 static int run_once(hop_writer_worker *worker) {
     test_context ctx;
     memset(&ctx, 0, sizeof(ctx));
@@ -51,6 +84,10 @@ int main(void) {
         fputs("FAIL: worker dispatch, completion, join, or restart lifecycle\n", stderr);
         return 1;
     }
-    puts("PASS: writer worker dispatch, completion, join, and restart");
+    if (!run_timeout_retry(&worker) || !run_once(&worker)) {
+        fputs("FAIL: timed join did not preserve worker state for retry\n", stderr);
+        return 1;
+    }
+    puts("PASS: writer worker dispatch, completion, timed join retry, and restart");
     return 0;
 }

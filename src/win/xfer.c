@@ -13,6 +13,7 @@
 #include "../core/xfer_rx_entry_reservations.h"
 #include "../core/xfer_rx_file_state.h"
 #include "../core/xfer_rx_dispatch.h"
+#include "../core/xfer_rx_batch_state.h"
 #include "../core/xfer_rx_image_state.h"
 #include "../core/xfer_rx_image_buffer.h"
 #include "xfer_writer_queue.h"

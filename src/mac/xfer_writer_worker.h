@@ -14,6 +14,7 @@ typedef struct {
     void *context;
     hop_writer_worker_callbacks callbacks;
     size_t task_size;
+    void *task_storage;
     int state;
     unsigned long thread_storage[8];
 } hop_writer_worker;

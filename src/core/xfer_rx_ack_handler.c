@@ -1,4 +1,5 @@
 #include "hop.h"
+#include "xfer_status.h"
 #include "xfer_rx_ack_handler.h"
 
 int hop_xfer_rx_handle_file_ack(

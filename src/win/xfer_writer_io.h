@@ -1,5 +1,6 @@
 #ifndef HOP_WIN_XFER_WRITER_IO_H
 #define HOP_WIN_XFER_WRITER_IO_H
+#include <stdint.h>
 #include <windows.h>
 typedef struct { HANDLE file; } hop_writer_io;
 void hop_writer_io_init(hop_writer_io *io);

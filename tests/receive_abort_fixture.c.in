@@ -131,7 +131,7 @@ static int try_image_buffer_ensure(hop_xfer_rx_image_buffer *buffer,uint64_t exp
 }
 #define hop_xfer_rx_image_buffer_ensure try_image_buffer_ensure
 @DISPATCH_HANDLERS@
-static void dispatch(uint8_t type,const uint8_t*p,uint32_t len){(void)hop_xfer_rx_dispatch_message(type,p,len,&s_rx_dispatch_handlers,NULL);}
+static void dispatch(uint8_t type,const uint8_t*p,uint32_t len){(void)hop_xfer_rx_dispatch_message(type,p,len,&s_rx_dispatch_handlers,&s_rx);}
 #undef hop_xfer_rx_image_buffer_ensure
 static void image_begin(uint32_t batch,uint32_t width){
     uint8_t p[20];hop_put_be32(p,batch);hop_put_be32(p+4,1);hop_put_be32(p+8,width);

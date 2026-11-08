@@ -361,7 +361,7 @@ hop_xfer_done_msg done;
             if (!done.batch || !done.total || done.total > HOP_XFER_FILE_LIMIT || done.ok > done.total) return;
             int result;
             const hop_xfer_rx_done_receipt *receipt =
-                hop_xfer_rx_done_receipt_find(&rx->done_receipt, hop_xfer_rx_lifecycle_session(rx->lifecycle), done.batch);
+                hop_xfer_rx_done_receipt_find(rx->done_receipt, hop_xfer_rx_lifecycle_session(rx->lifecycle), done.batch);
             if (receipt) {
                 if (!hop_xfer_rx_done_receipt_matches_payload(receipt, &done)) return;
                 result=receipt->status; /* repeat ACK without repeating clipboard effects */

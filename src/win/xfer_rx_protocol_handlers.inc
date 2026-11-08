@@ -45,7 +45,7 @@ hop_xfer_file_begin_msg msg;
                 return;
             }
             status_add_received_file(batch,id,relz,size,s_rx.file_state.is_directory);
-            wchar_t *path = rx_path_for(relz);
+            wchar_t *path = hop_xfer_rx_fs_path_for(s_rx.dir, relz);
             free(relz);
             if (!path) { hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_BADPATH); return; }
 
@@ -62,7 +62,7 @@ hop_xfer_file_begin_msg msg;
             }
 
             if (s_rx.file_state.is_directory) {
-                if (!ensure_dirs(path) || !create_directory_if_missing(path)) {
+                if (!hop_xfer_rx_fs_ensure_dirs(path) || !hop_xfer_rx_fs_create_directory_if_missing(path)) {
                     hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_DISK);
                     return;
                 }

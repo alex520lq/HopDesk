@@ -12,6 +12,10 @@
 #include "../core/xfer_rx_protocol_adapter.h"
 #include "../core/xfer_rx_platform_dispatch.h"
 
+static int rx_reserve_entry_budget(void *context, uint64_t bytes) {
+    return hop_xfer_task_reserve_entry((hop_xfer_task *)context, bytes);
+}
+
 static uint64_t rx_now_ns(xfer_rx_context *rx) {
     return rx && rx->services.now_ns
         ? rx->services.now_ns(rx->services.context) : 0;

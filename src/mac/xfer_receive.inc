@@ -447,9 +447,9 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
         return;
     }
 
-    switch (type) {
+    switch (hop_xfer_rx_dispatch_classify(type)) {
 
-        case HOP_MSG_FILE_BEGIN: {
+        case HOP_RX_DISPATCH_FILE_BEGIN: {
             hop_xfer_file_begin_msg msg;
             if (!hop_xfer_decode_file_begin(p, len, &msg)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed FILE_BEGIN rejected");
@@ -544,7 +544,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             break;
         }
 
-        case HOP_MSG_IMAGE_BEGIN: {
+        case HOP_RX_DISPATCH_IMAGE_BEGIN: {
             hop_xfer_image_begin_msg msg;
             if (!hop_xfer_decode_image_begin(p, len, &msg)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed IMAGE_BEGIN rejected");
@@ -592,7 +592,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             break;
         }
 
-        case HOP_MSG_FILE_CHUNK: {
+        case HOP_RX_DISPATCH_FILE_CHUNK: {
             if (!s_rx.active) return; /* late data after termination */
             uint64_t receive_started_ns=rate_now_ns();
             hop_xfer_file_chunk_msg chunk;
@@ -701,7 +701,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             break;
         }
 
-        case HOP_MSG_FILE_END: {
+        case HOP_RX_DISPATCH_FILE_END: {
             hop_xfer_file_end_msg end_msg;
             if (!hop_xfer_decode_file_end(p, len, &end_msg)) return;
             uint32_t id = end_msg.id;
@@ -764,14 +764,14 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             break;
         }
 
-        case HOP_MSG_FILE_ACK: {
+        case HOP_RX_DISPATCH_FILE_ACK: {
             hop_xfer_file_ack_msg ack;
             if (hop_xfer_decode_file_ack(p, len, &ack) && ack.id >= 1 && ack.id <= HOP_XFER_FILE_LIMIT)
                 ack_deliver(ack.batch, ack.id, ack.status);
             break;
         }
 
-        case HOP_MSG_XFER_ABORT: {
+        case HOP_RX_DISPATCH_ABORT: {
             hop_xfer_abort_msg abort_msg;
             if (!hop_xfer_decode_abort(p, len, &abort_msg)) return;
             uint32_t batch = abort_msg.batch;
@@ -794,7 +794,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             break;
         }
 
-        case HOP_MSG_XFER_DONE: {
+        case HOP_RX_DISPATCH_DONE: {
             hop_xfer_done_msg done;
             if (!hop_xfer_decode_done(p, len, &done)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed XFER_DONE ignored");
@@ -821,7 +821,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             break;
         }
 
-        case HOP_MSG_XFER_DONE_ACK:
+        case HOP_RX_DISPATCH_DONE_ACK:
             if (len==5 && hop_get_be32(p)!=0 && p[4]<=HOP_DONE_ACK_FAILED)
                 ack_deliver(hop_get_be32(p),HOP_DONE_ACK_SLOT,p[4]);
             break;

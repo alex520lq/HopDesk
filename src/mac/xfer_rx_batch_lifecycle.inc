@@ -1,10 +1,10 @@
 static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
     if (!batch) return;
     if (batch & HOP_XFER_PASTE_BATCH_FLAG)
-        clipboard_complete_remote_paste(batch,NULL,0,0);
+        if (s_rx.services.cancel_clipboard) s_rx.services.cancel_clipboard(s_rx.services.context, batch);
     if (notify_peer) { send_abort(batch,reason); }
     if (!hop_xfer_rx_batch_is_active(batch, s_rx.batch_state.active, s_rx.batch_state.batch)) return;
-    rx_close_file();
+    if (s_rx.services.close_file) s_rx.services.close_file(s_rx.services.context);
     rx_discard_dir();
     hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle, batch, reason);
     hop_xfer_task_finish(&s_rx.task,reason==HOP_ABORT_CANCEL?
@@ -103,41 +103,20 @@ static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
         return -1;
     }
 
-    rx_task t;
-    memset(&t, 0, sizeof(t));
-    t.kind = RX_CLOSE;
-    wq_push(&t);
-    wq_drain();
+    if (s_rx.services.close_file)
+        s_rx.services.close_file(s_rx.services.context);
 
-    if (ok != total) {
-        /* Keep the staged data for diagnosis/recovery, but never expose a partial
-         * folder as a successful clipboard item. */
-        hop_log(HOP_LOG_ERROR,
-                "xfer: batch %u incomplete (%u/%u entries); staged data kept at %s; clipboard not updated",
-                batch, ok, total, s_rx.dir);
-    } else if (s_rx.file_state.is_image) {
-        if (s_rx.image_buffer.data && s_rx.image_state.received == s_rx.image_state.expected) {
-            uint64_t clipboard_started_ns=rate_now_ns();
-            clipboard_apply_image(s_rx.image_buffer.data, s_rx.image_state.width, s_rx.image_state.height, s_rx.image_state.stride);
-            status_stage_time(HOP_XFER_DIR_RECEIVE,batch,HOP_XFER_TIME_CLIPBOARD_DISPATCH,
-                              rate_now_ns()-clipboard_started_ns);
-        } else
-            hop_log(HOP_LOG_ERROR, "xfer: incomplete image rejected (%llu/%llu bytes)",
-                    (unsigned long long)s_rx.image_state.received, (unsigned long long)s_rx.image_state.expected);
-    } else if (s_rx.ntop > 0) {
-        uint64_t clipboard_started_ns=rate_now_ns();
-        if (batch & HOP_XFER_PASTE_BATCH_FLAG) {
-            /* A requested cross-device paste must pass the request ID and
-             * original clipboard version gate; never use the generic path. */
-            clipboard_complete_remote_paste(batch,(const char *const *)s_rx.tops,s_rx.ntop,1);
-        } else {
-            clipboard_apply_paths((const char *const *)s_rx.tops, s_rx.ntop);
-        }
-        status_stage_time(HOP_XFER_DIR_RECEIVE,batch,HOP_XFER_TIME_CLIPBOARD_DISPATCH,
-                          rate_now_ns()-clipboard_started_ns);
-    }
-    if ((batch & HOP_XFER_PASTE_BATCH_FLAG) && ok != total)
-        clipboard_complete_remote_paste(batch,NULL,0,0);
+    int image_valid = s_rx.image_buffer.data &&
+                      s_rx.image_state.received == s_rx.image_state.expected;
+    if (ok == total && s_rx.file_state.is_image && !image_valid)
+        hop_log(HOP_LOG_ERROR, "xfer: incomplete image rejected (%llu/%llu bytes)",
+                (unsigned long long)s_rx.image_state.received,
+                (unsigned long long)s_rx.image_state.expected);
+    if (s_rx.services.finish_clipboard)
+        s_rx.services.finish_clipboard(s_rx.services.context, batch,
+            s_rx.image_buffer.data, s_rx.image_state.width,
+            s_rx.image_state.height, s_rx.image_state.stride, image_valid,
+            (const void *const *)s_rx.tops, s_rx.ntop, ok == total);
 
     hop_log(HOP_LOG_INFO, "xfer: batch %u done (%d items, %u/%u ACKed)",
             batch, s_rx.ntop, ok, total);

@@ -580,6 +580,17 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - FILE_BEGIN/CHUNK/FILE_END 的主要数据校验和 ACK 结果现在已由 Core 持有；平台层仍保留消息 dispatch、文件/目录副作用和 clipboard path commit。下一步应拆分 protocol dispatch 与批次资源生命周期，而不是继续把平台 IO 抽进 Core。
 
 
+### 2026-11-08：Receiver Protocol Adapter 显式实例边界（第一切片）
+
+- 新增独立生产编译单元 `src/core/xfer_rx_protocol_adapter.[ch]`。Adapter 持有 handler table 与显式 context；初始化、未初始化 dispatch、未知消息、空 handler 和 context 转发均有独立回归测试。
+- Windows/macOS 握手与 session gate 之后的消息路由改为经由 Adapter 实例调用；当前平台实例把 Receiver state 地址作为 context 传入，协议路由模块本身不依赖平台头文件或全局状态。
+- 更新 Windows HA fixture 的链接源清单，避免只在应用主目标加入新 Core 模块、遗漏直接编译 `xfer.c` 的 HA 测试目标。
+- 本切片仅完成“可独立编译的协议 Adapter 外壳/路由边界”。消息 handler 实现仍在平台 `.inc`，且目前仍有对 `s_rx`/`s_x` 的隐式访问；不能标记用户要求的完整依赖注入已完成。
+- 提交：`3b2d350b12fcc0d25ddc69b2e84578c9916fc5a4`（接口）、`dfa1258e3bc1adc859595b8266a57d3110e40e6c`（实现）、`22e12a2ef2e673a5c2b4c1aed50975af1925a1ce` / `5787d55c8478dbf1c2015f4a92d565076c9b4d6f`（Win/mac 接入）、`b4249f188c156ba629f1804acb2123d3987b0aba`（Adapter 测试）、`2e75b24afb4619f1de3a85e4994afc74259fc9ab`（Windows HA 链接修复）。
+- 验证状态：macOS Run #740 已通过 build 与 portable core/regression，正在上传安装包；Windows Run #740 已完成应用构建并进入 portable core/regression，最终结果待完成。前一轮 Windows HA 目标曾因缺少新 Adapter 链接项失败，已在本切片中修复；不得把该前序失败记作最终通过。
+- 下一切片：先定义平台无关 Receiver dependencies（writer、filesystem、status、clipboard、wire ACK、clock/log），将 FILE_BEGIN/IMAGE_BEGIN/CHUNK/FILE_END handlers 移入独立 platform adapter `.c`，以 context 取代直接访问全局；随后抽离文件路径/目录 API，并将 FILE_END ACK/terminal side effects 收敛为共享业务决策 + 平台提交接口。
+
+
 ### 2026-11-08：Receiver Dispatch 与 Batch Lifecycle 独立化（第一批）
 
 - 新增 `src/core/xfer_rx_dispatch.[ch]`：将 FILE_BEGIN、IMAGE_BEGIN、FILE_CHUNK、FILE_END、FILE_ACK、ABORT、DONE、DONE_ACK 统一映射为平台无关的 Dispatch Action，并通过注入的 handler table 完成回调路由；未知类型或缺少 handler 安全返回。Windows/macOS 的 `on_data_msg` 在握手/会话 gate 后只调用 Core dispatcher。

@@ -13,7 +13,7 @@
 
 #include <wchar.h>
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(FIXTURE_WINDOWS)
 #define HOP_XFER_RX_CONTEXT_PATH_CAPACITY 260
 typedef wchar_t hop_xfer_rx_path_char;
 #else

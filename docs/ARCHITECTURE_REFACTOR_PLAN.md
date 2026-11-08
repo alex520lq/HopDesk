@@ -516,3 +516,14 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 更新 ABORT 与 session-transport 源码夹具，直接链接该生产 Core 模块；Windows HA 目标也链接该模块。
 - CI：Run #621（ID `42479841137`，commit `97e7433fd66d36065bb6f3dbc581ca8edc06098e`）当前排队/等待执行；前序 Run #618 暴露的 fixture 链接遗漏已补齐，Run #621 才是包含全部修正的验证依据。未取得最终结果前不标记通过。
 - 下一步继续提取 tombstone / batch lifecycle 状态，确保 session rollover、late BEGIN、duplicate DONE 和 cancel/abort 的状态只由一个 Core owner 管理。
+
+
+### 2026-11-08：Receiver Session / Tombstone 状态提取为 Core 模块
+
+- 新增 `src/core/xfer_rx_lifecycle.[ch]`，集中拥有 Receiver 当前 Session ID、已作废 Batch ID 和对应 ABORT reason。
+- Windows/macOS Receiver 不再在 `s_rx` 结构中复制保存 `dead_batch/dead_reason`，也不再维护独立的 `s_rx_session` 全局变量；统一通过 lifecycle API 读取/绑定 session、标记 tombstone 和查询 tombstone reason。
+- Session rollover 时由 Core bind 操作自动清除旧 tombstone；同一 session 重连保留 tombstone，防止旧 BEGIN 重建已取消批次目录。
+- 新增 `tests/xfer_rx_lifecycle_tests.c`，覆盖 session bind、同 session tombstone 保留、跨 session tombstone 清除和显式 reset。
+- ABORT 与 session-transport 源码回归夹具已改为链接真实 Core lifecycle 模块，不再 mock 这部分状态。
+- CI 证据：GitHub Actions Run #632，run ID `42480893287`，head `5b6984299a6b2aae617fd8e727fdaf9e091054b5`：Windows MSVC build、Core/regression（含 DONE receipt 与 RX lifecycle 独立测试）、transfer protocol、TCP loopback、native control/data reconnect、updater syntax、package 全部 PASS；macOS build、Core/regression（含 ASan/UBSan）、transfer protocol、TCP loopback、control/listener loopback、bundle verification、package 全部 PASS；Release publication skipped（PR 预期）。
+- 这只抽离了 Receiver 的 Session/Tombstone 数据所有权；`rx_begin_batch`、`rx_terminate`、`rx_finish_batch` 的状态转换编排仍在平台 include。下一切片应将可共享的 batch transition decisions 抽成 Core 规则，并让平台层只执行目录/文件/clipboard/ACK side effects。

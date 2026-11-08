@@ -66,3 +66,9 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
   "$ROOT/tests/xfer_rx_receipt_tests.c" "$ROOT/src/core/xfer_rx_receipt.c" \
   "$ROOT/src/core/protocol.c" "$ROOT/src/core/crc32.c"
 "$BUILD/hopdesk-rx-receipt-tests"
+
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I "$ROOT/src/core" -o "$BUILD/hopdesk-rx-lifecycle-tests" \
+  "$ROOT/tests/xfer_rx_lifecycle_tests.c" "$ROOT/src/core/xfer_rx_lifecycle.c" \
+  "$ROOT/src/core/protocol.c" "$ROOT/src/core/crc32.c"
+"$BUILD/hopdesk-rx-lifecycle-tests"

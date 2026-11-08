@@ -662,7 +662,7 @@ int main(void){
         state_start=receiver.index('typedef struct xfer_rx_context {',receiver.index('/* ---------------- 接收'))
         state_end=receiver.index('static xfer_rx_context s_rx;',state_start)+len('static xfer_rx_context s_rx;')
         dispatch_names=['image_begin','file_chunk','file_ack','abort_message','done','done_ack']
-        dispatch_handlers='\n'.join(extract(receiver,'rx_dispatch_'+name) for name in dispatch_names)
+        dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_ack_deliver_file','rx_ack_deliver_done'])+'\n'+'\n'.join(extract(receiver,'rx_dispatch_'+name) for name in dispatch_names)
         dispatch_handlers+='\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { NULL, rx_dispatch_image_begin, rx_dispatch_file_chunk, NULL, rx_dispatch_file_ack, rx_dispatch_abort_message, rx_dispatch_done, rx_dispatch_done_ack };\n'
         fixture=(ROOT/'tests/receive_abort_fixture.c.in').read_text(encoding='utf-8')
         values={
@@ -690,7 +690,7 @@ int main(void){
             assert not any(token in handler for token in ['s_rx.', 's_x.', 's_ack.', 's_wq']), f'{platform} {handler_name} still reads receiver/platform globals'
         assert 'rx_begin_batch(batch)' in extract(receiver,'rx_dispatch_image_begin')
         if platform=='win':fixture='#define FIXTURE_WINDOWS 1\n'+fixture
-        run('abort_'+platform,fixture,['src/core/protocol.c','src/core/crc32.c','src/core/xfer_validate.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_dispatch.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_file_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_image_buffer.c'],threads=True)
+        run('abort_'+platform,fixture,['src/core/protocol.c','src/core/crc32.c','src/core/xfer_validate.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_dispatch.c','src/core/xfer_rx_ack_handler.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_file_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_image_buffer.c'],threads=True)
 
     inject=(ROOT/'src/mac/inject.c').read_text(encoding='utf-8')
     fixture=(ROOT/'tests/inject_release_fixture.c.in').read_text(encoding='utf-8')

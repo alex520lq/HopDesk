@@ -99,25 +99,6 @@ static void wq_stop(void) {
 
 /* ---------------- 接收 ---------------- */
 
-typedef struct xfer_rx_context {
-    hop_xfer_rx_batch_state batch_state;
-    hop_xfer_task task;
-    hop_xfer_rx_entry_reservations entry_reservations;
-    wchar_t   dir[MAX_PATH];
-    wchar_t  *cur_path;
-        hop_xfer_rx_file_state file_state;
-    /* 图片累积 */
-    hop_xfer_rx_image_buffer image_buffer;
-    hop_xfer_rx_image_state image_state;
-    /* 本批顶层条目（用于最后设置剪贴板） */
-    wchar_t **tops;
-    int       ntop;
-    void *writer;
-    hop_xfer_rx_lifecycle *lifecycle;
-    hop_xfer_rx_done_receipt *done_receipt;
-    hop_xfer_rx_services services;
-} xfer_rx_context;
-
 static xfer_rx_context s_rx;
 
 static void rx_context_shutdown_data(void *context) {

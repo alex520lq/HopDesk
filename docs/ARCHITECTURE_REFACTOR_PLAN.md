@@ -398,7 +398,7 @@ tests/
 
 ## 11. 当前执行切片
 
-已完成两个 Core 状态模块拆分：ACK Window 与 Transfer Tracking 从 header-only `static inline` 实现迁移为 `.c` 实现 + 公开声明头文件；Windows/macOS app 递归源发现自动纳入新文件，Core 测试脚本和源码提取回归夹具显式链接生产模块。随后将 Windows/macOS 接收端重复的 RX buffer best-fit 池提取为共享 `xfer_buffer_pool.c/.h`，平台 writer 只通过显式 pool API 操作缓冲区；原有 slot/bytes 上限、budget ledger、best-fit 复用、release 和 dispose 语义保留。CI 曾发现 HA target、abort fixture、DONE_ACK fixture 未显式链接新模块，均已补齐；最新双平台 CI 已通过。
+已完成三个 Core 领域模块拆分：ACK Window、Transfer Tracking、RX Buffer Pool。最新又将 Windows/macOS 接收端重复的队列容量与 slot/byte accounting 抽取为 `xfer_rx_queue.c/.h`；平台层保留 ring storage、锁/条件变量和线程调度，Core 统一负责 slot/bytes admission、reservation/rollback/commit、dequeue/complete 和 drained 判断。新增 Core 单元测试覆盖满队列、busy writer、预留回滚、提交和排空。最新提交的 Windows/macOS CI 正在执行，尚未以通过状态结案。
 
 下一项执行：定义 Writer Queue 的显式 adapter contract，将队列/缓冲区所有权、Task Reservation、watchdog/status 观察接口分开；平台文件写入已先提取。接下来先提取 Windows writer worker，再按相同契约提取 macOS。与此同时补齐 Core include 边界检查与构建源清单重复检查。
 

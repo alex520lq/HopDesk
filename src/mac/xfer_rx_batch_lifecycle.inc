@@ -81,7 +81,7 @@ static void rx_begin_batch(uint32_t batch) {
 
     char session_hex[33]; hop_session_hex(&s_x.session, session_hex);
     snprintf(s_rx.dir, sizeof(s_rx.dir), "%s/HopDesk/%s/%u", temp_root(), session_hex, batch);
-    if (mkdir_p(s_rx.dir) != 0) {
+    if (hop_xfer_rx_fs_mkdir_p(s_rx.dir) != 0) {
         rx_terminate(batch,HOP_ABORT_DISK,1);
         return;
     }

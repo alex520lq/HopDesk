@@ -681,6 +681,13 @@ int main(void){
                 'static void fixture_begin_batch(void *context,uint32_t batch){(void)context;rx_begin_batch(batch);}',
                 'static int fixture_finish_batch(void *context,uint32_t batch,uint32_t ok,uint32_t total){(void)context;return rx_finish_batch(batch,ok,total);}'
             ]),
+            'RX_WRITER_CALLBACKS':'\n'.join([
+                'static void fixture_reset_file_error(void *context){(void)context;}',
+                'static int fixture_open_file(void *context,const void *native_path){(void)context;(void)native_path;return 1;}',
+                'static int fixture_write_file_chunk(void *context,hop_xfer_task *task,uint64_t offset,const uint8_t *data,uint32_t length){(void)context;return wq_push_data(task,offset,data,length);}',
+                'static void fixture_close_file(void *context){(void)context;wq_drain();rx_task task;memset(&task,0,sizeof(task));task.kind=RX_CLOSE;(void)wq_push(&task);wq_drain();}',
+                'static int fixture_file_error(void *context){(void)context;return 0;}'
+            ]),
             'CANCEL_LOCAL':extract(receiver,'rx_cancel_local'),
             'BIND_SESSION':extract(receiver,'rx_bind_session'),
             'POLL_CANCEL':extract(receiver,'rx_poll_cancel'),

@@ -11,6 +11,7 @@
 #include "xfer_rate.h"
 #include "xfer_ack_window.h"
 #include "xfer_buffer_pool.h"
+#include "xfer_rx_queue.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -875,6 +876,33 @@ static void test_xfer_buffer_pool(void) {
     CHECK(snapshot.rx_pool_bytes == 0);
 }
 
+static void test_xfer_rx_queue(void) {
+    hop_xfer_rx_queue q;
+    hop_xfer_rx_queue_init(&q, 2, 100);
+    CHECK(hop_xfer_rx_queue_can_push(&q, 60));
+    CHECK(hop_xfer_rx_queue_reserve(&q, 60));
+    CHECK(!hop_xfer_rx_queue_can_push(&q, 50));
+    CHECK(hop_xfer_rx_queue_commit_reserved(&q));
+    CHECK(q.queued_slots == 1 && q.reserved_slots == 0 && q.queued_bytes == 60);
+    CHECK(hop_xfer_rx_queue_dequeue(&q));
+    CHECK(!hop_xfer_rx_queue_dequeue(&q)); /* single writer; no second in-flight task */
+    CHECK(q.queued_slots == 0 && q.busy_slots == 1);
+    CHECK(hop_xfer_rx_queue_can_push(&q, 40)); /* slot available, bytes still account for active write */
+    CHECK(hop_xfer_rx_queue_push(&q, 40));
+    CHECK(!hop_xfer_rx_queue_can_push(&q, 1)); /* slot cap reached by busy + queued */
+    hop_xfer_rx_queue_complete(&q, 60);
+    CHECK(q.busy_slots == 0 && q.queued_bytes == 40);
+    CHECK(hop_xfer_rx_queue_dequeue(&q));
+    hop_xfer_rx_queue_complete(&q, 40);
+    CHECK(hop_xfer_rx_queue_drained(&q));
+    CHECK(q.queued_bytes == 0);
+
+    CHECK(hop_xfer_rx_queue_reserve(&q, 75));
+    hop_xfer_rx_queue_rollback(&q, 75);
+    CHECK(hop_xfer_rx_queue_drained(&q));
+    CHECK(q.queued_bytes == 0);
+}
+
 static void test_xfer_rate_limiter(void) {
     hop_xfer_rate_limiter rate;
     hop_xfer_rate_init(&rate,1000,100,2000,100,0);
@@ -1507,6 +1535,7 @@ int main(void) {
     RUN_TEST(test_xfer_global_budget);
     RUN_TEST(test_xfer_ack_window);
     RUN_TEST(test_xfer_buffer_pool);
+    RUN_TEST(test_xfer_rx_queue);
     RUN_TEST(test_xfer_rate_limiter);
     RUN_TEST(test_xfer_tracking_stage_timing);
     RUN_TEST(test_xfer_tracking_duplex_snapshot);

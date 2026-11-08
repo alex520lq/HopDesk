@@ -1,6 +1,7 @@
 #include "hop.h"
 #include "xfer_status.h"
 #include "xfer_rx_ack_handler.h"
+#include "xfer_status.h"
 
 int hop_xfer_rx_handle_file_ack(
     const uint8_t *payload, uint32_t payload_length,

@@ -454,3 +454,16 @@ tests/
 - 修复提交：`4374782a359ec6ed24a54fa1b0f903afe06a4c3d`。
 - GitHub Actions run `42471596814`（run #580）：Windows MSVC build、Core/regression、transfer protocol、TCP loopback、native control/data role + reconnect、updater syntax、package 全部成功；macOS build、Core/regression、transfer protocol、TCP loopback、control/listener loopback、bundle verification、package 全部成功。
 - 该结果证明本次 Writer Worker 与 HA 测试链接修复通过 CI；不代表 Writer Queue 已独立模块化，也不替代真实双机/慢盘/长时压力验收。
+
+
+### 2026-11-08：macOS Writer Worker bounded-exit parity
+
+- macOS Worker adapter now waits for an explicit worker-exit signal with a 3-second deadline before calling `pthread_join`; the worker thread closes its IO before publishing exit.
+- A timed-out wait preserves the live worker, task storage, callback context, mutex, and condition variable. A later join can retry; only successful join releases these resources.
+- Shared `tests/writer_worker_tests.c` now exercises a callback lasting longer than the join deadline, verifies retained state after timeout, retries join, and verifies restart.
+- Added EINTR-safe delay handling in the POSIX timeout test.
+- Updated `docs/WRITER_QUEUE_CONTRACT.md` with the platform join contract.
+- Latest validation: GitHub Actions run #585, run ID `42476724930`, commit `a46f1584f49b29ffa47dc6766d2d725ae756a4d0`: Windows build/Core/regression/protocol/network/HA/updater/package PASS; macOS build/Core/regression/protocol/network/control-listener/bundle/package PASS. Release publication skipped as expected for a PR.
+- This closes Worker join parity only. It does not complete Writer Queue extraction; queue ring, producer reservation/copy/commit, accounting synchronization, and Receiver wrappers remain in `xfer_receive.inc`.
+
+Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue behind an opaque API with explicit Task budget and write-time callbacks, link it as a real production compilation unit, and test it before applying the same semantic contract to macOS. Do not remove Receiver compatibility wrappers until both platform modules pass the same lifecycle and ownership tests.

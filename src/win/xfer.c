@@ -14,6 +14,7 @@
 #include "../core/xfer_task_history.h"
 #include "../core/xfer_rate.h"
 #include "../core/xfer_ack_window.h"
+#include "../core/xfer_buffer_pool.h"
 
 #if HOP_TASK_SESSION_BYTES != HOP_SESSION_BYTES
 #error Task and protocol session sizes differ

@@ -41,5 +41,38 @@ static void test_reservation_lifecycle(void) {
     CHECK(q.queued_bytes == 60);
 
     CHECK(hop_xfer_rx_queue_reserve(&q, 40));
-    CHECK(hop_xfer_rx_queue_rollback(&q, 40), 1);
+    hop_xfer_rx_queue_rollback(&q, 40);
+    CHECK(q.reserved_slots == 0 && q.queued_bytes == 60);
+    CHECK(hop_xfer_rx_queue_dequeue(&q));
+    hop_xfer_rx_queue_complete(&q, 60);
+    CHECK(hop_xfer_rx_queue_drained(&q));
+    CHECK(q.queued_bytes == 0);
+}
+
+static void test_busy_and_queued_accounting(void) {
+    hop_xfer_rx_queue q;
+    hop_xfer_rx_queue_init(&q, 2, 100);
+    CHECK(hop_xfer_rx_queue_push(&q, 60));
+    CHECK(hop_xfer_rx_queue_dequeue(&q));
+    CHECK(hop_xfer_rx_queue_can_push(&q, 40));
+    CHECK(hop_xfer_rx_queue_push(&q, 40));
+    CHECK(!hop_xfer_rx_queue_can_push(&q, 1));
+    CHECK(q.busy_slots == 1 && q.queued_slots == 1 && q.queued_bytes == 100);
+    hop_xfer_rx_queue_complete(&q, 60);
+    CHECK(q.busy_slots == 0 && q.queued_slots == 1 && q.queued_bytes == 40);
+    CHECK(hop_xfer_rx_queue_dequeue(&q));
+    hop_xfer_rx_queue_complete(&q, 40);
+    CHECK(hop_xfer_rx_queue_drained(&q));
+}
+
+int main(void) {
+    test_capacity_boundaries();
+    test_reservation_lifecycle();
+    test_busy_and_queued_accounting();
+    if (failures) {
+        fprintf(stderr, "RX queue tests failed: %d\\n", failures);
+        return 1;
+    }
+    puts("PASS: RX queue accounting boundaries and lifecycle");
+    return 0;
 }

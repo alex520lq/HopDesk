@@ -541,3 +541,17 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - CI 证据：Run #638（ID `42481821345`，head `d2800e9bd88d853cc20201d23146f224635a4c0a`）Windows 与 macOS 全部通过：应用构建、Core/regression（含新规则测试及真实 Receiver/IMAGE fixture）、Transfer protocol、TCP loopback、Windows native role/reconnect、macOS control/listener loopback、更新脚本检查和打包均 PASS；PR 发布步骤按预期 skipped。
 - 中间 Run #637 暴露 IMAGE DONE 独立 fixture 未包含新 Core header/link；已补齐 fixture include 和生产模块链接，Run #638 验证通过。
 - 本切片只抽取了共享 Batch transition policy，不代表 Receiver 协议/批次生命周期整体拆完。下一步仍需提取接收协议消息处理和 batch/file state ownership，并补齐 stop-vs-producer、cancel-vs-finish、late frame、disconnect/reconnect 等并发和故障注入测试。
+
+
+### 2026-11-08：Receiver Entry Reservation 表抽离为 Core owner
+
+- 新增 `src/core/xfer_rx_entry_reservations.[ch]`，集中拥有每批次按 FILE ID 索引的 entry reservation 标记和已登记 size。
+- Windows/macOS Receiver 不再分别持有 `reserved_entries[]` 与 `reserved_entry_sizes[]` 两组数组；统一使用 Core reservation table。
+- Core API 对 1-based ID 做边界校验，区分 NEW、ALREADY_HELD、SIZE_CONFLICT、BUDGET_REJECTED、INVALID。
+- 新 entry 只有在注入的 Task budget reserve callback 成功后才提交到表；相同 ID/size 重发不重复 reserve；相同 ID 不同 size 继续触发原有 TOO_LARGE batch abort。
+- batch clear/reset 统一清空表；Task manager 仍然是实际预算 owner，Core 表只记录该批次已登记的 entry identity/size，不复制或替代预算账本。
+- 新增 `tests/xfer_rx_entry_reservations_tests.c`，覆盖新建、重复幂等、size 冲突、预算拒绝后重试、ID 边界和 reset。
+- Windows/macOS Core tests、真实 ABORT Receiver fixture、Windows HA target 均直接链接生产 Core 模块。
+- CI 证据：Run #644（ID `42482474497`，head `f641997d5d70fb46037bcf8e83934ba43c96228b`）Windows/macOS 完整通过：app build、Core/regression（含新 reservation 测试和 Receiver fixture）、transfer protocol、TCP loopback、Windows native reconnect/control、macOS control/listener、updater syntax、package 全部 PASS。
+- 早期 Run #643 发现新 header 引用了错误的公共头；已改为 include 定义 `HOP_XFER_FILE_LIMIT` 的 `xfer_status.h`，Run #644 验证修复通过。
+- 下一步继续提取当前文件的 offset/received/CRC/failure 状态，之后再处理消息 dispatch 和更完整的 batch/file 生命周期编排。

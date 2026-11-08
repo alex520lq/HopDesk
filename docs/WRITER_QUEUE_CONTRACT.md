@@ -152,3 +152,12 @@ The cross-platform Receiver now calls shared pure policy functions in `src/core/
 - Production-linked unit and regression fixtures cover both platforms. Run #638 (ID `42481821345`, commit `d2800e9bd88d853cc20201d23146f224635a4c0a`) passed the complete Windows and macOS CI pipelines.
 
 This is a shared transition-policy extraction, not completion of the full Receiver protocol/batch lifecycle refactor. Remaining acceptance includes protocol message dispatch extraction, batch/file state ownership, and race/failure injection around cancellation, finish, late frames, and reconnect.
+
+
+## 2026-11-08 Receiver entry reservation table
+
+- Added `src/core/xfer_rx_entry_reservations.[ch]`; the shared table owns per-batch 1-based entry ID -> declared-size identity and the reservation marker.
+- Windows/macOS Receiver state no longer embeds duplicate `reserved_entries[]` and `reserved_entry_sizes[]` arrays.
+- New IDs call an injected Task-budget reservation callback before committing the table entry. Duplicate ID+size is idempotent; conflicting size, invalid ID, and budget rejection are distinct results.
+- Task Manager remains the budget owner. The table is only the per-batch identity/once-only guard and resets with batch state.
+- Production tests and both platforms' regression fixtures link the Core module. Run #644 (ID `42482474497`, commit `f641997d5d70fb46037bcf8e83934ba43c96228b`) passed complete Windows and macOS CI.

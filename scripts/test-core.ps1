@@ -120,6 +120,17 @@ if ($LASTEXITCODE -ne 0) { throw "RX filesystem test compilation failed ($LASTEX
 & $rxFs
 if ($LASTEXITCODE -ne 0) { throw "RX filesystem adapter tests failed ($LASTEXITCODE)" }
 
+$rxAckHandler = Join-Path $build 'hopdesk-rx-ack-handler-tests.exe'
+$rxAckHandlerSources = @((Join-Path $root 'tests/xfer_rx_ack_handler_tests.c'), (Join-Path $root 'src/core/xfer_rx_ack_handler.c'), (Join-Path $root 'src/core/xfer_validate.c'), (Join-Path $root 'src/core/protocol.c'), (Join-Path $root 'src/core/crc32.c'))
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$rxAckHandler @rxAckHandlerSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $rxAckHandler @rxAckHandlerSources
+}
+if ($LASTEXITCODE -ne 0) { throw "RX ACK handler test compilation failed ($LASTEXITCODE)" }
+& $rxAckHandler
+if ($LASTEXITCODE -ne 0) { throw "RX ACK handler tests failed ($LASTEXITCODE)" }
+
 $rxReceipt = Join-Path $build 'hopdesk-rx-receipt-tests.exe'
 $rxReceiptSources = @((Join-Path $root 'tests/xfer_rx_receipt_tests.c'), (Join-Path $root 'src/core/xfer_rx_receipt.c'), (Join-Path $root 'src/core/protocol.c'), (Join-Path $root 'src/core/crc32.c'))
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {

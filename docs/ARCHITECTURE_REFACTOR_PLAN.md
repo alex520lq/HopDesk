@@ -635,3 +635,13 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 当前边界仍是第一切片：handler 仍调用同一翻译单元中的 `rx_begin_batch`、`rx_terminate`、`rx_finish_batch`、Writer/Status/Clipboard helper；这些 helper 自身还需要进一步 context 化，handler 文件也尚未迁移为独立 `.c`。不可将完整依赖倒置或独立编译标记完成。
 - 提交：共享 services 契约 `c8f3d8b554fb13b795a5e343f6c750eb6e78add6`；Windows/macOS Context 注入与 handler 接入见分支后续提交。
 - 验证：当前切片 Windows/macOS CI 待运行。下一步先把 Batch Lifecycle、Writer、Status、Clipboard、ACK 发送这些 helper 包装成同一 services contract 的回调，再将 handler 编译单元独立化，并以同一套共享行为测试验证两端。
+
+
+### 2026-11-08：Receiver Context 类型从平台实现文件移至共享契约头文件（第三切片）
+
+- 新增 `src/core/xfer_rx_context.h`，集中定义 Receiver 的批次、Task、条目预算、当前文件、图片缓冲、顶层路径、Writer 引用、Lifecycle/Receipt 和 Platform Services。
+- Windows/macOS 原生路径字符差异通过 `hop_xfer_rx_path_char` 与固定容量常量封装；Windows 保留 UTF-16 宽路径，macOS 保留 POSIX UTF-8 路径，不改变实际文件系统行为。
+- 两端 `xfer_receive.inc` 不再重复定义 Context struct，只保留各自的实例及平台服务绑定；`xfer.c` 显式包含共享 Context 契约。
+- 回归脚本验证 Context 类型只在共享头文件定义，且包含服务接口；后续可以让协议 handler 独立编译，而不再依赖 include 顺序中的局部 struct 声明。
+- 本切片仍未把协议 handler 移出原翻译单元；handler 还依赖批次生命周期、状态统计和 Writer/Clipboard 操作。下一步会继续把这些依赖纳入 Context/Services，而不是用 extern 暴露更多全局变量。
+- CI：等待本切片提交后的 Windows/macOS 全量验证。

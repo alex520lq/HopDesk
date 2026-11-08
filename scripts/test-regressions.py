@@ -697,8 +697,8 @@ int main(void){
         assert 'typedef struct xfer_rx_context' in context_header
         state_contract='#include "xfer_rx_context.h"\nstatic xfer_rx_context s_rx;'
         dispatch_names=[]
-        dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_handler_terminate','rx_handler_begin_batch','rx_handler_finish_batch','rx_ack_deliver_file','rx_ack_deliver_done','rx_now_ns','rx_reserve_entry_budget'])+'\n'+extract(receiver,'rx_dispatch_file_begin')+'\n'+extract(receiver,'rx_dispatch_file_end')+'\n'+'\n'.join(extract(receiver,name) for name in ['hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_handle_file_ack','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_handle_done_ack'])
-        dispatch_handlers+='\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { rx_dispatch_file_begin, hop_xfer_rx_handle_image_begin, hop_xfer_rx_handle_file_chunk, rx_dispatch_file_end, hop_xfer_rx_handle_file_ack, hop_xfer_rx_handle_abort, hop_xfer_rx_handle_done, hop_xfer_rx_handle_done_ack };\n'
+        dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_handler_terminate','rx_handler_begin_batch','rx_handler_finish_batch','rx_ack_deliver_file','rx_ack_deliver_done','rx_now_ns','rx_reserve_entry_budget'])+'\n'+extract(receiver,'rx_dispatch_file_begin')+'\n'+extract(receiver,'rx_dispatch_file_end')+'\n'+'\n'.join(extract(receiver,name) for name in ['hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_dispatch_file_ack_message','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_dispatch_done_ack_message'])
+        dispatch_handlers+='\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { rx_dispatch_file_begin, hop_xfer_rx_handle_image_begin, hop_xfer_rx_handle_file_chunk, rx_dispatch_file_end, hop_xfer_rx_dispatch_file_ack_message, hop_xfer_rx_handle_abort, hop_xfer_rx_handle_done, hop_xfer_rx_dispatch_done_ack_message };\n'
         fixture=(ROOT/'tests/receive_abort_fixture.c.in').read_text(encoding='utf-8')
         values={
             'RX_STATE':state_contract,
@@ -736,7 +736,7 @@ int main(void){
             assert 'xfer_rx_context *rx = (xfer_rx_context *)context;' in handler
             assert not any(token in handler for token in ['s_rx.', 's_x.', 's_ack.', 's_wq']), f'{platform} {handler_name} still reads receiver/platform globals'
         assert 'rx_handler_begin_batch(rx, batch)' in extract(receiver,'hop_xfer_rx_handle_image_begin')
-        for core_handler in ['hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_handle_file_ack','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_handle_done_ack']:
+        for core_handler in ['hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_dispatch_file_ack_message','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_dispatch_done_ack_message']:
             handler=extract(receiver,core_handler)
             assert 'xfer_rx_context *rx = (xfer_rx_context *)context;' in handler
             assert not any(token in handler for token in ['s_rx.', 's_x.', 's_ack.', 's_wq'])
@@ -800,8 +800,8 @@ int main(void){
         assert all(name in services for name in ['shutdown_data_channel','mark_sender_aborted','send_file_ack','send_done_ack','deliver_ack','terminate_batch','begin_batch','finish_batch','reset_file_error','open_file','write_file_chunk','close_file','file_error'])
         on_data_msg=extract(receiver,'on_data_msg')
         assert 'rx_context_configure();' in on_data_msg and 's_rx_dispatch_handlers, &s_rx' in on_data_msg
-        assert 'hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, rx)' in file_ack_handler
-        assert 'hop_xfer_rx_handle_done_ack(p, len, rx_ack_deliver_done, rx)' in done_ack_handler
+        assert 'hop_xfer_rx_dispatch_file_ack_message(p, len, rx_ack_deliver_file, rx)' in file_ack_handler
+        assert 'hop_xfer_rx_dispatch_done_ack_message(p, len, rx_ack_deliver_done, rx)' in done_ack_handler
         assert 'rx->services.terminate_batch' in extract(receiver,'rx_handler_terminate')
         assert 'rx->services.begin_batch' in extract(receiver,'rx_handler_begin_batch')
         assert 'rx->services.finish_batch' in extract(receiver,'rx_handler_finish_batch')

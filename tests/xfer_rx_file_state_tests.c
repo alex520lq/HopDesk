@@ -24,7 +24,15 @@ int main(void) {
     assert(state.crc == hop_xfer_file_crc_step(first_crc, 4, 0xabcdef01));
     assert(hop_xfer_rx_file_state_check_chunk(&state, 9, 1) == HOP_RX_FILE_CHUNK_INVALID);
 
-    hop_xfer_rx_file_state_fail(&state, HOP_FILE_ACK_CRC);
+    assert(hop_xfer_rx_file_state_ack(&state, HOP_FILE_OK, 0, state.crc) == HOP_FILE_ACK_OK);
+    assert(hop_xfer_rx_file_state_ack(&state, HOP_FILE_IO_ERROR, 0, state.crc) == HOP_FILE_ACK_DISK);
+    assert(hop_xfer_rx_file_state_ack(&state, HOP_FILE_OK, 1, state.crc) == HOP_FILE_ACK_DISK);
+    assert(hop_xfer_rx_file_state_ack(&state, HOP_FILE_OK, 0, state.crc + 1) == HOP_FILE_ACK_OK);
+    /* An incomplete transfer is CRC failure even if the peer CRC happens to match. */
+    hop_xfer_rx_file_state_set_size(&state, 10);
+    assert(hop_xfer_rx_file_state_ack(&state, HOP_FILE_OK, 0, state.crc) == HOP_FILE_ACK_CRC);
+    hop_xfer_rx_file_state_fail(&state, HOP_FILE_ACK_BADPATH);
+    assert(hop_xfer_rx_file_state_ack(&state, HOP_FILE_IO_ERROR, 1, 0) == HOP_FILE_ACK_BADPATH);
     assert(hop_xfer_rx_file_state_check_chunk(&state, 9, 0) == HOP_RX_FILE_CHUNK_ALREADY_FAILED);
     assert(!hop_xfer_rx_file_state_record_chunk(&state, 9, 0, 0));
 

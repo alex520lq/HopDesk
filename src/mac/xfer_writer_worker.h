@@ -2,6 +2,7 @@
 #define HOP_MAC_XFER_WRITER_WORKER_H
 
 #include <stddef.h>
+#include <pthread.h>
 
 typedef struct {
     int (*take)(void *context, void *task_out);
@@ -16,7 +17,7 @@ typedef struct {
     size_t task_size;
     void *task_storage;
     int state;
-    unsigned long thread_storage[8];
+    pthread_t thread;
 } hop_writer_worker;
 
 /* Callback context and its referenced state must outlive a successful join. */

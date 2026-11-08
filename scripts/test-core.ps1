@@ -60,3 +60,14 @@ $global:LASTEXITCODE = 0 # Expected watchdog exit 70 is a successful test.
 & python (Join-Path $root 'scripts/test-updates.py')
 if ($LASTEXITCODE -ne 0) { throw "Update lifecycle regressions failed" }
 & (Join-Path $PSScriptRoot 'test-update-windows.ps1')
+
+$writerIo = Join-Path $build 'hopdesk-writer-io-tests.exe'
+$writerIoSources = @((Join-Path $root 'tests/writer_io_tests.c'), (Join-Path $root 'src/win/xfer_writer_io.c'))
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I (Join-Path $root 'src/win') /Fe:$writerIo @writerIoSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I (Join-Path $root 'src/win') -o $writerIo @writerIoSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Writer IO adapter compilation failed ($LASTEXITCODE)" }
+& $writerIo
+if ($LASTEXITCODE -ne 0) { throw "Writer IO adapter tests failed ($LASTEXITCODE)" }

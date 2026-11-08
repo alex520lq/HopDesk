@@ -20,7 +20,8 @@ clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-
   "$ROOT/src/core/xfer_ack_window.c" \
   "$ROOT/src/core/xfer_tracking.c" \
   "$ROOT/src/core/xfer_buffer_pool.c" \
-  "$ROOT/src/core/xfer_rx_queue.c"
+  "$ROOT/src/core/xfer_rx_queue.c" \
+  "$ROOT/src/core/xfer_rx_batch_rules.c"
 "$BUILD/hopdesk-core-tests"
 python3 "$ROOT/scripts/test-regressions.py"
 clang -std=c11 -Wall -Wextra -Werror -pthread -I "$ROOT/src/core" \
@@ -72,3 +73,8 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
   "$ROOT/tests/xfer_rx_lifecycle_tests.c" "$ROOT/src/core/xfer_rx_lifecycle.c" \
   "$ROOT/src/core/protocol.c" "$ROOT/src/core/crc32.c"
 "$BUILD/hopdesk-rx-lifecycle-tests"
+
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I "$ROOT/src/core" -o "$BUILD/hopdesk-rx-batch-rules-tests" \
+  "$ROOT/tests/xfer_rx_batch_rules_tests.c" "$ROOT/src/core/xfer_rx_batch_rules.c"
+"$BUILD/hopdesk-rx-batch-rules-tests"

@@ -19,7 +19,8 @@ $sources = @(
     (Join-Path $root 'src/core/xfer_ack_window.c'),
     (Join-Path $root 'src/core/xfer_tracking.c'),
     (Join-Path $root 'src/core/xfer_buffer_pool.c'),
-    (Join-Path $root 'src/core/xfer_rx_queue.c')
+    (Join-Path $root 'src/core/xfer_rx_queue.c'),
+    (Join-Path $root 'src/core/xfer_rx_batch_rules.c')
 )
 $inc = Join-Path $root 'src/core'
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
@@ -127,3 +128,14 @@ if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
 if ($LASTEXITCODE -ne 0) { throw "RX lifecycle test compilation failed ($LASTEXITCODE)" }
 & $rxLifecycle
 if ($LASTEXITCODE -ne 0) { throw "RX lifecycle tests failed ($LASTEXITCODE)" }
+
+$rxBatchRules = Join-Path $build 'hopdesk-rx-batch-rules-tests.exe'
+$rxBatchRulesSources = @((Join-Path $root 'tests/xfer_rx_batch_rules_tests.c'), (Join-Path $root 'src/core/xfer_rx_batch_rules.c'))
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$rxBatchRules @rxBatchRulesSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $rxBatchRules @rxBatchRulesSources
+}
+if ($LASTEXITCODE -ne 0) { throw "RX batch rules test compilation failed ($LASTEXITCODE)" }
+& $rxBatchRules
+if ($LASTEXITCODE -ne 0) { throw "RX batch rules tests failed ($LASTEXITCODE)" }

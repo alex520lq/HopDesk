@@ -8,6 +8,7 @@
 #include "xfer_task.h"
 #include "xfer_rx_receipt.h"
 #include "xfer_rx_lifecycle.h"
+#include "xfer_rx_batch_rules.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>

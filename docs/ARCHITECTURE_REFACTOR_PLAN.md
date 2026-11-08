@@ -655,3 +655,13 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 中止/重连 fixture 已注入相同服务回调，继续执行真实生产 Handler 与生命周期函数；回归断言确保 Handler 不再直接调用这些平台生命周期入口。
 - 下一步继续把 Writer、路径列表和状态遥测操作纳入服务接口，待 Handler 不再依赖 include-local helper 后，再把两端协议 handler 移为独立生产 `.c` 编译单元。
 - CI：等待本切片 Windows/macOS 全量验证。
+
+
+### 2026-11-09：Receiver 写盘队列 Services 化（第五切片）
+
+- `hop_xfer_rx_services` 增加文件错误重置、文件打开、数据块入队、文件关闭、写队列错误读取五个接口。
+- Windows/macOS Adapter 分别实现服务：保留 Windows 宽字符路径和 macOS UTF-8 路径；写线程仍独占文件句柄，原有有界队列、背压和 Task RX buffer 预算逻辑不变。
+- 协议 Handler 不再直接调用 `wq_push`、`wq_push_data`、`wq_error_get`、`rx_close_file` 或 writer error reset；所有写盘动作均通过 `xfer_rx_context.services`。
+- 中止/重连 fixture 注入 writer service doubles，继续覆盖 Handler 与生命周期行为；源码断言阻止未来 Handler 直接访问队列内部。
+- 下一切片优先处理路径列表（top-level clipboard paths）和状态/计时遥测服务；完成后可把协议 Handler 移到独立平台编译单元，并继续将纯协议校验迁入 Core。
+- CI：本切片提交后等待 Windows/macOS 全量验证。

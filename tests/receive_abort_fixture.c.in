@@ -11,6 +11,7 @@
 #include "xfer_rx_batch_rules.h"
 #include "xfer_rx_entry_reservations.h"
 #include "xfer_rx_file_state.h"
+#include "xfer_rx_image_state.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>

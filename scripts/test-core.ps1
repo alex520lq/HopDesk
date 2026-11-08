@@ -163,3 +163,14 @@ if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
 if ($LASTEXITCODE -ne 0) { throw "RX file state test compilation failed ($LASTEXITCODE)" }
 & $rxFileState
 if ($LASTEXITCODE -ne 0) { throw "RX file state tests failed ($LASTEXITCODE)" }
+
+$rxImageState = Join-Path $build 'hopdesk-rx-image-state-tests.exe'
+$rxImageStateSources = @((Join-Path $root 'tests/xfer_rx_image_state_tests.c'), (Join-Path $root 'src/core/xfer_rx_image_state.c'))
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$rxImageState @rxImageStateSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $rxImageState @rxImageStateSources
+}
+if ($LASTEXITCODE -ne 0) { throw "RX image state test compilation failed ($LASTEXITCODE)" }
+& $rxImageState
+if ($LASTEXITCODE -ne 0) { throw "RX image state tests failed ($LASTEXITCODE)" }

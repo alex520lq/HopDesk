@@ -213,7 +213,6 @@ static int wq_start(void) {
     memset(&s_wq, 0, sizeof(s_wq));
     hop_xfer_buffer_pool_init(&s_wq.pool);
     hop_xfer_rx_queue_init(&s_wq.accounting, RX_Q_SLOTS, RX_Q_MAX_BYTES);
-    hop_xfer_rx_queue_init(&s_wq.accounting, RX_Q_SLOTS, RX_Q_MAX_BYTES);
     hop_writer_io_init(&s_wq.io);
     InitializeCriticalSection(&s_wq.lock);
     InitializeConditionVariable(&s_wq.cv_work);

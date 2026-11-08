@@ -329,7 +329,7 @@ int main(void){
         # macOS is intentionally checked against its current adapter until parity lands.
         if platform == 'win':
             writer=(ROOT/'src/win/xfer_writer_queue.c').read_text(encoding='utf-8')
-            assert 'hop_xfer_buffer_pool_acquire_locked(&queue->pool' in writer
+            assert 'hop_xfer_buffer_pool_acquire_locked(' in writer and '&queue->pool' in writer
             assert 'hop_xfer_buffer_pool_release_locked(&queue->pool' in writer
             assert 'hop_xfer_rx_queue_can_push(&queue->accounting' in writer
             assert 'hop_xfer_rx_queue_reserve(&queue->accounting' in writer

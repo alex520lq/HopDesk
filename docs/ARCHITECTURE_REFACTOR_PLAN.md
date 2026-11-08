@@ -205,6 +205,8 @@ tests/
 
 **目标**：首先解除 `xfer_receive.inc` 对发送端翻译单元静态状态的隐式依赖。
 
+当前进展：Windows/macOS writer queue 中的 buffer pool 算法已抽取为共享 Core 模块；writer thread、平台文件句柄、watchdog/status/task callback 仍留在 include 中，不能把阶段 2 标记为完成。
+
 顺序：
 1. 绘制 receiver include 的静态依赖表；明确接收状态、writer 状态和外部回调。
 2. 提取 Writer Queue 契约：start / enqueue-open / enqueue-write / enqueue-close / drain / stop / snapshot。
@@ -384,8 +386,8 @@ tests/
 |---|---|---|---|
 | 基线核对 | 完成 | `68818b3f093af20385c3fba5785405eb4ac8d634` | 已核实 main HEAD、PR/分支状态；完成主要模块与函数簇审计附件。动态调用图、全量资源所有权追踪仍作为阶段 0 深度审计待办。 |
 | 阶段 0：深度审计 | 进行中 | `eaf8488b21c87201297aaf9edcdad2660bab76f2` | 已建立模块/函数簇和平台差异清单；仍需逐项追踪所有资源 owner、锁顺序、线程退出与回调迟到路径。PR 基线双平台 CI 已通过。 |
-| 阶段 1：构建与模块边界 | 进行中 | `01974e551e16a11d16f0846286b72ade5e553917` | app 构建递归发现已完成；ACK Window 已拆为独立生产编译单元并接入两端 Core 测试。Core 平台 include 检查、源清单重复检查和更多模块测试待完成。 |
-| 阶段 2：接收端/Writer | 待完成 | — | 待先抽取 writer queue，再拆 receiver protocol/lifecycle；Windows/macOS 同步。 |
+| 阶段 1：构建与模块边界 | 进行中 | `6a994e691c844c60b3b15615f299633531283c13` | app 构建递归发现已完成；ACK Window、Transfer Tracking、RX Buffer Pool 已成为独立生产编译单元并接入两端测试。Core 平台 include 检查、显式 source manifest/重复源检查仍待完成。 |
+| 阶段 2：接收端/Writer | 进行中 | `36162735527a9cf43628f6baa33e91f1d24640dc` | 两端重复的 RX best-fit buffer pool 已抽取为共享 Core 模块；writer thread、文件 IO adapter、队列接口与 receiver lifecycle 尚未拆完。最新 Windows/macOS CI 全绿。 |
 | 阶段 3：Sender/Service | 待完成 | — | 待实施。 |
 | 阶段 4：共享 Transfer Domain | 待完成 | — | 待实施。 |
 | 阶段 5：Clipboard | 待完成 | — | 待实施。 |
@@ -396,8 +398,8 @@ tests/
 
 ## 11. 当前执行切片
 
-已完成第一个真实模块拆分：ACK Window 从 `xfer_ack_window.h` 的 header-only `static inline` 实现迁移为 `xfer_ack_window.c` + 公开声明头文件；Windows/macOS app 递归源发现自动纳入新文件，两个 Core 测试脚本显式链接该生产模块。原有 ACK 状态、窗口容量、deadline race 和 checkpoint 测试保留。首轮 CI 暴露出独立 HA 测试目标仍显式链接 `xfer.c` 却未链接新 ACK 模块；已同步修正 `scripts/test-ha.ps1`，并将该类显式测试目标纳入后续模块迁移检查。
+已完成两个 Core 状态模块拆分：ACK Window 与 Transfer Tracking 从 header-only `static inline` 实现迁移为 `.c` 实现 + 公开声明头文件；Windows/macOS app 递归源发现自动纳入新文件，Core 测试脚本和源码提取回归夹具显式链接生产模块。随后将 Windows/macOS 接收端重复的 RX buffer best-fit 池提取为共享 `xfer_buffer_pool.c/.h`，平台 writer 只通过显式 pool API 操作缓冲区；原有 slot/bytes 上限、budget ledger、best-fit 复用、release 和 dispose 语义保留。CI 曾发现 HA target、abort fixture、DONE_ACK fixture 未显式链接新模块，均已补齐；最新双平台 CI 已通过。
 
-下一项执行：补齐 Core include 边界检查与模块源清单验证，然后进入阶段 2。Writer Queue 仍与 Receiver 状态、Task/Reservation 生命周期、watchdog/status 回调和平台文件句柄交织，不能直接把 `.inc` 改成 `.c`；先定义 writer adapter contract，再按 Windows → macOS 对称提取。
+下一项执行：定义 Writer Queue 的显式 adapter contract，将队列/缓冲区所有权、Task Reservation、watchdog/status 观察接口与平台文件写入分开；随后先提取 Windows writer worker，再按相同契约提取 macOS。与此同时补齐 Core include 边界检查与构建源清单重复检查。
 
 此顺序是为了先确保新模块会被本地构建和 CI 正确编译，再拆解最有隐式依赖、最容易引入生命周期回归的接收端代码。

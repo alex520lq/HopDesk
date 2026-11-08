@@ -106,15 +106,9 @@ static struct {
     hop_xfer_rx_entry_reservations entry_reservations;
     char     dir[4096];
     char    *cur_path;
-    uint32_t cur_id;
     int      cur_is_image;
     int      cur_is_dir;    /* 目录在 BEGIN 时已登记，FILE_END 不能再登记一次 */
-    int      cur_fail;      /* 本条目已判死：-1 = 正常，否则是 FILE_END 要回的 ACK 状态。
-                             * 坏路径和坏数据都在这里落定，FILE_END 只负责回执。 */
-    uint64_t cur_size;      /* 声明的大小：超出就拒收，防止被灌成无限大 */
-    uint64_t cur_received; /* 已按连续偏移成功入队的文件字节数 */
-    /* 当前文件的校验累加：每块 CRC 折进来，FILE_END 时与发送端比对 */
-    uint32_t fcrc;
+    hop_xfer_rx_file_state file_state;
     uint8_t *img;
     size_t   img_cap, img_len, img_expected;
     int      img_w, img_h, img_stride;
@@ -150,13 +144,9 @@ static void rx_clear_state(void) {
     s_rx.ntop = 0;
     s_rx.active = 0;
     s_rx.batch = 0;
-    s_rx.fcrc = 0;
-    s_rx.cur_id = 0;
-    s_rx.cur_size = 0;
-    s_rx.cur_received = 0;
+    hop_xfer_rx_file_state_reset(&s_rx.file_state);
     s_rx.cur_is_image = s_rx.cur_is_dir = 0;
     s_rx.img_w = s_rx.img_h = s_rx.img_stride = 0;
-    s_rx.cur_fail = -1;
     hop_xfer_rx_entry_reservations_reset(&s_rx.entry_reservations);
     hop_xfer_task_dispose(&s_rx.task);
     s_rx.dir[0] = '\0';
@@ -491,19 +481,15 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             /* 先登记当前条目，确保坏路径也能在 FILE_END 时回 ACK。 */
             free(s_rx.cur_path);
             s_rx.cur_path     = NULL;
-            s_rx.cur_id       = id;
+            hop_xfer_rx_file_state_begin(&s_rx.file_state, id);
             s_rx.cur_is_image = 0;
             s_rx.cur_is_dir   = (flags & HOP_FILE_FLAG_DIR) ? 1 : 0;
-            s_rx.cur_fail     = -1;
-            s_rx.cur_size     = 0;
-            s_rx.cur_received = 0;
-            s_rx.fcrc         = 0;
             hop_writer_queue_error_reset(s_wq);
 
             char rel[HOP_PATH_LEN_MAX + 1];
             if (!hop_xfer_relpath_bytes_safe(msg.relpath, plen)) {
                 hop_log(HOP_LOG_WARN, "xfer: unsafe relative path rejected");
-                s_rx.cur_fail = HOP_FILE_ACK_BADPATH;
+                hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_BADPATH);
                 break;
             }
             memcpy(rel, msg.relpath, plen);
@@ -514,8 +500,8 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             snprintf(path, sizeof(path), "%s/%s", s_rx.dir, rel);
 
             s_rx.cur_path = strdup(path);
-            s_rx.cur_size = size;
-            if (!s_rx.cur_path) { s_rx.cur_fail=HOP_FILE_ACK_DISK; break; }
+            hop_xfer_rx_file_state_set_size(&s_rx.file_state, size);
+            if (!s_rx.cur_path) { hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_DISK); break; }
             rx_remove_top(s_rx.cur_path);
             hop_xfer_rx_entry_reserve_result reservation =
                 hop_xfer_rx_entry_reservations_reserve(&s_rx.entry_reservations, id, size,
@@ -529,12 +515,12 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 
             if (s_rx.cur_is_dir) {
                 if (mkdir_p(path) != 0) {
-                    s_rx.cur_fail = HOP_FILE_ACK_DISK;
+                    hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_DISK);
                     break;
                 }
                 /* 顶层目录才进剪贴板清单 */
                 if (!strchr(rel, '/') && !rx_add_top(path))
-                    s_rx.cur_fail = HOP_FILE_ACK_DISK;
+                    hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_DISK);
             } else {
                 /* 建父目录；失败时不能把后续文件错误地 ACK 成功。 */
                 char *sep = strrchr(path, '/');
@@ -543,7 +529,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                     int parent_ok = mkdir_p(path) == 0;
                     *sep = '/';
                     if (!parent_ok) {
-                        s_rx.cur_fail = HOP_FILE_ACK_DISK;
+                        hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_DISK);
                         break;
                     }
                 }
@@ -553,7 +539,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 memset(&t, 0, sizeof(t));
                 t.kind = RX_OPEN;
                 snprintf(t.path, sizeof(t.path), "%s", path);
-                if (!wq_push(&t)) s_rx.cur_fail = HOP_FILE_ACK_DISK;
+                if (!wq_push(&t)) hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_DISK);
 
                 /* 不在这里进剪贴板清单 —— 此刻文件还没写成功。
                  * 写盘失败 / 校验失败的文件绝不能出现在剪贴板里，
@@ -599,7 +585,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 return;
             }
             s_rx.cur_is_image = 1;
-            s_rx.cur_id = msg.id;
+            hop_xfer_rx_file_state_begin(&s_rx.file_state, msg.id);
             s_rx.img_w = w;
             s_rx.img_h = h;
             s_rx.img_stride = stride;
@@ -618,13 +604,13 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             uint32_t crc = hop_get_be32(p + 16);
             if (!hop_xfer_chunk_valid(p, len,
                     s_rx.cur_is_image ? s_rx.img_expected :
-                        (s_rx.cur_fail >= 0 ? UINT64_MAX : s_rx.cur_size),
+                        (s_rx.file_state.failure >= 0 ? UINT64_MAX : s_rx.file_state.declared_size),
                     s_rx.cur_is_image)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed or out-of-range chunk; aborting receive");
                 rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
-            if (hop_get_be32(p) != s_rx.cur_id) {
+            if (hop_get_be32(p) != s_rx.file_state.id) {
                 rx_terminate(s_rx.batch,HOP_ABORT_CRC,1);
                 return;
             }
@@ -648,7 +634,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 if (s_rx.cur_is_image) {
                     rx_terminate(s_rx.batch,HOP_ABORT_CRC,1);
                 } else {
-                    s_rx.cur_fail = HOP_FILE_ACK_CRC;
+                    hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_CRC);
                 }
                 return;
             }
@@ -677,41 +663,37 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                 memcpy(s_rx.img + off, data, n);
                 if (need > s_rx.img_len) s_rx.img_len = need;
                 uint64_t receive_elapsed_ns=rate_now_ns()-receive_started_ns;
-                status_chunk_timed(HOP_XFER_DIR_RECEIVE,s_rx.batch,s_rx.cur_id,off,n,
+                status_chunk_timed(HOP_XFER_DIR_RECEIVE,s_rx.batch,s_rx.file_state.id,off,n,
                                    0,crc_elapsed_ns,0,receive_elapsed_ns);
                 break;
             }
 
             /* TCP is ordered: reject gaps, overlaps and chunks after a prior
              * file failure instead of creating sparse or truncated files. */
-            if (s_rx.cur_fail >= 0) break;
-            if (off != s_rx.cur_received || off > s_rx.cur_size ||
-                (uint64_t)n > s_rx.cur_size - off) {
+            hop_xfer_rx_file_chunk_check chunk_check =
+                hop_xfer_rx_file_state_check_chunk(&s_rx.file_state, off, n);
+            if (chunk_check == HOP_RX_FILE_CHUNK_ALREADY_FAILED) break;
+            if (chunk_check != HOP_RX_FILE_CHUNK_ACCEPT) {
                 hop_log(HOP_LOG_ERROR, "xfer: non-contiguous file chunk rejected (off=%llu received=%llu size=%llu)",
-                        (unsigned long long)off, (unsigned long long)s_rx.cur_received,
-                        (unsigned long long)s_rx.cur_size);
-                s_rx.cur_fail = HOP_FILE_ACK_CRC;
+                        (unsigned long long)off, (unsigned long long)s_rx.file_state.received,
+                        (unsigned long long)s_rx.file_state.declared_size);
+                hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_CRC);
                 break;
-            }
-            /* 不许超出声明的大小：否则对端能一直灌，把磁盘写爆 */
-            if (off + n > s_rx.cur_size) {
-                hop_log(HOP_LOG_ERROR, "xfer: chunk beyond declared size (%llu+%u > %llu)",
-                        (unsigned long long)off, n, (unsigned long long)s_rx.cur_size);
-                return;
             }
 
             /* 校验通过才入队。拷贝一份交给写线程 —— 解码器的缓冲
              * 在回调返回后就被释放了，不能把指针递出去。 */
             if (!wq_push_data(&s_rx.task, off, data, n)) {
-                s_rx.cur_fail = HOP_FILE_ACK_DISK;
+                hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_DISK);
                 break;
             }
-            s_rx.cur_received += n;
-            /* 文件 CRC 折入本块 CRC：既覆盖数据（块 CRC 已验证），
-             * 也覆盖顺序与偏移，且不需要把整份文件重算一遍 */
-            s_rx.fcrc = hop_xfer_file_crc_step(s_rx.fcrc, off, crc);
+            /* Queue admission succeeded; only now commit offset and file CRC. */
+            if (!hop_xfer_rx_file_state_record_chunk(&s_rx.file_state, off, n, crc)) {
+                hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_CRC);
+                break;
+            }
             uint64_t receive_elapsed_ns=rate_now_ns()-receive_started_ns;
-            status_chunk_timed(HOP_XFER_DIR_RECEIVE,s_rx.batch,s_rx.cur_id,off,n,
+            status_chunk_timed(HOP_XFER_DIR_RECEIVE,s_rx.batch,s_rx.file_state.id,off,n,
                                0,crc_elapsed_ns,0,receive_elapsed_ns);
             break;
         }
@@ -720,7 +702,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             hop_xfer_file_end_msg end_msg;
             if (!hop_xfer_decode_file_end(p, len, &end_msg)) return;
             uint32_t id = end_msg.id;
-            if (!s_rx.active || id != s_rx.cur_id) return;
+            if (!s_rx.active || !hop_xfer_rx_file_state_matches(&s_rx.file_state, id)) return;
             uint32_t want = end_msg.file_crc;
             uint8_t status = end_msg.status;
 
@@ -735,8 +717,8 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
              * writer's still-open handle. */
             if (!s_rx.cur_is_dir) rx_close_file();
 
-            if (s_rx.cur_fail >= 0) {
-                ack = s_rx.cur_fail;
+            if (s_rx.file_state.failure >= 0) {
+                ack = s_rx.file_state.failure;
             } else {
                 if (wq_error_get()) {
                     hop_log(HOP_LOG_ERROR, "xfer: disk error, %s incomplete",
@@ -746,15 +728,15 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
                     hop_log(HOP_LOG_ERROR, "xfer: peer reported status %u for %s",
                             (unsigned)status, s_rx.cur_path ? s_rx.cur_path : "?");
                     ack = HOP_FILE_ACK_DISK;
-                } else if (s_rx.cur_received != s_rx.cur_size) {
+                } else if (s_rx.file_state.received != s_rx.file_state.declared_size) {
                     hop_log(HOP_LOG_ERROR, "xfer: incomplete file rejected (%llu/%llu bytes)",
-                            (unsigned long long)s_rx.cur_received,
-                            (unsigned long long)s_rx.cur_size);
+                            (unsigned long long)s_rx.file_state.received,
+                            (unsigned long long)s_rx.file_state.declared_size);
                     ack = HOP_FILE_ACK_CRC;
-                } else if (want != s_rx.fcrc) {
+                } else if (want != s_rx.file_state.crc) {
                     hop_log(HOP_LOG_ERROR,
                             "xfer: FILE CRC MISMATCH %s (expect %08x got %08x)",
-                            s_rx.cur_path ? s_rx.cur_path : "?", want, s_rx.fcrc);
+                            s_rx.cur_path ? s_rx.cur_path : "?", want, s_rx.file_state.crc);
                     ack = HOP_FILE_ACK_CRC;
                 } else if (s_rx.cur_path && !s_rx.cur_is_dir) {
                     /* 落盘成功、校验通过，才登记为可粘贴条目。

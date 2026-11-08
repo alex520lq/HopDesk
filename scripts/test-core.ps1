@@ -21,7 +21,8 @@ $sources = @(
     (Join-Path $root 'src/core/xfer_buffer_pool.c'),
     (Join-Path $root 'src/core/xfer_rx_queue.c'),
     (Join-Path $root 'src/core/xfer_rx_batch_rules.c'),
-    (Join-Path $root 'src/core/xfer_rx_entry_reservations.c')
+    (Join-Path $root 'src/core/xfer_rx_entry_reservations.c'),
+    (Join-Path $root 'src/core/xfer_rx_file_state.c')
 )
 $inc = Join-Path $root 'src/core'
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
@@ -151,3 +152,14 @@ if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
 if ($LASTEXITCODE -ne 0) { throw "RX entry reservation test compilation failed ($LASTEXITCODE)" }
 & $rxEntryReservations
 if ($LASTEXITCODE -ne 0) { throw "RX entry reservation tests failed ($LASTEXITCODE)" }
+
+$rxFileState = Join-Path $build 'hopdesk-rx-file-state-tests.exe'
+$rxFileStateSources = @((Join-Path $root 'tests/xfer_rx_file_state_tests.c'), (Join-Path $root 'src/core/xfer_rx_file_state.c'), (Join-Path $root 'src/core/protocol.c'), (Join-Path $root 'src/core/crc32.c'))
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$rxFileState @rxFileStateSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $rxFileState @rxFileStateSources
+}
+if ($LASTEXITCODE -ne 0) { throw "RX file state test compilation failed ($LASTEXITCODE)" }
+& $rxFileState
+if ($LASTEXITCODE -ne 0) { throw "RX file state tests failed ($LASTEXITCODE)" }

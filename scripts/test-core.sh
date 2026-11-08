@@ -22,7 +22,8 @@ clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-
   "$ROOT/src/core/xfer_buffer_pool.c" \
   "$ROOT/src/core/xfer_rx_queue.c" \
   "$ROOT/src/core/xfer_rx_batch_rules.c" \
-  "$ROOT/src/core/xfer_rx_entry_reservations.c"
+  "$ROOT/src/core/xfer_rx_entry_reservations.c" \
+  "$ROOT/src/core/xfer_rx_file_state.c"
 "$BUILD/hopdesk-core-tests"
 python3 "$ROOT/scripts/test-regressions.py"
 clang -std=c11 -Wall -Wextra -Werror -pthread -I "$ROOT/src/core" \
@@ -84,3 +85,9 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-rx-entry-reservations-tests" \
   "$ROOT/tests/xfer_rx_entry_reservations_tests.c" "$ROOT/src/core/xfer_rx_entry_reservations.c"
 "$BUILD/hopdesk-rx-entry-reservations-tests"
+
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I "$ROOT/src/core" -o "$BUILD/hopdesk-rx-file-state-tests" \
+  "$ROOT/tests/xfer_rx_file_state_tests.c" "$ROOT/src/core/xfer_rx_file_state.c" \
+  "$ROOT/src/core/protocol.c" "$ROOT/src/core/crc32.c"
+"$BUILD/hopdesk-rx-file-state-tests"

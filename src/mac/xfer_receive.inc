@@ -599,23 +599,23 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
         case HOP_MSG_FILE_CHUNK: {
             if (!s_rx.active) return; /* late data after termination */
             uint64_t receive_started_ns=rate_now_ns();
-            if (len < 20) { rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1); return; }
-            uint64_t off = hop_get_be64(p + 4);
-            uint32_t n   = hop_get_be32(p + 12);
-            uint32_t crc = hop_get_be32(p + 16);
-            if (!hop_xfer_chunk_valid(p, len,
+            hop_xfer_file_chunk_msg chunk;
+            if (!hop_xfer_decode_file_chunk(p, len,
                     s_rx.cur_is_image ? s_rx.image_state.expected :
                         (s_rx.file_state.failure >= 0 ? UINT64_MAX : s_rx.file_state.declared_size),
-                    s_rx.cur_is_image)) {
+                    s_rx.cur_is_image, &chunk)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed or out-of-range chunk; aborting receive");
                 rx_terminate(s_rx.batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
-            if (hop_get_be32(p) != s_rx.file_state.id) {
+            uint64_t off = chunk.offset;
+            uint32_t n = chunk.length;
+            uint32_t crc = chunk.crc;
+            if (chunk.id != s_rx.file_state.id) {
                 rx_terminate(s_rx.batch,HOP_ABORT_CRC,1);
                 return;
             }
-            const uint8_t *data = p + 20;
+            const uint8_t *data = chunk.data;
 
             /* 逐块校验。TCP 的 16 位校验和 + 网卡 offload 有漏检可能，
              * 漏检一次就是静默写入损坏数据。这里宁可报错也不要写坏文件。

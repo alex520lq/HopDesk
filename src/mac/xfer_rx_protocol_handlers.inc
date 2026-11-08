@@ -41,10 +41,8 @@ hop_xfer_file_begin_msg msg;
             rel[plen] = '\0';
 
 
-            char path[4096];
-            snprintf(path, sizeof(path), "%s/%s", s_rx.dir, rel);
-
-            s_rx.cur_path = strdup(path);
+            s_rx.cur_path = hop_xfer_rx_fs_path_for(s_rx.dir, rel);
+            const char *path = s_rx.cur_path;
             hop_xfer_rx_file_state_set_size(&s_rx.file_state, size);
             if (!s_rx.cur_path) { hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_DISK); return; }
             rx_remove_top(s_rx.cur_path);
@@ -59,7 +57,7 @@ hop_xfer_file_begin_msg msg;
             status_add_received_file(batch,id,rel,size,s_rx.file_state.is_directory);
 
             if (s_rx.file_state.is_directory) {
-                if (mkdir_p(path) != 0) {
+                if (hop_xfer_rx_fs_mkdir_p(path) != 0) {
                     hop_xfer_rx_file_state_fail(&s_rx.file_state, HOP_FILE_ACK_DISK);
                     return;
                 }

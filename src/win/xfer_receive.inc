@@ -112,15 +112,10 @@ typedef struct xfer_rx_context {
     /* 本批顶层条目（用于最后设置剪贴板） */
     wchar_t **tops;
     int       ntop;
-    void *platform_context;
     hop_writer_queue *writer;
     hop_xfer_rx_lifecycle *lifecycle;
     hop_xfer_rx_done_receipt *done_receipt;
-    void (*shutdown_data_channel)(void *context);
-    void (*mark_sender_aborted)(void *context, uint32_t batch, uint8_t reason);
-    void (*send_file_ack)(void *context, uint32_t batch, uint32_t id, int status);
-    void (*send_done_ack)(void *context, uint32_t batch, const uint8_t *payload, uint32_t length);
-    void (*deliver_ack)(void *context, uint32_t batch, uint32_t id, int status);
+    hop_xfer_rx_services services;
 } xfer_rx_context;
 
 static xfer_rx_context s_rx;
@@ -168,15 +163,15 @@ static void rx_context_deliver_ack(void *context, uint32_t batch, uint32_t id, i
 }
 
 static void rx_context_configure(void) {
-    s_rx.platform_context = NULL;
     s_rx.writer = s_wq;
     s_rx.lifecycle = &s_rx_lifecycle;
     s_rx.done_receipt = &s_done_receipt;
-    s_rx.shutdown_data_channel = rx_context_shutdown_data;
-    s_rx.mark_sender_aborted = rx_context_mark_sender_aborted;
-    s_rx.send_file_ack = rx_context_send_file_ack;
-    s_rx.send_done_ack = rx_context_send_done_ack;
-    s_rx.deliver_ack = rx_context_deliver_ack;
+    s_rx.services.context = NULL;
+    s_rx.services.shutdown_data_channel = rx_context_shutdown_data;
+    s_rx.services.mark_sender_aborted = rx_context_mark_sender_aborted;
+    s_rx.services.send_file_ack = rx_context_send_file_ack;
+    s_rx.services.send_done_ack = rx_context_send_done_ack;
+    s_rx.services.deliver_ack = rx_context_deliver_ack;
 }
 
 static int rx_reserve_entry_budget(void *context, uint64_t bytes) {

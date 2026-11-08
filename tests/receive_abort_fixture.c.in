@@ -72,7 +72,7 @@ static hop_xfer_rx_lifecycle s_rx_lifecycle;
 static hop_xfer_rx_done_receipt s_done_receipt;
 static int ack_deliveries;static uint32_t ack_id;
 static void ack_deliver(uint32_t batch,uint32_t id,int status){(void)batch;(void)status;ack_deliveries++;ack_id=id;}
-static void history_save(void){assert(closed); if(s_receive_status.status.phase!=HOP_XFER_COMPLETED) assert(!s_rx.image_buffer.data && !s_rx.cur_path && !s_rx.tops && !s_rx.active); saved++;}
+static void history_save(void){assert(closed); if(s_receive_status.status.phase!=HOP_XFER_COMPLETED) assert(!s_rx.image_buffer.data && !s_rx.cur_path && !s_rx.tops && !s_rx.batch_state.active); saved++;}
 #ifdef FIXTURE_WINDOWS
 #define XFER_RX_ROOT L"HopDesk"
 #define ERROR_ALREADY_EXISTS 183
@@ -167,7 +167,7 @@ static void seed_resources(void){
 }
 static void assert_terminal(uint32_t batch,uint8_t reason,int before){
     uint8_t tombstone_reason=0;
-    assert(!s_rx.active && !s_rx.batch &&
+    assert(!s_rx.batch_state.active && !s_rx.batch_state.batch &&
            hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,batch,&tombstone_reason) &&
            tombstone_reason==reason);
     assert(!s_rx.cur_path && !s_rx.image_buffer.data && !s_rx.tops && !s_rx.ntop && !s_rx.image_buffer.capacity && !s_rx.image_state.expected && !s_rx.image_state.received);
@@ -218,8 +218,8 @@ int main(void){
         s_x.cancel_rx=1;
         image_begin(batch,1); /* tombstone survives a newer active receive */
         assert(s_x.cancel_rx==1); /* stale BEGIN must not consume the newer cancellation */
-        assert(s_rx.active && s_rx.batch==batch+1 && s_rx.cur_path && saved==before+1);
-        peer_abort(batch,reason);late_done(batch);assert(s_rx.active && s_rx.batch==batch+1);
+        assert(s_rx.batch_state.active && s_rx.batch_state.batch==batch+1 && s_rx.cur_path && saved==before+1);
+        peer_abort(batch,reason);late_done(batch);assert(s_rx.batch_state.active && s_rx.batch_state.batch==batch+1);
         rx_cancel_local();assert_terminal(batch+1,HOP_ABORT_CANCEL,before+1);
         peer_abort(batch+1,HOP_ABORT_CANCEL);rx_cancel_local();assert(saved==before+2);
     }
@@ -231,7 +231,7 @@ int main(void){
     /* Both directions use batch 201: a sender-target ABORT must not touch RX. */
     s_x.cur_batch=201; s_x.abort_batch=0;
     peer_abort_target(201,HOP_ABORT_CANCEL,HOP_ABORT_TO_SENDER);
-    assert(s_x.abort_batch==201 && s_x.abort_reason==HOP_ABORT_CANCEL && s_rx.active && s_rx.batch==201 && saved==before);
+    assert(s_x.abort_batch==201 && s_x.abort_reason==HOP_ABORT_CANCEL && s_rx.batch_state.active && s_rx.batch_state.batch==201 && saved==before);
     s_x.abort_batch=0;
     peer_abort(201,HOP_ABORT_CRC);
     assert(s_x.abort_batch==0);assert_terminal(201,HOP_ABORT_CRC,before);assert(notified==notices);
@@ -243,8 +243,8 @@ int main(void){
     assert(applied==0);
     /* A same-session data outage is bounded; reconnect resets the grace timer. */
     before=saved; image_begin(203,1); seed_resources();s_x.cancel_rx=0;s_x.peer_ready=0;
-    rx_poll_cancel();fake_ms+=HOP_XFER_RX_DISCONNECT_BUDGET_MS-3;rx_poll_cancel();assert(s_rx.active);
-    s_x.peer_ready=1;rx_poll_cancel();s_x.peer_ready=0;rx_poll_cancel();assert(s_rx.active);
+    rx_poll_cancel();fake_ms+=HOP_XFER_RX_DISCONNECT_BUDGET_MS-3;rx_poll_cancel();assert(s_rx.batch_state.active);
+    s_x.peer_ready=1;rx_poll_cancel();s_x.peer_ready=0;rx_poll_cancel();assert(s_rx.batch_state.active);
     fake_ms+=HOP_XFER_RX_DISCONNECT_BUDGET_MS;rx_poll_cancel();
     assert_terminal(203,HOP_ABORT_TIMEOUT,before);
     assert(!s_rx.task.initialized); /* reservation returned on timeout */
@@ -252,7 +252,7 @@ int main(void){
     before=saved;image_begin(204,1);seed_resources();assert(hop_xfer_task_request_cancel(s_rx.task.id));
     notices=notified; /* the socket may already be bound to the next session */
     hop_session_id next_session={{2}};rx_bind_session(&next_session);
-    assert(!s_rx.active && !s_rx.task.initialized && saved==before+1);
+    assert(!s_rx.batch_state.active && !s_rx.task.initialized && saved==before+1);
     assert(s_history[0].batch==204 && s_history[0].phase==HOP_XFER_CANCELLED);
     assert(notified==notices); /* never send old-session ABORT to a new peer */
     assert(s_send_status.status.active); /* replacement cannot cancel the other direction */
@@ -267,12 +267,12 @@ int main(void){
     /* Lost ACK can be retried without re-applying the image or duplicating history. */
     int old_applied=applied, old_acks=done_acks;before=saved;
     image_begin(205,1);chunk(1,0,0);chunk(1,4,0);assert(s_rx.image_state.received==s_rx.image_state.expected);
-    late_done(205);assert(!s_rx.active && applied==old_applied+1 && saved==before+1);
+    late_done(205);assert(!s_rx.batch_state.active && applied==old_applied+1 && saved==before+1);
     assert(done_acks==old_acks+1 && last_done_status==HOP_DONE_ACK_COMPLETE);
     late_done(205);assert(applied==old_applied+1 && saved==before+1 && done_acks==old_acks+2);
     uint8_t altered[20]={0};hop_put_be32(altered,205);hop_put_be32(altered+8,1);
     dispatch(HOP_MSG_XFER_DONE,altered,20);assert(done_acks==old_acks+2);
-    image_begin(205,1);assert(!s_rx.active); /* no reuse within same session */
+    image_begin(205,1);assert(!s_rx.batch_state.active); /* no reuse within same session */
     hop_session_id new_session={{3}};rx_bind_session(&new_session);
     late_done(205);assert(done_acks==old_acks+2); /* old receipt never crosses session */
     s_x.cur_batch=0; s_send_status.status.active=0;assert(!xfer_busy()); /* sender retry window is no longer active */

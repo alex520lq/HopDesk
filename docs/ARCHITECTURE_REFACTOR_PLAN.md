@@ -612,3 +612,14 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 更新 Receiver 源码结构回归断言，并将 Windows HA 集成目标链接新的 filesystem 编译单元。
 - 本切片不代表 Receiver Protocol Handler 已完全依赖注入：handler 仍通过当前翻译单元的 `s_rx`、`s_x` 及 status/clipboard/wire helper 访问平台能力。下一切片继续定义完整 Receiver Context/Services contract，把协议 handler 移到独立 `.c` 并显式注入这些依赖。
 - CI 证据：GitHub Actions Run #770（ID `42496114953`，head `e2ded11254c7472a894d715f836dce8a9ac2ad42`）Windows MSVC build、portable Core/regression（含真实 filesystem Adapter 测试）、transfer protocol、TCP loopback、native control/data role + reconnect、updater syntax、package 全部 PASS；macOS build、portable Core/regression（含 ASan/UBSan filesystem Adapter 测试）、transfer protocol、TCP loopback、control/listener loopback、bundle verification、package 全部 PASS；Release publication skipped（PR 预期）。前序 Run #766/#767/#769 分别暴露了 fixture 未更新新 FS API、macOS mkdtemp feature macro 和清理根目录测试路径断言问题；均已修复，Run #770 验证最终切片通过。
+
+
+### 2026-11-08：Receiver ACK 协议处理下沉 Core（第二切片）
+
+- 新增 `src/core/xfer_rx_ack_handler.[ch]`，将 FILE_ACK / XFER_DONE_ACK 的 payload 解码、边界校验和 callback 分发从 Windows/macOS 协议 handler 中抽离。
+- Core 负责纯协议语义：FILE_ACK 长度与 file ID 范围；DONE_ACK 长度、非零 batch 与 status 范围。平台层只提供 ACK-window delivery callback，继续负责并发同步及 ACK 状态投递。
+- 两端保留极薄的 wire handler wrapper，消除此前重复的 payload 检查逻辑；同时 DONE_ACK 对 NULL payload 做显式防护。
+- 新增独立单元测试，覆盖合法 ACK、错误长度、NULL callback/payload、非法 file ID、零 batch 和非法 DONE_ACK status；接入 Windows 与 macOS Core 测试。
+- 生产构建通过递归收集 `src/core/*.c` 自动包含新模块，无需增加平台专属链接清单。
+- 下一切片继续将 FILE_BEGIN/IMAGE_BEGIN/CHUNK/END 处理依赖收敛到明确的 Receiver Context/Services；不直接把当前依赖全局状态的 400 行 handler 整体搬进独立文件，以免制造隐藏依赖或改变线程/生命周期语义。
+- CI：本切片提交后等待 Windows/macOS 全量构建与测试。

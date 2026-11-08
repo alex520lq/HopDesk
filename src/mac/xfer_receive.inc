@@ -272,7 +272,7 @@ static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
     if (batch & HOP_XFER_PASTE_BATCH_FLAG)
         clipboard_complete_remote_paste(batch,NULL,0,0);
     if (notify_peer) { send_abort(batch,reason); }
-    if (!s_rx.active || s_rx.batch != batch) return;
+    if (!hop_xfer_rx_batch_is_active(batch, s_rx.active, s_rx.batch)) return;
     rx_close_file();
     rx_discard_dir();
     hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle, batch, reason);
@@ -285,17 +285,27 @@ static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
 }
 
 static void rx_begin_batch(uint32_t batch) {
-    if (hop_xfer_rx_done_receipt_find(&s_done_receipt, hop_xfer_rx_lifecycle_session(&s_rx_lifecycle), batch)) {
-        return; /* already committed in this session; never recreate its task */
-    }
-    /* 作废过的批次又来了（对端还没收到取消）：回一个 ABORT 让它立刻放手，
-     * 千万别为它重建目录 —— 用户已经说过不要了。 */
     uint8_t dead_reason = 0;
-    if (hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle, batch, &dead_reason)) {
-        rx_terminate(batch,dead_reason,1);
-        return;
+    int committed = hop_xfer_rx_done_receipt_find(
+        &s_done_receipt, hop_xfer_rx_lifecycle_session(&s_rx_lifecycle), batch) != NULL;
+    (void)hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle, batch, &dead_reason);
+    hop_xfer_rx_batch_begin_action begin_action = hop_xfer_rx_batch_begin_decide(
+        batch, committed, dead_reason, s_rx.active, s_rx.batch, &dead_reason);
+    switch (begin_action) {
+        case HOP_RX_BATCH_BEGIN_IGNORE_COMMITTED:
+            return; /* already committed in this session; never recreate its task */
+        case HOP_RX_BATCH_BEGIN_REJECT_DEAD:
+            /* A cancelled/aborted batch must never recreate its staging directory. */
+            rx_terminate(batch, dead_reason, 1);
+            return;
+        case HOP_RX_BATCH_BEGIN_RESUME:
+            return; /* duplicate BEGIN for the active batch */
+        case HOP_RX_BATCH_BEGIN_START:
+            break;
+        case HOP_RX_BATCH_BEGIN_INVALID:
+        default:
+            return;
     }
-    if (s_rx.active && s_rx.batch == batch) return;   /* 重发同一个批次：接着用 */
     /* 清掉上一批遗留的"接收侧取消"请求。
      *
      * 用户可能在"没有接收在途"的时候点取消（比如只在发文件），
@@ -341,14 +351,18 @@ static void rx_begin_batch(uint32_t batch) {
 }
 
 static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
-    if (!s_rx.active || s_rx.batch != batch) {
+    if (!hop_xfer_rx_batch_is_active(batch, s_rx.active, s_rx.batch)) {
         hop_log(HOP_LOG_WARN, "xfer: stale DONE for batch %u ignored (active=%u)",
                 batch, s_rx.active ? s_rx.batch : 0);
         return -1;
     }
     /* Completion and per-task cancellation serialize before clipboard effects. */
-    if (!hop_xfer_task_begin_completion(&s_rx.task)) {
-        rx_terminate(batch,HOP_ABORT_CANCEL,1);
+    int completion_claimed = hop_xfer_task_begin_completion(&s_rx.task);
+    if (!completion_claimed) {
+        hop_xfer_rx_batch_finish_action cancelled = hop_xfer_rx_batch_finish_decide(
+            batch, s_rx.active, s_rx.batch, 0, ok, total, s_rx.cur_is_image, 0);
+        if (cancelled == HOP_RX_BATCH_FINISH_CANCELLED)
+            rx_terminate(batch,HOP_ABORT_CANCEL,1);
         return -1;
     }
 
@@ -395,13 +409,16 @@ static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
     pthread_mutex_unlock(&s_status_lock);
     if(s_rx.cur_is_image && ok==total && s_rx.img_len==s_rx.img_expected)
         status_file_phase(HOP_XFER_DIR_RECEIVE,batch,0,HOP_XFER_FILE_COMPLETED,1);
-    int complete=(ok==total) && (!s_rx.cur_is_image ||
-        (s_rx.img && s_rx.img_len==s_rx.img_expected));
+    int image_valid = s_rx.img && s_rx.img_len == s_rx.img_expected;
+    hop_xfer_rx_batch_finish_action finish_action = hop_xfer_rx_batch_finish_decide(
+        batch, s_rx.active, s_rx.batch, 1, ok, total, s_rx.cur_is_image, image_valid);
+    int complete = finish_action == HOP_RX_BATCH_FINISH_COMPLETE;
     hop_xfer_task_finish(&s_rx.task,complete?HOP_XFER_TASK_COMPLETED:(s_rx.cur_is_image?HOP_XFER_TASK_FAILED:HOP_XFER_TASK_PARTIAL));
     status_end(HOP_XFER_DIR_RECEIVE,batch,complete?HOP_XFER_COMPLETED:
                (s_rx.cur_is_image?HOP_XFER_FAILED:HOP_XFER_PARTIAL),
                complete?"Receive completed":"Receive incomplete; clipboard not updated");
-    int result=complete?HOP_DONE_ACK_COMPLETE:(s_rx.cur_is_image?HOP_DONE_ACK_FAILED:HOP_DONE_ACK_PARTIAL);
+    int result=finish_action==HOP_RX_BATCH_FINISH_COMPLETE?HOP_DONE_ACK_COMPLETE:
+               (finish_action==HOP_RX_BATCH_FINISH_IMAGE_FAILED?HOP_DONE_ACK_FAILED:HOP_DONE_ACK_PARTIAL);
     rx_reset();
     return result;
 }

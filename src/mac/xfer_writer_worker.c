@@ -5,13 +5,6 @@
 #include <string.h>
 #include <pthread/qos.h>
 
-typedef struct {
-    pthread_t thread;
-} mac_thread_storage;
-
-_Static_assert(sizeof(mac_thread_storage) <= sizeof(((hop_writer_worker *)0)->thread_storage),
-               "worker thread storage is too small");
-
 static void *hop_writer_worker_main(void *opaque) {
     hop_writer_worker *worker = (hop_writer_worker *)opaque;
     pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
@@ -35,8 +28,7 @@ int hop_writer_worker_start(hop_writer_worker *worker, void *context,
     worker->task_size = task_size;
     worker->task_storage = malloc(task_size);
     if (!worker->task_storage) { memset(worker, 0, sizeof(*worker)); return 0; }
-    mac_thread_storage *storage = (mac_thread_storage *)worker->thread_storage;
-    if (pthread_create(&storage->thread, NULL, hop_writer_worker_main, worker) != 0) {
+    if (pthread_create(&worker->thread, NULL, hop_writer_worker_main, worker) != 0) {
         free(worker->task_storage);
         memset(worker, 0, sizeof(*worker));
         return 0;
@@ -47,8 +39,7 @@ int hop_writer_worker_start(hop_writer_worker *worker, void *context,
 
 int hop_writer_worker_join(hop_writer_worker *worker) {
     if (!worker || worker->state != 1) return worker && worker->state == 2;
-    mac_thread_storage *storage = (mac_thread_storage *)worker->thread_storage;
-    if (pthread_join(storage->thread, NULL) != 0) return 0;
+    if (pthread_join(worker->thread, NULL) != 0) return 0;
     free(worker->task_storage);
     worker->task_storage = NULL;
     worker->state = 2;

@@ -18,6 +18,7 @@
 #include "../core/xfer_task_history.h"
 #include "../core/xfer_rate.h"
 #include "../core/xfer_ack_window.h"
+#include "../core/xfer_buffer_pool.h"
 
 _Static_assert(HOP_TASK_SESSION_BYTES == HOP_SESSION_BYTES, "task and protocol session sizes differ");
 

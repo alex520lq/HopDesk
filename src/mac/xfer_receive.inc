@@ -328,7 +328,7 @@ static void rx_begin_batch(uint32_t batch) {
         hop_xfer_task_finish(&s_rx.task, HOP_XFER_TASK_FAILED);
         hop_xfer_task_dispose(&s_rx.task);
         hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle, batch, HOP_ABORT_DISK);
-        send_abort_msg(s_x.sock, batch, HOP_ABORT_DISK, HOP_ABORT_TO_SENDER);
+        send_abort(batch, HOP_ABORT_DISK);
         return;
     }
     hop_log(HOP_LOG_INFO,"xfer: receive batch %u task=%llu",

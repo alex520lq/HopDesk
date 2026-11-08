@@ -8,271 +8,89 @@
  * 这就是显式背压：内存上界 = RX_Q_SLOTS × chunk，不随传输时长增长。
  * 文件句柄由写线程独占，避免"网络线程关文件、写线程还在写"的竞态。
  */
-#define RX_Q_SLOTS HOP_XFER_DEFAULT_RX_QUEUE_SLOTS
-#define RX_Q_MAX_BYTES HOP_XFER_DEFAULT_RX_QUEUE_BYTES
-
-enum { RX_OPEN = 1, RX_WRITE, RX_CLOSE };
+enum { RX_OPEN = 1, RX_CLOSE };
 
 typedef struct {
-    int      kind;
-    wchar_t  path[MAX_PATH];
-    uint64_t off;
-    uint32_t len;
-    uint8_t *data;
-    int      pool_slot;
-    hop_xfer_task *budget_owner;
+    int kind;
+    wchar_t path[MAX_PATH];
 } rx_task;
 
-typedef struct {
-    hop_xfer_buffer_pool pool;
-    rx_task            ring[RX_Q_SLOTS];
-    int head, tail;
-    hop_xfer_rx_queue accounting;
-    CRITICAL_SECTION   lock;
-    CONDITION_VARIABLE cv_work, cv_space;
-    hop_writer_worker worker;
-    hop_writer_io      io;       /* 写线程独占 */
-    volatile LONG      err;      /* 写盘失败标记，主路径读 */
-    int                stop;
-} hop_rx_writer_queue;
+static hop_writer_queue *s_wq;
 
-static hop_rx_writer_queue s_wq;
-
-/* Reusable bounded RX payload pool. Called with s_wq.lock held.
- * Retained capacity is capped by RX_Q_MAX_BYTES, independently of queue
- * occupancy, so repeated small/large chunks do not churn malloc/free. */
-
-
-
-
-static void wq_error_set_for(hop_rx_writer_queue *queue, int value) { InterlockedExchange(&queue->err, value); }
-static int wq_error_get(void) { return InterlockedCompareExchange(&s_wq.err, 0, 0); }
-
-static void wq_task_run(hop_rx_writer_queue *queue, rx_task *t) {
-    unsigned long error = 0;
-    switch (t->kind) {
-        case RX_OPEN:
-            if (!hop_writer_io_open(&queue->io, t->path, &error)) {
-                hop_log(HOP_LOG_WARN, "xfer: cannot create %ls (err %lu)", t->path, error);
-                wq_error_set_for(queue, 1);
-            }
-            break;
-        case RX_WRITE:
-            if (!hop_writer_io_write_at(&queue->io, t->off, t->data, t->len, &error)) {
-                hop_log(HOP_LOG_WARN, "xfer: write failed at %llu (err %lu)",
-                        (unsigned long long)t->off, error);
-                wq_error_set_for(queue, 1);
-            }
-            break;
-        case RX_CLOSE:
-            hop_writer_io_close(&queue->io);
-            break;
-    }
+static int wq_reserve_task_rx(void *context, void *owner, uint32_t bytes) {
+    (void)context;
+    return hop_xfer_task_reserve_rx_buffer((hop_xfer_task *)owner, bytes);
 }
-
-static int wq_worker_take(void *context, void *task_out) {
-    hop_rx_writer_queue *queue = (hop_rx_writer_queue *)context;
-    EnterCriticalSection(&queue->lock);
-    while (queue->accounting.queued_slots == 0 && !queue->stop)
-        SleepConditionVariableCS(&queue->cv_work, &queue->lock, INFINITE);
-    if (queue->accounting.queued_slots == 0 && queue->stop) {
-        LeaveCriticalSection(&queue->lock);
-        return 0;
-    }
-    rx_task *task = (rx_task *)task_out;
-    *task = queue->ring[queue->head];
-    queue->head = (queue->head + 1) % RX_Q_SLOTS;
-    (void)hop_xfer_rx_queue_dequeue(&queue->accounting);
-    LeaveCriticalSection(&queue->lock);
-    return 1;
+static void wq_release_task_rx(void *context, void *owner, uint32_t bytes) {
+    (void)context;
+    (void)hop_xfer_task_release_rx_buffer((hop_xfer_task *)owner, bytes);
 }
-
-static void wq_worker_run(void *context, const void *task_data) {
-    hop_rx_writer_queue *queue = (hop_rx_writer_queue *)context;
-    rx_task *task = (rx_task *)task_data;
-    int disk_guard = hop_watchdog_begin("disk writer task", HOP_IO_DEADLINE_MS);
-    uint64_t write_started_ns = rate_now_ns();
-    wq_task_run(queue, task);
-    uint64_t write_elapsed_ns = rate_now_ns() - write_started_ns;
-    if (task->kind == RX_WRITE && task->budget_owner) {
-        hop_xfer_task_snapshot snapshot;
-        if (hop_xfer_task_get_snapshot(task->budget_owner->id, &snapshot))
-            status_stage_time(HOP_XFER_DIR_RECEIVE, snapshot.transfer_id,
-                              HOP_XFER_TIME_WRITE, write_elapsed_ns);
-    }
-    hop_watchdog_end(disk_guard);
+static int wq_watchdog_begin(void *context, const char *label, uint32_t deadline) {
+    (void)context;
+    return hop_watchdog_begin(label, deadline);
 }
-
-static void wq_worker_complete(void *context, const void *task_data) {
-    hop_rx_writer_queue *queue = (hop_rx_writer_queue *)context;
-    const rx_task *task = (const rx_task *)task_data;
-    if (task->kind == RX_WRITE && task->budget_owner)
-        (void)hop_xfer_task_release_rx_buffer(task->budget_owner, task->len);
-    EnterCriticalSection(&queue->lock);
-    if (task->kind == RX_WRITE)
-        hop_xfer_buffer_pool_release_locked(&queue->pool, task->pool_slot);
-    hop_xfer_rx_queue_complete(&queue->accounting,
-                               task->kind == RX_WRITE ? task->len : 0);
-    WakeConditionVariable(&queue->cv_space);
-    LeaveCriticalSection(&queue->lock);
+static void wq_watchdog_end(void *context, int guard) {
+    (void)context;
+    hop_watchdog_end(guard);
 }
-
-static void wq_worker_exit(void *context) {
-    hop_rx_writer_queue *queue = (hop_rx_writer_queue *)context;
-    hop_writer_io_close(&queue->io);
+static uint64_t wq_now_ns(void *context) {
+    (void)context;
+    return rate_now_ns();
 }
-
-/* 入队。队列满时阻塞 —— 这就是背压的着力点。 */
-static int wq_push(const rx_task *t) {
-    uint64_t add_bytes = t && t->kind == RX_WRITE ? t->len : 0;
-    if (!t || add_bytes > RX_Q_MAX_BYTES) return 0;
-    int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
-    EnterCriticalSection(&s_wq.lock);
-    while (!hop_xfer_rx_queue_can_push(&s_wq.accounting, add_bytes) && !s_wq.stop)
-        SleepConditionVariableCS(&s_wq.cv_space, &s_wq.lock, INFINITE);
-    if (s_wq.stop) {
-        LeaveCriticalSection(&s_wq.lock);
-        hop_watchdog_end(queue_guard);
-        return 0;
-    }
-    if (!hop_xfer_rx_queue_push(&s_wq.accounting, add_bytes)) {
-        LeaveCriticalSection(&s_wq.lock);
-        hop_watchdog_end(queue_guard);
-        return 0;
-    }
-    s_wq.ring[s_wq.tail] = *t;
-    s_wq.tail = (s_wq.tail + 1) % RX_Q_SLOTS;
-    WakeConditionVariable(&s_wq.cv_work);
-    LeaveCriticalSection(&s_wq.lock);
-    hop_watchdog_end(queue_guard);
-    return 1;
+static void wq_write_time(void *context, void *owner, uint64_t elapsed_ns) {
+    (void)context;
+    hop_xfer_task_snapshot snapshot;
+    if (owner && hop_xfer_task_get_snapshot(((hop_xfer_task *)owner)->id, &snapshot))
+        status_stage_time(HOP_XFER_DIR_RECEIVE, snapshot.transfer_id,
+                          HOP_XFER_TIME_WRITE, elapsed_ns);
 }
-
-static int wq_push_data(hop_xfer_task *owner, uint64_t off, const uint8_t *data, uint32_t len) {
-    if (!owner || !data || !len || len > RX_Q_MAX_BYTES) return 0;
-    int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
-    EnterCriticalSection(&s_wq.lock);
-    while (!hop_xfer_rx_queue_can_push(&s_wq.accounting, len) && !s_wq.stop)
-        SleepConditionVariableCS(&s_wq.cv_space, &s_wq.lock, INFINITE);
-    if (s_wq.stop) {
-        LeaveCriticalSection(&s_wq.lock);
-        hop_watchdog_end(queue_guard);
-        return 0;
-    }
-    if (!hop_xfer_rx_queue_reserve(&s_wq.accounting, len)) {
-        LeaveCriticalSection(&s_wq.lock);
-        hop_watchdog_end(queue_guard);
-        return 0;
-    }
-    LeaveCriticalSection(&s_wq.lock);
-
-    if (!hop_xfer_task_reserve_rx_buffer(owner, len)) {
-        EnterCriticalSection(&s_wq.lock);
-        hop_xfer_rx_queue_rollback(&s_wq.accounting, len);
-        WakeAllConditionVariable(&s_wq.cv_space);
-        LeaveCriticalSection(&s_wq.lock);
-        hop_watchdog_end(queue_guard);
-        return 0;
-    }
-
-    rx_task t;
-    memset(&t, 0, sizeof(t));
-    t.kind = RX_WRITE;
-    t.off = off;
-    t.len = len;
-    t.budget_owner = owner;
-    t.pool_slot = -1;
-
-    EnterCriticalSection(&s_wq.lock);
-    int pool_result = 0;
-    while (!s_wq.stop && (pool_result = hop_xfer_buffer_pool_acquire_locked(&s_wq.pool,len, &t.pool_slot, &t.data)) == 0)
-        SleepConditionVariableCS(&s_wq.cv_space, &s_wq.lock, INFINITE);
-    if (s_wq.stop || pool_result != 1) {
-        hop_xfer_rx_queue_rollback(&s_wq.accounting, len);
-        WakeAllConditionVariable(&s_wq.cv_space);
-        LeaveCriticalSection(&s_wq.lock);
-        (void)hop_xfer_task_release_rx_buffer(owner, len);
-        hop_watchdog_end(queue_guard);
-        return 0;
-    }
-    LeaveCriticalSection(&s_wq.lock);
-    memcpy(t.data, data, len);
-
-    EnterCriticalSection(&s_wq.lock);
-    if (s_wq.stop) {
-        hop_xfer_rx_queue_rollback(&s_wq.accounting, len);
-        hop_xfer_buffer_pool_release_locked(&s_wq.pool,t.pool_slot);
-        WakeAllConditionVariable(&s_wq.cv_space);
-        LeaveCriticalSection(&s_wq.lock);
-        (void)hop_xfer_task_release_rx_buffer(owner, len);
-        hop_watchdog_end(queue_guard);
-        return 0;
-    }
-    if (!hop_xfer_rx_queue_commit_reserved(&s_wq.accounting)) {
-        hop_xfer_rx_queue_rollback(&s_wq.accounting, len);
-        hop_xfer_buffer_pool_release_locked(&s_wq.pool, t.pool_slot);
-        WakeAllConditionVariable(&s_wq.cv_space);
-        LeaveCriticalSection(&s_wq.lock);
-        (void)hop_xfer_task_release_rx_buffer(owner, len);
-        hop_watchdog_end(queue_guard);
-        return 0;
-    }
-    s_wq.ring[s_wq.tail] = t;
-    s_wq.tail = (s_wq.tail + 1) % RX_Q_SLOTS;
-    WakeConditionVariable(&s_wq.cv_work);
-    LeaveCriticalSection(&s_wq.lock);
-    hop_watchdog_end(queue_guard);
-    return 1;
+static void wq_open_error(void *context, const wchar_t *path, unsigned long error) {
+    (void)context;
+    hop_log(HOP_LOG_WARN, "xfer: cannot create %ls (err %lu)", path, error);
 }
-
-/* 等队列排空且写线程空闲。关文件、比对文件 CRC 之前必须调用。 */
-static void wq_drain(void) {
-    int queue_guard = hop_watchdog_begin("disk queue wait", HOP_IO_DEADLINE_MS + 5000);
-    EnterCriticalSection(&s_wq.lock);
-    while (!hop_xfer_rx_queue_drained(&s_wq.accounting))
-        SleepConditionVariableCS(&s_wq.cv_space, &s_wq.lock, INFINITE);
-    LeaveCriticalSection(&s_wq.lock);
-    hop_watchdog_end(queue_guard);
+static void wq_write_error(void *context, uint64_t offset, unsigned long error) {
+    (void)context;
+    hop_log(HOP_LOG_WARN, "xfer: write failed at %llu (err %lu)",
+            (unsigned long long)offset, error);
 }
 
 static int wq_start(void) {
-    /* A previous join timeout leaves a live worker; never erase its state. */
-    if (s_wq.worker.state == 1) return 0;
-    memset(&s_wq, 0, sizeof(s_wq));
-    hop_xfer_buffer_pool_init(&s_wq.pool);
-    hop_xfer_rx_queue_init(&s_wq.accounting, RX_Q_SLOTS, RX_Q_MAX_BYTES);
-    hop_writer_io_init(&s_wq.io);
-    InitializeCriticalSection(&s_wq.lock);
-    InitializeConditionVariable(&s_wq.cv_work);
-    InitializeConditionVariable(&s_wq.cv_space);
-    const hop_writer_worker_callbacks callbacks = {
-        wq_worker_take, wq_worker_run, wq_worker_complete, wq_worker_exit
+    if (s_wq) return 0;
+    const hop_writer_queue_callbacks callbacks = {
+        wq_reserve_task_rx, wq_release_task_rx,
+        wq_watchdog_begin, wq_watchdog_end, wq_now_ns,
+        wq_write_time, wq_open_error, wq_write_error
     };
-    if (!hop_writer_worker_start(&s_wq.worker, &s_wq, sizeof(rx_task), &callbacks)) {
-        DeleteCriticalSection(&s_wq.lock);
-        hop_xfer_buffer_pool_dispose(&s_wq.pool);
-        return 0;
-    }
-    return 1;
+    s_wq = hop_writer_queue_create(NULL, &callbacks);
+    return s_wq != NULL;
 }
 
-/* 停写线程：先让它把队列里的活干完（数据已经收下来了，丢了就是损坏），
- * 再置 stop 唤醒，最后 join。没 join 成功就保留临界区。 */
-static void wq_stop(void) {
-    if (s_wq.worker.state != 1) return;
-    wq_drain();
-    EnterCriticalSection(&s_wq.lock);
-    s_wq.stop = 1;
-    WakeAllConditionVariable(&s_wq.cv_work);
-    WakeAllConditionVariable(&s_wq.cv_space);
-    LeaveCriticalSection(&s_wq.lock);
+static int wq_push(const rx_task *task) {
+    if (!s_wq || !task) return 0;
+    if (task->kind == RX_OPEN)
+        return hop_writer_queue_enqueue_open(s_wq, task->path);
+    if (task->kind == RX_CLOSE)
+        return hop_writer_queue_enqueue_close(s_wq);
+    return 0;
+}
 
-    if (!hop_writer_worker_join(&s_wq.worker)) {
-        hop_log(HOP_LOG_WARN, "xfer: writer worker did not exit, retain thread and queue state");
+static int wq_push_data(hop_xfer_task *owner, uint64_t offset,
+                        const uint8_t *data, uint32_t length) {
+    return s_wq && hop_writer_queue_enqueue_write(s_wq, owner, offset, data, length);
+}
+
+static void wq_drain(void) {
+    hop_writer_queue_drain(s_wq);
+}
+
+static void wq_stop(void) {
+    if (!s_wq) return;
+    if (!hop_writer_queue_stop(s_wq)) {
+        hop_log(HOP_LOG_WARN, "xfer: writer worker did not exit, retain queue state");
         return;
     }
-    hop_xfer_buffer_pool_dispose(&s_wq.pool);
-    DeleteCriticalSection(&s_wq.lock);
+    hop_writer_queue_destroy(s_wq);
+    s_wq = NULL;
 }
 
 /* ---------------- 接收 ---------------- */
@@ -760,7 +578,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             s_rx.cur_size     = 0;   /* 0 = 任何分块都越界被拒，坏条目不落盘 */
             s_rx.cur_received = 0;
             s_rx.fcrc         = 0;
-            wq_error_set_for(&s_wq, 0);
+            hop_writer_queue_error_reset(s_wq);
 
             char *relz = (char *)malloc((size_t)plen + 1);
             if (!relz) { s_rx.cur_fail = HOP_FILE_ACK_DISK; break; }
@@ -1005,7 +823,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
             if (s_rx.cur_fail >= 0) {
                 ack = s_rx.cur_fail;
             } else {
-                if (wq_error_get()) {
+                if (hop_writer_queue_error(s_wq)) {
                     hop_log(HOP_LOG_ERROR, "xfer: disk error, %ls incomplete",
                             s_rx.cur_path ? s_rx.cur_path : L"?");
                     ack = HOP_FILE_ACK_DISK;

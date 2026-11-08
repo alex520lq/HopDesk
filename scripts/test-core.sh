@@ -18,7 +18,8 @@ clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-
   "$ROOT/src/core/clock.c" \
   "$ROOT/src/core/xfer_rate.c" \
   "$ROOT/src/core/xfer_ack_window.c" \
-  "$ROOT/src/core/xfer_tracking.c"
+  "$ROOT/src/core/xfer_tracking.c" \
+  "$ROOT/src/core/xfer_buffer_pool.c"
 "$BUILD/hopdesk-core-tests"
 python3 "$ROOT/scripts/test-regressions.py"
 clang -std=c11 -Wall -Wextra -Werror -pthread -I "$ROOT/src/core" \

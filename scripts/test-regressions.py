@@ -706,8 +706,8 @@ int main(void){
         assert 'peer_ready = 0' in kick_fn or 'peer_ready=0' in kick_fn
 
         handler=extract(receiver,'on_data_msg')
-        begin=handler[handler.index('case HOP_MSG_FILE_BEGIN:'):handler.index('case HOP_MSG_IMAGE_BEGIN:')]
-        end=handler[handler.index('case HOP_MSG_FILE_END:'):handler.index('case HOP_MSG_FILE_ACK:')]
+        begin=handler[handler.index('case HOP_RX_DISPATCH_FILE_BEGIN:'):handler.index('case HOP_RX_DISPATCH_IMAGE_BEGIN:')]
+        end=handler[handler.index('case HOP_RX_DISPATCH_FILE_END:'):handler.index('case HOP_RX_DISPATCH_FILE_ACK:')]
         assert 'rx_remove_top(s_rx.cur_path)' in begin
         assert '!rx_add_top(path)' in begin or '!rx_add_top(s_rx.cur_path)' in end
         if platform=='mac':

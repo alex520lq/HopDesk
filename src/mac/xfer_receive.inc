@@ -110,7 +110,7 @@ typedef struct xfer_rx_context {
     hop_xfer_rx_image_state image_state;
     char   **tops;
     int      ntop;
-    hop_writer_queue *writer;
+    void *writer;
     hop_xfer_rx_lifecycle *lifecycle;
     hop_xfer_rx_done_receipt *done_receipt;
     hop_xfer_rx_services services;

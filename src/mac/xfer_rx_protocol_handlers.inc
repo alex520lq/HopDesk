@@ -28,7 +28,7 @@ hop_xfer_file_begin_msg msg;
             rx->cur_path     = NULL;
             hop_xfer_rx_file_state_begin(&rx->file_state, id);
             hop_xfer_rx_file_state_set_kind(&rx->file_state, 0, (flags & HOP_FILE_FLAG_DIR) != 0);
-            hop_writer_queue_error_reset(s_wq);
+            hop_writer_queue_error_reset(rx->writer);
 
             char rel[HOP_PATH_LEN_MAX + 1];
             if (!hop_xfer_relpath_bytes_safe(msg.relpath, plen)) {

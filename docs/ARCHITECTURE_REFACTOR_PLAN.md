@@ -467,3 +467,16 @@ tests/
 - This closes Worker join parity only. It does not complete Writer Queue extraction; queue ring, producer reservation/copy/commit, accounting synchronization, and Receiver wrappers remain in `xfer_receive.inc`.
 
 Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue behind an opaque API with explicit Task budget and write-time callbacks, link it as a real production compilation unit, and test it before applying the same semantic contract to macOS. Do not remove Receiver compatibility wrappers until both platform modules pass the same lifecycle and ownership tests.
+
+
+### 2026-11-08：Windows Writer Queue 独立生产模块（第一平台切片）
+
+- 新增 `src/win/xfer_writer_queue.[ch]`：Writer Queue 现在是单独编译的生产模块，使用 opaque queue handle；Receiver 不再直接持有/操作 ring、queue accounting、buffer pool、锁/条件变量或 worker thread。
+- Queue 对外提供 create、enqueue OPEN/WRITE/CLOSE、drain、error reset/read、stop、destroy。Receiver 保留薄兼容包装，负责把 Task reservation、watchdog、时钟/写盘耗时状态、日志通过显式 callbacks 注入。
+- WRITE 仍按 queue slot+bytes reserve -> Task RX budget reserve -> buffer-pool acquire -> payload copy -> commit 顺序执行；任何失败路径回滚 queue accounting、Task budget 和 pool slot。Worker completion 恰好释放 Task budget、pool slot 和 queue accounting。
+- STOP 先 drain 已接受命令，再拒绝新任务并唤醒线程；join 超时保留 opaque queue 及其全部同步/线程资源，只有成功 join 才允许 destroy。
+- 新增 `tests/writer_queue_tests.c`，直接链接生产 Windows Queue、Worker、IO、Core RX Queue 和 Buffer Pool，覆盖 OPEN/WRITE/CLOSE 顺序、Task budget admission rejection/rollback、完成释放、drain/stop 和落盘字节核验。
+- Windows HA 测试目标已链接新生产编译单元；Windows Core 脚本增加独立 Queue 测试目标。应用构建递归发现新 `.c` 文件。
+- Receiver 源码结构回归测试已调整：Windows 检查 Queue 生产模块拥有 pool/accounting，Receiver include 不再包含 worker/pool 实现；macOS 在 parity 完成前仍检查旧平台适配。
+- 本切片还未验收：GitHub Actions Run #594（commit `cc32cd30a050520d8bb10c19ef61c94dca3e0d7b`）正在执行；前一轮因旧源码结构断言失败，已修正断言并触发新一轮。不得将编译/测试状态提前标记通过。
+- 当前只完成 Windows 平台提取；macOS Writer Queue 仍留在 `src/mac/xfer_receive.inc`，不能标记阶段 2 完成。

@@ -81,6 +81,12 @@ static int read_exact(const char *path, const unsigned char *expected, size_t le
 int main(void) {
     test_context ctx;
     memset(&ctx, 0, sizeof(ctx));
+    atomic_init(&ctx.held_bytes, 0);
+    atomic_init(&ctx.reserved_calls, 0);
+    atomic_init(&ctx.released_calls, 0);
+    atomic_init(&ctx.write_time_calls, 0);
+    atomic_init(&ctx.open_errors, 0);
+    atomic_init(&ctx.write_errors, 0);
     const hop_writer_queue_callbacks callbacks = {
         30000, reserve_rx, release_rx, watchdog_begin, watchdog_end,
         now_ns, write_time, open_error, write_error

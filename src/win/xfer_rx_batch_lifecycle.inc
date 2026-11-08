@@ -1,10 +1,10 @@
 static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
     if (!batch) return;
     if (batch & HOP_XFER_PASTE_BATCH_FLAG)
-        clip_complete_remote_paste(batch,NULL,0,0);
+        if (s_rx.services.cancel_clipboard) s_rx.services.cancel_clipboard(s_rx.services.context, batch);
     if (notify_peer) { send_abort_msg(s_x.client,batch,reason,HOP_ABORT_TO_SENDER); }
     if (!hop_xfer_rx_batch_is_active(batch, s_rx.batch_state.active, s_rx.batch_state.batch)) return;
-    rx_close_file();
+    if (s_rx.services.close_file) s_rx.services.close_file(s_rx.services.context);
     rx_discard_dir();
     hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle, batch, reason);
     hop_xfer_task_finish(&s_rx.task,reason==HOP_ABORT_CANCEL?
@@ -141,40 +141,21 @@ static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
     }
 
     /* 落盘全部完成后才能把路径挂到剪贴板。 */
-    rx_task t;
-    memset(&t, 0, sizeof(t));
-    t.kind = RX_CLOSE;
-    wq_push(&t);
-    wq_drain();
+    if (s_rx.services.close_file)
+        s_rx.services.close_file(s_rx.services.context);
 
-    if (ok != total) {
-        /* Keep the staged files for recovery, but never advertise a partial folder
-         * through CF_HDROP as though it were a successful transfer. */
-        hop_log(HOP_LOG_ERROR,
-                "xfer: batch %u incomplete (%u/%u entries); staged data kept at %ls; clipboard not updated",
-                batch, ok, total, s_rx.dir);
-    } else if (s_rx.file_state.is_image) {
-        if (s_rx.image_buffer.data && s_rx.image_state.received == s_rx.image_state.expected) {
-            uint64_t clipboard_started_ns=rate_now_ns();
-            clip_apply_remote_image(s_rx.image_buffer.data, s_rx.image_state.width, s_rx.image_state.height, s_rx.image_state.stride);
-            status_stage_time(HOP_XFER_DIR_RECEIVE,batch,HOP_XFER_TIME_CLIPBOARD_DISPATCH,
-                              rate_now_ns()-clipboard_started_ns);
-        } else
-            hop_log(HOP_LOG_ERROR, "xfer: incomplete image rejected (%llu/%llu bytes)",
-                    (unsigned long long)s_rx.image_state.received, (unsigned long long)s_rx.image_state.expected);
-    } else if (s_rx.ntop > 0) {
-        uint64_t clipboard_started_ns=rate_now_ns();
-        if (batch & HOP_XFER_PASTE_BATCH_FLAG) {
-            /* Requested cross-device paste must pass request/version validation. */
-            clip_complete_remote_paste(batch,(const wchar_t *const *)s_rx.tops,s_rx.ntop,1);
-        } else {
-            clip_apply_remote_paths((const wchar_t *const *)s_rx.tops, s_rx.ntop);
-        }
-        status_stage_time(HOP_XFER_DIR_RECEIVE,batch,HOP_XFER_TIME_CLIPBOARD_DISPATCH,
-                          rate_now_ns()-clipboard_started_ns);
-    }
-    if ((batch & HOP_XFER_PASTE_BATCH_FLAG) && ok != total)
-        clip_complete_remote_paste(batch,NULL,0,0);
+    int image_valid = s_rx.image_buffer.data &&
+                      s_rx.image_state.received == s_rx.image_state.expected;
+    if (ok == total && s_rx.file_state.is_image && !image_valid)
+        hop_log(HOP_LOG_ERROR, "xfer: incomplete image rejected (%llu/%llu bytes)",
+                (unsigned long long)s_rx.image_state.received,
+                (unsigned long long)s_rx.image_state.expected);
+    if (s_rx.services.finish_clipboard)
+        s_rx.services.finish_clipboard(s_rx.services.context, batch,
+            s_rx.image_buffer.data, s_rx.image_state.width,
+            s_rx.image_state.height, s_rx.image_state.stride, image_valid,
+            (const void *const *)s_rx.tops, s_rx.ntop, ok == total);
+
     hop_log(HOP_LOG_INFO, "xfer: batch %u done (%d items, %u/%u ACKed)",
             batch, s_rx.ntop, ok, total);
     AcquireSRWLockExclusive(&s_status_lock);

@@ -423,3 +423,15 @@ tests/
 - 明确 Writer 不拥有 Receiver Task 终态，不直接控制 ACK；Receiver 必须在 CRC/删除/复用路径前 drain + CLOSE + drain。
 - 当前仍是接口与验收契约，不代表 Writer Worker 已拆成独立生产编译单元；后续按 Windows -> macOS 顺序实施。
 - 提交：`6dc51da68276eaa2ea1230e0f94882ab88ff19f7`。
+
+
+### 2026-11-08：Writer Worker 线程适配层独立化（第一切片）
+
+- 新增 `src/mac/xfer_writer_worker.[ch]` 与 `src/win/xfer_writer_worker.[ch]`，将 native thread 创建、线程优先级/QoS、回调循环、join 和 worker task storage 生命周期从 Receiver include 中抽出。
+- Writer Worker 通过 `take / run / complete / on_exit` 回调与接收队列交互；线程模块不再直接访问 `s_wq`、Task Manager、buffer pool 或文件 IO。
+- 两个平台仍由 Receiver 侧回调负责队列锁、dequeue/accounting、Task RX reservation release、buffer pool release 和写入耗时统计；这避免将业务依赖反向塞进 worker 模块。
+- Windows join 超时不关闭/丢弃线程 HANDLE，也不释放 task storage；Receiver 保留 worker 和 queue 状态，禁止重新初始化仍可能被线程访问的状态。
+- macOS 使用原生 `pthread_t`；成功 join 后才释放 task storage。当前 macOS join 仍是阻塞式，与此前行为一致。
+- 新增 `tests/writer_worker_tests.c`，覆盖 take/run/complete/on_exit 的调用顺序、成功 join 和 join 后重启；两端 core test 脚本均接入该独立目标。
+- 当前切片尚未取得本次新提交的 CI 结果。下一步应补齐 start failure、join timeout 注入、停止期间 producer 唤醒和队列 drain 竞态测试，再继续把 queue command/ownership 从 include 中抽出。
+- 提交序列：`ccaef1d`、`1e7649c`、`8d34d94`、`eec2622`、`40c4b7d`、`80d3e2f`、`f6ce65c`、`be4dfd2`、`fa9c1f4`、`baa94ec`、`39d5168`、`ec72cb1`、`e947258`、`359b68f`、`5963e0d`、`05b11b9`、`79204e7`、`1608649`、`18178f9`。

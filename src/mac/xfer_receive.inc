@@ -277,6 +277,49 @@ static int rx_context_finish_batch(void *context, uint32_t batch, uint32_t ok, u
     return rx_finish_batch(batch, ok, total);
 }
 
+static uint64_t rx_context_now_ns(void *context) {
+    (void)context;
+    return rate_now_ns();
+}
+static int rx_context_status_begin(void *context, uint32_t batch, uint32_t files,
+        uint64_t bytes, const char *name, int phase) {
+    (void)context;
+    return status_begin(batch, HOP_XFER_DIR_RECEIVE, files, bytes, name, phase);
+}
+static void rx_context_status_end(void *context, uint32_t batch, int phase, const char *detail) {
+    (void)context;
+    status_end(HOP_XFER_DIR_RECEIVE, batch, phase, detail);
+}
+static void rx_context_status_add_file(void *context, uint32_t batch, uint32_t id,
+        const char *path, uint64_t size, int directory) {
+    (void)context;
+    status_add_received_file(batch, id, path, size, directory);
+}
+static void rx_context_status_image(void *context, uint32_t batch, uint64_t size) {
+    (void)context;
+    status_image(batch, HOP_XFER_DIR_RECEIVE, size);
+}
+static void rx_context_status_stage(void *context, uint32_t batch, int stage, uint64_t elapsed_ns) {
+    (void)context;
+    status_stage_time(HOP_XFER_DIR_RECEIVE, batch, stage, elapsed_ns);
+}
+static void rx_context_status_chunk(void *context, uint32_t batch, uint32_t id,
+        uint64_t offset, uint32_t length, uint64_t crc_ns, uint64_t receive_ns) {
+    (void)context;
+    status_chunk_timed(HOP_XFER_DIR_RECEIVE, batch, id, offset, length, 0, crc_ns, 0, receive_ns);
+}
+static void rx_context_status_file_phase(void *context, uint32_t batch, int index,
+        int phase, uint32_t attempts) {
+    (void)context;
+    status_file_phase(HOP_XFER_DIR_RECEIVE, batch, index, phase, attempts);
+}
+static void rx_context_status_set_files_total(void *context, uint32_t total) {
+    (void)context;
+    pthread_mutex_lock(&s_status_lock);
+    s_receive_status.status.files_total = total;
+    pthread_mutex_unlock(&s_status_lock);
+}
+
 static void rx_context_configure(void) {
     s_rx.writer = s_wq;
     s_rx.lifecycle = &s_rx_lifecycle;
@@ -299,6 +342,15 @@ static void rx_context_configure(void) {
     s_rx.services.remove_top_path = rx_context_remove_top_path;
     s_rx.services.finish_clipboard = rx_context_finish_clipboard;
     s_rx.services.cancel_clipboard = rx_context_cancel_clipboard;
+    s_rx.services.now_ns = rx_context_now_ns;
+    s_rx.services.status_begin = rx_context_status_begin;
+    s_rx.services.status_end = rx_context_status_end;
+    s_rx.services.status_add_received_file = rx_context_status_add_file;
+    s_rx.services.status_image = rx_context_status_image;
+    s_rx.services.status_stage_time = rx_context_status_stage;
+    s_rx.services.status_chunk_received = rx_context_status_chunk;
+    s_rx.services.status_file_phase = rx_context_status_file_phase;
+    s_rx.services.status_set_files_total = rx_context_status_set_files_total;
 }
 static void rx_discard_dir(void);
 static void rx_bind_session(const hop_session_id *session) {

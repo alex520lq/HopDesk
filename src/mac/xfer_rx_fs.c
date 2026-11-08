@@ -55,6 +55,10 @@ static int remove_tree_entry(const char *path, const struct stat *status,
     return unlink(path);
 }
 
+int hop_xfer_rx_fs_remove_file(const char *path) {
+    return path ? unlink(path) : -1;
+}
+
 int hop_xfer_rx_fs_remove_tree(const char *path, const char *required_path_fragment) {
     if (!path || !*path || !required_path_fragment ||
         !strstr(path, required_path_fragment)) return -2;

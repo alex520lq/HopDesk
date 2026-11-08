@@ -115,6 +115,15 @@ Writer queue 当前通过 include 访问 task/budget、status timing、watchdog 
 
 该拆分不改变 ACK window 的同步约定（调用方仍持有平台 ACK lock），也不把平台锁引入 Core。原有 `test_xfer_ack_window` 覆盖窗口容量、重复 ACK、deadline race、RTT 和连续 checkpoint，保留原测试向量。
 
+### Native Writer IO Adapter
+
+Windows/macOS writer worker 原先直接操作各自平台文件句柄。现已将文件生命周期与随机偏移写入拆到平台 adapter：
+- `src/win/xfer_writer_io.c/.h`：HANDLE 初始化、打开/覆盖、偏移写入、关闭。
+- `src/mac/xfer_writer_io.c/.h`：fd 初始化、打开/覆盖、完整处理 partial write/EINTR、偏移写入、关闭。
+- `tests/writer_io_tests.c`：两端共享测试入口，验证 open → write-at(0) → overwrite-at(1) → close 后的实际字节内容。
+
+平台 writer worker 仍负责 watchdog、耗时统计、Task Reservation 释放和队列状态；adapter 不触碰这些生命周期。Windows `SetFilePointerEx` 失败现在会正确返回错误，不再忽略 seek 失败。
+
 ## 10. 审计结论
 
 第一项真正的生产代码拆分应从 writer queue 开始：其职责相对独立、slot/bytes/pool 所有权可明确建模，而且能通过慢盘、满队列、取消、shutdown drain 等测试验证。不要先拆 UI，也不要直接把整个 `.inc` 改名为 `.c`；后者只会把隐式依赖变成编译/链接错误。

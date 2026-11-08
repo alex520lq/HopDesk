@@ -125,9 +125,13 @@ static int wq_push(const rx_task *t) {
         hop_watchdog_end(queue_guard);
         return 0;
     }
+    if (!hop_xfer_rx_queue_push(&s_wq.accounting, add_bytes)) {
+        LeaveCriticalSection(&s_wq.lock);
+        hop_watchdog_end(queue_guard);
+        return 0;
+    }
     s_wq.ring[s_wq.tail] = *t;
     s_wq.tail = (s_wq.tail + 1) % RX_Q_SLOTS;
-    (void)hop_xfer_rx_queue_push(&s_wq.accounting, add_bytes);
     WakeConditionVariable(&s_wq.cv_work);
     LeaveCriticalSection(&s_wq.lock);
     hop_watchdog_end(queue_guard);
@@ -145,7 +149,11 @@ static int wq_push_data(hop_xfer_task *owner, uint64_t off, const uint8_t *data,
         hop_watchdog_end(queue_guard);
         return 0;
     }
-    (void)hop_xfer_rx_queue_reserve(&s_wq.accounting, len);
+    if (!hop_xfer_rx_queue_reserve(&s_wq.accounting, len)) {
+        LeaveCriticalSection(&s_wq.lock);
+        hop_watchdog_end(queue_guard);
+        return 0;
+    }
     LeaveCriticalSection(&s_wq.lock);
 
     if (!hop_xfer_task_reserve_rx_buffer(owner, len)) {
@@ -190,7 +198,15 @@ static int wq_push_data(hop_xfer_task *owner, uint64_t off, const uint8_t *data,
         hop_watchdog_end(queue_guard);
         return 0;
     }
-    (void)hop_xfer_rx_queue_commit_reserved(&s_wq.accounting);
+    if (!hop_xfer_rx_queue_commit_reserved(&s_wq.accounting)) {
+        hop_xfer_rx_queue_rollback(&s_wq.accounting, len);
+        hop_xfer_buffer_pool_release_locked(&s_wq.pool, t.pool_slot);
+        WakeAllConditionVariable(&s_wq.cv_space);
+        LeaveCriticalSection(&s_wq.lock);
+        (void)hop_xfer_task_release_rx_buffer(owner, len);
+        hop_watchdog_end(queue_guard);
+        return 0;
+    }
     s_wq.ring[s_wq.tail] = t;
     s_wq.tail = (s_wq.tail + 1) % RX_Q_SLOTS;
     WakeConditionVariable(&s_wq.cv_work);

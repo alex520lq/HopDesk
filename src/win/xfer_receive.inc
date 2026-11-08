@@ -112,9 +112,37 @@ typedef struct xfer_rx_context {
     /* 本批顶层条目（用于最后设置剪贴板） */
     wchar_t **tops;
     int       ntop;
+    void *platform_context;
+    void (*shutdown_data_channel)(void *context);
+    void (*mark_sender_aborted)(void *context, uint32_t batch, uint8_t reason);
 } xfer_rx_context;
 
 static xfer_rx_context s_rx;
+
+static void rx_context_shutdown_data(void *context) {
+    (void)context;
+    EnterCriticalSection(&s_x.lock);
+    SOCKET active = s_x.client;
+    LeaveCriticalSection(&s_x.lock);
+    if (active != INVALID_SOCKET) shutdown(active, SD_BOTH);
+}
+
+static void rx_context_mark_sender_aborted(void *context, uint32_t batch, uint8_t reason) {
+    (void)context;
+    EnterCriticalSection(&s_x.lock);
+    if (s_x.cur_batch == batch) {
+        s_x.abort_batch = batch;
+        s_x.abort_reason = reason;
+    }
+    LeaveCriticalSection(&s_x.lock);
+    SetEvent(s_ack.ev);
+}
+
+static void rx_context_configure(void) {
+    s_rx.platform_context = NULL;
+    s_rx.shutdown_data_channel = rx_context_shutdown_data;
+    s_rx.mark_sender_aborted = rx_context_mark_sender_aborted;
+}
 
 static int rx_reserve_entry_budget(void *context, uint64_t bytes) {
     return hop_xfer_task_reserve_entry((hop_xfer_task *)context, bytes);
@@ -302,6 +330,7 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
     }
 
     static hop_xfer_rx_protocol_adapter adapter;
+    rx_context_configure();
     hop_xfer_rx_protocol_adapter_init(&adapter, &s_rx_dispatch_handlers, &s_rx);
     (void)hop_xfer_rx_protocol_adapter_dispatch(&adapter, type, p, len);
 }

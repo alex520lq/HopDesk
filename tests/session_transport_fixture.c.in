@@ -7,13 +7,13 @@
 #include "xfer_tracking.h"
 #include "xfer_task.h"
 #include "xfer_rx_receipt.h"
+#include "xfer_rx_lifecycle.h"
 #define SD_BOTH 2
 #define SHUT_RDWR 2
 #define INVALID_SOCKET -1
 typedef int SOCKET;
 static struct {int client,sock,lock,slock;hop_session_id session;hop_xfer_rate_limiter rate;} s_x;
-static struct {int active;uint32_t batch,dead_batch;uint8_t dead_reason;hop_xfer_task task;} s_rx;
-static hop_session_id s_rx_session;
+static struct {int active;uint32_t batch;hop_xfer_task task;} s_rx;
 static hop_xfer_rx_done_receipt s_done_receipt;
 static struct {int marker;} s_send_status,s_receive_status;
 static int s_status_lock,resets,closes,discarded,paste_cancelled;
@@ -53,11 +53,11 @@ static int not_busy(void){return 0;}
 @FUNCTIONS@
 int main(void){
  s_x.session.bytes[0]=1;s_x.client=s_x.sock=7;hop_session_publish(&s_x.session);
- s_rx.dead_batch=42;s_receive_status.marker=9;rx_bind_session(&s_x.session);
- assert(resets==1 && !s_rx.dead_batch && !s_receive_status.marker);
- s_rx.active=1;s_rx.batch=HOP_XFER_PASTE_BATCH_FLAG|42;s_rx.dead_batch=42;rx_bind_session(&s_x.session);
- assert(resets==1 && closes==1 && !discarded && !paste_cancelled && s_rx.dead_batch==42);
- hop_session_id next={{2}};rx_bind_session(&next);assert(resets==2 && !s_rx.dead_batch && discarded==1 && paste_cancelled==1);
+ hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle,42,HOP_ABORT_CANCEL);s_receive_status.marker=9;rx_bind_session(&s_x.session);
+ assert(resets==1 && !hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,42,NULL) && !s_receive_status.marker);
+ s_rx.active=1;s_rx.batch=HOP_XFER_PASTE_BATCH_FLAG|42;hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle,42,HOP_ABORT_DISK);rx_bind_session(&s_x.session);
+ assert(resets==1 && closes==1 && !discarded && !paste_cancelled && hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,42,NULL));
+ hop_session_id next={{2}};rx_bind_session(&next);assert(resets==2 && !hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,42,NULL) && discarded==1 && paste_cancelled==1);
  rx_bind_session(&s_x.session);s_rx.batch=42;s_rx.active=1;
  rx_expire_stale_session();assert(s_rx.active && discarded==1);
  hop_session_clear(&s_x.session);rx_expire_stale_session();

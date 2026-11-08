@@ -99,3 +99,15 @@ Windows and macOS may retain different synchronization and path APIs, but must s
 - Worker join success and injected join timeout; prove no restart or object destruction while the worker may still be live.
 - Exactly-once release for Task budget, pool slot, and queue accounting on every failure path.
 - Sanitizer/concurrency stress tests where supported.
+
+
+## 2026-11-08 worker join parity hardening
+
+The platform worker adapters now share the same bounded join behavior:
+- Windows waits at most 3 seconds with `WaitForSingleObject`.
+- macOS waits at most 3 seconds for an explicit worker-exit signal using a condition variable, then calls `pthread_join` only after exit is confirmed.
+- A timeout leaves the worker in RUNNING state with its thread identity, callback context, task storage, and synchronization objects intact. Callers may retry join; they must not restart or destroy the owner while the worker may still execute.
+- Successful join is the only path that releases worker task storage and the macOS exit synchronization primitives.
+- `tests/writer_worker_tests.c` now exercises a deliberate >3-second callback, verifies the first join times out without clearing live state, retries join successfully, and verifies restart afterward on both platforms.
+
+This closes a platform lifecycle mismatch in the worker adapter; it does not yet extract the complete Writer Queue from the Receiver include.

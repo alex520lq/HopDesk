@@ -9,6 +9,7 @@
 #include "xfer_rx_receipt.h"
 #include "xfer_rx_lifecycle.h"
 #include "xfer_rx_batch_rules.h"
+#include "xfer_rx_batch_state.h"
 #include "xfer_rx_entry_reservations.h"
 #include "xfer_rx_file_state.h"
 #include "xfer_rx_image_state.h"

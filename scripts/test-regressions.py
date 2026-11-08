@@ -32,7 +32,7 @@ with tempfile.TemporaryDirectory(prefix='hopdesk-regression-') as directory:
         subprocess.run(cmd,cwd=work,check=True)
         subprocess.run([str(exe)],cwd=work,check=True,timeout=30)
 
-    run('tracking_config',(ROOT/'tests/regression_tests.c').read_text(encoding='utf-8'),['src/core/config.c'])
+    run('tracking_config',(ROOT/'tests/regression_tests.c').read_text(encoding='utf-8'),['src/core/config.c','src/core/xfer_tracking.c'])
     assert not list(work.glob('*.tmp.*')), 'failed migration leaked temporary files'
     run('ack_window_checkpoint',r'''
 #include "xfer_ack_window.h"
@@ -481,7 +481,7 @@ int main(void){
     puts("PASS: production IMAGE DONE and validated file-paste completion paths");return 0;
 }
 '''
-        run('image_'+platform,common+extract(source,'send_done')+'\n'+extract(source,'rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+        run('image_'+platform,common+extract(source,'send_done')+'\n'+extract(source,'rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c'],threads=True)
     # Run the actual per-platform state wrappers, not only a reimplemented model.
     for platform in ['win','mac']:
         source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', (ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8'))
@@ -526,7 +526,7 @@ int main(void){
 }
 '''
         names=['status_for','status_begin','status_chunk_timed','status_file_phase','status_end','status_add_received_file']
-        run('wrappers_'+platform,preamble+'\n'.join(extract(source,n) for n in names)+main)
+        run('wrappers_'+platform,preamble+'\n'.join(extract(source,n) for n in names)+main,['src/core/xfer_tracking.c'])
 
     if os.name!='nt':
         source=(ROOT/'src/mac/xfer.c').read_text(encoding='utf-8')

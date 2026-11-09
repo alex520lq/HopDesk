@@ -792,7 +792,7 @@ int main(void){
                 'static void fixture_status_file_phase(void *context,uint32_t batch,int index,int phase,uint32_t attempts){(void)context;status_file_phase(HOP_XFER_DIR_RECEIVE,batch,index,phase,attempts);}',
                 'static void fixture_status_total(void *context,uint32_t total){(void)context;s_receive_status.status.files_total=total;}',
                 'static void fixture_status_reset(void *context){(void)context;memset(&s_receive_status,0,sizeof(s_receive_status));}',
-                'static void fixture_reset_batch_state(void *context){(void)context;rx_clear_state();}'
+                'static void fixture_reset_batch_state(void *context){(void)context;rx_clear_state(&s_rx);}'
             ]),
             'RX_WRITER_CALLBACKS':'\n'.join([
                 'static void fixture_reset_file_error(void *context){(void)context;}',

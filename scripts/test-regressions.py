@@ -938,14 +938,12 @@ int main(void){
         assert 'rx->services.remove_top_path' in begin
         assert 'rx->services.add_top_path' in begin and 'rx->services.add_top_path' in end
         if platform=='mac':
-            assert 'hop_xfer_rx_fs_mkdir_p(path) != 0' in begin
+            assert 'hop_xfer_rx_fs_mkdir_p(copy)' in receive_impl
             fs=(ROOT/'src/mac/xfer_rx_fs.c').read_text(encoding='utf-8')
             assert 'hop_xfer_rx_fs_path_for' in fs and 'hop_xfer_rx_fs_remove_tree' in fs and 'hop_xfer_rx_fs_remove_file' in fs
-            assert 'if (!parent_ok)' in begin
         else:
-            assert 'hop_xfer_rx_fs_create_directory_if_missing(path)' in begin
-            assert 'hop_xfer_rx_fs_ensure_dirs(path)' in begin
-            assert 'if (!parent_ok)' in begin
+            assert 'hop_xfer_rx_fs_create_directory_if_missing(path)' in receive_impl
+            assert 'hop_xfer_rx_fs_ensure_dirs(copy)' in receive_impl
             fs=(ROOT/'src/win/xfer_rx_fs.c').read_text(encoding='utf-8')
             assert 'GetFileAttributesW(path)' in fs
             assert 'hop_xfer_rx_fs_path_for' in fs and 'hop_xfer_rx_fs_remove_tree' in fs

@@ -793,6 +793,8 @@ int main(void){
         file_ack_handler=extract(receiver,'rx_dispatch_file_ack')
         done_ack_handler=extract(receiver,'rx_dispatch_done_ack')
         services=(ROOT/'src/core/xfer_rx_services.h').read_text(encoding='utf-8')
+        core_message_handlers=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
+        assert 'if (!rx->services.write_file_chunk || !rx->services.write_file_chunk(' in core_message_handlers
         context_header=(ROOT/'src/core/xfer_rx_context.h').read_text(encoding='utf-8')
         assert 'typedef struct xfer_rx_context' in context_header
         assert 'hop_xfer_rx_services services;' in context_header

@@ -584,16 +584,16 @@ int main(void){
     s_rx.image_buffer.data=pixel;s_rx.image_buffer.capacity=4;assert(hop_xfer_rx_image_state_begin(&s_rx.image_state,1,1,4,4));s_rx.image_state.received=4;s_rx.image_state.capacity=4;
     hop_xfer_tracking_begin(&s_receive_status,j.batch,HOP_XFER_DIR_RECEIVE,0,0,"Image",HOP_XFER_RECEIVING);
     hop_xfer_tracking_file(&s_receive_status,j.batch,1,"Image",4,0,HOP_XFER_FILE_RECEIVING);
-    rx_finish_batch(j.batch,hop_get_be32(wire+4),hop_get_be32(wire+8));
+    rx_finish_batch(&s_rx,j.batch,hop_get_be32(wire+4),hop_get_be32(wire+8));
     assert(applied==1 && !s_receive_status.status.active && s_receive_status.status.phase==HOP_XFER_COMPLETED);
     assert(s_receive_status.status.files_done==1);
-    rx_finish_batch(j.batch,1,1);assert(applied==1);
+    rx_finish_batch(&s_rx,j.batch,1,1);assert(applied==1);
     assert(hop_xfer_task_init(&s_rx.task,0,0,11));
     assert(hop_xfer_task_reserve_job(&s_rx.task));
     assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
     assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,11));hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,1,0);assert(hop_xfer_rx_image_state_begin(&s_rx.image_state,1,1,4,4));s_rx.image_state.received=3;s_rx.image_state.capacity=4;
     hop_xfer_tracking_begin(&s_receive_status,11,HOP_XFER_DIR_RECEIVE,1,4,"Image",HOP_XFER_RECEIVING);
-    rx_finish_batch(11,1,1);assert(applied==1 && s_receive_status.status.phase==HOP_XFER_FAILED);
+    rx_finish_batch(&s_rx,11,1,1);assert(applied==1 && s_receive_status.status.phase==HOP_XFER_FAILED);
 
     /* Requested file paste must use the validated callback, not generic paths. */
     const char *one_path="received.txt";void *tops[1]={(void *)one_path};
@@ -603,7 +603,7 @@ int main(void){
     assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
     assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,paste_batch));hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,0,0);s_rx.ntop=1;s_rx.tops=tops;
     hop_xfer_tracking_begin(&s_receive_status,paste_batch,HOP_XFER_DIR_RECEIVE,1,0,"File",HOP_XFER_RECEIVING);
-    rx_finish_batch(paste_batch,1,1);
+    rx_finish_batch(&s_rx,paste_batch,1,1);
     assert(paste_success_calls==1 && paste_failure_calls==0);
 
     paste_batch=HOP_XFER_PASTE_BATCH_FLAG|13u;
@@ -612,7 +612,7 @@ int main(void){
     assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
     assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,paste_batch));hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,0,0);s_rx.ntop=1;s_rx.tops=tops;
     hop_xfer_tracking_begin(&s_receive_status,paste_batch,HOP_XFER_DIR_RECEIVE,1,0,"File",HOP_XFER_RECEIVING);
-    rx_finish_batch(paste_batch,0,1);
+    rx_finish_batch(&s_rx,paste_batch,0,1);
     assert(paste_success_calls==1 && paste_failure_calls==1);
     puts("PASS: production IMAGE DONE and validated file-paste completion paths");return 0;
 }
@@ -760,9 +760,9 @@ int main(void){
             'FINISH_BATCH':extract(receiver,'rx_finish_batch'),
             'RX_SERVICE_CALLBACKS':'\n'.join([
                 'static void fixture_send_abort(void *context,uint32_t batch,uint8_t reason){(void)context;\n#ifdef FIXTURE_WINDOWS\nsend_abort_msg(s_x.client,batch,reason,HOP_ABORT_TO_SENDER);\n#else\nsend_abort(batch,reason);\n#endif\n}',
-                'static void fixture_terminate_batch(void *context,uint32_t batch,uint8_t reason,int notify_peer){(void)context;rx_terminate(&s_rx,batch,reason,notify_peer);}',
-                'static void fixture_begin_batch(void *context,uint32_t batch){(void)context;rx_begin_batch(batch);}',
-                'static int fixture_finish_batch(void *context,uint32_t batch,uint32_t ok,uint32_t total){(void)context;return rx_finish_batch(batch,ok,total);}',
+                'static void fixture_terminate_batch(void *context,uint32_t batch,uint8_t reason,int notify_peer){rx_terminate((xfer_rx_context*)context,batch,reason,notify_peer);}',
+                'static void fixture_begin_batch(void *context,uint32_t batch){rx_begin_batch((xfer_rx_context*)context,batch);}',
+                'static int fixture_finish_batch(void *context,uint32_t batch,uint32_t ok,uint32_t total){return rx_finish_batch((xfer_rx_context*)context,batch,ok,total);}',
                 'static int fixture_add_top_path(void *context,const void *path){(void)context;(void)path;return 1;}',
                 'static void fixture_remove_top_path(void *context,const void *path){(void)context;(void)path;}',
                 'static void fixture_finish_clipboard(void *context,uint32_t batch,const void *image,uint32_t w,uint32_t h,uint32_t stride,int image_valid,const void *const *paths,int count,int allow){(void)context;if(allow&&image_valid&&image){apply_image((const uint8_t*)image,(int)w,(int)h,(int)stride);return;}if(allow&&count>0){if(batch&HOP_XFER_PASTE_BATCH_FLAG){',

@@ -65,17 +65,15 @@ static void rx_dispatch_file_begin(void *context, const uint8_t *p, uint32_t len
             rx->cur_path     = NULL;
             if (rx->services.reset_file_error) rx->services.reset_file_error(rx->services.context);
 
+            if (!hop_xfer_rx_file_state_prepare_entry(&rx->file_state, id, size,
+                    (flags & HOP_FILE_FLAG_DIR) != 0, rel, plen)) {
+                hop_log(HOP_LOG_WARN, "xfer: unsafe rel path rejected");
+                return;
+            }
             char *relz = (char *)malloc((size_t)plen + 1);
             if (!relz) { hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_DISK); return; }
             memcpy(relz, rel, plen);
             relz[plen] = '\0';
-
-            if (!hop_xfer_rx_file_state_prepare_entry(&rx->file_state, id, size,
-                    (flags & HOP_FILE_FLAG_DIR) != 0, rel, plen)) {
-                hop_log(HOP_LOG_WARN, "xfer: unsafe rel path rejected: %s", relz);
-                free(relz);
-                return;
-            }
             if (rx->services.status_add_received_file) rx->services.status_add_received_file(rx->services.context,batch,id,relz,size,rx->file_state.is_directory);
             wchar_t *path = hop_xfer_rx_fs_path_for(rx->dir, relz);
             free(relz);

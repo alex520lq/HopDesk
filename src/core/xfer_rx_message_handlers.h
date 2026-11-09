@@ -4,6 +4,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+void hop_xfer_rx_handle_file_begin(void *context, const uint8_t *payload, uint32_t length);
+void hop_xfer_rx_handle_file_end(void *context, const uint8_t *payload, uint32_t length);
 void hop_xfer_rx_handle_image_begin(void *context, const uint8_t *payload, uint32_t length);
 void hop_xfer_rx_handle_file_chunk(void *context, const uint8_t *payload, uint32_t length);
 void hop_xfer_rx_dispatch_file_ack_message(void *context, const uint8_t *payload, uint32_t length);

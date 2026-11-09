@@ -742,7 +742,7 @@ int main(void){
         assert 'typedef struct xfer_rx_context' in context_header
         state_contract='#include "xfer_rx_context.h"\nstatic xfer_rx_context s_rx;'
         dispatch_names=[]
-        dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_reserve_entry_budget','rx_handler_terminate','rx_handler_begin_batch','rx_handler_finish_batch','rx_ack_deliver_file','rx_ack_deliver_done','rx_now_ns'])+'\n'+'\n'.join(extract(receiver,name) for name in ['hop_xfer_rx_handle_file_begin','hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_handle_file_end','hop_xfer_rx_dispatch_file_ack_message','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_dispatch_done_ack_message'])
+        dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_reserve_entry_budget','rx_handler_terminate','rx_handler_begin_batch','rx_handler_finish_batch','rx_ack_deliver_file','rx_ack_deliver_done','rx_now_ns','hop_xfer_rx_finish_batch'])+'\n'+'\n'.join(extract(receiver,name) for name in ['hop_xfer_rx_handle_file_begin','hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_handle_file_end','hop_xfer_rx_dispatch_file_ack_message','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_dispatch_done_ack_message'])
         dispatch_handlers+='\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { hop_xfer_rx_handle_file_begin, hop_xfer_rx_handle_image_begin, hop_xfer_rx_handle_file_chunk, hop_xfer_rx_handle_file_end, hop_xfer_rx_dispatch_file_ack_message, hop_xfer_rx_handle_abort, hop_xfer_rx_handle_done, hop_xfer_rx_dispatch_done_ack_message };\n'
         fixture=(ROOT/'tests/receive_abort_fixture.c.in').read_text(encoding='utf-8')
         values={
@@ -790,7 +790,8 @@ int main(void){
                 'static void fixture_status_chunk(void *context,uint32_t batch,uint32_t id,uint64_t offset,uint32_t length,uint64_t crc,uint64_t receive){(void)context;status_chunk_timed(HOP_XFER_DIR_RECEIVE,batch,id,offset,length,0,crc,0,receive);}',
                 'static void fixture_status_file_phase(void *context,uint32_t batch,int index,int phase,uint32_t attempts){(void)context;status_file_phase(HOP_XFER_DIR_RECEIVE,batch,index,phase,attempts);}',
                 'static void fixture_status_total(void *context,uint32_t total){(void)context;s_receive_status.status.files_total=total;}',
-                'static void fixture_status_reset(void *context){(void)context;memset(&s_receive_status,0,sizeof(s_receive_status));}'
+                'static void fixture_status_reset(void *context){(void)context;memset(&s_receive_status,0,sizeof(s_receive_status));}',
+                'static void fixture_reset_batch_state(void *context){(void)context;rx_clear_state();}'
             ]),
             'RX_WRITER_CALLBACKS':'\n'.join([
                 'static void fixture_reset_file_error(void *context){(void)context;}',

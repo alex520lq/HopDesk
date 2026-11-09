@@ -686,3 +686,12 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 扩展 `tests/xfer_rx_file_state_tests.c`，覆盖普通文件、目录、路径穿越拒绝、非法 ID 不修改现有状态；更新源码回归断言，确保两端不再各自调用路径安全校验或重复初始化 File State。
 - 本切片只统一 FILE_BEGIN 的元数据准入，不包含平台路径创建、预算预留和文件打开；这些副作用仍由平台 Adapter 负责。FILE_END 的完整 ACK/清理编排仍待下一切片继续收敛。
 - CI：Run #964 暴露 `HOP_XFER_FILE_LIMIT` 未从 `xfer_status.h` 引入，导致 Windows/macOS 在 Core 编译阶段失败；已补齐 Core 与独立测试的显式 include。修复后的当前 head `326377d2f4716af6c2d6ad3b8e881b9e17174da8` 尚无新的 CI 结果，必须等待新一轮 Windows/macOS 全量验证后再标记通过。
+### 2026-11-09：FILE_END 结果与诊断原因统一下沉 Core（第八切片）
+
+- 扩展 `hop_xfer_rx_file_state_evaluate_end`，由单一 Core 决策同时返回 wire ACK 状态和稳定的诊断原因枚举。
+- 统一 ACK 优先级：已记录的条目失败、Writer 错误、发送端失败状态、接收字节数不完整、CRC 不匹配、成功。
+- Windows/macOS FILE_END Handler 改为消费同一结果；平台层仅负责路径格式化日志、关闭/删除文件、剪贴板顶层路径登记、状态更新和发送 ACK。
+- 保留旧 `hop_xfer_rx_file_state_ack` 作为薄兼容包装，避免其他调用点被迫同步迁移。
+- 独立 File State 测试覆盖所有结果原因，包括已记录 BADPATH 对其他错误的优先级；源码回归断言逐平台检查两个 Handler 均使用 Core 结果。
+- 不改变 FILE_END 的外部协议、ACK 数值、文件清理时机和图片批次无逐文件 ACK 规则。
+- CI：本切片提交已触发新的 Windows/macOS 全量流水线，结果待完成。

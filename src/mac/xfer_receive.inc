@@ -227,16 +227,16 @@ static int rx_context_file_error(void *context) {
     return rx ? wq_error_get() : 1;
 }
 
-static int rx_add_top(const char *p);
-static void rx_remove_top(const char *p);
+static int rx_add_top(xfer_rx_context *rx, const char *p);
+static void rx_remove_top(xfer_rx_context *rx, const char *p);
 
 static int rx_context_add_top_path(void *context, const void *native_path) {
-    (void)context;
-    return rx_add_top((const char *)native_path);
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    return rx && native_path ? rx_add_top(rx, (const char *)native_path) : 0;
 }
 static void rx_context_remove_top_path(void *context, const void *native_path) {
-    (void)context;
-    rx_remove_top((const char *)native_path);
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (rx && native_path) rx_remove_top(rx, (const char *)native_path);
 }
 static void rx_context_cancel_clipboard(void *context, uint32_t batch) {
     (void)context;
@@ -414,34 +414,31 @@ static void rx_discard_dir(void) {
     s_rx.dir[0] = '\0';
 }
 
-static int rx_add_top(const char *p) {
-    /* 重发会让同一个顶层条目再来一次（比如 ACK 超时但文件其实写成功了），
-     * 不去重的话剪贴板里会出现两份同样的路径。ntop 只是顶层条目数，
-     * 线性扫一遍的代价可以忽略。 */
-    for (int i = 0; i < s_rx.ntop; ++i)
-        if (strcmp(s_rx.tops[i], p) == 0) return 1;
-
-    char **nv = (char **)realloc(s_rx.tops, (size_t)(s_rx.ntop + 1) * sizeof(char *));
+static int rx_add_top(xfer_rx_context *rx, const char *p) {
+    if (!rx || !p) return 0;
+    for (int i = 0; i < rx->ntop; ++i)
+        if (strcmp(rx->tops[i], p) == 0) return 1;
+    char **nv = (char **)realloc(rx->tops, (size_t)(rx->ntop + 1) * sizeof(char *));
     if (!nv) return 0;
-    s_rx.tops = nv;
-    s_rx.tops[s_rx.ntop] = strdup(p);
-    if (!s_rx.tops[s_rx.ntop]) return 0;
-    s_rx.ntop++;
+    rx->tops = nv;
+    rx->tops[rx->ntop] = strdup(p);
+    if (!rx->tops[rx->ntop]) return 0;
+    rx->ntop++;
     return 1;
 }
  
 /* Remove a previously successful top-level file before retrying it.
  * A retry opens with truncate; if it later fails, stale clipboard paths must
  * not continue advertising the now-incomplete file. */
-static void rx_remove_top(const char *p) {
-    if (!p) return;
-    for (int i = 0; i < s_rx.ntop; ++i) {
-        if (strcmp(s_rx.tops[i], p) != 0) continue;
-        free(s_rx.tops[i]);
-        if (i + 1 < s_rx.ntop)
-            memmove(&s_rx.tops[i], &s_rx.tops[i + 1],
-                    (size_t)(s_rx.ntop - i - 1) * sizeof(*s_rx.tops));
-        s_rx.ntop--;
+static void rx_remove_top(xfer_rx_context *rx, const char *p) {
+    if (!rx || !p) return;
+    for (int i = 0; i < rx->ntop; ++i) {
+        if (strcmp(rx->tops[i], p) != 0) continue;
+        free(rx->tops[i]);
+        if (i + 1 < rx->ntop)
+            memmove(&rx->tops[i], &rx->tops[i + 1],
+                    (size_t)(rx->ntop - i - 1) * sizeof(*rx->tops));
+        rx->ntop--;
         return;
     }
 }

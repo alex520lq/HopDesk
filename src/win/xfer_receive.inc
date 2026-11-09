@@ -366,18 +366,18 @@ static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total);
 
 static void rx_context_terminate_batch(void *context, uint32_t batch, uint8_t reason, int notify_peer) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (!rx || rx != &s_rx) return;
+    if (!rx) return;
     rx_terminate(rx, batch, reason, notify_peer);
 }
 static void rx_context_begin_batch(void *context, uint32_t batch) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (!rx || rx != &s_rx) return;
+    if (!rx) return;
     rx_begin_batch(rx, batch);
 }
 static int rx_context_finish_batch(void *context, uint32_t batch, uint32_t ok, uint32_t total) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (!rx || rx != &s_rx) return -1;
-    return rx_finish_batch(batch, ok, total);
+    if (!rx) return -1;
+    return rx_finish_batch(rx, batch, ok, total);
 }
 
 static uint64_t rx_context_now_ns(void *context) {

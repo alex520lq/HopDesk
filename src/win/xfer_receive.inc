@@ -153,12 +153,11 @@ static void rx_context_deliver_ack(void *context, uint32_t batch, uint32_t id, i
 /* 关掉当前文件（排空写队列后）。断线时也要调，但不能清批次状态 ——
  * 发送端会带着同一个 batch 号回来重发剩下的条目。 */
 static void rx_close_file(void) {
-    wq_drain();
-    rx_task close_t;
-    memset(&close_t, 0, sizeof(close_t));
-    close_t.kind = RX_CLOSE;
-    wq_push(&close_t);
-    wq_drain();
+    hop_writer_queue *writer = (hop_writer_queue *)s_rx.writer;
+    if (!writer) return;
+    hop_writer_queue_drain(writer);
+    (void)hop_writer_queue_enqueue_close(writer);
+    hop_writer_queue_drain(writer);
 }
 
 static void rx_clear_state(void) {
@@ -196,22 +195,20 @@ static hop_xfer_rx_done_receipt s_done_receipt;
 static void rx_context_reset_file_error(void *context) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx) return;
-    hop_writer_queue_error_reset(s_wq);
+    hop_writer_queue_error_reset((hop_writer_queue *)rx->writer);
 }
 static int rx_context_open_file(void *context, const void *native_path) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx || !native_path) return 0;
-    rx_task task;
-    memset(&task, 0, sizeof(task));
-    task.kind = RX_OPEN;
-    wcsncpy(task.path, (const wchar_t *)native_path, MAX_PATH - 1);
-    return wq_push(&task);
+    return hop_writer_queue_enqueue_open((hop_writer_queue *)rx->writer,
+                                         (const wchar_t *)native_path);
 }
 static int rx_context_write_file_chunk(void *context, hop_xfer_task *task,
                                        uint64_t offset, const uint8_t *data, uint32_t length) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx || task != &rx->task) return 0;
-    return wq_push_data(task, offset, data, length);
+    return hop_writer_queue_enqueue_write((hop_writer_queue *)rx->writer,
+                                          task, offset, data, length);
 }
 static void rx_context_close_file(void *context) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
@@ -220,7 +217,7 @@ static void rx_context_close_file(void *context) {
 }
 static int rx_context_file_error(void *context) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
-    return rx ? wq_error_get() : 1;
+    return rx && rx->writer ? hop_writer_queue_error((const hop_writer_queue *)rx->writer) : 1;
 }
 
 static int rx_add_top(xfer_rx_context *rx, const wchar_t *p);
@@ -333,6 +330,7 @@ static void rx_context_status_reset(void *context) {
 static void rx_context_configure(void) {
     s_rx.lifecycle = &s_rx_lifecycle;
     s_rx.done_receipt = &s_done_receipt;
+    s_rx.writer = s_wq;
     s_rx.services.context = &s_rx;
     s_rx.services.shutdown_data_channel = rx_context_shutdown_data;
     s_rx.services.mark_sender_aborted = rx_context_mark_sender_aborted;

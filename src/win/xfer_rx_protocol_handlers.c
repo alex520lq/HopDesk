@@ -59,39 +59,50 @@ static void rx_dispatch_file_begin(void *context, const uint8_t *p, uint32_t len
                 return;
             }
 
-            /* 先把"当前条目"登记好，哪怕它是坏的：FILE_END 要靠 cur_id 回 ACK，
-             * 漏回一次，发送端就要白等 10 秒超时再重试。 */
-            free(rx->cur_path);
-            rx->cur_path     = NULL;
-            if (rx->services.reset_file_error) rx->services.reset_file_error(rx->services.context);
-
+            /* Prepare metadata and construct a candidate path without publishing it
+             * into the live context. The previous entry remains untouched until
+             * the task budget reservation has been accepted. */
             if (!hop_xfer_rx_file_state_prepare_entry(&rx->file_state, id, size,
                     (flags & HOP_FILE_FLAG_DIR) != 0, rel, plen)) {
+                free(rx->cur_path);
+                rx->cur_path = NULL;
                 hop_log(HOP_LOG_WARN, "xfer: unsafe rel path rejected");
                 return;
             }
             char *relz = (char *)malloc((size_t)plen + 1);
-            if (!relz) { hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_DISK); return; }
+            if (!relz) {
+                free(rx->cur_path);
+                rx->cur_path = NULL;
+                hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_DISK);
+                return;
+            }
             memcpy(relz, rel, plen);
             relz[plen] = '\0';
-            wchar_t *path = hop_xfer_rx_fs_path_for(rx->dir, relz);
-            if (!path) {
+            wchar_t *candidate_path = hop_xfer_rx_fs_path_for(rx->dir, relz);
+            if (!candidate_path) {
                 free(relz);
+                free(rx->cur_path);
+                rx->cur_path = NULL;
                 hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_BADPATH);
                 return;
             }
-
-            rx->cur_path = path;
 
             hop_xfer_rx_entry_reserve_result reservation =
                 hop_xfer_rx_entry_reservations_reserve(&rx->entry_reservations, id, size,
                     rx_reserve_entry_budget, &rx->task);
             if (reservation != HOP_RX_ENTRY_RESERVE_NEW &&
                 reservation != HOP_RX_ENTRY_RESERVE_ALREADY_HELD) {
+                free(candidate_path);
                 free(relz);
                 rx_handler_terminate(rx, batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
+
+            /* Commit the candidate only after admission. */
+            free(rx->cur_path);
+            rx->cur_path = candidate_path;
+            wchar_t *path = candidate_path;
+            if (rx->services.reset_file_error) rx->services.reset_file_error(rx->services.context);
             if (rx->services.remove_top_path) rx->services.remove_top_path(rx->services.context, rx->cur_path);
             if (rx->services.status_add_received_file) rx->services.status_add_received_file(rx->services.context,batch,id,relz,size,rx->file_state.is_directory);
             free(relz);

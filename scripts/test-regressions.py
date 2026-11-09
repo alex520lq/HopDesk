@@ -482,7 +482,8 @@ int main(void){
 
     for platform in ['win','mac']:
         rx_sources='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_batch_lifecycle.inc','xfer_rx_protocol_handlers.c'))
-        source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', rx_sources)
+        source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
+        source=source.replace('#include "xfer_receive.inc"', rx_sources)
         common=r'''
 #include "hop.h"
 #include "xfer_rx_batch_rules.h"

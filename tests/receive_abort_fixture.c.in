@@ -164,7 +164,6 @@ static void checked_free(void*p){if(p)assert(closed);free(p);}
 #define free checked_free
 @CLEAR_STATE@
 #undef free
-@RESET_STATE@
 static void rx_discard_dir(xfer_rx_context *rx){assert(closed);discarded++;if(rx)rx->dir[0]=0;}
 static void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n,int success){
     (void)batch;(void)paths;(void)n;(void)success;

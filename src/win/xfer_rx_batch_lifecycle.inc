@@ -1,6 +1,7 @@
 static void rx_abort_send(void *context, uint32_t batch, uint8_t reason) {
-    (void)context;
-    send_abort_msg(s_x.client,batch,reason,HOP_ABORT_TO_SENDER);
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (rx && rx->services.send_abort)
+        rx->services.send_abort(rx->services.context, batch, reason);
 }
 
 static void rx_abort_cancel_clipboard(void *context, uint32_t batch) {

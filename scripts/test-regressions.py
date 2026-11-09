@@ -393,8 +393,10 @@ int main(void){
             assert 'statusbar_notify_paste_ready()' in apply_objects
 
         platform_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
-        assert 'hop_xfer_task_cancel_requested(rx->task.id)' in platform_handlers
+        assert 'if (rx->batch_state.active && hop_xfer_task_cancel_requested(rx->task.id))' in platform_handlers
         assert 'if (!hop_xfer_task_set_kind(&rx->task,HOP_TASK_KIND_FILES) || hop_xfer_task_cancel_requested(rx->task.id))' in platform_handlers
+        assert 'if (!hop_xfer_decode_file_begin(p, len, &msg))' in platform_handlers
+        assert 'if (rx->batch_state.active && hop_xfer_task_cancel_requested(rx->task.id))' in platform_handlers[platform_handlers.index('static void rx_dispatch_file_end'): ]
         # RX storage/accounting lives in the production writer implementation,
         # not in Receiver protocol code. Windows has completed this extraction;
         # macOS is intentionally checked against its current adapter until parity lands.

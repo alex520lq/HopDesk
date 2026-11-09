@@ -6,6 +6,26 @@ int main(void) {
     hop_xfer_rx_file_state state;
     hop_xfer_rx_file_state_reset(&state);
     assert(state.failure == -1 && state.id == 0);
+    static const uint8_t valid_path[] = "folder/file.bin";
+    assert(hop_xfer_rx_file_state_prepare_entry(&state, 7, 1234, 0,
+        valid_path, (uint32_t)(sizeof(valid_path) - 1)));
+    assert(state.id == 7 && state.declared_size == 1234);
+    assert(!state.is_image && !state.is_directory && state.failure == -1);
+
+    static const uint8_t directory_path[] = "folder/sub";
+    assert(hop_xfer_rx_file_state_prepare_entry(&state, 8, 0, 1,
+        directory_path, (uint32_t)(sizeof(directory_path) - 1)));
+    assert(state.id == 8 && state.is_directory && state.failure == -1);
+
+    static const uint8_t unsafe_path[] = "../escape";
+    assert(!hop_xfer_rx_file_state_prepare_entry(&state, 9, 55, 0,
+        unsafe_path, (uint32_t)(sizeof(unsafe_path) - 1)));
+    assert(state.id == 9 && state.declared_size == 55);
+    assert(state.failure == HOP_FILE_ACK_BADPATH);
+    assert(!hop_xfer_rx_file_state_prepare_entry(&state, 0, 1, 0,
+        valid_path, (uint32_t)(sizeof(valid_path) - 1)));
+    assert(state.id == 9); /* invalid ID leaves the current entry untouched */
+
     hop_xfer_rx_file_state_begin(&state, 9);
     hop_xfer_rx_file_state_set_size(&state, 9);
     hop_xfer_rx_file_state_set_kind(&state, 1, 0);

@@ -918,7 +918,7 @@ int main(void){
         assert 'task != &rx->task' in receive_impl
         assert 'rx->writer' in receive_impl
         assert 'typedef struct xfer_rx_context' not in receiver
-        assert all(name in services for name in ['shutdown_data_channel','mark_sender_aborted','send_abort','send_file_ack','send_done_ack','deliver_ack','terminate_batch','begin_batch','finish_batch','reset_batch_state','clear_cancel_request','create_staging_directory','send_abort','reset_file_error','open_file','write_file_chunk','close_file','file_error','build_path','prepare_file_path','is_top_level_path','remove_file'])
+        assert all(name in services for name in ['shutdown_data_channel','mark_sender_aborted','send_abort','send_file_ack','send_done_ack','deliver_ack','terminate_batch','begin_batch','finish_batch','reset_batch_state','clear_cancel_request','create_staging_directory','discard_staging_directory','send_abort','reset_file_error','open_file','write_file_chunk','close_file','file_error','build_path','prepare_file_path','is_top_level_path','remove_file'])
         on_data_msg=extract(receiver,'on_data_msg')
         assert 'rx_context_configure();' in on_data_msg and '&hop_xfer_rx_platform_dispatch_handlers, &s_rx' in on_data_msg
         assert 'hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, rx)' in file_ack_handler
@@ -950,6 +950,9 @@ int main(void){
         assert 'hop_xfer_rx_begin_batch(rx, batch)' in lifecycle
         assert 's_rx.services.clear_cancel_request = rx_context_clear_cancel_request;' in receive_impl
         assert 's_rx.services.create_staging_directory = rx_context_create_staging_directory;' in receive_impl
+        assert 's_rx.services.discard_staging_directory = rx_context_discard_staging_directory;' in receive_impl
+        assert 'hop_xfer_rx_bind_session(&s_rx, session);' in receive_impl
+        assert 'hop_xfer_rx_bind_session' in core_message_handlers
         if platform=='mac':
             assert 'hop_xfer_rx_fs_mkdir_p(rx->dir)' in receive_impl
         else:

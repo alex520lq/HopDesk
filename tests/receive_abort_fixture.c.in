@@ -70,6 +70,8 @@ static int wq_push_data(hop_xfer_task *owner,uint64_t off,const uint8_t *data,ui
 static void fixture_shutdown_data(void *context){(void)context;}
 static void fixture_terminate_batch(void *context,uint32_t batch,uint8_t reason,int notify_peer);
 static void fixture_send_abort(void *context,uint32_t batch,uint8_t reason);
+static void fixture_clear_cancel_request(void *context);
+static int fixture_create_staging_directory(void *context,const char *session_hex,uint32_t batch);
 static void fixture_begin_batch(void *context,uint32_t batch);
 static int fixture_finish_batch(void *context,uint32_t batch,uint32_t ok,uint32_t total);
 static void fixture_reset_batch_state(void *context);
@@ -118,6 +120,8 @@ static void fixture_configure_rx_context(void){
     s_rx.services.shutdown_data_channel=fixture_shutdown_data;
     s_rx.services.mark_sender_aborted=fixture_mark_sender_aborted;
     s_rx.services.send_abort=fixture_send_abort;
+    s_rx.services.clear_cancel_request=fixture_clear_cancel_request;
+    s_rx.services.create_staging_directory=fixture_create_staging_directory;
     s_rx.services.send_file_ack=fixture_send_file_ack;
     s_rx.services.send_done_ack=fixture_send_done_ack;
     s_rx.services.deliver_ack=fixture_deliver_ack;

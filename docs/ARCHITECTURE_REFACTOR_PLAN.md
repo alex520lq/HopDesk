@@ -719,3 +719,5 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - macOS `net_client.c` 的握手、角色相关控制消息、键鼠注入、剪贴板/显示消息分发移至 `net_client_protocol.inc`；socket、重连与发送队列仍由 transport 层持有。
 - 回归脚本改为从新模块读取真实生产函数，保留粘贴版本校验、远程文件 Offer、角色消息分发和控制连接行为测试，并增加模块边界断言。
 - 第十一切片与前述发送端拆分一起等待双平台 CI 验证；不改变控制协议、剪贴板格式或外部 API。
+- 连接层继续拆分：Windows `net_server_transport.inc` 收纳 reader/sender/server worker、listener 生命周期与公开 start/stop/send 实现；macOS `net_client_transport.inc` 收纳控制发送队列、socket connect/accept、重连循环与连接状态更新。`net_server_protocol.inc` / `net_client_protocol.inc` 只负责握手与控制消息分发。
+- 连接层的 session/token/heartbeat/queue admission 规则仍调用 Core 现有 `session`、`watchdog`、`ctrl_queue` 等实现；socket、锁、线程与 AppKit/Win32 调度继续留在平台 transport，不跨平台伪统一。

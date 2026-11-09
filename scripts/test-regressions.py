@@ -772,9 +772,9 @@ int main(void){
             'RX_WRITER_CALLBACKS':'\n'.join([
                 'static void fixture_reset_file_error(void *context){(void)context;}',
                 'static int fixture_open_file(void *context,const void *native_path){(void)context;(void)native_path;return 1;}',
-                'static int fixture_write_file_chunk(void *context,hop_xfer_task *task,uint64_t offset,const uint8_t *data,uint32_t length){(void)context;return wq_push_data(task,offset,data,length);}',
+                'static int fixture_write_file_chunk(void *context,hop_xfer_task *task,uint64_t offset,const uint8_t *data,uint32_t length){(void)context;if(fail_write)return 0;return wq_push_data(task,offset,data,length);}',
                 'static void fixture_close_file(void *context){(void)context;wq_drain();rx_task task;memset(&task,0,sizeof(task));task.kind=RX_CLOSE;(void)wq_push(&task);wq_drain();}',
-                'static int fixture_file_error(void *context){(void)context;return 0;}'
+                'static int fixture_file_error(void *context){(void)context;return fail_writer_io;}'
             ]),
             'CANCEL_LOCAL':extract(receiver,'rx_cancel_local'),
             'BIND_SESSION':extract(receiver,'rx_bind_session'),
@@ -1015,6 +1015,43 @@ int main(void) {
 }
 """
     run('task_disconnect_timer',timer_fixture,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+
+    # Cancellation and DONE completion share one manager lock. Exactly one
+    # contender must claim the terminal transition; the loser cannot win later.
+    if os.name != 'nt':
+        race_fixture=r"""
+#include "xfer_task.h"
+#include <assert.h>
+#include <pthread.h>
+#include <stdio.h>
+uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
+static hop_xfer_task task;
+static pthread_barrier_t gate;
+static int completion_won,cancel_won;
+static void *complete(void *unused){(void)unused;pthread_barrier_wait(&gate);completion_won=hop_xfer_task_begin_completion(&task);return NULL;}
+static void *cancel(void *unused){(void)unused;pthread_barrier_wait(&gate);cancel_won=hop_xfer_task_request_cancel(task.id);return NULL;}
+int main(void){
+ for(unsigned i=0;i<500;i++){
+  task=(hop_xfer_task){0};completion_won=cancel_won=0;
+  assert(hop_xfer_task_init_classified(&task,0,0,i+1,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_FILES));
+  assert(hop_xfer_task_reserve_job(&task));
+  assert(hop_xfer_task_set_state(&task,HOP_XFER_TASK_ACTIVE));
+  assert(pthread_barrier_init(&gate,NULL,3)==0);
+  pthread_t a,b;assert(pthread_create(&a,NULL,complete,NULL)==0);
+  assert(pthread_create(&b,NULL,cancel,NULL)==0);
+  pthread_barrier_wait(&gate);pthread_join(a,NULL);pthread_join(b,NULL);
+  pthread_barrier_destroy(&gate);
+  assert(completion_won+cancel_won==1);
+  assert(!hop_xfer_task_request_cancel(task.id) || cancel_won);
+  assert(hop_xfer_task_finish(&task,cancel_won?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_COMPLETED));
+  hop_xfer_task_dispose(&task);
+ }
+ hop_xfer_task_audit audit;assert(hop_xfer_task_reconcile(&audit)&&!audit.mismatches&&!audit.jobs);
+ puts("PASS: 500 concurrent receive cancellation vs DONE completion races");return 0;
+}
+"""
+        run('task_cancel_completion_race',race_fixture,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+
 
     run('task_history',(ROOT/'tests/task_history_tests.c').read_text(encoding='utf-8'),['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
 

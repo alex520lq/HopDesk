@@ -60,6 +60,6 @@ static void rx_begin_batch(xfer_rx_context *rx, uint32_t batch) {
     hop_xfer_rx_begin_batch(rx, batch);
 }
 
-static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
-    return hop_xfer_rx_finish_batch(&s_rx, batch, ok, total);
+static int rx_finish_batch(xfer_rx_context *rx, uint32_t batch, uint32_t ok, uint32_t total) {
+    return hop_xfer_rx_finish_batch(rx, batch, ok, total);
 }

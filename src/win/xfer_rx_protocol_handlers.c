@@ -34,7 +34,7 @@ static void rx_dispatch_file_begin(void *context, const uint8_t *p, uint32_t len
         return;
     }
     hop_xfer_file_begin_msg msg;
-            if (!hop_xfer_decode_file_begin(p, len, &msg) {
+            if (!hop_xfer_decode_file_begin(p, len, &msg)) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed FILE_BEGIN rejected");
                 if (rx->batch_state.active) rx_handler_terminate(rx, rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
                 if (rx->services.shutdown_data_channel)

@@ -197,6 +197,53 @@ static hop_xfer_rx_lifecycle s_rx_lifecycle;
  * wire idempotency metadata, not another task or reservation owner. */
 static hop_xfer_rx_done_receipt s_done_receipt;
 
+static void *rx_context_build_path(void *context, const char *relative, uint32_t length) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (!rx || !relative || !length || length > HOP_PATH_LEN_MAX) return NULL;
+    char *terminated = (char *)malloc((size_t)length + 1u);
+    if (!terminated) return NULL;
+    memcpy(terminated, relative, length);
+    terminated[length] = '\0';
+    char *path = hop_xfer_rx_fs_path_for(rx->dir, terminated);
+    free(terminated);
+    return path;
+}
+
+static int rx_context_prepare_file_path(void *context, const void *native_path, int is_directory) {
+    (void)context;
+    if (!native_path) return 0;
+    char *copy = strdup((const char *)native_path);
+    if (!copy) return 0;
+    int result;
+    if (is_directory) {
+        result = hop_xfer_rx_fs_mkdir_p(copy) == 0;
+    } else {
+        char *separator = strrchr(copy, '/');
+        if (!separator) { free(copy); return 0; }
+        *separator = '\0';
+        result = hop_xfer_rx_fs_mkdir_p(copy) == 0;
+    }
+    free(copy);
+    return result;
+}
+
+static int rx_context_is_top_level_path(void *context, const void *native_path) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    const char *path = (const char *)native_path;
+    if (!rx || !path) return 0;
+    size_t root_length = strlen(rx->dir);
+    if (strncmp(path, rx->dir, root_length) != 0 || path[root_length] != '/') return 0;
+    const char *tail = path + root_length + 1u;
+    return *tail && strchr(tail, '/') == NULL;
+}
+
+static int rx_context_remove_file(void *context, const void *native_path) {
+    (void)context;
+    if (!native_path) return 0;
+    if (hop_xfer_rx_fs_remove_file((const char *)native_path) == 0) return 1;
+    return errno == ENOENT;
+}
+
 static void rx_context_reset_file_error(void *context) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx || !rx->writer) return;
@@ -348,6 +395,10 @@ static void rx_context_configure(void) {
     s_rx.services.terminate_batch = rx_context_terminate_batch;
     s_rx.services.begin_batch = rx_context_begin_batch;
     s_rx.services.finish_batch = rx_context_finish_batch;
+    s_rx.services.build_path = rx_context_build_path;
+    s_rx.services.prepare_file_path = rx_context_prepare_file_path;
+    s_rx.services.is_top_level_path = rx_context_is_top_level_path;
+    s_rx.services.remove_file = rx_context_remove_file;
     s_rx.services.reset_file_error = rx_context_reset_file_error;
     s_rx.services.open_file = rx_context_open_file;
     s_rx.services.write_file_chunk = rx_context_write_file_chunk;

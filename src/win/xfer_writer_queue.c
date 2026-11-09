@@ -160,7 +160,8 @@ static int enqueue_control(hop_writer_queue *queue, int kind, const wchar_t *pat
 
 hop_writer_queue *hop_writer_queue_create(
     void *callback_context, const hop_writer_queue_callbacks *callbacks) {
-    if (!callbacks || !callbacks->reserve_task_rx || !callbacks->release_task_rx) return NULL;
+    if (!callbacks || !callbacks->reserve_task_rx || !callbacks->release_task_rx ||
+        !callbacks->task_cancelled) return NULL;
     hop_writer_queue *queue = (hop_writer_queue *)calloc(1, sizeof(*queue));
     if (!queue) return NULL;
     queue->callback_context = callback_context;

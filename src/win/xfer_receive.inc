@@ -114,6 +114,11 @@ static void rx_context_shutdown_data(void *context) {
     if (active != INVALID_SOCKET) shutdown(active, SD_BOTH);
 }
 
+static void rx_context_send_abort(void *context, uint32_t batch, uint8_t reason) {
+    (void)context;
+    send_abort_msg(s_x.client, batch, reason, HOP_ABORT_TO_SENDER);
+}
+
 static void rx_context_mark_sender_aborted(void *context, uint32_t batch, uint8_t reason) {
     (void)context;
     EnterCriticalSection(&s_x.lock);
@@ -394,6 +399,7 @@ static void rx_context_configure(void) {
     s_rx.services.context = &s_rx;
     s_rx.services.shutdown_data_channel = rx_context_shutdown_data;
     s_rx.services.mark_sender_aborted = rx_context_mark_sender_aborted;
+    s_rx.services.send_abort = rx_context_send_abort;
     s_rx.services.send_file_ack = rx_context_send_file_ack;
     s_rx.services.send_done_ack = rx_context_send_done_ack;
     s_rx.services.deliver_ack = rx_context_deliver_ack;

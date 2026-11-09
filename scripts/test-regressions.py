@@ -744,7 +744,7 @@ int main(void){
         protocol_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
         context_header=(ROOT/'src/core/xfer_rx_context.h').read_text(encoding='utf-8')
         assert 'typedef struct xfer_rx_context' in context_header
-        state_contract='#include "xfer_rx_context.h"\nstatic xfer_rx_context s_rx;'
+        state_contract='#include "xfer_rx_context.h"\n#include "xfer_rx_message_handlers.h"\nstatic xfer_rx_context s_rx;'
         dispatch_names=[]
         dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_reserve_entry_budget','rx_handler_terminate','rx_handler_begin_batch','rx_handler_finish_batch','rx_ack_deliver_file','rx_ack_deliver_done','rx_now_ns','hop_xfer_rx_begin_batch','hop_xfer_rx_finish_batch'])+'\n'+'\n'.join(extract(receiver,name) for name in ['hop_xfer_rx_handle_file_begin','hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_handle_file_end','hop_xfer_rx_dispatch_file_ack_message','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_dispatch_done_ack_message'])
         dispatch_handlers+='\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { hop_xfer_rx_handle_file_begin, hop_xfer_rx_handle_image_begin, hop_xfer_rx_handle_file_chunk, hop_xfer_rx_handle_file_end, hop_xfer_rx_dispatch_file_ack_message, hop_xfer_rx_handle_abort, hop_xfer_rx_handle_done, hop_xfer_rx_dispatch_done_ack_message };\n'

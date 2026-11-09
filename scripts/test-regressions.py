@@ -751,7 +751,7 @@ int main(void){
             'CLOSE_FILE':extract(receiver,'rx_close_file'),
             'CLEAR_STATE':extract(receiver,'rx_clear_state'),
             'RESET_STATE':extract(receiver,'rx_reset'),
-            'TERMINATE':extract(receiver,'rx_terminate'),
+            'TERMINATE':'\\n'.join(extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_abort_close_file','rx_abort_discard_staging','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end'])+'\\n'+extract(receiver,'rx_terminate'),
             'BEGIN_BATCH':extract(receiver,'rx_begin_batch'),
             'FINISH_BATCH':extract(receiver,'rx_finish_batch'),
             'RX_SERVICE_CALLBACKS':'\n'.join([
@@ -903,6 +903,7 @@ int main(void){
         assert 'rx->services.finish_batch' in extract(receiver,'rx_handler_finish_batch')
         lifecycle_impl=(ROOT/f'src/{platform}/xfer_rx_batch_lifecycle.inc').read_text(encoding='utf-8')
         assert 'hop_xfer_rx_batch_abort_decide(' in lifecycle_impl
+        assert 'hop_xfer_rx_abort_execute(' in lifecycle_impl
         assert 'HOP_RX_BATCH_ABORT_REPLY_ONLY' in lifecycle_impl
         assert 'hop_xfer_rx_batch_finish_decide(' in lifecycle_impl
         for writer_call in ['reset_file_error','open_file','write_file_chunk','close_file','file_error']:

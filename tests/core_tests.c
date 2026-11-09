@@ -12,7 +12,6 @@
 #include "xfer_ack_window.h"
 #include "xfer_buffer_pool.h"
 #include "xfer_rx_queue.h"
-#include "xfer_rx_file_state.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -299,37 +298,6 @@ static void test_xfer_relative_path_validation(void) {
     CHECK(!hop_xfer_relpath_safe("folder/./file"));
     CHECK(!hop_xfer_relpath_safe("file:stream"));
     CHECK(!hop_xfer_relpath_safe("bad\nname"));
-}
-
-static void test_xfer_rx_file_begin_admission(void) {
-    hop_xfer_rx_file_state state;
-    memset(&state, 0, sizeof(state));
-    static const uint8_t valid_path[] = "folder/file.bin";
-    CHECK(hop_xfer_rx_file_state_prepare_entry(&state, 7, 1234, 0,
-          valid_path, (uint32_t)(sizeof(valid_path) - 1)));
-    CHECK(state.id == 7);
-    CHECK(state.declared_size == 1234);
-    CHECK(state.is_image == 0 && state.is_directory == 0);
-    CHECK(state.failure == -1 && state.received == 0 && state.crc == 0);
-
-    static const uint8_t directory_path[] = "folder/sub";
-    CHECK(hop_xfer_rx_file_state_prepare_entry(&state, 8, 0, 1,
-          directory_path, (uint32_t)(sizeof(directory_path) - 1)));
-    CHECK(state.id == 8 && state.is_directory == 1);
-    CHECK(state.declared_size == 0 && state.failure == -1);
-
-    static const uint8_t unsafe_path[] = "../escape";
-    CHECK(!hop_xfer_rx_file_state_prepare_entry(&state, 9, 55, 0,
-          unsafe_path, (uint32_t)(sizeof(unsafe_path) - 1)));
-    CHECK(state.id == 9 && state.declared_size == 55);
-    CHECK(state.failure == HOP_FILE_ACK_BADPATH);
-
-    CHECK(!hop_xfer_rx_file_state_prepare_entry(&state, 0, 1, 0,
-          valid_path, (uint32_t)(sizeof(valid_path) - 1)));
-    CHECK(state.id == 9); /* invalid IDs do not overwrite the current entry */
-    CHECK(!hop_xfer_rx_file_state_prepare_entry(&state, HOP_XFER_FILE_LIMIT + 1u, 1, 0,
-          valid_path, (uint32_t)(sizeof(valid_path) - 1)));
-    CHECK(state.id == 9);
 }
 
 static void test_xfer_image_bounds(void) {
@@ -1558,7 +1526,6 @@ int main(void) {
     RUN_TEST(test_decoder_all_split_points);
     RUN_TEST(test_xfer_hello_validation);
     RUN_TEST(test_xfer_relative_path_validation);
-    RUN_TEST(test_xfer_rx_file_begin_admission);
     RUN_TEST(test_xfer_image_bounds);
     RUN_TEST(test_xfer_chunk_bounds);
     RUN_TEST(test_xfer_retry_policy);

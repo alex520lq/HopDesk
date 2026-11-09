@@ -386,12 +386,17 @@ int main(void){
         else:
             assert 'clipboard_complete_remote_paste(batch, (const char *const *)top_paths, top_count, 1)' in rx
             assert 'clipboard_complete_remote_paste(batch, NULL, 0, 0)' in rx
-            clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
+            shared_rx_handlers=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
+    assert 'if (!hop_xfer_task_set_kind(&rx->task,HOP_TASK_KIND_IMAGE) || hop_xfer_task_cancel_requested(rx->task.id))' in shared_rx_handlers
+    clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
             assert '[pb changeCount] != expected_count' in clip
             apply_objects=extract(clip,'apply_objects_retry')
             assert 'inject_paste_shortcut()' not in apply_objects
             assert 'statusbar_notify_paste_ready()' in apply_objects
 
+        platform_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_task_cancel_requested(rx->task.id)' in platform_handlers
+        assert 'if (!hop_xfer_task_set_kind(&rx->task,HOP_TASK_KIND_FILES) || hop_xfer_task_cancel_requested(rx->task.id))' in platform_handlers
         # RX storage/accounting lives in the production writer implementation,
         # not in Receiver protocol code. Windows has completed this extraction;
         # macOS is intentionally checked against its current adapter until parity lands.

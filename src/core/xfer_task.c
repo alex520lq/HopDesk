@@ -278,10 +278,13 @@ int hop_xfer_task_set_state(hop_xfer_task *task, hop_xfer_task_state state) {
     }
     UNLOCK(); return ok;
 }
+/* New reservations are rejected as soon as cancellation or terminal
+ * completion wins. Releases remain legal so queued/in-flight writer commands
+ * can return their exact reservations while termination drains the queue. */
 #define RESERVE_WRAPPER(name,fn) \
-int name(hop_xfer_task *task) { LOCK(); task_record *r=owned(task); int ok=r && !terminal(r->state) && fn(&r->reservation); UNLOCK(); return ok; }
+int name(hop_xfer_task *task) { LOCK(); task_record *r=owned(task); int ok=r && !terminal(r->state) && !r->cancel_requested && !r->completing && fn(&r->reservation); UNLOCK(); return ok; }
 #define BYTES_WRAPPER(name,fn,live) \
-int name(hop_xfer_task *task, uint64_t bytes) { LOCK(); task_record *r=owned(task); int ok=r && (!(live) || !terminal(r->state)) && fn(&r->reservation,bytes); UNLOCK(); return ok; }
+int name(hop_xfer_task *task, uint64_t bytes) { LOCK(); task_record *r=owned(task); int ok=r && (!(live) || (!terminal(r->state) && !r->cancel_requested && !r->completing)) && fn(&r->reservation,bytes); UNLOCK(); return ok; }
 RESERVE_WRAPPER(hop_xfer_task_reserve_job,hop_xfer_budget_reserve_job)
 BYTES_WRAPPER(hop_xfer_task_reserve_entry,hop_xfer_budget_reserve_entry,1)
 BYTES_WRAPPER(hop_xfer_task_reserve_image,hop_xfer_budget_reserve_image,1)

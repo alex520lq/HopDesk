@@ -38,13 +38,13 @@ static uint64_t wq_now_ns(void *context) {
     (void)context;
     return rate_now_ns();
 }
-static void rx_context_status_stage(void *context, uint32_t batch, int stage, uint64_t elapsed_ns);
-
 static void wq_write_time(void *context, void *owner, uint64_t elapsed_ns) {
-    (void)context;
+    xfer_rx_context *rx = (xfer_rx_context *)context;
     hop_xfer_task_snapshot snapshot;
-    if (owner && hop_xfer_task_get_snapshot(((hop_xfer_task *)owner)->id, &snapshot))
-        rx_context_status_stage(NULL, snapshot.transfer_id, HOP_XFER_TIME_WRITE, elapsed_ns);
+    if (rx && owner && hop_xfer_task_get_snapshot(((hop_xfer_task *)owner)->id, &snapshot) &&
+        rx->services.status_stage_time)
+        rx->services.status_stage_time(rx->services.context, snapshot.transfer_id,
+                                       HOP_XFER_TIME_WRITE, elapsed_ns);
 }
 static void wq_open_error(void *context, const wchar_t *path, unsigned long error) {
     (void)context;

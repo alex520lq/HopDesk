@@ -315,6 +315,11 @@ static void rx_context_status_set_files_total(void *context, uint32_t total) {
     pthread_mutex_unlock(&s_status_lock);
 }
 
+static void rx_context_status_reset(void *context) {
+    (void)context;
+    if (s_rx.services.status_reset) s_rx.services.status_reset(s_rx.services.context);
+}
+
 static void rx_context_configure(void) {
     s_rx.writer = s_wq;
     s_rx.lifecycle = &s_rx_lifecycle;
@@ -346,6 +351,7 @@ static void rx_context_configure(void) {
     s_rx.services.status_chunk_received = rx_context_status_chunk;
     s_rx.services.status_file_phase = rx_context_status_file_phase;
     s_rx.services.status_set_files_total = rx_context_status_set_files_total;
+    s_rx.services.status_reset = rx_context_status_reset;
 }
 static void rx_discard_dir(void);
 static void rx_bind_session(const hop_session_id *session) {

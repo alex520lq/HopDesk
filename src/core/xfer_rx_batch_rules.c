@@ -14,6 +14,14 @@ hop_xfer_rx_batch_begin_action hop_xfer_rx_batch_begin_decide(
     return HOP_RX_BATCH_BEGIN_START;
 }
 
+hop_xfer_rx_batch_abort_action hop_xfer_rx_batch_abort_decide(
+    uint32_t batch, int active, uint32_t active_batch, int notify_peer) {
+    if (!batch) return HOP_RX_BATCH_ABORT_IGNORE;
+    if (hop_xfer_rx_batch_is_active(batch, active, active_batch))
+        return HOP_RX_BATCH_ABORT_TERMINATE_ACTIVE;
+    return notify_peer ? HOP_RX_BATCH_ABORT_REPLY_ONLY : HOP_RX_BATCH_ABORT_IGNORE;
+}
+
 int hop_xfer_rx_batch_is_active(uint32_t batch, int active, uint32_t active_batch) {
     return batch != 0 && active && active_batch == batch;
 }

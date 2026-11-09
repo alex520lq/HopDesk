@@ -517,7 +517,6 @@ static xfer_rx_context s_rx;
 static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t batch){(void)batch;(void)fd;(void)type;assert(n==20);memcpy(wire,p,n);return 1;}
 static void wq_drain(void){}
 static void rx_reset(void){hop_xfer_rx_batch_state_reset(&s_rx.batch_state);hop_xfer_task_dispose(&s_rx.task);}
-static void fixture_reset_batch_state(void *context){(void)context;rx_reset();}
 static void status_file_phase(int d,uint32_t b,int i,int p,uint32_t a){assert(d==HOP_XFER_DIR_RECEIVE);hop_xfer_tracking_phase(&s_receive_status,b,i,p,a);}
 static void status_end(int d,uint32_t b,int p,const char*s){assert(d==HOP_XFER_DIR_RECEIVE);hop_xfer_tracking_end(&s_receive_status,b,p,s);}
 static void apply_image(const uint8_t*p,int w,int h,int stride){(void)p;(void)w;(void)h;(void)stride;applied++;}
@@ -566,7 +565,6 @@ static void clipboard_complete_remote_paste(uint32_t batch,const char *const *pa
         main=r'''
 int main(void){
     s_rx.services.close_file=fixture_close_file;
-    s_rx.services.reset_batch_state=fixture_reset_batch_state;
     s_rx.services.finish_clipboard=fixture_finish_clipboard;
     s_rx.services.status_end=fixture_status_end;
     s_rx.services.status_file_phase=fixture_status_file_phase;
@@ -584,16 +582,16 @@ int main(void){
     s_rx.image_buffer.data=pixel;s_rx.image_buffer.capacity=4;assert(hop_xfer_rx_image_state_begin(&s_rx.image_state,1,1,4,4));s_rx.image_state.received=4;s_rx.image_state.capacity=4;
     hop_xfer_tracking_begin(&s_receive_status,j.batch,HOP_XFER_DIR_RECEIVE,0,0,"Image",HOP_XFER_RECEIVING);
     hop_xfer_tracking_file(&s_receive_status,j.batch,1,"Image",4,0,HOP_XFER_FILE_RECEIVING);
-    rx_finish_batch(&s_rx,j.batch,hop_get_be32(wire+4),hop_get_be32(wire+8));
+    hop_xfer_rx_finish_batch(&s_rx,j.batch,hop_get_be32(wire+4),hop_get_be32(wire+8));
     assert(applied==1 && !s_receive_status.status.active && s_receive_status.status.phase==HOP_XFER_COMPLETED);
     assert(s_receive_status.status.files_done==1);
-    rx_finish_batch(&s_rx,j.batch,1,1);assert(applied==1);
+    hop_xfer_rx_finish_batch(&s_rx,j.batch,1,1);assert(applied==1);
     assert(hop_xfer_task_init(&s_rx.task,0,0,11));
     assert(hop_xfer_task_reserve_job(&s_rx.task));
     assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
     assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,11));hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,1,0);assert(hop_xfer_rx_image_state_begin(&s_rx.image_state,1,1,4,4));s_rx.image_state.received=3;s_rx.image_state.capacity=4;
     hop_xfer_tracking_begin(&s_receive_status,11,HOP_XFER_DIR_RECEIVE,1,4,"Image",HOP_XFER_RECEIVING);
-    rx_finish_batch(&s_rx,11,1,1);assert(applied==1 && s_receive_status.status.phase==HOP_XFER_FAILED);
+    hop_xfer_rx_finish_batch(&s_rx,11,1,1);assert(applied==1 && s_receive_status.status.phase==HOP_XFER_FAILED);
 
     /* Requested file paste must use the validated callback, not generic paths. */
 #ifdef FIXTURE_WINDOWS
@@ -608,7 +606,7 @@ int main(void){
     assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
     assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,paste_batch));hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,0,0);s_rx.ntop=1;s_rx.tops=tops;
     hop_xfer_tracking_begin(&s_receive_status,paste_batch,HOP_XFER_DIR_RECEIVE,1,0,"File",HOP_XFER_RECEIVING);
-    rx_finish_batch(&s_rx,paste_batch,1,1);
+    hop_xfer_rx_finish_batch(&s_rx,paste_batch,1,1);
     assert(paste_success_calls==1 && paste_failure_calls==0);
 
     paste_batch=HOP_XFER_PASTE_BATCH_FLAG|13u;
@@ -617,7 +615,7 @@ int main(void){
     assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
     assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,paste_batch));hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,0,0);s_rx.ntop=1;s_rx.tops=tops;
     hop_xfer_tracking_begin(&s_receive_status,paste_batch,HOP_XFER_DIR_RECEIVE,1,0,"File",HOP_XFER_RECEIVING);
-    rx_finish_batch(&s_rx,paste_batch,0,1);
+    hop_xfer_rx_finish_batch(&s_rx,paste_batch,0,1);
     assert(paste_success_calls==1 && paste_failure_calls==1);
     puts("PASS: production IMAGE DONE and validated file-paste completion paths");return 0;
 }

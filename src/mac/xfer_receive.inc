@@ -424,23 +424,22 @@ static void rx_discard_dir(xfer_rx_context *rx);
 static void rx_bind_session(const hop_session_id *session) {
     if (!hop_session_id_equal(hop_xfer_rx_lifecycle_session(&s_rx_lifecycle), session)) {
         hop_xfer_rx_done_receipt_clear(&s_done_receipt);
-        /* A new control session cannot resume the old batch. Its staging files
-         * were never published; close the writer before removing them. Completed
-         * or deliberately retained partial batches are not active here. */
-        if (rx->batch_state.active && !hop_xfer_task_begin_completion(&rx->task) &&
-            hop_xfer_task_cancel_requested(rx->task.id))
-            /* The current socket may already belong to the new session. Never
-             * send an old-session ABORT through it, even if batch IDs collide. */
-            rx_terminate(rx->batch_state.batch,HOP_ABORT_CANCEL,0);
-        if (rx->batch_state.active) {
+        if (s_rx.batch_state.active && !hop_xfer_task_begin_completion(&s_rx.task) &&
+            hop_xfer_task_cancel_requested(s_rx.task.id))
+            rx_terminate(s_rx.batch_state.batch, HOP_ABORT_CANCEL, 0);
+        if (s_rx.batch_state.active) {
             rx_close_file(&s_rx);
             rx_discard_dir(&s_rx);
-            if (rx->batch_state.batch & HOP_XFER_PASTE_BATCH_FLAG)
-                if (rx->services.cancel_clipboard) rx->services.cancel_clipboard(rx->services.context, rx->batch_state.batch);
+            if (s_rx.batch_state.batch & HOP_XFER_PASTE_BATCH_FLAG)
+                if (s_rx.services.cancel_clipboard)
+                    s_rx.services.cancel_clipboard(s_rx.services.context, s_rx.batch_state.batch);
         }
         rx_reset(&s_rx);
-        if (rx->services.status_reset) rx->services.status_reset(rx->services.context);
-    } else rx_close_file(&s_rx);
+        if (s_rx.services.status_reset)
+            s_rx.services.status_reset(s_rx.services.context);
+    } else {
+        rx_close_file(&s_rx);
+    }
     (void)hop_xfer_rx_lifecycle_bind_session(&s_rx_lifecycle, session);
 }
 
@@ -457,15 +456,14 @@ static void rx_expire_stale_session(void) {
 /* 递归删掉本批临时目录。
  * 只在接收批次被 ABORT 时调用；普通部分完成仍保留已送达的文件，
  * 成功批次的文件就是产物本身，都不能删。 */
-static void rx_discard_dir(void) {
-    if (!s_rx.dir[0]) return;
-    /* 路径是我们自己拼的，但删除是不可逆操作 —— 仍然验一次根目录 */
-    int result = hop_xfer_rx_fs_remove_tree(s_rx.dir, "/HopDesk/");
+static void rx_discard_dir(xfer_rx_context *rx) {
+    if (!rx || !rx->dir[0]) return;
+    int result = hop_xfer_rx_fs_remove_tree(rx->dir, "/HopDesk/");
     if (result == -2)
-        hop_log(HOP_LOG_ERROR, "xfer: refuse to delete %s", s_rx.dir);
+        hop_log(HOP_LOG_ERROR, "xfer: refuse to delete receiver staging directory");
     else if (result != 0)
-        hop_log(HOP_LOG_WARN, "xfer: failed to remove %s (%s)", s_rx.dir, strerror(errno));
-    s_rx.dir[0] = '\0';
+        hop_log(HOP_LOG_WARN, "xfer: failed to remove receiver staging directory");
+    rx->dir[0] = 0;
 }
 
 static int rx_add_top(xfer_rx_context *rx, const char *p) {
@@ -740,7 +738,7 @@ static void *conn_thread(void *arg) {
         pthread_mutex_unlock(&s_txlock);
         /* 只关文件，不清批次：发送端会带着同一个 batch 号回来，
          * 从断点条目继续发。这里清掉就变成"从头重传整批"了。 */
-        rx_close_file();
+        rx_close_file(&s_rx);
         if (!s_x.stop) hop_log(HOP_LOG_WARN, "xfer: data channel closed");
     }
 

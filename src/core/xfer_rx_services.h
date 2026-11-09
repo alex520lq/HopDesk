@@ -28,6 +28,12 @@ typedef struct {
                             uint64_t offset, const uint8_t *data, uint32_t length);
     void (*close_file)(void *context);
     int (*file_error)(void *context);
+    /* Native path operations are platform adapters. build_path returns a
+     * malloc-compatible candidate owned by Receiver until context reset. */
+    void *(*build_path)(void *context, const char *relative_path, uint32_t length);
+    int (*prepare_file_path)(void *context, const void *native_path, int is_directory);
+    int (*is_top_level_path)(void *context, const void *native_path);
+    int (*remove_file)(void *context, const void *native_path);
     int (*add_top_path)(void *context, const void *native_path);
     void (*remove_top_path)(void *context, const void *native_path);
     void (*finish_clipboard)(void *context, uint32_t batch,

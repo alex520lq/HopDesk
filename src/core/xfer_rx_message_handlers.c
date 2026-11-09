@@ -17,20 +17,91 @@ static uint64_t rx_now_ns(xfer_rx_context *rx) {
     return rx && rx->services.now_ns
         ? rx->services.now_ns(rx->services.context) : 0;
 }
-static void rx_handler_terminate(xfer_rx_context *rx, uint32_t batch, uint8_t reason, int notify_peer) {
-    if (rx && rx->services.terminate_batch)
-        rx->services.terminate_batch(rx->services.context, batch, reason, notify_peer);
+static void rx_abort_send(void *context, uint32_t batch, uint8_t reason) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (rx && rx->services.send_abort)
+        rx->services.send_abort(rx->services.context, batch, reason);
+}
+static void rx_abort_cancel_clipboard(void *context, uint32_t batch) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (rx && rx->services.cancel_clipboard)
+        rx->services.cancel_clipboard(rx->services.context, batch);
+}
+static void rx_abort_close_file(void *context) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (rx && rx->services.close_file)
+        rx->services.close_file(rx->services.context);
+}
+static void rx_abort_discard_staging(void *context) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (rx && rx->services.discard_staging_directory)
+        rx->services.discard_staging_directory(rx->services.context);
+}
+static void rx_abort_mark_dead(void *context, uint32_t batch, uint8_t reason) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (rx && rx->lifecycle)
+        hop_xfer_rx_lifecycle_mark_dead(rx->lifecycle, batch, reason);
+}
+static void rx_abort_finish_task(void *context, int cancelled) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (rx) (void)hop_xfer_task_finish(&rx->task,
+        cancelled ? HOP_XFER_TASK_CANCELLED : HOP_XFER_TASK_FAILED);
+}
+static void rx_abort_clear_state(void *context) {
+    hop_xfer_rx_reset_batch_state(context);
+}
+static void rx_abort_status_end(void *context, uint32_t batch, int cancelled) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (rx && rx->services.status_end)
+        rx->services.status_end(rx->services.context, batch,
+            cancelled ? HOP_XFER_CANCELLED : HOP_XFER_FAILED,
+            cancelled ? "Receive cancelled" : "Receive aborted");
 }
 
+void hop_xfer_rx_terminate_batch(void *context, uint32_t batch,
+                                 uint8_t reason, int notify_peer) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (!rx) return;
+    hop_xfer_rx_batch_abort_action action = hop_xfer_rx_batch_abort_decide(
+        batch, rx->batch_state.active, rx->batch_state.batch, notify_peer);
+    const hop_xfer_rx_abort_ops ops = {
+        rx, rx_abort_send, rx_abort_cancel_clipboard, rx_abort_close_file,
+        rx_abort_discard_staging, rx_abort_mark_dead, rx_abort_finish_task,
+        rx_abort_clear_state, rx_abort_status_end
+    };
+    (void)hop_xfer_rx_abort_execute(action, batch, reason, notify_peer,
+        (batch & HOP_XFER_PASTE_BATCH_FLAG) != 0, &ops);
+}
+
+void hop_xfer_rx_reset_batch_state(void *context) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (!rx) return;
+    free(rx->cur_path);
+    rx->cur_path = NULL;
+    hop_xfer_rx_image_buffer_dispose(&rx->image_buffer);
+    hop_xfer_rx_image_state_reset(&rx->image_state);
+    for (int i = 0; i < rx->ntop; ++i) free(rx->tops[i]);
+    free(rx->tops);
+    rx->tops = NULL;
+    rx->ntop = 0;
+    hop_xfer_rx_batch_state_reset(&rx->batch_state);
+    hop_xfer_rx_file_state_reset(&rx->file_state);
+    hop_xfer_rx_file_state_set_kind(&rx->file_state, 0, 0);
+    hop_xfer_rx_entry_reservations_reset(&rx->entry_reservations);
+    hop_xfer_task_dispose(&rx->task);
+    rx->dir[0] = 0;
+}
+
+static void rx_handler_terminate(xfer_rx_context *rx, uint32_t batch,
+                                 uint8_t reason, int notify_peer) {
+    hop_xfer_rx_terminate_batch(rx, batch, reason, notify_peer);
+}
 static void rx_handler_begin_batch(xfer_rx_context *rx, uint32_t batch) {
-    if (rx && rx->services.begin_batch)
-        rx->services.begin_batch(rx->services.context, batch);
+    hop_xfer_rx_begin_batch(rx, batch);
 }
-
-
-static int rx_handler_finish_batch(xfer_rx_context *rx, uint32_t batch, uint32_t ok, uint32_t total) {
-    if (!rx || !rx->services.finish_batch) return -1;
-    return rx->services.finish_batch(rx->services.context, batch, ok, total);
+static int rx_handler_finish_batch(xfer_rx_context *rx, uint32_t batch,
+                                   uint32_t ok, uint32_t total) {
+    return hop_xfer_rx_finish_batch(rx, batch, ok, total);
 }
 
 void hop_xfer_rx_bind_session(void *context, const hop_session_id *session) {
@@ -46,9 +117,7 @@ void hop_xfer_rx_bind_session(void *context, const hop_session_id *session) {
 
     if (was_active && !hop_xfer_task_begin_completion(&rx->task) &&
         hop_xfer_task_cancel_requested(rx->task.id)) {
-        if (rx->services.terminate_batch)
-            rx->services.terminate_batch(rx->services.context,
-                rx->batch_state.batch, HOP_ABORT_CANCEL, 0);
+        hop_xfer_rx_terminate_batch(rx, rx->batch_state.batch, HOP_ABORT_CANCEL, 0);
         terminated = !rx->batch_state.active;
     }
 
@@ -93,8 +162,7 @@ void hop_xfer_rx_begin_batch(void *context, uint32_t batch) {
         case HOP_RX_BATCH_BEGIN_INVALID:
             return;
         case HOP_RX_BATCH_BEGIN_REJECT_DEAD:
-            if (rx->services.terminate_batch)
-                rx->services.terminate_batch(rx->services.context, batch, dead_reason, 1);
+            hop_xfer_rx_terminate_batch(rx, batch, dead_reason, 1);
             return;
         case HOP_RX_BATCH_BEGIN_START:
             break;
@@ -105,22 +173,12 @@ void hop_xfer_rx_begin_batch(void *context, uint32_t batch) {
     if (rx->services.clear_cancel_request)
         rx->services.clear_cancel_request(rx->services.context);
     if (rx->batch_state.active) {
-        uint32_t previous_batch = rx->batch_state.batch;
-        if (rx->services.status_end)
-            rx->services.status_end(rx->services.context, previous_batch,
-                HOP_XFER_FAILED, "Receive interrupted");
+        hop_xfer_rx_terminate_batch(rx, rx->batch_state.batch, HOP_ABORT_DISK, 0);
+    } else {
         if (rx->services.close_file)
             rx->services.close_file(rx->services.context);
-        if (rx->services.discard_staging_directory)
-            rx->services.discard_staging_directory(rx->services.context);
-        if ((previous_batch & HOP_XFER_PASTE_BATCH_FLAG) &&
-            rx->services.cancel_clipboard)
-            rx->services.cancel_clipboard(rx->services.context, previous_batch);
-    } else if (rx->services.close_file) {
-        rx->services.close_file(rx->services.context);
+        hop_xfer_rx_reset_batch_state(rx);
     }
-    if (rx->services.reset_batch_state)
-        rx->services.reset_batch_state(rx->services.context);
 
     if (!hop_xfer_task_init_classified(&rx->task, 0,
             (batch & HOP_XFER_PASTE_BATCH_FLAG) ? batch : 0,
@@ -167,8 +225,7 @@ void hop_xfer_rx_begin_batch(void *context, uint32_t batch) {
     if (!rx->services.create_staging_directory ||
         !rx->services.create_staging_directory(
             rx->services.context, session_hex, batch)) {
-        if (rx->services.terminate_batch)
-            rx->services.terminate_batch(rx->services.context, batch, HOP_ABORT_DISK, 1);
+        hop_xfer_rx_terminate_batch(rx, batch, HOP_ABORT_DISK, 1);
     }
 }
 
@@ -190,8 +247,7 @@ int hop_xfer_rx_finish_batch(void *context, uint32_t batch, uint32_t ok, uint32_
         batch, rx->batch_state.active, rx->batch_state.batch, claimed,
         ok, total, rx->file_state.is_image, 0);
     if (action == HOP_RX_BATCH_FINISH_CANCELLED) {
-        if (rx->services.terminate_batch)
-            rx->services.terminate_batch(rx->services.context, batch, HOP_ABORT_CANCEL, 1);
+        hop_xfer_rx_terminate_batch(rx, batch, HOP_ABORT_CANCEL, 1);
         return -1;
     }
     if (action == HOP_RX_BATCH_FINISH_STALE) return -1;
@@ -240,8 +296,7 @@ int hop_xfer_rx_finish_batch(void *context, uint32_t batch, uint32_t ok, uint32_
     /* The writer was drained/closed above. Clear the batch state directly:
      * rx_reset would close it a second time and publish an "interrupted" status
      * after the terminal result. */
-    if (rx->services.reset_batch_state)
-        rx->services.reset_batch_state(rx->services.context);
+    hop_xfer_rx_reset_batch_state(rx);
     return result;
 }
 

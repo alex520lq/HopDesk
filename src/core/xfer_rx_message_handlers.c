@@ -33,6 +33,47 @@ static int rx_handler_finish_batch(xfer_rx_context *rx, uint32_t batch, uint32_t
     return rx->services.finish_batch(rx->services.context, batch, ok, total);
 }
 
+void hop_xfer_rx_bind_session(void *context, const hop_session_id *session) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (!rx || !rx->lifecycle || !session) return;
+
+    const hop_session_id *current = hop_xfer_rx_lifecycle_session(rx->lifecycle);
+    if (hop_session_id_equal(current, session)) return;
+
+    hop_xfer_rx_done_receipt_clear(rx->done_receipt);
+    int was_active = rx->batch_state.active;
+    int terminated = 0;
+
+    if (was_active && !hop_xfer_task_begin_completion(&rx->task) &&
+        hop_xfer_task_cancel_requested(rx->task.id)) {
+        if (rx->services.terminate_batch)
+            rx->services.terminate_batch(rx->services.context,
+                rx->batch_state.batch, HOP_ABORT_CANCEL, 0);
+        terminated = !rx->batch_state.active;
+    }
+
+    if (!terminated) {
+        if (was_active && rx->batch_state.active && rx->services.status_end)
+            rx->services.status_end(rx->services.context, rx->batch_state.batch,
+                HOP_XFER_FAILED, "Receive interrupted");
+        if (rx->services.close_file)
+            rx->services.close_file(rx->services.context);
+        if (was_active && rx->batch_state.active) {
+            if (rx->services.discard_staging_directory)
+                rx->services.discard_staging_directory(rx->services.context);
+            if ((rx->batch_state.batch & HOP_XFER_PASTE_BATCH_FLAG) &&
+                rx->services.cancel_clipboard)
+                rx->services.cancel_clipboard(rx->services.context, rx->batch_state.batch);
+        }
+        if (rx->services.reset_batch_state)
+            rx->services.reset_batch_state(rx->services.context);
+    }
+
+    if (rx->services.status_reset)
+        rx->services.status_reset(rx->services.context);
+    (void)hop_xfer_rx_lifecycle_bind_session(rx->lifecycle, session);
+}
+
 void hop_xfer_rx_begin_batch(void *context, uint32_t batch) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx || !batch || !rx->lifecycle || !rx->done_receipt) return;

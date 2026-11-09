@@ -66,13 +66,41 @@ int hop_xfer_rx_file_state_record_chunk(
     return 1;
 }
 
+hop_xfer_rx_file_end_result hop_xfer_rx_file_state_evaluate_end(
+    const hop_xfer_rx_file_state *state, uint8_t peer_status,
+    int writer_error, uint32_t expected_file_crc) {
+    hop_xfer_rx_file_end_result result;
+    result.ack_status = HOP_FILE_ACK_DISK;
+    result.reason = HOP_RX_FILE_END_STORED_FAILURE;
+    if (!state || !state->id) {
+        result.reason = HOP_RX_FILE_END_STORED_FAILURE;
+        return result;
+    }
+    if (state->failure >= 0) {
+        result.ack_status = (uint8_t)state->failure;
+        result.reason = HOP_RX_FILE_END_STORED_FAILURE;
+    } else if (writer_error) {
+        result.ack_status = HOP_FILE_ACK_DISK;
+        result.reason = HOP_RX_FILE_END_WRITER_ERROR;
+    } else if (peer_status != HOP_FILE_OK) {
+        result.ack_status = HOP_FILE_ACK_DISK;
+        result.reason = HOP_RX_FILE_END_PEER_REJECTED;
+    } else if (state->received != state->declared_size) {
+        result.ack_status = HOP_FILE_ACK_CRC;
+        result.reason = HOP_RX_FILE_END_INCOMPLETE;
+    } else if (state->crc != expected_file_crc) {
+        result.ack_status = HOP_FILE_ACK_CRC;
+        result.reason = HOP_RX_FILE_END_CRC_MISMATCH;
+    } else {
+        result.ack_status = HOP_FILE_ACK_OK;
+        result.reason = HOP_RX_FILE_END_SUCCESS;
+    }
+    return result;
+}
+
 uint8_t hop_xfer_rx_file_state_ack(const hop_xfer_rx_file_state *state,
                                    uint8_t peer_status, int writer_error,
                                    uint32_t expected_file_crc) {
-    if (!state || !state->id) return HOP_FILE_ACK_DISK;
-    if (state->failure >= 0) return (uint8_t)state->failure;
-    if (writer_error || peer_status != HOP_FILE_OK) return HOP_FILE_ACK_DISK;
-    if (state->received != state->declared_size) return HOP_FILE_ACK_CRC;
-    if (state->crc != expected_file_crc) return HOP_FILE_ACK_CRC;
-    return HOP_FILE_ACK_OK;
+    return hop_xfer_rx_file_state_evaluate_end(
+        state, peer_status, writer_error, expected_file_crc).ack_status;
 }

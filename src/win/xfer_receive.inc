@@ -209,29 +209,11 @@ static void rx_close_file(xfer_rx_context *rx) {
         rx->services.close_file(rx->services.context);
 }
 
-static void rx_clear_state(xfer_rx_context *rx) {
-    free(rx->cur_path);
-    rx->cur_path = NULL;
-    hop_xfer_rx_image_buffer_dispose(&rx->image_buffer);
-    hop_xfer_rx_image_state_reset(&rx->image_state);
-    for (int i = 0; i < rx->ntop; ++i) free(rx->tops[i]);
-    free(rx->tops);
-    rx->tops = NULL;
-    rx->ntop = 0;
-    hop_xfer_rx_batch_state_reset(&rx->batch_state);
-    hop_xfer_rx_file_state_reset(&rx->file_state);
-    hop_xfer_rx_file_state_set_kind(&rx->file_state, 0, 0);
-    
-    hop_xfer_rx_entry_reservations_reset(&rx->entry_reservations);
-    hop_xfer_task_dispose(&rx->task);
-    rx->dir[0] = L'\0';
-}
-
 static void rx_reset(xfer_rx_context *rx) {
     if(rx->batch_state.active && rx->services.status_end) rx->services.status_end(rx->services.context,rx->batch_state.batch,HOP_XFER_FAILED,"Receive interrupted");
     /* 先把队列排空并关掉文件，再清状态 —— 否则写线程可能还在用旧路径 */
     rx_close_file(rx);
-    rx_clear_state(rx);
+    hop_xfer_rx_reset_batch_state(rx);
 }
 
 /* Receiver-owned lifecycle boundary. Only a data reconnect in the SAME control
@@ -369,22 +351,6 @@ static void rx_terminate(xfer_rx_context *rx, uint32_t batch, uint8_t reason, in
 static void rx_begin_batch(xfer_rx_context *rx, uint32_t batch);
 static int rx_finish_batch(xfer_rx_context *rx, uint32_t batch, uint32_t ok, uint32_t total);
 
-static void rx_context_terminate_batch(void *context, uint32_t batch, uint8_t reason, int notify_peer) {
-    xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (!rx) return;
-    rx_terminate(rx, batch, reason, notify_peer);
-}
-static void rx_context_begin_batch(void *context, uint32_t batch) {
-    xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (!rx) return;
-    rx_begin_batch(rx, batch);
-}
-static int rx_context_finish_batch(void *context, uint32_t batch, uint32_t ok, uint32_t total) {
-    xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (!rx) return -1;
-    return rx_finish_batch(rx, batch, ok, total);
-}
-
 static uint64_t rx_context_now_ns(void *context) {
     (void)context;
     return rate_now_ns();
@@ -435,10 +401,6 @@ static void rx_context_status_reset(void *context) {
     ReleaseSRWLockExclusive(&s_status_lock);
 }
 
-static void rx_context_reset_batch_state(void *context) {
-    rx_clear_state((xfer_rx_context *)context);
-}
-
 static void rx_context_configure(void) {
     s_rx.lifecycle = &s_rx_lifecycle;
     s_rx.done_receipt = &s_done_receipt;
@@ -453,10 +415,6 @@ static void rx_context_configure(void) {
     s_rx.services.send_file_ack = rx_context_send_file_ack;
     s_rx.services.send_done_ack = rx_context_send_done_ack;
     s_rx.services.deliver_ack = rx_context_deliver_ack;
-    s_rx.services.terminate_batch = rx_context_terminate_batch;
-    s_rx.services.begin_batch = rx_context_begin_batch;
-    s_rx.services.finish_batch = rx_context_finish_batch;
-    s_rx.services.reset_batch_state = rx_context_reset_batch_state;
     s_rx.services.build_path = rx_context_build_path;
     s_rx.services.prepare_file_path = rx_context_prepare_file_path;
     s_rx.services.is_top_level_path = rx_context_is_top_level_path;
@@ -552,7 +510,6 @@ static void rx_remove_top(xfer_rx_context *rx, const wchar_t *p) {
 /* Receiver-thread only. Wire notification has no status side effects. Close the
  * writer before freeing paths/buffers or deleting staging files. Terminal state
  * is idempotent; repeated/stale ABORTs cannot end an unrelated active batch. */
-#include "xfer_rx_batch_lifecycle.inc"
 
 
 
@@ -634,7 +591,7 @@ static void on_data_frame(void *user, uint8_t type, const uint8_t *p, uint32_t l
 static void rx_cancel_local(void) {
     if (!s_rx.batch_state.active) return;
     uint32_t batch = s_rx.batch_state.batch;
-    rx_terminate(&s_rx,batch,HOP_ABORT_CANCEL,1);
+    hop_xfer_rx_terminate_batch(&s_rx,batch,HOP_ABORT_CANCEL,1);
     hop_log(HOP_LOG_INFO, "xfer: batch %u cancelled locally", batch);
 }
 static void rx_poll_cancel(void) {
@@ -643,7 +600,7 @@ static void rx_poll_cancel(void) {
     EnterCriticalSection(&s_x.lock); int connected=s_x.peer_ready; LeaveCriticalSection(&s_x.lock);
     if (s_rx.batch_state.active && hop_xfer_task_rx_disconnect_expired(&s_rx.task,connected,hop_monotonic_ms(),HOP_XFER_RX_DISCONNECT_BUDGET_MS)) {
         hop_log(HOP_LOG_WARN,"xfer: receive batch %u expired while disconnected",s_rx.batch_state.batch);
-        rx_terminate(&s_rx,s_rx.batch_state.batch,HOP_ABORT_TIMEOUT,0);
+        hop_xfer_rx_terminate_batch(&s_rx,s_rx.batch_state.batch,HOP_ABORT_TIMEOUT,0);
     }
 }
 

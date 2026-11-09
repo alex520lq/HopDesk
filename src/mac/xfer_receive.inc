@@ -16,6 +16,7 @@ typedef struct {
 } rx_task;
 
 static hop_writer_queue *s_wq;
+static xfer_rx_context s_rx;
 
 static int wq_reserve_task_rx(void *context, void *owner, uint32_t bytes) {
     (void)context;
@@ -63,7 +64,7 @@ static int wq_start(void) {
         wq_watchdog_begin, wq_watchdog_end, wq_now_ns,
         wq_write_time, wq_open_error, wq_write_error
     };
-    s_wq = hop_writer_queue_create(NULL, &callbacks);
+    s_wq = hop_writer_queue_create(&s_rx, &callbacks);
     return s_wq != NULL;
 }
 
@@ -100,7 +101,6 @@ static void wq_stop(void) {
 
 /* ---------------- 接收 ---------------- */
 
-static xfer_rx_context s_rx;
 
 static void rx_context_shutdown_data(void *context) {
     (void)context;

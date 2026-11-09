@@ -317,7 +317,9 @@ static void rx_context_status_set_files_total(void *context, uint32_t total) {
 
 static void rx_context_status_reset(void *context) {
     (void)context;
-    if (s_rx.services.status_reset) s_rx.services.status_reset(s_rx.services.context);
+    pthread_mutex_lock(&s_status_lock);
+    memset(&s_receive_status, 0, sizeof(s_receive_status));
+    pthread_mutex_unlock(&s_status_lock);
 }
 
 static void rx_context_configure(void) {
@@ -372,9 +374,7 @@ static void rx_bind_session(const hop_session_id *session) {
                 if (s_rx.services.cancel_clipboard) s_rx.services.cancel_clipboard(s_rx.services.context, s_rx.batch_state.batch);
         }
         rx_reset();
-        pthread_mutex_lock(&s_status_lock);
-        memset(&s_receive_status,0,sizeof(s_receive_status));
-        pthread_mutex_unlock(&s_status_lock);
+        if (s_rx.services.status_reset) s_rx.services.status_reset(s_rx.services.context);
     } else rx_close_file();
     (void)hop_xfer_rx_lifecycle_bind_session(&s_rx_lifecycle, session);
 }

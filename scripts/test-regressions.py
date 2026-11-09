@@ -904,7 +904,9 @@ int main(void){
         lifecycle_impl=(ROOT/f'src/{platform}/xfer_rx_batch_lifecycle.inc').read_text(encoding='utf-8')
         assert 'hop_xfer_rx_batch_abort_decide(' in lifecycle_impl
         assert 'hop_xfer_rx_abort_execute(' in lifecycle_impl
-        assert 'HOP_RX_BATCH_ABORT_REPLY_ONLY' in lifecycle_impl
+        abort_policy=(ROOT/'src/core/xfer_rx_lifecycle.c').read_text(encoding='utf-8')
+        assert 'HOP_RX_BATCH_ABORT_REPLY_ONLY' in abort_policy
+        assert 'HOP_RX_BATCH_ABORT_TERMINATE_ACTIVE' in abort_policy
         assert 'hop_xfer_rx_batch_finish_decide(' in lifecycle_impl
         for writer_call in ['reset_file_error','open_file','write_file_chunk','close_file','file_error']:
             assert 'rx->services.'+writer_call in protocol_handlers or 'rx->services.'+writer_call in core_message_handlers

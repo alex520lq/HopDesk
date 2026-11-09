@@ -1,4 +1,5 @@
 #include "xfer_rx_file_state.h"
+#include "xfer_status.h"
 #include <string.h>
 
 void hop_xfer_rx_file_state_reset(hop_xfer_rx_file_state *state) {

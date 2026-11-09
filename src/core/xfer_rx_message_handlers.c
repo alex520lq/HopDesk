@@ -104,11 +104,21 @@ void hop_xfer_rx_begin_batch(void *context, uint32_t batch) {
 
     if (rx->services.clear_cancel_request)
         rx->services.clear_cancel_request(rx->services.context);
-    if (rx->batch_state.active && rx->services.status_end)
-        rx->services.status_end(rx->services.context, rx->batch_state.batch,
-            HOP_XFER_FAILED, "Receive interrupted");
-    if (rx->services.close_file)
+    if (rx->batch_state.active) {
+        uint32_t previous_batch = rx->batch_state.batch;
+        if (rx->services.status_end)
+            rx->services.status_end(rx->services.context, previous_batch,
+                HOP_XFER_FAILED, "Receive interrupted");
+        if (rx->services.close_file)
+            rx->services.close_file(rx->services.context);
+        if (rx->services.discard_staging_directory)
+            rx->services.discard_staging_directory(rx->services.context);
+        if ((previous_batch & HOP_XFER_PASTE_BATCH_FLAG) &&
+            rx->services.cancel_clipboard)
+            rx->services.cancel_clipboard(rx->services.context, previous_batch);
+    } else if (rx->services.close_file) {
         rx->services.close_file(rx->services.context);
+    }
     if (rx->services.reset_batch_state)
         rx->services.reset_batch_state(rx->services.context);
 

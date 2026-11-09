@@ -497,6 +497,8 @@ static void fixture_close_file(void *context){(void)context;wq_drain();}
 static void fixture_status_end(void *context,uint32_t batch,int phase,const char *detail){(void)context;status_end(HOP_XFER_DIR_RECEIVE,batch,phase,detail);}
 static void fixture_status_file_phase(void *context,uint32_t batch,int index,int phase,uint32_t attempts){(void)context;status_file_phase(HOP_XFER_DIR_RECEIVE,batch,index,phase,attempts);}
 static void fixture_status_total(void *context,uint32_t total){(void)context;(void)total;}
+static void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n,int success);
+static void clipboard_complete_remote_paste(uint32_t batch,const char *const *paths,int n,int success);
 static void fixture_finish_clipboard(void *context,uint32_t batch,const void *image_data,uint32_t width,uint32_t height,uint32_t stride,int image_valid,const void *const *paths,int count,int allow_publish){
     (void)context;
     if(allow_publish && image_valid && image_data){apply_image((const uint8_t *)image_data,(int)width,(int)height,(int)stride);return;}

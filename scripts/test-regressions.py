@@ -312,7 +312,7 @@ int main(void){
     assert win_return.index('send_button(i, 0)') < win_return.index('net_server_send(g_app.net, HOP_MSG_EDGE_LEAVE, NULL, 0)')
 
 
-    clip=(ROOT/'src/win/clipboard.c').read_text(encoding='utf-8')
+    clip=(ROOT/'src/win/clipboard.c').read_text(encoding='utf-8')+'\n'+(ROOT/'src/win/clipboard_paste.inc').read_text(encoding='utf-8')
     clip_preamble=r'''
 #include <stdint.h>
 #include <stdio.h>
@@ -386,7 +386,7 @@ int main(void){
         else:
             assert 'clipboard_complete_remote_paste(batch, (const char *const *)top_paths, top_count, 1)' in rx
             assert 'clipboard_complete_remote_paste(batch, NULL, 0, 0)' in rx
-            clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
+            clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')+'\n'+(ROOT/'src/mac/clipboard_paste.inc').read_text(encoding='utf-8')
             assert '[pb changeCount] != expected_count' in clip
             apply_objects=extract(clip,'apply_objects_retry')
             assert 'inject_paste_shortcut()' not in apply_objects
@@ -1085,6 +1085,13 @@ int main(void){
     history_ui=(ROOT/'tests/task_history_ui_fixture.c.in').read_text(encoding='utf-8')
     history_ui=history_ui.replace('@UI_FUNCTIONS@',extract(ui,'task_state_name')+'\n'+extract(ui,'refresh_task_history'))
     run('task_history_ui_win',history_ui,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+
+    for platform,source_name in [('win','clipboard.c'),('mac','clipboard.m')]:
+        clipboard_source=(ROOT/f'src/{platform}/{source_name}').read_text(encoding='utf-8')
+        paste_module=(ROOT/f'src/{platform}/clipboard_paste.inc').read_text(encoding='utf-8')
+        assert '#include "clipboard_paste.inc"' in clipboard_source
+        assert 'clip_send_paste_failed' in paste_module
+        assert 'clip_complete_remote_paste' in paste_module or 'clipboard_complete_remote_paste' in paste_module
 
     # A paste request cannot be replayed as a generic transfer: that would
     # discard destination/version context and may overwrite the peer clipboard.

@@ -1026,21 +1026,22 @@ int main(void) {
 #include <stdio.h>
 uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
 static hop_xfer_task task;
-static pthread_barrier_t gate;
-static int completion_won,cancel_won;
-static void *complete(void *unused){(void)unused;pthread_barrier_wait(&gate);completion_won=hop_xfer_task_begin_completion(&task);return NULL;}
-static void *cancel(void *unused){(void)unused;pthread_barrier_wait(&gate);cancel_won=hop_xfer_task_request_cancel(task.id);return NULL;}
+static pthread_mutex_t gate_lock=PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t gate_cond=PTHREAD_COND_INITIALIZER;
+static int ready,go,completion_won,cancel_won;
+static void await_gate(void){pthread_mutex_lock(&gate_lock);ready++;if(ready==3){go=1;pthread_cond_broadcast(&gate_cond);}while(!go)pthread_cond_wait(&gate_cond,&gate_lock);pthread_mutex_unlock(&gate_lock);}
+static void *complete(void *unused){(void)unused;await_gate();completion_won=hop_xfer_task_begin_completion(&task);return NULL;}
+static void *cancel(void *unused){(void)unused;await_gate();cancel_won=hop_xfer_task_request_cancel(task.id);return NULL;}
 int main(void){
  for(unsigned i=0;i<500;i++){
   task=(hop_xfer_task){0};completion_won=cancel_won=0;
   assert(hop_xfer_task_init_classified(&task,0,0,i+1,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_FILES));
   assert(hop_xfer_task_reserve_job(&task));
   assert(hop_xfer_task_set_state(&task,HOP_XFER_TASK_ACTIVE));
-  assert(pthread_barrier_init(&gate,NULL,3)==0);
+  pthread_mutex_lock(&gate_lock);ready=0;go=0;pthread_mutex_unlock(&gate_lock);
   pthread_t a,b;assert(pthread_create(&a,NULL,complete,NULL)==0);
   assert(pthread_create(&b,NULL,cancel,NULL)==0);
-  pthread_barrier_wait(&gate);pthread_join(a,NULL);pthread_join(b,NULL);
-  pthread_barrier_destroy(&gate);
+  await_gate();pthread_join(a,NULL);pthread_join(b,NULL);
   assert(completion_won+cancel_won==1);
   assert(!hop_xfer_task_request_cancel(task.id) || cancel_won);
   assert(hop_xfer_task_finish(&task,cancel_won?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_COMPLETED));

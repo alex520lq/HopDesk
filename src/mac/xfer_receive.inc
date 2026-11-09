@@ -17,6 +17,7 @@ typedef struct {
 
 static hop_writer_queue *s_wq;
 static xfer_rx_context s_rx;
+static void rx_discard_dir(xfer_rx_context *rx);
 
 static int wq_reserve_task_rx(void *context, void *owner, uint32_t bytes) {
     (void)context;
@@ -112,6 +113,10 @@ static void rx_context_shutdown_data(void *context) {
     int active = s_x.sock;
     pthread_mutex_unlock(&s_x.slock);
     if (active >= 0) shutdown(active, SHUT_RDWR);
+}
+
+static void rx_context_discard_staging_directory(void *context) {
+    rx_discard_dir((xfer_rx_context *)context);
 }
 
 static void rx_context_clear_cancel_request(void *context) {
@@ -418,6 +423,7 @@ static void rx_context_configure(void) {
     s_rx.services.send_abort = rx_context_send_abort;
     s_rx.services.clear_cancel_request = rx_context_clear_cancel_request;
     s_rx.services.create_staging_directory = rx_context_create_staging_directory;
+    s_rx.services.discard_staging_directory = rx_context_discard_staging_directory;
     s_rx.services.send_file_ack = rx_context_send_file_ack;
     s_rx.services.send_done_ack = rx_context_send_done_ack;
     s_rx.services.deliver_ack = rx_context_deliver_ack;
@@ -451,25 +457,7 @@ static void rx_context_configure(void) {
 }
 static void rx_discard_dir(xfer_rx_context *rx);
 static void rx_bind_session(const hop_session_id *session) {
-    if (!hop_session_id_equal(hop_xfer_rx_lifecycle_session(&s_rx_lifecycle), session)) {
-        hop_xfer_rx_done_receipt_clear(&s_done_receipt);
-        if (s_rx.batch_state.active && !hop_xfer_task_begin_completion(&s_rx.task) &&
-            hop_xfer_task_cancel_requested(s_rx.task.id))
-            rx_terminate(&s_rx, s_rx.batch_state.batch, HOP_ABORT_CANCEL, 0);
-        if (s_rx.batch_state.active) {
-            rx_close_file(&s_rx);
-            rx_discard_dir(&s_rx);
-            if (s_rx.batch_state.batch & HOP_XFER_PASTE_BATCH_FLAG)
-                if (s_rx.services.cancel_clipboard)
-                    s_rx.services.cancel_clipboard(s_rx.services.context, s_rx.batch_state.batch);
-        }
-        rx_reset(&s_rx);
-        if (s_rx.services.status_reset)
-            s_rx.services.status_reset(s_rx.services.context);
-    } else {
-        rx_close_file(&s_rx);
-    }
-    (void)hop_xfer_rx_lifecycle_bind_session(&s_rx_lifecycle, session);
+    hop_xfer_rx_bind_session(&s_rx, session);
 }
 
 /* The control session may vanish permanently before a new data connection is

@@ -23,10 +23,6 @@ typedef struct {
     void (*send_done_ack)(void *context, uint32_t batch,
                           const uint8_t *payload, uint32_t length);
     void (*deliver_ack)(void *context, uint32_t batch, uint32_t id, int status);
-    void (*terminate_batch)(void *context, uint32_t batch, uint8_t reason, int notify_peer);
-    void (*begin_batch)(void *context, uint32_t batch);
-    int (*finish_batch)(void *context, uint32_t batch, uint32_t ok, uint32_t total);
-    void (*reset_batch_state)(void *context);
     void (*reset_file_error)(void *context);
     int (*open_file)(void *context, const void *native_path);
     int (*write_file_chunk)(void *context, hop_xfer_task *task,

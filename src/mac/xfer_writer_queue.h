@@ -9,6 +9,7 @@ typedef struct {
     uint32_t io_deadline_ms;
     int (*reserve_task_rx)(void *context, void *task_owner, uint32_t bytes);
     void (*release_task_rx)(void *context, void *task_owner, uint32_t bytes);
+    int (*task_cancelled)(void *context, void *task_owner);
     int (*watchdog_begin)(void *context, const char *label, uint32_t deadline_ms);
     void (*watchdog_end)(void *context, int guard);
     uint64_t (*now_ns)(void *context);

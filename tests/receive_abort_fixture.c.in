@@ -48,7 +48,7 @@ static uint64_t s_status_revision;
 static hop_xfer_tracking s_send_status,s_receive_status;
 static void *s_retry_paths[HOP_XFER_FILE_LIMIT];
 static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];static int s_history_count;
-static int saved,closed,closes,discarded,applied,fail_directory,fail_alloc,fail_send;
+static int saved,closed,closes,discarded,applied,fail_directory,fail_alloc,fail_send,fail_write,fail_writer_io;
 static int notified, done_acks, last_done_status;static uint8_t last_reason;
 static void history_save(void);
 static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t batch){(void)batch;
@@ -62,6 +62,7 @@ static void wq_drain(void){}
 static int wq_push(rx_task*t){if(t->kind==RX_CLOSE){closed=1;closes++;}else free(t->data);return 1;}
 static int wq_push_data(hop_xfer_task *owner,uint64_t off,const uint8_t *data,uint32_t len){
     (void)off;(void)data;
+    if(fail_write)return 0;
     if(!hop_xfer_task_reserve_rx_buffer(owner,len))return 0;
     return hop_xfer_task_release_rx_buffer(owner,len);
 }
@@ -109,8 +110,7 @@ static void fixture_deliver_ack(void *context,uint32_t batch,uint32_t id,int sta
     (void)context;ack_deliver(batch,id,status);
 }
 static void fixture_configure_rx_context(void){
-    s_rx.writer=NULL;
-    s_rx.services.context=NULL;
+    s_rx.services.context=&s_rx;
     s_rx.lifecycle=&s_rx_lifecycle;
     s_rx.done_receipt=&s_done_receipt;
     s_rx.services.shutdown_data_channel=fixture_shutdown_data;
@@ -316,6 +316,27 @@ int main(void){
     assert(s_history[0].batch==204 && s_history[0].phase==HOP_XFER_CANCELLED);
     assert(notified==notices); /* never send old-session ABORT to a new peer */
     assert(s_send_status.status.active); /* replacement cannot cancel the other direction */
+    /* Writer queue rejection must fail only this file and must not advance
+     * its accepted offset/CRC; FILE_END then reports DISK even if peer CRC matches. */
+    assert(hop_xfer_task_init_classified(&s_rx.task,0,0,206,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_FILES));
+    assert(hop_xfer_task_reserve_job(&s_rx.task));
+    assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
+    assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,206));
+    static const uint8_t file_path[]="writer-failure.bin";
+    assert(hop_xfer_rx_file_state_prepare_entry(&s_rx.file_state,1,4,0,file_path,sizeof(file_path)-1));
+    fail_write=1;chunk(1,0,0);fail_write=0;
+    assert(s_rx.file_state.failure==HOP_FILE_ACK_DISK && s_rx.file_state.received==0);
+    fail_writer_io=1;
+    hop_xfer_rx_file_end_result writer_result=hop_xfer_rx_file_state_evaluate_end(
+        &s_rx.file_state,HOP_FILE_OK,1,0);
+    fail_writer_io=0;
+    assert(writer_result.ack_status==HOP_FILE_ACK_DISK &&
+           writer_result.reason==HOP_RX_FILE_END_STORED_FAILURE);
+    hop_xfer_task_finish(&s_rx.task,HOP_XFER_TASK_FAILED);
+    rx_clear_state();
+    hop_xfer_budget_snapshot writer_budget;hop_xfer_budget_get_snapshot(&writer_budget);
+    assert(writer_budget.jobs==0 && writer_budget.pending_bytes==0 && writer_budget.entries==0);
+
     /* A FILE_ACK may not impersonate the dedicated completion slot. */
     uint8_t fake_ack[9]={0};hop_put_be32(fake_ack,205);hop_put_be32(fake_ack+4,HOP_DONE_ACK_SLOT);
     dispatch(HOP_MSG_FILE_ACK,fake_ack,9);assert(ack_deliveries==0);

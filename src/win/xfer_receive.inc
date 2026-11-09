@@ -195,19 +195,19 @@ static hop_xfer_rx_done_receipt s_done_receipt;
 
 static void rx_context_reset_file_error(void *context) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (!rx) return;
+    if (!rx || !rx->writer) return;
     hop_writer_queue_error_reset((hop_writer_queue *)rx->writer);
 }
 static int rx_context_open_file(void *context, const void *native_path) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (!rx || !native_path) return 0;
+    if (!rx || !rx->writer || !native_path) return 0;
     return hop_writer_queue_enqueue_open((hop_writer_queue *)rx->writer,
                                          (const wchar_t *)native_path);
 }
 static int rx_context_write_file_chunk(void *context, hop_xfer_task *task,
                                        uint64_t offset, const uint8_t *data, uint32_t length) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (!rx || task != &rx->task) return 0;
+    if (!rx || !rx->writer || task != &rx->task) return 0;
     return hop_writer_queue_enqueue_write((hop_writer_queue *)rx->writer,
                                           task, offset, data, length);
 }

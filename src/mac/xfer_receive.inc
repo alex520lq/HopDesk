@@ -321,9 +321,6 @@ static void rx_context_finish_clipboard(void *context, uint32_t batch,
     }
 }
 
-static void rx_terminate(xfer_rx_context *rx, uint32_t batch, uint8_t reason, int notify_peer);
-static void rx_begin_batch(xfer_rx_context *rx, uint32_t batch);
-static int rx_finish_batch(xfer_rx_context *rx, uint32_t batch, uint32_t ok, uint32_t total);
 
 static uint64_t rx_context_now_ns(void *context) {
     (void)context;

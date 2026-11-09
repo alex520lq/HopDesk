@@ -35,6 +35,7 @@ typedef struct xfer_rx_context {
     hop_xfer_rx_image_state image_state;
     hop_xfer_rx_path_char **tops;
     int ntop;
+    void *writer; /* injected platform writer queue; owned by the platform runtime */
     hop_xfer_rx_lifecycle *lifecycle;
     hop_xfer_rx_done_receipt *done_receipt;
     hop_xfer_rx_services services;

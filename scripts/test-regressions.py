@@ -378,7 +378,7 @@ int main(void){
         if platform=='win':
             assert 'clip_complete_remote_paste(batch, (const wchar_t *const *)top_paths, top_count, 1)' in rx
             assert 'clip_complete_remote_paste(batch, NULL, 0, 0)' in rx
-            clip=(ROOT/'src/win/clipboard.c').read_text(encoding='utf-8')
+            clip=(ROOT/'src/win/clipboard.c').read_text(encoding='utf-8')+'\n'+(ROOT/'src/win/clipboard_offer.inc').read_text(encoding='utf-8')+'\n'+(ROOT/'src/win/clipboard_paste.inc').read_text(encoding='utf-8')
             assert 'GetClipboardSequenceNumber()!=expected' in clip
             paste_message=extract(clip,'clip_on_paste_message')
             assert 'SendInput(' not in paste_message

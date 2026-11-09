@@ -1,4 +1,5 @@
 #include "xfer_rx_file_state.h"
+#include "xfer_status.h"
 #include <assert.h>
 #include <stdio.h>
 

@@ -215,6 +215,9 @@ static void assert_terminal(uint32_t batch,uint8_t reason,int before){
     assert(s_send_status.status.active); /* receiving ABORT cannot end outgoing state */
 }
 int main(void){
+    (void)&status_begin; (void)&status_end; (void)&clip_complete_remote_paste;
+    (void)&status_image; (void)&rate_now_ns; (void)&status_chunk_timed;
+    (void)&status_file_phase; (void)&apply_image; (void)&apply_paths;
     hop_xfer_rx_lifecycle_init(&s_rx_lifecycle);
     hop_session_id initial_session={{1}};
     (void)hop_xfer_rx_lifecycle_bind_session(&s_rx_lifecycle,&initial_session);

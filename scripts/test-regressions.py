@@ -967,7 +967,7 @@ int main(void){
             assert 'GetFileAttributesW(path)' in fs
             assert 'hop_xfer_rx_fs_path_for' in fs and 'hop_xfer_rx_fs_remove_tree' in fs
         close=end.index('rx->services.close_file(')
-        cleanup=end.index('hop_xfer_rx_fs_remove_file(')
+        cleanup=end.index('rx->services.remove_file(')
         assert close < cleanup, 'failed receive cleanup must wait for writer close'
 
         if platform=='mac':

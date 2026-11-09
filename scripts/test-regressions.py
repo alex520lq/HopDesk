@@ -884,6 +884,7 @@ int main(void){
         admission=begin.index('hop_xfer_rx_entry_reservations_reserve(')
         commit=begin.index('rx->cur_path = candidate_path')
         assert admission < commit, 'FILE_BEGIN publishes candidate path before budget admission'
+        assert admission < begin.rindex('free(rx->cur_path)'), 'FILE_BEGIN releases the previous live path before budget admission'
         for side_effect in ['rx->services.reset_file_error(', 'rx->services.remove_top_path(', 'rx->services.status_add_received_file(']:
             assert admission < begin.index(side_effect), 'FILE_BEGIN side effect precedes budget admission: '+side_effect
         file_ack_handler=extract(receiver,'hop_xfer_rx_dispatch_file_ack_message')

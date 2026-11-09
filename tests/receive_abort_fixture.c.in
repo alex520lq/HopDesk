@@ -159,7 +159,6 @@ static void history_save(void){assert(closed); if(s_receive_status.status.phase!
 #endif
 @WIRE_SEND@
 @STATUS_FUNCTIONS@
-@CLOSE_FILE@
 static void checked_free(void*p){if(p)assert(closed);free(p);}
 #define free checked_free
 @CLEAR_STATE@

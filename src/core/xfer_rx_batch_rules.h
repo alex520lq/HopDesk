@@ -16,6 +16,12 @@ typedef enum {
 } hop_xfer_rx_batch_begin_action;
 
 typedef enum {
+    HOP_RX_BATCH_ABORT_IGNORE = 0,
+    HOP_RX_BATCH_ABORT_REPLY_ONLY,
+    HOP_RX_BATCH_ABORT_TERMINATE_ACTIVE
+} hop_xfer_rx_batch_abort_action;
+
+typedef enum {
     HOP_RX_BATCH_FINISH_STALE = 0,
     HOP_RX_BATCH_FINISH_CANCELLED,
     HOP_RX_BATCH_FINISH_COMPLETE,
@@ -28,6 +34,11 @@ typedef enum {
 hop_xfer_rx_batch_begin_action hop_xfer_rx_batch_begin_decide(
     uint32_t batch, int committed, uint8_t dead_reason,
     int active, uint32_t active_batch, uint8_t *reason);
+
+/* Stale ABORTs may be re-acknowledged to the peer, but must never touch
+ * clipboard, writer, staging paths or task state belonging to another batch. */
+hop_xfer_rx_batch_abort_action hop_xfer_rx_batch_abort_decide(
+    uint32_t batch, int active, uint32_t active_batch, int notify_peer);
 
 /* True only when a terminal event belongs to the currently active batch. */
 int hop_xfer_rx_batch_is_active(uint32_t batch, int active, uint32_t active_batch);

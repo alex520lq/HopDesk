@@ -8,13 +8,14 @@
 #include "xfer_task.h"
 #include "xfer_rx_receipt.h"
 #include "xfer_rx_lifecycle.h"
+#include "xfer_rx_services.h"
 #include "xfer_rx_batch_state.h"
 #define SD_BOTH 2
 #define SHUT_RDWR 2
 #define INVALID_SOCKET -1
 typedef int SOCKET;
 static struct {int client,sock,lock,slock;hop_session_id session;hop_xfer_rate_limiter rate;} s_x;
-static struct {hop_xfer_rx_batch_state batch_state;hop_xfer_task task;} s_rx;
+static struct {hop_xfer_rx_batch_state batch_state;hop_xfer_task task;hop_xfer_rx_services services;} s_rx;
 static hop_xfer_rx_done_receipt s_done_receipt;
 static hop_xfer_rx_lifecycle s_rx_lifecycle;
 static struct {int marker;} s_send_status,s_receive_status;
@@ -28,6 +29,8 @@ static int test_cancel_requested(hop_xfer_task_id t){(void)t;return 0;}
 #define hop_xfer_task_begin_completion test_begin_completion
 #define hop_xfer_task_cancel_requested test_cancel_requested
 static void finish_paste(uint32_t b,const void*p,int n,int ok){(void)b;(void)p;(void)n;assert(!ok);paste_cancelled++;}
+static void fixture_cancel_clipboard(void *context,uint32_t batch){(void)context;finish_paste(batch,NULL,0,0);}
+static void fixture_status_reset(void *context){(void)context;s_receive_status.marker=0;}
 #define clip_complete_remote_paste finish_paste
 #define clipboard_complete_remote_paste finish_paste
 typedef struct {hop_session_id session;int next_i,ok;} xf_job;
@@ -54,6 +57,7 @@ static void on_data_msg(void *user,uint8_t type,const uint8_t *p,uint32_t len){(
 static int not_busy(void){return 0;}
 @FUNCTIONS@
 int main(void){
+ s_rx.services.cancel_clipboard=fixture_cancel_clipboard;s_rx.services.status_reset=fixture_status_reset;
  s_x.session.bytes[0]=1;s_x.client=s_x.sock=7;hop_session_publish(&s_x.session);
  hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle,42,HOP_ABORT_CANCEL);s_receive_status.marker=9;rx_bind_session(&s_x.session);
  assert(resets==1 && !hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,42,NULL) && !s_receive_status.marker);

@@ -721,3 +721,12 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 第十一切片与前述发送端拆分一起等待双平台 CI 验证；不改变控制协议、剪贴板格式或外部 API。
 - 连接层继续拆分：Windows `net_server_transport.inc` 收纳 reader/sender/server worker、listener 生命周期与公开 start/stop/send 实现；macOS `net_client_transport.inc` 收纳控制发送队列、socket connect/accept、重连循环与连接状态更新。`net_server_protocol.inc` / `net_client_protocol.inc` 只负责握手与控制消息分发。
 - 连接层的 session/token/heartbeat/queue admission 规则仍调用 Core 现有 `session`、`watchdog`、`ctrl_queue` 等实现；socket、锁、线程与 AppKit/Win32 调度继续留在平台 transport，不跨平台伪统一。
+### 2026-11-09：Receiver 终结策略、预算顺序与故障回归（第九切片）
+
+- FILE_BEGIN：将 Entry Reservation 提前到剪贴板顶层路径移除、状态登记和文件系统创建之前；Windows 路径临时缓冲区在状态登记完成后释放，避免提前释放和拒绝路径泄漏。
+- ABORT：Core 新增 `hop_xfer_rx_batch_abort_decide`，明确活动批次终结、过期批次仅回复、无效/不通知场景忽略；Windows/macOS 生命周期代码共用同一决策，防止旧批次清理新批次资源。
+- DONE：继续使用 Task Manager 的 `begin_completion` 与 `request_cancel` 原子竞争，现有完成收据和批次状态规则保持不变；并发测试覆盖 500 轮竞争。
+- Receiver Context：移除 `writer` 冗余字段，平台服务回调以 `&s_rx` 显式绑定上下文，Writer Queue 回调校验 task 所有权。
+- 故障测试：增加 writer queue 拒绝、writer I/O 错误和资源账本释放断言；回归脚本增加预算先于副作用的顺序断言。
+- CI 纠错记录：Run #1032 在 Receiver ABORT fixture 生成阶段失败，定位为拼接函数时误用了字面量 `\\n`；已改为真实换行。Run #1033 正在重新执行 Windows/macOS 全量流水线，尚未验收通过。
+- 后续仍需：补齐可控断线/重连期间的取消与终结测试；继续审计服务回调对平台全局对象的依赖；再进入发送端、剪贴板和连接模块的独立性重构。

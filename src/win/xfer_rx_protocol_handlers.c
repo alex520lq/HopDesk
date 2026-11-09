@@ -29,8 +29,12 @@ static void rx_handler_begin_batch(xfer_rx_context *rx, uint32_t batch) {
 static void rx_dispatch_file_begin(void *context, const uint8_t *p, uint32_t len) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx) return;
-hop_xfer_file_begin_msg msg;
-            if (!hop_xfer_decode_file_begin(p, len, &msg) || hop_xfer_task_cancel_requested(rx->task.id)) {
+    if (rx->batch_state.active && hop_xfer_task_cancel_requested(rx->task.id)) {
+        rx_handler_terminate(rx, rx->batch_state.batch, HOP_ABORT_CANCEL, 1);
+        return;
+    }
+    hop_xfer_file_begin_msg msg;
+            if (!hop_xfer_decode_file_begin(p, len, &msg) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed FILE_BEGIN rejected");
                 if (rx->batch_state.active) rx_handler_terminate(rx, rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
                 if (rx->services.shutdown_data_channel)
@@ -129,7 +133,11 @@ hop_xfer_file_begin_msg msg;
 static void rx_dispatch_file_end(void *context, const uint8_t *p, uint32_t len) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx) return;
-hop_xfer_file_end_msg end_msg;
+    if (rx->batch_state.active && hop_xfer_task_cancel_requested(rx->task.id)) {
+        rx_handler_terminate(rx, rx->batch_state.batch, HOP_ABORT_CANCEL, 1);
+        return;
+    }
+    hop_xfer_file_end_msg end_msg;
             if (!hop_xfer_decode_file_end(p, len, &end_msg)) return;
             uint32_t id = end_msg.id;
             if (!rx->batch_state.active || !hop_xfer_rx_file_state_matches(&rx->file_state, id)) return;

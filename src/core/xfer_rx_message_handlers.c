@@ -28,6 +28,168 @@ static int rx_handler_finish_batch(xfer_rx_context *rx, uint32_t batch, uint32_t
     return rx->services.finish_batch(rx->services.context, batch, ok, total);
 }
 
+void hop_xfer_rx_handle_file_begin(void *context, const uint8_t *p, uint32_t len) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (!rx) return;
+    if (rx->batch_state.active && hop_xfer_task_cancel_requested(rx->task.id)) {
+        rx_handler_terminate(rx, rx->batch_state.batch, HOP_ABORT_CANCEL, 1);
+        return;
+    }
+
+    hop_xfer_file_begin_msg msg;
+    if (!hop_xfer_decode_file_begin(p, len, &msg)) {
+        hop_log(HOP_LOG_WARN, "xfer: malformed FILE_BEGIN rejected");
+        if (rx->batch_state.active)
+            rx_handler_terminate(rx, rx->batch_state.batch, HOP_ABORT_TOO_LARGE, 1);
+        if (rx->services.shutdown_data_channel)
+            rx->services.shutdown_data_channel(rx->services.context);
+        return;
+    }
+
+    const uint32_t batch = msg.batch;
+    const uint32_t id = msg.id;
+    const uint64_t size = msg.size;
+    const int is_directory = (msg.flags & HOP_FILE_FLAG_DIR) != 0;
+    rx_handler_begin_batch(rx, batch);
+    if (!rx->batch_state.active || rx->batch_state.batch != batch) return;
+    if (!hop_xfer_task_set_kind(&rx->task, HOP_TASK_KIND_FILES) ||
+        hop_xfer_task_cancel_requested(rx->task.id)) {
+        rx_handler_terminate(rx, batch, HOP_ABORT_CANCEL, 1);
+        return;
+    }
+    if (!id || id > HOP_XFER_FILE_LIMIT) {
+        rx_handler_terminate(rx, batch, HOP_ABORT_TOO_LARGE, 1);
+        return;
+    }
+
+    /* Shared validation and file-state transition. A failed candidate must not
+     * leave the previous entry path attached to this new FILE_END. */
+    if (!hop_xfer_rx_file_state_prepare_entry(&rx->file_state, id, size,
+            is_directory, msg.relpath, msg.relpath_len)) {
+        free(rx->cur_path);
+        rx->cur_path = NULL;
+        hop_log(HOP_LOG_WARN, "xfer: unsafe relative path rejected");
+        return;
+    }
+
+    char relative[HOP_PATH_LEN_MAX + 1];
+    memcpy(relative, msg.relpath, msg.relpath_len);
+    relative[msg.relpath_len] = '\0';
+    if (!rx->services.build_path || !rx->services.prepare_file_path) {
+        free(rx->cur_path);
+        rx->cur_path = NULL;
+        hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_DISK);
+        return;
+    }
+
+    void *candidate = rx->services.build_path(
+        rx->services.context, relative, msg.relpath_len);
+    if (!candidate) {
+        free(rx->cur_path);
+        rx->cur_path = NULL;
+        hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_BADPATH);
+        return;
+    }
+
+    hop_xfer_rx_entry_reserve_result reservation =
+        hop_xfer_rx_entry_reservations_reserve(&rx->entry_reservations, id, size,
+            rx_reserve_entry_budget, &rx->task);
+    if (reservation != HOP_RX_ENTRY_RESERVE_NEW &&
+        reservation != HOP_RX_ENTRY_RESERVE_ALREADY_HELD) {
+        free(candidate);
+        rx_handler_terminate(rx, batch, HOP_ABORT_TOO_LARGE, 1);
+        return;
+    }
+
+    /* Admission is the commit point: only now publish the candidate and allow
+     * writer/filesystem/clipboard/status side effects. */
+    free(rx->cur_path);
+    rx->cur_path = (hop_xfer_rx_path_char *)candidate;
+    if (rx->services.reset_file_error)
+        rx->services.reset_file_error(rx->services.context);
+    if (rx->services.remove_top_path)
+        rx->services.remove_top_path(rx->services.context, rx->cur_path);
+    if (rx->services.status_add_received_file)
+        rx->services.status_add_received_file(rx->services.context, batch, id,
+            relative, size, is_directory);
+
+    if (!rx->services.prepare_file_path(
+            rx->services.context, rx->cur_path, is_directory)) {
+        hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_DISK);
+        return;
+    }
+
+    if (is_directory) {
+        if (rx->services.is_top_level_path &&
+            rx->services.is_top_level_path(rx->services.context, rx->cur_path) &&
+            (!rx->services.add_top_path ||
+             !rx->services.add_top_path(rx->services.context, rx->cur_path)))
+            hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_DISK);
+        return;
+    }
+
+    if (!rx->services.open_file ||
+        !rx->services.open_file(rx->services.context, rx->cur_path))
+        hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_DISK);
+}
+
+void hop_xfer_rx_handle_file_end(void *context, const uint8_t *p, uint32_t len) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (!rx) return;
+    if (rx->batch_state.active && hop_xfer_task_cancel_requested(rx->task.id)) {
+        rx_handler_terminate(rx, rx->batch_state.batch, HOP_ABORT_CANCEL, 1);
+        return;
+    }
+
+    hop_xfer_file_end_msg msg;
+    if (!hop_xfer_decode_file_end(p, len, &msg)) return;
+    if (!rx->batch_state.active ||
+        !hop_xfer_rx_file_state_matches(&rx->file_state, msg.id)) return;
+    if (rx->file_state.is_image) return; /* image batches have no per-file ACK */
+
+    const uint32_t batch = rx->batch_state.batch;
+    if (rx->services.status_file_phase)
+        rx->services.status_file_phase(rx->services.context, batch,
+            (int)msg.id - 1, HOP_XFER_FILE_VERIFYING, 0);
+
+    if (!rx->file_state.is_directory && rx->services.close_file)
+        rx->services.close_file(rx->services.context);
+
+    const int writer_error = rx->services.file_error
+        ? rx->services.file_error(rx->services.context) : 1;
+    const hop_xfer_rx_file_end_result result =
+        hop_xfer_rx_file_state_evaluate_end(
+            &rx->file_state, msg.status, writer_error, msg.file_crc);
+    int ack = result.ack_status;
+
+    if (ack == HOP_FILE_ACK_OK && !rx->file_state.is_directory &&
+        rx->cur_path && rx->services.is_top_level_path &&
+        rx->services.is_top_level_path(rx->services.context, rx->cur_path)) {
+        if (!rx->services.add_top_path ||
+            !rx->services.add_top_path(rx->services.context, rx->cur_path))
+            ack = HOP_FILE_ACK_DISK;
+    }
+
+    if (ack != HOP_FILE_ACK_OK && !rx->file_state.is_directory &&
+        rx->cur_path && rx->services.remove_file &&
+        !rx->services.remove_file(rx->services.context, rx->cur_path))
+        hop_log(HOP_LOG_WARN, "xfer: failed to remove incomplete received file");
+
+    if (result.reason == HOP_RX_FILE_END_WRITER_ERROR)
+        hop_log(HOP_LOG_ERROR, "xfer: receiver writer reported an I/O error");
+    else if (result.reason == HOP_RX_FILE_END_INCOMPLETE)
+        hop_log(HOP_LOG_ERROR, "xfer: incomplete received file rejected");
+    else if (result.reason == HOP_RX_FILE_END_CRC_MISMATCH)
+        hop_log(HOP_LOG_ERROR, "xfer: received file CRC mismatch");
+
+    if (rx->services.status_file_phase)
+        rx->services.status_file_phase(rx->services.context, batch,
+            (int)msg.id - 1,
+            ack == HOP_FILE_ACK_OK ? HOP_XFER_FILE_COMPLETED : HOP_XFER_FILE_FAILED, 0);
+    if (rx->services.send_file_ack)
+        rx->services.send_file_ack(rx->services.context, batch, msg.id, ack);
+}
+
 void hop_xfer_rx_handle_image_begin(void *context, const uint8_t *p, uint32_t len) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx) return;

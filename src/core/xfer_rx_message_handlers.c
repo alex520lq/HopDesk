@@ -172,7 +172,7 @@ if (!rx->batch_state.active) return; /* late data after termination */
 
             /* 校验通过才入队。拷贝一份交给写线程 —— 解码器的缓冲
              * 在回调返回后就被释放了，不能把指针递出去。 */
-            if (!rx->services.write_file_chunk && rx->services.write_file_chunk(rx->services.context, &rx->task, off, data, n)) {
+            if (!rx->services.write_file_chunk || !rx->services.write_file_chunk(rx->services.context, &rx->task, off, data, n)) {
                 hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_DISK);
                 return;
             }

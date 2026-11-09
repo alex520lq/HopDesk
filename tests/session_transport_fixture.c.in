@@ -9,21 +9,22 @@
 #include "xfer_rx_receipt.h"
 #include "xfer_rx_lifecycle.h"
 #include "xfer_rx_services.h"
+#include "xfer_rx_context.h"
 #include "xfer_rx_batch_state.h"
 #define SD_BOTH 2
 #define SHUT_RDWR 2
 #define INVALID_SOCKET -1
 typedef int SOCKET;
 static struct {int client,sock,lock,slock;hop_session_id session;hop_xfer_rate_limiter rate;} s_x;
-static struct {hop_xfer_rx_batch_state batch_state;hop_xfer_task task;hop_xfer_rx_services services;} s_rx;
+static xfer_rx_context s_rx;
 static hop_xfer_rx_done_receipt s_done_receipt;
 static hop_xfer_rx_lifecycle s_rx_lifecycle;
 static struct {int marker;} s_send_status,s_receive_status;
 static int s_status_lock,resets,closes,discarded,paste_cancelled;
-static void rx_reset(void){hop_xfer_rx_batch_state_reset(&s_rx.batch_state);resets++;}
-static void rx_close_file(void){closes++;}
-static void rx_discard_dir(void){assert(closes>0);discarded++;}
-static void rx_terminate(uint32_t batch,uint8_t reason,int notify){(void)reason;assert(!notify);(void)hop_xfer_rx_batch_state_end(&s_rx.batch_state,batch);}
+static void rx_reset(xfer_rx_context *rx){hop_xfer_rx_batch_state_reset(&rx->batch_state);resets++;}
+static void rx_close_file(xfer_rx_context *rx){(void)rx;closes++;}
+static void rx_discard_dir(xfer_rx_context *rx){(void)rx;assert(closes>0);discarded++;}
+static void rx_terminate(xfer_rx_context *rx,uint32_t batch,uint8_t reason,int notify){(void)reason;assert(!notify);(void)hop_xfer_rx_batch_state_end(&rx->batch_state,batch);}
 static int test_begin_completion(const hop_xfer_task *t){(void)t;return 1;}
 static int test_cancel_requested(hop_xfer_task_id t){(void)t;return 0;}
 #define hop_xfer_task_begin_completion test_begin_completion

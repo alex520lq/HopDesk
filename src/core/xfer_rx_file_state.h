@@ -41,8 +41,27 @@ hop_xfer_rx_file_chunk_check hop_xfer_rx_file_state_check_chunk(
 int hop_xfer_rx_file_state_record_chunk(
     hop_xfer_rx_file_state *state, uint64_t offset, uint32_t length,
     uint32_t chunk_crc);
-/* Shared FILE_END ACK precedence: stored failure, writer error, peer status,
- * incomplete byte count, file CRC mismatch, then success. */
+typedef enum {
+    HOP_RX_FILE_END_STORED_FAILURE = 0,
+    HOP_RX_FILE_END_WRITER_ERROR,
+    HOP_RX_FILE_END_PEER_REJECTED,
+    HOP_RX_FILE_END_INCOMPLETE,
+    HOP_RX_FILE_END_CRC_MISMATCH,
+    HOP_RX_FILE_END_SUCCESS
+} hop_xfer_rx_file_end_reason;
+
+typedef struct {
+    uint8_t ack_status;
+    hop_xfer_rx_file_end_reason reason;
+} hop_xfer_rx_file_end_result;
+
+/* Shared FILE_END outcome: one Core decision supplies both wire ACK status
+ * and a stable diagnostic reason to platform adapters. */
+hop_xfer_rx_file_end_result hop_xfer_rx_file_state_evaluate_end(
+    const hop_xfer_rx_file_state *state, uint8_t peer_status,
+    int writer_error, uint32_t expected_file_crc);
+
+/* Compatibility helper for callers that only need the wire ACK status. */
 uint8_t hop_xfer_rx_file_state_ack(const hop_xfer_rx_file_state *state,
                                    uint8_t peer_status, int writer_error,
                                    uint32_t expected_file_crc);

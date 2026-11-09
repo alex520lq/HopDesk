@@ -86,7 +86,7 @@ static void rx_begin_batch(uint32_t batch) {
      * 把刚建立的新批次误判成"用户要取消"。批次一换，旧请求就该作废。 */
     InterlockedExchange(&s_x.cancel_rx, 0);
 
-    rx_reset();
+    rx_reset(&s_rx);
     if (!hop_xfer_task_init_classified(&s_rx.task,0,(batch & HOP_XFER_PASTE_BATCH_FLAG)?batch:0,batch,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_UNSPECIFIED)) {
         hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle,batch,HOP_ABORT_DISK);
         send_abort_msg(s_x.client,batch,HOP_ABORT_DISK,HOP_ABORT_TO_SENDER);

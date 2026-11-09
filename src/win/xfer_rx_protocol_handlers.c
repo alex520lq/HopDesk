@@ -16,11 +16,6 @@ static int rx_reserve_entry_budget(void *context, uint64_t bytes) {
     return hop_xfer_task_reserve_entry((hop_xfer_task *)context, bytes);
 }
 
-static uint64_t rx_now_ns(xfer_rx_context *rx) {
-    return rx && rx->services.now_ns
-        ? rx->services.now_ns(rx->services.context) : 0;
-}
-
 static void rx_handler_terminate(xfer_rx_context *rx, uint32_t batch, uint8_t reason, int notify_peer) {
     if (rx && rx->services.terminate_batch)
         rx->services.terminate_batch(rx->services.context, batch, reason, notify_peer);

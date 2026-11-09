@@ -96,7 +96,10 @@ static void worker_run(void *context, const void *task_data) {
     int guard = watchdog_begin(queue, "disk writer task", queue->callbacks.io_deadline_ms);
     uint64_t started = queue->callbacks.now_ns
         ? queue->callbacks.now_ns(queue->callback_context) : 0;
-    run_command(queue, command);
+    int cancelled = command->kind == RX_WRITE && command->task_owner &&
+        queue->callbacks.task_cancelled &&
+        queue->callbacks.task_cancelled(queue->callback_context, command->task_owner);
+    if (!cancelled) run_command(queue, command);
     if (command->kind == RX_WRITE && command->task_owner &&
         queue->callbacks.write_time && queue->callbacks.now_ns) {
         uint64_t ended = queue->callbacks.now_ns(queue->callback_context);

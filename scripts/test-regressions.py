@@ -397,8 +397,8 @@ int main(void){
         assert 'if (!hop_xfer_task_set_kind(&rx->task,HOP_TASK_KIND_FILES) || hop_xfer_task_cancel_requested(rx->task.id))' in platform_handlers
         assert 'if (!hop_xfer_decode_file_begin(p, len, &msg))' in platform_handlers
         assert 'hop_xfer_rx_file_state_prepare_entry(&rx->file_state, id, size,' in platform_handlers
-            assert 'hop_xfer_relpath_bytes_safe(' not in platform_handlers
-        assert 'hop_xfer_rx_file_state_begin(&rx->file_state, id)' not in platform_handlers
+        assert 'hop_xfer_rx_file_state_evaluate_end' in platform_handlers
+        assert 'hop_xfer_relpath_bytes_safe(' not in platform_handlers
         assert 'if (rx->batch_state.active && hop_xfer_task_cancel_requested(rx->task.id))' in platform_handlers[platform_handlers.index('static void rx_dispatch_file_end'): ]
         assert 'if (!hop_xfer_decode_file_begin(p, len, &msg))' in platform_handlers
         assert 'if (rx->batch_state.active && hop_xfer_task_cancel_requested(rx->task.id))' in platform_handlers[platform_handlers.index('static void rx_dispatch_file_end'): ]
@@ -435,7 +435,6 @@ int main(void){
     assert 'hop_xfer_rx_file_state_prepare_entry' in file_state_tests
     assert 'hop_xfer_rx_file_state_evaluate_end' in file_state_tests
     assert 'HOP_RX_FILE_END_INCOMPLETE' in file_state_tests
-    assert 'hop_xfer_rx_file_state_evaluate_end' in platform_handlers
     assert 'HOP_FILE_ACK_BADPATH' in file_state_tests
     assert 'if (rx->batch_state.active && hop_xfer_task_cancel_requested(rx->task.id))' in shared_rx_handlers
     assert 'if (!hop_xfer_task_set_kind(&rx->task,HOP_TASK_KIND_IMAGE) || hop_xfer_task_cancel_requested(rx->task.id))' in shared_rx_handlers

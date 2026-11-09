@@ -837,7 +837,7 @@ int main(void){
         protocol=(ROOT/f'src/{platform}/{module_name}').read_text(encoding='utf-8')
         assert '#include "'+module_name+'"' in transport
         assert '#include "'+('net_server_transport.inc' if platform=='win' else 'net_client_transport.inc')+'"' in transport
-        transport_module=(ROOT/f'src/{platform}/'+('net_server_transport.inc' if platform=='win' else 'net_client_transport.inc')).read_text(encoding='utf-8')
+        transport_module=(ROOT/'src'/platform/('net_server_transport.inc' if platform=='win' else 'net_client_transport.inc')).read_text(encoding='utf-8')
         assert 'reader_thread' in transport_module or 'control_sender' in transport_module
         assert 'net_loop_run' in transport_module or 'server_thread' in transport_module
         assert 'HOP_MSG_HELLO' in protocol and 'HOP_MSG_PING' in protocol

@@ -614,7 +614,7 @@ int main(void){
     assert(hop_xfer_task_init(&s_rx.task,0,0,paste_batch));
     assert(hop_xfer_task_reserve_job(&s_rx.task));
     assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
-    assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,paste_batch));hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,0,0);s_rx.ntop=1;s_rx.tops=tops;
+    assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,paste_batch));hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,0,0);s_rx.tops=malloc(sizeof(*s_rx.tops));assert(s_rx.tops);s_rx.tops[0]=malloc(sizeof(one_path));assert(s_rx.tops[0]);memcpy(s_rx.tops[0],one_path,sizeof(one_path));s_rx.ntop=1;
     hop_xfer_tracking_begin(&s_receive_status,paste_batch,HOP_XFER_DIR_RECEIVE,1,0,"File",HOP_XFER_RECEIVING);
     hop_xfer_rx_finish_batch(&s_rx,paste_batch,0,1);
     assert(paste_success_calls==1 && paste_failure_calls==1);

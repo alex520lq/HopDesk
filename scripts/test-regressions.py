@@ -397,6 +397,11 @@ int main(void){
         assert 'if (!hop_xfer_task_set_kind(&rx->task,HOP_TASK_KIND_FILES) || hop_xfer_task_cancel_requested(rx->task.id))' in platform_handlers
         assert 'if (!hop_xfer_decode_file_begin(p, len, &msg))' in platform_handlers
         assert 'hop_xfer_rx_file_state_prepare_entry(&rx->file_state, id, size,' in platform_handlers
+        begin_reserve = begin.index('hop_xfer_rx_entry_reservations_reserve(')
+        begin_remove_clipboard = begin.index('rx->services.remove_top_path')
+        begin_fs_side_effect = min(i for i in [begin.find('hop_xfer_rx_fs_ensure_dirs('), begin.find('hop_xfer_rx_fs_mkdir_p('), begin.find('rx->services.open_file(')] if i >= 0)
+        assert begin_reserve < begin_remove_clipboard < begin_fs_side_effect
+        assert begin.index('rx->services.status_add_received_file') > begin_reserve
         assert 'hop_xfer_rx_file_state_evaluate_end' in platform_handlers
         assert 'hop_xfer_relpath_bytes_safe(' not in platform_handlers
         assert 'if (rx->batch_state.active && hop_xfer_task_cancel_requested(rx->task.id))' in platform_handlers[platform_handlers.index('static void rx_dispatch_file_end'): ]
@@ -854,6 +859,10 @@ int main(void){
         context_header=(ROOT/'src/core/xfer_rx_context.h').read_text(encoding='utf-8')
         assert 'typedef struct xfer_rx_context' in context_header
         assert 'hop_xfer_rx_services services;' in context_header
+        assert 'void *writer;' not in context_header
+        receive_impl=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        assert 's_rx.services.context = &s_rx;' in receive_impl
+        assert 'task != &rx->task' in receive_impl
         assert 'typedef struct xfer_rx_context' not in receiver
         assert all(name in services for name in ['shutdown_data_channel','mark_sender_aborted','send_file_ack','send_done_ack','deliver_ack','terminate_batch','begin_batch','finish_batch','reset_file_error','open_file','write_file_chunk','close_file','file_error'])
         on_data_msg=extract(receiver,'on_data_msg')
@@ -863,6 +872,10 @@ int main(void){
         assert 'rx->services.terminate_batch' in extract(receiver,'rx_handler_terminate')
         assert 'rx->services.begin_batch' in extract(receiver,'rx_handler_begin_batch')
         assert 'rx->services.finish_batch' in extract(receiver,'rx_handler_finish_batch')
+        lifecycle_impl=(ROOT/f'src/{platform}/xfer_rx_batch_lifecycle.inc').read_text(encoding='utf-8')
+        assert 'hop_xfer_rx_batch_abort_decide(' in lifecycle_impl
+        assert 'HOP_RX_BATCH_ABORT_REPLY_ONLY' in lifecycle_impl
+        assert 'hop_xfer_rx_batch_finish_decide(' in lifecycle_impl
         for writer_call in ['reset_file_error','open_file','write_file_chunk','close_file','file_error']:
             assert 'rx->services.'+writer_call in protocol_handlers or 'rx->services.'+writer_call in core_message_handlers
         assert not any(token in protocol_handlers for token in ['wq_push(', 'wq_push_data(', 'wq_error_get(', 'rx_close_file(', 'hop_writer_queue_error_reset('])

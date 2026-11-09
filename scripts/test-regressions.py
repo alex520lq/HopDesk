@@ -792,8 +792,8 @@ int main(void){
 
         begin=extract(receiver,'rx_dispatch_file_begin')
         end=extract(receiver,'rx_dispatch_file_end')
-        file_ack_handler=extract(receiver,'rx_dispatch_file_ack')
-        done_ack_handler=extract(receiver,'rx_dispatch_done_ack')
+        file_ack_handler=extract(receiver,'hop_xfer_rx_dispatch_file_ack_message')
+        done_ack_handler=extract(receiver,'hop_xfer_rx_dispatch_done_ack_message')
         services=(ROOT/'src/core/xfer_rx_services.h').read_text(encoding='utf-8')
         core_message_handlers=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         assert 'if (!rx->services.write_file_chunk || !rx->services.write_file_chunk(' in core_message_handlers
@@ -803,9 +803,9 @@ int main(void){
         assert 'typedef struct xfer_rx_context' not in receiver
         assert all(name in services for name in ['shutdown_data_channel','mark_sender_aborted','send_file_ack','send_done_ack','deliver_ack','terminate_batch','begin_batch','finish_batch','reset_file_error','open_file','write_file_chunk','close_file','file_error'])
         on_data_msg=extract(receiver,'on_data_msg')
-        assert 'rx_context_configure();' in on_data_msg and 's_rx_dispatch_handlers, &s_rx' in on_data_msg
-        assert 'hop_xfer_rx_dispatch_file_ack_message(p, len, rx_ack_deliver_file, rx)' in file_ack_handler
-        assert 'hop_xfer_rx_dispatch_done_ack_message(p, len, rx_ack_deliver_done, rx)' in done_ack_handler
+        assert 'rx_context_configure();' in on_data_msg and '&hop_xfer_rx_platform_dispatch_handlers, &s_rx' in on_data_msg
+        assert 'hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, rx)' in file_ack_handler
+        assert 'hop_xfer_rx_handle_done_ack(p, len, rx_ack_deliver_done, rx)' in done_ack_handler
         assert 'rx->services.terminate_batch' in extract(receiver,'rx_handler_terminate')
         assert 'rx->services.begin_batch' in extract(receiver,'rx_handler_begin_batch')
         assert 'rx->services.finish_batch' in extract(receiver,'rx_handler_finish_batch')
@@ -815,7 +815,7 @@ int main(void){
         assert not any(token in protocol_handlers for token in ['rx_add_top(', 'rx_remove_top(', 'status_add_received_file(', 'status_image(', 'status_stage_time(', 'status_chunk_timed(', 'status_file_phase(', 'rate_now_ns('])
         for service in ['add_top_path','remove_top_path','finish_clipboard','cancel_clipboard','now_ns','status_begin','status_end','status_add_received_file','status_image','status_stage_time','status_chunk_received','status_file_phase','status_set_files_total','status_reset']:
             assert 'rx->services.'+service in protocol_handlers or service in receiver
-        done_handler=extract(receiver,'rx_dispatch_done')
+        done_handler=extract(receiver,'hop_xfer_rx_handle_done')
         assert 'hop_xfer_rx_done_receipt_find(rx->done_receipt,' in done_handler
         assert 'hop_xfer_rx_done_receipt_find(&rx->done_receipt,' not in done_handler
         shared_ack=(ROOT/'src/core/xfer_rx_ack_handler.c').read_text(encoding='utf-8')

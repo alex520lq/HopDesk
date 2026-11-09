@@ -27,6 +27,12 @@ void hop_xfer_rx_file_state_reset(hop_xfer_rx_file_state *state);
 void hop_xfer_rx_file_state_begin(hop_xfer_rx_file_state *state, uint32_t id);
 void hop_xfer_rx_file_state_set_kind(hop_xfer_rx_file_state *state, int is_image, int is_directory);
 void hop_xfer_rx_file_state_set_size(hop_xfer_rx_file_state *state, uint64_t size);
+/* Shared FILE_BEGIN metadata admission: initializes the entry state and applies
+ * the same relative-path safety policy on Windows and macOS. A rejected path
+ * leaves the entry registered with HOP_FILE_ACK_BADPATH for its FILE_END ACK. */
+int hop_xfer_rx_file_state_prepare_entry(hop_xfer_rx_file_state *state,
+    uint32_t id, uint64_t size, int is_directory,
+    const uint8_t *relative_path, uint32_t relative_path_length);
 void hop_xfer_rx_file_state_fail(hop_xfer_rx_file_state *state, uint8_t ack_status);
 int hop_xfer_rx_file_state_matches(const hop_xfer_rx_file_state *state, uint32_t id);
 hop_xfer_rx_file_chunk_check hop_xfer_rx_file_state_check_chunk(

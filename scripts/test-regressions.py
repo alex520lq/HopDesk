@@ -374,7 +374,7 @@ int main(void){
     run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','apply_global_expected','apply_global','clip_retry_pending','clip_on_paste_message'])+clip_main)
     # A cross-device paste batch must never fall through to the ordinary clipboard writer.
     for platform in ['win','mac']:
-        rx='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_batch_lifecycle.inc','xfer_rx_protocol_handlers.c'))
+        rx='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
         if platform=='win':
             assert 'clip_complete_remote_paste(batch, (const wchar_t *const *)top_paths, top_count, 1)' in rx
             assert 'clip_complete_remote_paste(batch, NULL, 0, 0)' in rx
@@ -482,7 +482,7 @@ int main(void){
     run('image_budget_permanent',image_limits_preamble+extract(clip,'image_conversion_fits_budget')+image_limits_main)
 
     for platform in ['win','mac']:
-        rx_sources='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_batch_lifecycle.inc','xfer_rx_protocol_handlers.c'))
+        rx_sources='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
         source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
         source=source.replace('#include "xfer_receive.inc"', rx_sources)
         common=r'''
@@ -582,16 +582,16 @@ int main(void){
     s_rx.image_buffer.data=pixel;s_rx.image_buffer.capacity=4;assert(hop_xfer_rx_image_state_begin(&s_rx.image_state,1,1,4,4));s_rx.image_state.received=4;s_rx.image_state.capacity=4;
     hop_xfer_tracking_begin(&s_receive_status,j.batch,HOP_XFER_DIR_RECEIVE,0,0,"Image",HOP_XFER_RECEIVING);
     hop_xfer_tracking_file(&s_receive_status,j.batch,1,"Image",4,0,HOP_XFER_FILE_RECEIVING);
-    hop_xfer_rx_finish_batch(&s_rx,j.batch,hop_get_be32(wire+4),hop_get_be32(wire+8));
+    hop_xfer_hop_xfer_rx_finish_batch(&s_rx,j.batch,hop_get_be32(wire+4),hop_get_be32(wire+8));
     assert(applied==1 && !s_receive_status.status.active && s_receive_status.status.phase==HOP_XFER_COMPLETED);
     assert(s_receive_status.status.files_done==1);
-    hop_xfer_rx_finish_batch(&s_rx,j.batch,1,1);assert(applied==1);
+    hop_xfer_hop_xfer_rx_finish_batch(&s_rx,j.batch,1,1);assert(applied==1);
     assert(hop_xfer_task_init(&s_rx.task,0,0,11));
     assert(hop_xfer_task_reserve_job(&s_rx.task));
     assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
     assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,11));hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,1,0);assert(hop_xfer_rx_image_state_begin(&s_rx.image_state,1,1,4,4));s_rx.image_state.received=3;s_rx.image_state.capacity=4;
     hop_xfer_tracking_begin(&s_receive_status,11,HOP_XFER_DIR_RECEIVE,1,4,"Image",HOP_XFER_RECEIVING);
-    hop_xfer_rx_finish_batch(&s_rx,11,1,1);assert(applied==1 && s_receive_status.status.phase==HOP_XFER_FAILED);
+    hop_xfer_hop_xfer_rx_finish_batch(&s_rx,11,1,1);assert(applied==1 && s_receive_status.status.phase==HOP_XFER_FAILED);
 
     /* Requested file paste must use the validated callback, not generic paths. */
 #ifdef FIXTURE_WINDOWS
@@ -606,7 +606,7 @@ int main(void){
     assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
     assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,paste_batch));hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,0,0);s_rx.ntop=1;s_rx.tops=tops;
     hop_xfer_tracking_begin(&s_receive_status,paste_batch,HOP_XFER_DIR_RECEIVE,1,0,"File",HOP_XFER_RECEIVING);
-    hop_xfer_rx_finish_batch(&s_rx,paste_batch,1,1);
+    hop_xfer_hop_xfer_rx_finish_batch(&s_rx,paste_batch,1,1);
     assert(paste_success_calls==1 && paste_failure_calls==0);
 
     paste_batch=HOP_XFER_PASTE_BATCH_FLAG|13u;
@@ -615,7 +615,7 @@ int main(void){
     assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
     assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,paste_batch));hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,0,0);s_rx.ntop=1;s_rx.tops=tops;
     hop_xfer_tracking_begin(&s_receive_status,paste_batch,HOP_XFER_DIR_RECEIVE,1,0,"File",HOP_XFER_RECEIVING);
-    hop_xfer_rx_finish_batch(&s_rx,paste_batch,0,1);
+    hop_xfer_hop_xfer_rx_finish_batch(&s_rx,paste_batch,0,1);
     assert(paste_success_calls==1 && paste_failure_calls==1);
     puts("PASS: production IMAGE DONE and validated file-paste completion paths");return 0;
 }
@@ -626,7 +626,7 @@ int main(void){
         run('image_'+platform,common+extract(sender_source,'send_done')+'\n'+extract(core_finish_source,'hop_xfer_rx_finish_batch')+'\n'+extract(source,'rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_protocol_adapter.c','src/core/xfer_rx_dispatch.c'],threads=True)
     # Run the actual per-platform state wrappers, not only a reimplemented model.
     for platform in ['win','mac']:
-        source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', '\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_batch_lifecycle.inc','xfer_rx_protocol_handlers.c')))
+        source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', '\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c')))
         preamble=r'''
 #include "hop.h"
 #include "xfer_tracking.h"
@@ -741,7 +741,7 @@ int main(void){
     # Exact production case bodies + lifecycle helpers; only OS I/O is doubled.
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
-        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_batch_lifecycle.inc','xfer_rx_protocol_handlers.c'))
+        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         protocol_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
@@ -756,15 +756,12 @@ int main(void){
             'RX_STATE':state_contract,
             'WIRE_SEND':extract(sender,'send_abort_msg' if platform=='win' else 'send_abort'),
             'STATUS_FUNCTIONS':'\n'.join(extract(sender,n) for n in ['status_for','status_begin','status_end']),
-            'CLEAR_STATE':extract(receiver,'rx_clear_state'),
-            'TERMINATE':'\n'.join(extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_abort_close_file','rx_abort_discard_staging','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end'])+'\n'+extract(receiver,'rx_terminate'),
-            'BEGIN_BATCH':extract(receiver,'rx_begin_batch'),
-            'FINISH_BATCH':extract(receiver,'rx_finish_batch'),
+            'CLEAR_STATE':extract(receiver,'hop_xfer_rx_reset_batch_state'),
+            'TERMINATE':'\n'.join(extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_abort_close_file','rx_abort_discard_staging','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end'])+'\n'+extract(receiver,'hop_xfer_rx_terminate_batch'),
+            'BEGIN_BATCH':extract(receiver,'hop_xfer_rx_begin_batch'),
+            'FINISH_BATCH':extract(receiver,'hop_xfer_rx_finish_batch'),
             'RX_SERVICE_CALLBACKS':'\n'.join([
                 'static void fixture_send_abort(void *context,uint32_t batch,uint8_t reason){(void)context;\n#ifdef FIXTURE_WINDOWS\nsend_abort_msg(s_x.client,batch,reason,HOP_ABORT_TO_SENDER);\n#else\nsend_abort(batch,reason);\n#endif\n}',
-                'static void fixture_terminate_batch(void *context,uint32_t batch,uint8_t reason,int notify_peer){rx_terminate((xfer_rx_context*)context,batch,reason,notify_peer);}',
-                'static void fixture_begin_batch(void *context,uint32_t batch){rx_begin_batch((xfer_rx_context*)context,batch);}',
-                'static int fixture_finish_batch(void *context,uint32_t batch,uint32_t ok,uint32_t total){return rx_finish_batch((xfer_rx_context*)context,batch,ok,total);}',
                 'static int fixture_add_top_path(void *context,const void *path){(void)context;(void)path;return 1;}',
                 'static void fixture_remove_top_path(void *context,const void *path){(void)context;(void)path;}',
                 'static void fixture_finish_clipboard(void *context,uint32_t batch,const void *image,uint32_t w,uint32_t h,uint32_t stride,int image_valid,const void *const *paths,int count,int allow){(void)context;if(allow&&image_valid&&image){apply_image((const uint8_t*)image,(int)w,(int)h,(int)stride);return;}if(allow&&count>0){if(batch&HOP_XFER_PASTE_BATCH_FLAG){',
@@ -799,7 +796,6 @@ int main(void){
                 'static void fixture_status_reset(void *context){(void)context;memset(&s_receive_status,0,sizeof(s_receive_status));}',
                 'static void fixture_clear_cancel_request(void *context){(void)context;}',
                 'static int fixture_create_staging_directory(void *context,const char *session_hex,uint32_t batch){xfer_rx_context *rx=(xfer_rx_context*)context;(void)session_hex;(void)batch;if(!rx||fail_directory)return 0;\n#ifdef FIXTURE_WINDOWS\nwcscpy(rx->dir,L"tmp\\\\HopDesk\\\\fixture");\n#else\nstrcpy(rx->dir,"/tmp/HopDesk/fixture");\n#endif\nreturn 1;}',
-                'static void fixture_reset_batch_state(void *context){rx_clear_state((xfer_rx_context*)context);}'
             ]),
             'RX_WRITER_CALLBACKS':'\n'.join([
                 'static void fixture_reset_file_error(void *context){(void)context;}',
@@ -837,7 +833,7 @@ int main(void){
 
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
-        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_batch_lifecycle.inc','xfer_rx_protocol_handlers.c'))
+        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         fixture=(ROOT/'tests/session_transport_fixture.c.in').read_text(encoding='utf-8')
         functions='\n'.join([extract(sender,'job_bind_session'),extract(sender,'send_small'),extract(sender,'send_chunk'),extract(receiver,'hop_xfer_rx_bind_session'),extract(receiver,'rx_bind_session'),extract(receiver,'rx_expire_stale_session'),extract(receiver,'on_data_frame_checked'),extract(receiver,'on_data_frame')])
@@ -866,7 +862,7 @@ int main(void){
     # batch/file ID is reused; the unresolved file remains the resume point.
     for platform in ['mac','win']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
-        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_batch_lifecycle.inc','xfer_rx_protocol_handlers.c'))
+        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         protocol_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
         entry=extract(sender,'send_file_entry')
@@ -916,17 +912,13 @@ int main(void){
         assert 'task != &rx->task' in receive_impl
         assert 'rx->writer' in receive_impl
         assert 'typedef struct xfer_rx_context' not in receiver
-        assert all(name in services for name in ['shutdown_data_channel','mark_sender_aborted','send_abort','send_file_ack','send_done_ack','deliver_ack','terminate_batch','begin_batch','finish_batch','reset_batch_state','clear_cancel_request','create_staging_directory','discard_staging_directory','send_abort','reset_file_error','open_file','write_file_chunk','close_file','file_error','build_path','prepare_file_path','is_top_level_path','remove_file'])
+        assert all(name in services for name in ['shutdown_data_channel','mark_sender_aborted','send_abort','send_file_ack','send_done_ack','deliver_ack','clear_cancel_request','create_staging_directory','discard_staging_directory','send_abort','reset_file_error','open_file','write_file_chunk','close_file','file_error','build_path','prepare_file_path','is_top_level_path','remove_file'])
         on_data_msg=extract(receiver,'on_data_msg')
         assert 'rx_context_configure();' in on_data_msg and '&hop_xfer_rx_platform_dispatch_handlers, &s_rx' in on_data_msg
         assert 'hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, rx)' in file_ack_handler
         assert 'hop_xfer_rx_handle_done_ack(p, len, rx_ack_deliver_done, rx)' in done_ack_handler
-        assert 'rx->services.terminate_batch' in extract(receiver,'rx_handler_terminate')
-        assert 'rx->services.begin_batch' in extract(receiver,'rx_handler_begin_batch')
-        assert 'rx->services.finish_batch' in extract(receiver,'rx_handler_finish_batch')
-        lifecycle_impl=(ROOT/f'src/{platform}/xfer_rx_batch_lifecycle.inc').read_text(encoding='utf-8')
-        assert 'hop_xfer_rx_batch_abort_decide(' in lifecycle_impl
-        assert 'hop_xfer_rx_abort_execute(' in lifecycle_impl
+        assert 'hop_xfer_rx_batch_abort_decide(' in core_message_handlers
+        assert 'hop_xfer_rx_abort_execute(' in core_message_handlers
         abort_policy=(ROOT/'src/core/xfer_rx_lifecycle.c').read_text(encoding='utf-8')
         assert 'HOP_RX_BATCH_ABORT_REPLY_ONLY' in abort_policy
         assert 'HOP_RX_BATCH_ABORT_TERMINATE_ACTIVE' in abort_policy
@@ -944,8 +936,12 @@ int main(void){
         shared_ack=(ROOT/'src/core/xfer_rx_ack_handler.c').read_text(encoding='utf-8')
         assert 'ack.id < 1u' in shared_ack and 'ack.id > HOP_XFER_FILE_LIMIT' in shared_ack
         assert 'status > HOP_DONE_ACK_FAILED' in shared_ack
-        lifecycle=extract(receiver,'rx_begin_batch')
-        assert 'hop_xfer_rx_begin_batch(rx, batch)' in lifecycle
+        lifecycle=extract(receiver,'hop_xfer_rx_begin_batch')
+        assert 'hop_xfer_rx_reset_batch_state(rx)' in lifecycle
+        assert 'hop_xfer_rx_reset_batch_state' in core_message_handlers
+        assert 'hop_xfer_rx_terminate_batch' in core_message_handlers
+        assert 'rx_clear_state' not in receive_impl
+        assert 'xfer_rx_batch_lifecycle.inc' not in receive_impl
         assert 's_rx.services.clear_cancel_request = rx_context_clear_cancel_request;' in receive_impl
         assert 's_rx.services.create_staging_directory = rx_context_create_staging_directory;' in receive_impl
         assert 's_rx.services.discard_staging_directory = rx_context_discard_staging_directory;' in receive_impl

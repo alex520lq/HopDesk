@@ -13,6 +13,12 @@ int main(void) {
     assert(hop_xfer_rx_batch_begin_decide(7,0,0,0,0,&reason) == HOP_RX_BATCH_BEGIN_START);
     assert(reason == 0);
 
+    assert(hop_xfer_rx_batch_abort_decide(0,1,7,1) == HOP_RX_BATCH_ABORT_IGNORE);
+    assert(hop_xfer_rx_batch_abort_decide(7,1,7,1) == HOP_RX_BATCH_ABORT_TERMINATE_ACTIVE);
+    assert(hop_xfer_rx_batch_abort_decide(8,1,7,1) == HOP_RX_BATCH_ABORT_REPLY_ONLY);
+    assert(hop_xfer_rx_batch_abort_decide(8,1,7,0) == HOP_RX_BATCH_ABORT_IGNORE);
+    assert(hop_xfer_rx_batch_abort_decide(7,0,0,1) == HOP_RX_BATCH_ABORT_REPLY_ONLY);
+
     assert(!hop_xfer_rx_batch_is_active(0,1,7));
     assert(!hop_xfer_rx_batch_is_active(7,0,7));
     assert(!hop_xfer_rx_batch_is_active(7,1,8));

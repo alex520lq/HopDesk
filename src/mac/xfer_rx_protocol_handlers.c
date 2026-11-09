@@ -143,25 +143,30 @@ static void rx_dispatch_file_end(void *context, const uint8_t *p, uint32_t len) 
             if (!rx->file_state.is_directory) if (rx->services.close_file) rx->services.close_file(rx->services.context);
 
             int writer_error = rx->services.file_error ? rx->services.file_error(rx->services.context) : 1;
-            int ack = hop_xfer_rx_file_state_ack(
+            hop_xfer_rx_file_end_result end_result = hop_xfer_rx_file_state_evaluate_end(
                 &rx->file_state, status, writer_error, want);
-            if (rx->file_state.failure < 0) {
-                if (writer_error) {
-                    hop_log(HOP_LOG_ERROR, "xfer: disk error, %s incomplete",
-                            rx->cur_path ? rx->cur_path : "?");
-                } else if (status != HOP_FILE_OK) {
+            int ack = end_result.ack_status;
+            switch (end_result.reason) {
+                case HOP_RX_FILE_END_WRITER_ERROR:
+                    hop_log(HOP_LOG_ERROR, "xfer: disk error, %s incomplete", rx->cur_path ? rx->cur_path : "?");
+                    break;
+                case HOP_RX_FILE_END_PEER_REJECTED:
                     hop_log(HOP_LOG_ERROR, "xfer: peer reported status %u for %s",
                             (unsigned)status, rx->cur_path ? rx->cur_path : "?");
-                } else if (ack == HOP_FILE_ACK_CRC &&
-                           rx->file_state.received != rx->file_state.declared_size) {
+                    break;
+                case HOP_RX_FILE_END_INCOMPLETE:
                     hop_log(HOP_LOG_ERROR, "xfer: incomplete file rejected (%llu/%llu bytes)",
                             (unsigned long long)rx->file_state.received,
                             (unsigned long long)rx->file_state.declared_size);
-                } else if (ack == HOP_FILE_ACK_CRC) {
-                    hop_log(HOP_LOG_ERROR,
-                            "xfer: FILE CRC MISMATCH %s (expect %08x got %08x)",
+                    break;
+                case HOP_RX_FILE_END_CRC_MISMATCH:
+                    hop_log(HOP_LOG_ERROR, "xfer: FILE CRC MISMATCH %s (expect %08x got %08x)",
                             rx->cur_path ? rx->cur_path : "?", want, rx->file_state.crc);
-                }
+                    break;
+                case HOP_RX_FILE_END_STORED_FAILURE:
+                case HOP_RX_FILE_END_SUCCESS:
+                default:
+                    break;
             }
             if (ack == HOP_FILE_ACK_OK && rx->cur_path && !rx->file_state.is_directory) {
                 /* Only verified top-level files are exposed through clipboard. */

@@ -741,8 +741,8 @@ int main(void){
         assert 'typedef struct xfer_rx_context' in context_header
         state_contract='#include "xfer_rx_context.h"\nstatic xfer_rx_context s_rx;'
         dispatch_names=[]
-        dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_handler_terminate','rx_handler_begin_batch','rx_handler_finish_batch','rx_ack_deliver_file','rx_ack_deliver_done','rx_now_ns'])+'\n'+'\n'.join(extract(receiver,name) for name in ['hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_dispatch_file_ack_message','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_dispatch_done_ack_message'])
-        dispatch_handlers+='\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { NULL, hop_xfer_rx_handle_image_begin, hop_xfer_rx_handle_file_chunk, NULL, hop_xfer_rx_dispatch_file_ack_message, hop_xfer_rx_handle_abort, hop_xfer_rx_handle_done, hop_xfer_rx_dispatch_done_ack_message };\n'
+        dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_reserve_entry_budget','rx_handler_terminate','rx_handler_begin_batch','rx_handler_finish_batch','rx_ack_deliver_file','rx_ack_deliver_done','rx_now_ns'])+'\n'+'\n'.join(extract(receiver,name) for name in ['hop_xfer_rx_handle_file_begin','hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_handle_file_end','hop_xfer_rx_dispatch_file_ack_message','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_dispatch_done_ack_message'])
+        dispatch_handlers+='\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { hop_xfer_rx_handle_file_begin, hop_xfer_rx_handle_image_begin, hop_xfer_rx_handle_file_chunk, hop_xfer_rx_handle_file_end, hop_xfer_rx_dispatch_file_ack_message, hop_xfer_rx_handle_abort, hop_xfer_rx_handle_done, hop_xfer_rx_dispatch_done_ack_message };\n'
         fixture=(ROOT/'tests/receive_abort_fixture.c.in').read_text(encoding='utf-8')
         values={
             'RX_STATE':state_contract,
@@ -806,13 +806,13 @@ int main(void){
         }
         for key,value in values.items():fixture=fixture.replace('@'+key+'@',value)
         assert '@' not in fixture
-        assert 'if (!rx->batch_state.active || rx->batch_state.batch != batch) return;' in extract(receiver,'rx_dispatch_file_begin')
-        for handler_name in ['file_begin','file_end']:
-            handler=extract(receiver,'rx_dispatch_'+handler_name)
+        assert 'if (!rx->batch_state.active || rx->batch_state.batch != batch) return;' in extract(receiver,'hop_xfer_rx_handle_file_begin')
+        for handler_name in ['hop_xfer_rx_handle_file_begin','hop_xfer_rx_handle_file_end']:
+            handler=extract(receiver,handler_name)
             assert 'xfer_rx_context *rx = (xfer_rx_context *)context;' in handler
             assert not any(token in handler for token in ['s_rx.', 's_x.', 's_ack.', 's_wq']), f'{platform} {handler_name} still reads receiver/platform globals'
         assert 'rx_handler_begin_batch(rx, batch)' in extract(receiver,'hop_xfer_rx_handle_image_begin')
-        for core_handler in ['hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_dispatch_file_ack_message','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_dispatch_done_ack_message']:
+        for core_handler in ['hop_xfer_rx_handle_file_begin','hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_handle_file_end','hop_xfer_rx_dispatch_file_ack_message','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_dispatch_done_ack_message']:
             handler=extract(receiver,core_handler)
             assert 'xfer_rx_context *rx = (xfer_rx_context *)context;' in handler
             assert not any(token in handler for token in ['s_rx.', 's_x.', 's_ack.', 's_wq'])
@@ -876,16 +876,15 @@ int main(void){
         kick_fn=extract(sender,'xfer_kick')
         assert 'peer_ready = 0' in kick_fn or 'peer_ready=0' in kick_fn
 
-        begin=extract(receiver,'rx_dispatch_file_begin')
-        end=extract(receiver,'rx_dispatch_file_end')
+        begin=extract(receiver,'hop_xfer_rx_handle_file_begin')
+        end=extract(receiver,'hop_xfer_rx_handle_file_end')
         # FILE_BEGIN must keep the candidate path local until the task entry
         # reservation succeeds; only then may it replace live context state
         # or trigger clipboard/status/writer/filesystem side effects.
         admission=begin.index('hop_xfer_rx_entry_reservations_reserve(')
-        commit=begin.index('rx->cur_path = candidate_path')
+        commit=begin.index('rx->cur_path = (hop_xfer_rx_path_char *)candidate')
         assert admission < commit, 'FILE_BEGIN publishes candidate path before budget admission'
-        assert admission < begin.rindex('free(rx->cur_path)'), 'FILE_BEGIN releases the previous live path before budget admission'
-        for side_effect in ['rx->services.reset_file_error(', 'rx->services.remove_top_path(', 'rx->services.status_add_received_file(']:
+        for side_effect in ['rx->services.reset_file_error(', 'rx->services.remove_top_path(', 'rx->services.status_add_received_file(', 'rx->services.prepare_file_path(']:
             assert admission < begin.index(side_effect), 'FILE_BEGIN side effect precedes budget admission: '+side_effect
         file_ack_handler=extract(receiver,'hop_xfer_rx_dispatch_file_ack_message')
         done_ack_handler=extract(receiver,'hop_xfer_rx_dispatch_done_ack_message')

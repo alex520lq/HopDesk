@@ -685,4 +685,4 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - Windows 在分配临时 UTF-8 路径副本前先登记共享文件状态，确保内存分配失败时仍有正确的 FILE_END 错误回执上下文。
 - 扩展 `tests/xfer_rx_file_state_tests.c`，覆盖普通文件、目录、路径穿越拒绝、非法 ID 不修改现有状态；更新源码回归断言，确保两端不再各自调用路径安全校验或重复初始化 File State。
 - 本切片只统一 FILE_BEGIN 的元数据准入，不包含平台路径创建、预算预留和文件打开；这些副作用仍由平台 Adapter 负责。FILE_END 的完整 ACK/清理编排仍待下一切片继续收敛。
-- CI：提交后由 GitHub Actions Run #964 验证 Windows/macOS 全量构建与测试，结果待完成。
+- CI：Run #964 暴露 `HOP_XFER_FILE_LIMIT` 未从 `xfer_status.h` 引入，导致 Windows/macOS 在 Core 编译阶段失败；已补齐 Core 与独立测试的显式 include。修复后的当前 head `326377d2f4716af6c2d6ad3b8e881b9e17174da8` 尚无新的 CI 结果，必须等待新一轮 Windows/macOS 全量验证后再标记通过。

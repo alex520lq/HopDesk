@@ -114,6 +114,11 @@ static void rx_context_shutdown_data(void *context) {
     if (active >= 0) shutdown(active, SHUT_RDWR);
 }
 
+static void rx_context_send_abort(void *context, uint32_t batch, uint8_t reason) {
+    (void)context;
+    send_abort(batch, reason);
+}
+
 static void rx_context_mark_sender_aborted(void *context, uint32_t batch, uint8_t reason) {
     (void)context;
     pthread_mutex_lock(&s_x.qlock);
@@ -389,6 +394,7 @@ static void rx_context_configure(void) {
     s_rx.services.context = &s_rx;
     s_rx.services.shutdown_data_channel = rx_context_shutdown_data;
     s_rx.services.mark_sender_aborted = rx_context_mark_sender_aborted;
+    s_rx.services.send_abort = rx_context_send_abort;
     s_rx.services.send_file_ack = rx_context_send_file_ack;
     s_rx.services.send_done_ack = rx_context_send_done_ack;
     s_rx.services.deliver_ack = rx_context_deliver_ack;

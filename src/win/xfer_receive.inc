@@ -361,8 +361,8 @@ static void rx_context_finish_clipboard(void *context, uint32_t batch,
 }
 
 static void rx_terminate(xfer_rx_context *rx, uint32_t batch, uint8_t reason, int notify_peer);
-static void rx_begin_batch(uint32_t batch);
-static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total);
+static void rx_begin_batch(xfer_rx_context *rx, uint32_t batch);
+static int rx_finish_batch(xfer_rx_context *rx, uint32_t batch, uint32_t ok, uint32_t total);
 
 static void rx_context_terminate_batch(void *context, uint32_t batch, uint8_t reason, int notify_peer) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
@@ -481,7 +481,7 @@ static void rx_bind_session(const hop_session_id *session) {
         hop_xfer_rx_done_receipt_clear(&s_done_receipt);
         if (s_rx.batch_state.active && !hop_xfer_task_begin_completion(&s_rx.task) &&
             hop_xfer_task_cancel_requested(s_rx.task.id))
-            rx_terminate(s_rx.batch_state.batch, HOP_ABORT_CANCEL, 0);
+            rx_terminate(&s_rx, s_rx.batch_state.batch, HOP_ABORT_CANCEL, 0);
         if (s_rx.batch_state.active) {
             rx_close_file(&s_rx);
             rx_discard_dir(&s_rx);
@@ -646,7 +646,7 @@ static void on_data_frame(void *user, uint8_t type, const uint8_t *p, uint32_t l
 static void rx_cancel_local(void) {
     if (!s_rx.batch_state.active) return;
     uint32_t batch = s_rx.batch_state.batch;
-    rx_terminate(batch,HOP_ABORT_CANCEL,1);
+    rx_terminate(&s_rx,batch,HOP_ABORT_CANCEL,1);
     hop_log(HOP_LOG_INFO, "xfer: batch %u cancelled locally", batch);
 }
 static void rx_poll_cancel(void) {
@@ -655,7 +655,7 @@ static void rx_poll_cancel(void) {
     EnterCriticalSection(&s_x.lock); int connected=s_x.peer_ready; LeaveCriticalSection(&s_x.lock);
     if (s_rx.batch_state.active && hop_xfer_task_rx_disconnect_expired(&s_rx.task,connected,hop_monotonic_ms(),HOP_XFER_RX_DISCONNECT_BUDGET_MS)) {
         hop_log(HOP_LOG_WARN,"xfer: receive batch %u expired while disconnected",s_rx.batch_state.batch);
-        rx_terminate(s_rx.batch_state.batch,HOP_ABORT_TIMEOUT,0);
+        rx_terminate(&s_rx,s_rx.batch_state.batch,HOP_ABORT_TIMEOUT,0);
     }
 }
 

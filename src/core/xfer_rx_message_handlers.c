@@ -33,6 +33,94 @@ static int rx_handler_finish_batch(xfer_rx_context *rx, uint32_t batch, uint32_t
     return rx->services.finish_batch(rx->services.context, batch, ok, total);
 }
 
+void hop_xfer_rx_begin_batch(void *context, uint32_t batch) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (!rx || !batch || !rx->lifecycle || !rx->done_receipt) return;
+
+    uint8_t dead_reason = 0;
+    const hop_session_id *session = hop_xfer_rx_lifecycle_session(rx->lifecycle);
+    int committed = hop_xfer_rx_done_receipt_find(
+        rx->done_receipt, session, batch) != NULL;
+    (void)hop_xfer_rx_lifecycle_dead_reason(rx->lifecycle, batch, &dead_reason);
+
+    hop_xfer_rx_batch_begin_action action = hop_xfer_rx_batch_begin_decide(
+        batch, committed, dead_reason, rx->batch_state.active,
+        rx->batch_state.batch, &dead_reason);
+    switch (action) {
+        case HOP_RX_BATCH_BEGIN_IGNORE_COMMITTED:
+        case HOP_RX_BATCH_BEGIN_RESUME:
+        case HOP_RX_BATCH_BEGIN_INVALID:
+            return;
+        case HOP_RX_BATCH_BEGIN_REJECT_DEAD:
+            if (rx->services.terminate_batch)
+                rx->services.terminate_batch(rx->services.context, batch, dead_reason, 1);
+            return;
+        case HOP_RX_BATCH_BEGIN_START:
+            break;
+        default:
+            return;
+    }
+
+    if (rx->services.clear_cancel_request)
+        rx->services.clear_cancel_request(rx->services.context);
+    if (rx->batch_state.active && rx->services.status_end)
+        rx->services.status_end(rx->services.context, rx->batch_state.batch,
+            HOP_XFER_FAILED, "Receive interrupted");
+    if (rx->services.close_file)
+        rx->services.close_file(rx->services.context);
+    if (rx->services.reset_batch_state)
+        rx->services.reset_batch_state(rx->services.context);
+
+    if (!hop_xfer_task_init_classified(&rx->task, 0,
+            (batch & HOP_XFER_PASTE_BATCH_FLAG) ? batch : 0,
+            batch, HOP_XFER_DIR_RECEIVE, HOP_TASK_KIND_UNSPECIFIED)) {
+        hop_xfer_rx_lifecycle_mark_dead(rx->lifecycle, batch, HOP_ABORT_DISK);
+        if (rx->services.send_abort)
+            rx->services.send_abort(rx->services.context, batch, HOP_ABORT_DISK);
+        return;
+    }
+    if (session)
+        (void)hop_xfer_task_bind_session(&rx->task, session->bytes);
+    if (!hop_xfer_task_reserve_job(&rx->task)) {
+        hop_xfer_rx_lifecycle_mark_dead(rx->lifecycle, batch, HOP_ABORT_TOO_LARGE);
+        hop_xfer_task_finish(&rx->task, HOP_XFER_TASK_FAILED);
+        hop_xfer_task_dispose(&rx->task);
+        if (rx->services.send_abort)
+            rx->services.send_abort(rx->services.context, batch, HOP_ABORT_TOO_LARGE);
+        return;
+    }
+    if (!hop_xfer_task_set_state(&rx->task, HOP_XFER_TASK_ACTIVE)) {
+        hop_xfer_rx_lifecycle_mark_dead(rx->lifecycle, batch, HOP_ABORT_DISK);
+        hop_xfer_task_finish(&rx->task, HOP_XFER_TASK_FAILED);
+        hop_xfer_task_dispose(&rx->task);
+        if (rx->services.send_abort)
+            rx->services.send_abort(rx->services.context, batch, HOP_ABORT_DISK);
+        return;
+    }
+    if (!hop_xfer_rx_batch_state_begin(&rx->batch_state, batch)) {
+        hop_log(HOP_LOG_ERROR, "xfer: receiver batch state rejected begin for %u", batch);
+        hop_xfer_task_finish(&rx->task, HOP_XFER_TASK_FAILED);
+        hop_xfer_task_dispose(&rx->task);
+        hop_xfer_rx_lifecycle_mark_dead(rx->lifecycle, batch, HOP_ABORT_DISK);
+        if (rx->services.send_abort)
+            rx->services.send_abort(rx->services.context, batch, HOP_ABORT_DISK);
+        return;
+    }
+
+    if (rx->services.status_begin)
+        rx->services.status_begin(rx->services.context, batch, 0, 0,
+            "Incoming files", HOP_XFER_RECEIVING);
+
+    char session_hex[33] = {0};
+    if (session) hop_session_hex(session, session_hex);
+    if (!rx->services.create_staging_directory ||
+        !rx->services.create_staging_directory(
+            rx->services.context, session_hex, batch)) {
+        if (rx->services.terminate_batch)
+            rx->services.terminate_batch(rx->services.context, batch, HOP_ABORT_DISK, 1);
+    }
+}
+
 int hop_xfer_rx_finish_batch(void *context, uint32_t batch, uint32_t ok, uint32_t total) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx) return -1;

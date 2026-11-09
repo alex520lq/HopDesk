@@ -359,7 +359,7 @@ static void rx_bind_session(const hop_session_id *session) {
             rx_close_file();
             rx_discard_dir();
             if (s_rx.batch_state.batch & HOP_XFER_PASTE_BATCH_FLAG)
-                clip_complete_remote_paste(s_rx.batch_state.batch,NULL,0,0);
+                if (s_rx.services.cancel_clipboard) s_rx.services.cancel_clipboard(s_rx.services.context, s_rx.batch_state.batch);
         }
         rx_reset();
         AcquireSRWLockExclusive(&s_status_lock);

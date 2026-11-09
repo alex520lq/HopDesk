@@ -393,21 +393,22 @@ int main(void){
             assert 'statusbar_notify_paste_ready()' in apply_objects
 
         platform_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
-        assert 'if (rx->batch_state.active && hop_xfer_task_cancel_requested(rx->task.id))' in platform_handlers
-        assert 'if (!hop_xfer_task_set_kind(&rx->task,HOP_TASK_KIND_FILES) || hop_xfer_task_cancel_requested(rx->task.id))' in platform_handlers
-        assert 'if (!hop_xfer_decode_file_begin(p, len, &msg))' in platform_handlers
-        assert 'hop_xfer_rx_file_state_prepare_entry(&rx->file_state, id, size,' in platform_handlers
-        begin = extract(platform_handlers,'rx_dispatch_file_begin')
-        begin_reserve = begin.index('hop_xfer_rx_entry_reservations_reserve(')
-        begin_remove_clipboard = begin.index('rx->services.remove_top_path')
-        begin_fs_side_effect = min(i for i in [begin.find('hop_xfer_rx_fs_ensure_dirs('), begin.find('hop_xfer_rx_fs_mkdir_p('), begin.find('rx->services.open_file(')] if i >= 0)
-        assert begin_reserve < begin_remove_clipboard < begin_fs_side_effect
-        assert begin.index('rx->services.status_add_received_file') > begin_reserve
-        assert 'hop_xfer_rx_file_state_evaluate_end' in platform_handlers
-        assert 'hop_xfer_relpath_bytes_safe(' not in platform_handlers
-        assert 'if (rx->batch_state.active && hop_xfer_task_cancel_requested(rx->task.id))' in platform_handlers[platform_handlers.index('static void rx_dispatch_file_end'): ]
-        assert 'if (!hop_xfer_decode_file_begin(p, len, &msg))' in platform_handlers
-        assert 'if (rx->batch_state.active && hop_xfer_task_cancel_requested(rx->task.id))' in platform_handlers[platform_handlers.index('static void rx_dispatch_file_end'): ]
+        core_handlers=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
+        begin=extract(core_handlers,'hop_xfer_rx_handle_file_begin')
+        end=extract(core_handlers,'hop_xfer_rx_handle_file_end')
+        assert 'if (rx->batch_state.active && hop_xfer_task_cancel_requested(rx->task.id))' in begin
+        assert 'if (!hop_xfer_task_set_kind(&rx->task, HOP_TASK_KIND_FILES)' in begin
+        assert 'hop_xfer_rx_file_state_prepare_entry(&rx->file_state, id, size,' in begin
+        begin_reserve=begin.index('hop_xfer_rx_entry_reservations_reserve(')
+        begin_commit=begin.index('rx->cur_path = (hop_xfer_rx_path_char *)candidate')
+        assert begin_reserve < begin_commit
+        for side_effect in ['rx->services.reset_file_error(', 'rx->services.remove_top_path(', 'rx->services.status_add_received_file(', 'rx->services.prepare_file_path(']:
+            assert begin.index(side_effect) > begin_reserve
+        assert 'rx->services.open_file(' in begin
+        assert 'hop_xfer_rx_file_state_evaluate_end' in end
+        assert 'rx->services.close_file(' in end and 'rx->services.send_file_ack(' in end
+        assert 'rx->services.remove_file(' in end and 'rx->services.is_top_level_path(' in end
+        assert 'rx_dispatch_file_begin' not in platform_handlers and 'rx_dispatch_file_end' not in platform_handlers
         # RX storage/accounting lives in the production writer implementation,
         # not in Receiver protocol code. Windows has completed this extraction;
         # macOS is intentionally checked against its current adapter until parity lands.

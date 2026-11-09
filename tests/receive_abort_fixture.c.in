@@ -156,8 +156,6 @@ static void history_save(void){assert(closed); if(s_receive_status.status.phase!
 #define ERROR_FILE_NOT_FOUND 2
 #define ERROR_PATH_NOT_FOUND 3
 #else
-static const char*temp_root(void){return "/tmp";}
-static int hop_xfer_rx_fs_mkdir_p(const char*p){(void)p;return fail_directory?-1:0;}
 #endif
 @WIRE_SEND@
 @STATUS_FUNCTIONS@

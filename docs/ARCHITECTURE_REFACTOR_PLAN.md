@@ -712,3 +712,10 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 保持平台差异：Windows 线程事件/锁与 macOS pthread/QoS/条件变量不强行抽象；共享的 ACK Window、Task Manager、Rate Limiter 继续留在 Core。
 - 回归脚本改为从拆分后的 Worker 文件提取真实生产实现，继续覆盖发送线程的重连策略、队列取消、DONE ACK 与取消逻辑；增加模块边界断言。
 - 当前切片待新的 Windows/macOS CI 全量验证。剪贴板与控制连接模块仍在后续阶段。
+### 2026-11-09：剪贴板与控制连接模块拆分（第十一切片）
+
+- Windows/macOS 剪贴板文件 Offer 发布、清理、去重与快照逻辑移至 `clipboard_offer.inc`；远程 Paste Request、失败通知、完成回调与粘贴快捷键接续移至 `clipboard_paste.inc`。系统剪贴板 API、图片转换/预算与平台 UI 线程仍留在平台实现中。
+- Windows `net_server.c` 的认证 HELLO/HELLO_ACK、会话替换、PING/PONG 与控制帧投递移至 `net_server_protocol.inc`。
+- macOS `net_client.c` 的握手、角色相关控制消息、键鼠注入、剪贴板/显示消息分发移至 `net_client_protocol.inc`；socket、重连与发送队列仍由 transport 层持有。
+- 回归脚本改为从新模块读取真实生产函数，保留粘贴版本校验、远程文件 Offer、角色消息分发和控制连接行为测试，并增加模块边界断言。
+- 第十一切片与前述发送端拆分一起等待双平台 CI 验证；不改变控制协议、剪贴板格式或外部 API。

@@ -47,7 +47,23 @@ int main(void) {
     assert(state.crc == hop_xfer_file_crc_step(first_crc, 4, 0xabcdef01));
     assert(hop_xfer_rx_file_state_check_chunk(&state, 9, 1) == HOP_RX_FILE_CHUNK_INVALID);
 
+    hop_xfer_rx_file_end_result end_result =
+        hop_xfer_rx_file_state_evaluate_end(&state, HOP_FILE_OK, 0, state.crc);
+    assert(end_result.ack_status == HOP_FILE_ACK_OK);
+    assert(end_result.reason == HOP_RX_FILE_END_SUCCESS);
+    end_result = hop_xfer_rx_file_state_evaluate_end(&state, HOP_FILE_IO_ERROR, 0, state.crc);
+    assert(end_result.ack_status == HOP_FILE_ACK_DISK);
+    assert(end_result.reason == HOP_RX_FILE_END_PEER_REJECTED);
+    end_result = hop_xfer_rx_file_state_evaluate_end(&state, HOP_FILE_OK, 1, state.crc);
+    assert(end_result.reason == HOP_RX_FILE_END_WRITER_ERROR);
+    end_result = hop_xfer_rx_file_state_evaluate_end(&state, HOP_FILE_OK, 0, state.crc + 1);
+    assert(end_result.reason == HOP_RX_FILE_END_CRC_MISMATCH);
+    hop_xfer_rx_file_state_set_size(&state, 10);
+    end_result = hop_xfer_rx_file_state_evaluate_end(&state, HOP_FILE_OK, 0, state.crc);
+    assert(end_result.reason == HOP_RX_FILE_END_INCOMPLETE);
+    hop_xfer_rx_file_state_set_size(&state, 9);
     assert(hop_xfer_rx_file_state_ack(&state, HOP_FILE_OK, 0, state.crc) == HOP_FILE_ACK_OK);
+        assert(hop_xfer_rx_file_state_ack(&state, HOP_FILE_OK, 0, state.crc) == HOP_FILE_ACK_OK);
     assert(hop_xfer_rx_file_state_ack(&state, HOP_FILE_IO_ERROR, 0, state.crc) == HOP_FILE_ACK_DISK);
     assert(hop_xfer_rx_file_state_ack(&state, HOP_FILE_OK, 1, state.crc) == HOP_FILE_ACK_DISK);
     assert(hop_xfer_rx_file_state_ack(&state, HOP_FILE_OK, 0, state.crc + 1) == HOP_FILE_ACK_CRC);

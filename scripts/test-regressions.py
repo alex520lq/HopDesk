@@ -757,7 +757,6 @@ int main(void){
             'RX_STATE':state_contract,
             'WIRE_SEND':extract(sender,'send_abort_msg' if platform=='win' else 'send_abort'),
             'STATUS_FUNCTIONS':'\n'.join(extract(sender,n) for n in ['status_for','status_begin','status_end']),
-            'CLOSE_FILE':extract(receiver,'rx_close_file'),
             'CLEAR_STATE':extract(receiver,'rx_clear_state'),
             'TERMINATE':'\n'.join(extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_abort_close_file','rx_abort_discard_staging','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end'])+'\n'+extract(receiver,'rx_terminate'),
             'BEGIN_BATCH':extract(receiver,'rx_begin_batch'),

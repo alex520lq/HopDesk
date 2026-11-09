@@ -76,7 +76,7 @@ static void rx_dispatch_file_begin(void *context, const uint8_t *p, uint32_t len
             rx->cur_path = hop_xfer_rx_fs_path_for(rx->dir, rel);
             char *path = rx->cur_path;
             if (!rx->cur_path) { hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_DISK); return; }
-            if (rx->services.remove_top_path) rx->services.remove_top_path(rx->services.context, rx->cur_path);
+
             hop_xfer_rx_entry_reserve_result reservation =
                 hop_xfer_rx_entry_reservations_reserve(&rx->entry_reservations, id, size,
                     rx_reserve_entry_budget, &rx->task);
@@ -85,6 +85,7 @@ static void rx_dispatch_file_begin(void *context, const uint8_t *p, uint32_t len
                 rx_handler_terminate(rx, batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
+            if (rx->services.remove_top_path) rx->services.remove_top_path(rx->services.context, rx->cur_path);
             if (rx->services.status_add_received_file) rx->services.status_add_received_file(rx->services.context,batch,id,rel,size,rx->file_state.is_directory);
 
             if (rx->file_state.is_directory) {

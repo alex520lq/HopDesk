@@ -7,6 +7,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 
 typedef struct {
@@ -17,6 +18,7 @@ typedef struct {
     atomic_uint open_errors;
     atomic_uint write_errors;
     int reject_reservation;
+    atomic_int cancel_writes;
 } test_context;
 
 static int reserve_rx(void *opaque, void *owner, uint32_t bytes) {
@@ -25,6 +27,10 @@ static int reserve_rx(void *opaque, void *owner, uint32_t bytes) {
     atomic_fetch_add(&ctx->held_bytes, bytes);
     atomic_fetch_add(&ctx->reserved_calls, 1);
     return 1;
+}
+static int task_cancelled(void *opaque, void *owner) {
+    test_context *ctx = (test_context *)opaque;
+    return owner && atomic_load(&ctx->cancel_writes);
 }
 static void release_rx(void *opaque, void *owner, uint32_t bytes) {
     test_context *ctx = (test_context *)opaque;
@@ -87,8 +93,9 @@ int main(void) {
     atomic_init(&ctx.write_time_calls, 0);
     atomic_init(&ctx.open_errors, 0);
     atomic_init(&ctx.write_errors, 0);
+    atomic_init(&ctx.cancel_writes, 0);
     const hop_writer_queue_callbacks callbacks = {
-        30000, reserve_rx, release_rx, watchdog_begin, watchdog_end,
+        30000, reserve_rx, release_rx, task_cancelled, watchdog_begin, watchdog_end,
         now_ns, write_time, open_error, write_error
     };
     int task_token = 1;
@@ -125,6 +132,23 @@ int main(void) {
         atomic_load(&ctx.released_calls) != 2 ||
         atomic_load(&ctx.write_time_calls) != 2 ||
         hop_writer_queue_error(queue)) goto fail;
+    /* A cancelled Task may have a command accepted just before the worker runs;
+     * the worker must skip the disk write and still release its exact budget. */
+    char cancelled_path[] = "/tmp/hopdesk-writer-cancel-XXXXXX";
+    int cancelled_fd = mkstemp(cancelled_path);
+    if (cancelled_fd < 0) goto fail;
+    close(cancelled_fd);
+    unlink(cancelled_path);
+    if (!hop_writer_queue_enqueue_open(queue, cancelled_path)) goto fail;
+    atomic_store(&ctx.cancel_writes, 1);
+    if (!hop_writer_queue_enqueue_write(queue, &task_token, 0, first, sizeof(first))) goto fail;
+    hop_writer_queue_drain(queue);
+    if (!hop_writer_queue_enqueue_close(queue)) goto fail;
+    hop_writer_queue_drain(queue);
+    struct stat cancelled_stat;
+    if (stat(cancelled_path, &cancelled_stat) != 0 || cancelled_stat.st_size != 0) goto fail;
+    atomic_store(&ctx.cancel_writes, 0);
+    unlink(cancelled_path);
     if (!hop_writer_queue_stop(queue)) goto fail;
     hop_writer_queue_destroy(queue);
     unlink(path);

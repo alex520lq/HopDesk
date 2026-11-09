@@ -841,7 +841,7 @@ int main(void){
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
         receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_batch_lifecycle.inc','xfer_rx_protocol_handlers.c'))
         fixture=(ROOT/'tests/session_transport_fixture.c.in').read_text(encoding='utf-8')
-        functions='\n'.join([extract(sender,'job_bind_session'),extract(sender,'send_small'),extract(sender,'send_chunk'),extract(receiver,'rx_bind_session'),extract(receiver,'rx_expire_stale_session'),extract(receiver,'on_data_frame_checked'),extract(receiver,'on_data_frame')])
+        functions='\n'.join([extract(sender,'job_bind_session'),extract(sender,'send_small'),extract(sender,'send_chunk'),extract(receiver,'hop_xfer_rx_bind_session'),extract(receiver,'rx_bind_session'),extract(receiver,'rx_expire_stale_session'),extract(receiver,'on_data_frame_checked'),extract(receiver,'on_data_frame')])
         fixture=fixture.replace('@FUNCTIONS@',functions)
         run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_state.c'],threads=True)
 

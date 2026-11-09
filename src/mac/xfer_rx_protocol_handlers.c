@@ -45,7 +45,7 @@ hop_xfer_file_begin_msg msg;
 
             rx_handler_begin_batch(rx, batch);
             if (!rx->batch_state.active || rx->batch_state.batch != batch) return;
-            if (!hop_xfer_task_set_kind(&rx->task,HOP_TASK_KIND_FILES)) {
+            if (!hop_xfer_task_set_kind(&rx->task,HOP_TASK_KIND_FILES) || hop_xfer_task_cancel_requested(rx->task.id)) {
                 rx_handler_terminate(rx, batch, HOP_ABORT_CANCEL, 1);
                 return;
             }

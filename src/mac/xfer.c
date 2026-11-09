@@ -675,7 +675,7 @@ void xfer_shutdown(void) {
     pthread_join(s_x.th_conn, NULL);
     pthread_join(s_x.th_send, NULL);
 
-    rx_reset();      /* 先把写盘队列排空并关掉文件，再停写线程 */
+    rx_reset(&s_rx);      /* 先把写盘队列排空并关掉文件，再停写线程 */
     wq_stop();
     pthread_mutex_destroy(&s_ack.lock);
     pthread_cond_destroy(&s_ack.cond);

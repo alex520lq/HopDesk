@@ -31,8 +31,12 @@ static int rx_handler_finish_batch(xfer_rx_context *rx, uint32_t batch, uint32_t
 void hop_xfer_rx_handle_image_begin(void *context, const uint8_t *p, uint32_t len) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx) return;
-hop_xfer_image_begin_msg msg;
-            if (!hop_xfer_decode_image_begin(p, len, &msg) || hop_xfer_task_cancel_requested(rx->task.id)) {
+    if (rx->batch_state.active && hop_xfer_task_cancel_requested(rx->task.id)) {
+        rx_handler_terminate(rx, rx->batch_state.batch, HOP_ABORT_CANCEL, 1);
+        return;
+    }
+    hop_xfer_image_begin_msg msg;
+            if (!hop_xfer_decode_image_begin(p, len, &msg) {
                 hop_log(HOP_LOG_WARN, "xfer: malformed IMAGE_BEGIN rejected");
                 if (rx->batch_state.active) rx_handler_terminate(rx, rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
                 return;
@@ -85,6 +89,10 @@ void hop_xfer_rx_handle_file_chunk(void *context, const uint8_t *p, uint32_t len
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx) return;
 if (!rx->batch_state.active) return; /* late data after termination */
+            if (hop_xfer_task_cancel_requested(rx->task.id)) {
+                rx_handler_terminate(rx, rx->batch_state.batch, HOP_ABORT_CANCEL, 1);
+                return;
+            }
             uint64_t receive_started_ns=rx_now_ns(rx);
             hop_xfer_file_chunk_msg chunk;
             if (!hop_xfer_decode_file_chunk(p, len,

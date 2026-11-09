@@ -1,23 +1,60 @@
+static void rx_abort_send(void *context, uint32_t batch, uint8_t reason) {
+    (void)context;
+    send_abort_msg(s_x.client,batch,reason,HOP_ABORT_TO_SENDER);
+}
+
+static void rx_abort_cancel_clipboard(void *context, uint32_t batch) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (rx && rx->services.cancel_clipboard)
+        rx->services.cancel_clipboard(rx->services.context, batch);
+}
+
+static void rx_abort_close_file(void *context) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (rx && rx->services.close_file)
+        rx->services.close_file(rx->services.context);
+}
+
+static void rx_abort_discard_staging(void *context) {
+    (void)context;
+    rx_discard_dir();
+}
+
+static void rx_abort_mark_dead(void *context, uint32_t batch, uint8_t reason) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (rx && rx->lifecycle)
+        hop_xfer_rx_lifecycle_mark_dead(rx->lifecycle, batch, reason);
+}
+
+static void rx_abort_finish_task(void *context, int cancelled) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (rx) hop_xfer_task_finish(&rx->task,
+        cancelled ? HOP_XFER_TASK_CANCELLED : HOP_XFER_TASK_FAILED);
+}
+
+static void rx_abort_clear_state(void *context) {
+    (void)context;
+    rx_clear_state();
+}
+
+static void rx_abort_status_end(void *context, uint32_t batch, int cancelled) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (rx && rx->services.status_end)
+        rx->services.status_end(rx->services.context, batch,
+            cancelled ? HOP_XFER_CANCELLED : HOP_XFER_FAILED,
+            cancelled ? "Receive cancelled" : "Receive aborted");
+}
+
 static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
     hop_xfer_rx_batch_abort_action action = hop_xfer_rx_batch_abort_decide(
         batch, s_rx.batch_state.active, s_rx.batch_state.batch, notify_peer);
-    if (action == HOP_RX_BATCH_ABORT_IGNORE) return;
-    if (action == HOP_RX_BATCH_ABORT_REPLY_ONLY) {
-        send_abort_msg(s_x.client,batch,reason,HOP_ABORT_TO_SENDER);
-        return;
-    }
-    if (batch & HOP_XFER_PASTE_BATCH_FLAG)
-        if (s_rx.services.cancel_clipboard) s_rx.services.cancel_clipboard(s_rx.services.context, batch);
-    if (notify_peer) send_abort_msg(s_x.client,batch,reason,HOP_ABORT_TO_SENDER);
-    if (s_rx.services.close_file) s_rx.services.close_file(s_rx.services.context);
-    rx_discard_dir();
-    hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle, batch, reason);
-    hop_xfer_task_finish(&s_rx.task,reason==HOP_ABORT_CANCEL?
-                         HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
-    rx_clear_state();
-    if (s_rx.services.status_end) s_rx.services.status_end(s_rx.services.context,batch,
-               reason==HOP_ABORT_CANCEL?HOP_XFER_CANCELLED:HOP_XFER_FAILED,
-               reason==HOP_ABORT_CANCEL?"Receive cancelled":"Receive aborted");
+    const hop_xfer_rx_abort_ops ops = {
+        &s_rx, rx_abort_send, rx_abort_cancel_clipboard, rx_abort_close_file,
+        rx_abort_discard_staging, rx_abort_mark_dead, rx_abort_finish_task,
+        rx_abort_clear_state, rx_abort_status_end
+    };
+    (void)hop_xfer_rx_abort_execute(action, batch, reason, notify_peer,
+        (batch & HOP_XFER_PASTE_BATCH_FLAG) != 0, &ops);
 }
 
 static void rx_begin_batch(uint32_t batch) {

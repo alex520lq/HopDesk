@@ -878,6 +878,14 @@ int main(void){
 
         begin=extract(receiver,'rx_dispatch_file_begin')
         end=extract(receiver,'rx_dispatch_file_end')
+        # FILE_BEGIN must keep the candidate path local until the task entry
+        # reservation succeeds; only then may it replace live context state
+        # or trigger clipboard/status/writer/filesystem side effects.
+        admission=begin.index('hop_xfer_rx_entry_reservations_reserve(')
+        commit=begin.index('rx->cur_path = candidate_path')
+        assert admission < commit, 'FILE_BEGIN publishes candidate path before budget admission'
+        for side_effect in ['rx->services.reset_file_error(', 'rx->services.remove_top_path(', 'rx->services.status_add_received_file(']:
+            assert admission < begin.index(side_effect), 'FILE_BEGIN side effect precedes budget admission: '+side_effect
         file_ack_handler=extract(receiver,'hop_xfer_rx_dispatch_file_ack_message')
         done_ack_handler=extract(receiver,'hop_xfer_rx_dispatch_done_ack_message')
         services=(ROOT/'src/core/xfer_rx_services.h').read_text(encoding='utf-8')

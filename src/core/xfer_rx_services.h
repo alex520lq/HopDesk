@@ -15,6 +15,7 @@ typedef struct {
     void *context;
     void (*shutdown_data_channel)(void *context);
     void (*mark_sender_aborted)(void *context, uint32_t batch, uint8_t reason);
+    void (*send_abort)(void *context, uint32_t batch, uint8_t reason);
     void (*send_file_ack)(void *context, uint32_t batch, uint32_t id, int status);
     void (*send_done_ack)(void *context, uint32_t batch,
                           const uint8_t *payload, uint32_t length);

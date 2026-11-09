@@ -932,7 +932,8 @@ int main(void){
         abort_policy=(ROOT/'src/core/xfer_rx_lifecycle.c').read_text(encoding='utf-8')
         assert 'HOP_RX_BATCH_ABORT_REPLY_ONLY' in abort_policy
         assert 'HOP_RX_BATCH_ABORT_TERMINATE_ACTIVE' in abort_policy
-        assert 'hop_xfer_rx_batch_finish_decide(' in lifecycle_impl
+        assert 'hop_xfer_rx_batch_begin_decide(' in core_message_handlers
+        assert 'hop_xfer_rx_batch_finish_decide(' in core_message_handlers
         for writer_call in ['reset_file_error','open_file','write_file_chunk','close_file','file_error']:
             assert 'rx->services.'+writer_call in protocol_handlers or 'rx->services.'+writer_call in core_message_handlers
         assert not any(token in protocol_handlers for token in ['wq_push(', 'wq_push_data(', 'wq_error_get(', 'rx_close_file(', 'hop_writer_queue_error_reset('])

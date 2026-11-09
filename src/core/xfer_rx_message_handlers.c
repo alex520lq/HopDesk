@@ -1,5 +1,6 @@
 #include "hop.h"
 #include "xfer_rx_context.h"
+#include "xfer_rx_batch_rules.h"
 #include "xfer_rx_message_handlers.h"
 #include "xfer_rx_ack_handler.h"
 #include "xfer_tracking.h"
@@ -30,6 +31,79 @@ static void rx_handler_begin_batch(xfer_rx_context *rx, uint32_t batch) {
 static int rx_handler_finish_batch(xfer_rx_context *rx, uint32_t batch, uint32_t ok, uint32_t total) {
     if (!rx || !rx->services.finish_batch) return -1;
     return rx->services.finish_batch(rx->services.context, batch, ok, total);
+}
+
+int hop_xfer_rx_finish_batch(void *context, uint32_t batch, uint32_t ok, uint32_t total) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (!rx) return -1;
+
+    int active = hop_xfer_rx_batch_is_active(
+        batch, rx->batch_state.active, rx->batch_state.batch);
+    if (!active) {
+        hop_log(HOP_LOG_WARN, "xfer: stale DONE for batch %u ignored", batch);
+        return -1;
+    }
+
+    /* Completion and cancellation compete through the Task Manager. No
+     * clipboard publication or writer teardown may happen before this claim. */
+    int claimed = hop_xfer_task_begin_completion(&rx->task);
+    hop_xfer_rx_batch_finish_action action = hop_xfer_rx_batch_finish_decide(
+        batch, rx->batch_state.active, rx->batch_state.batch, claimed,
+        ok, total, rx->file_state.is_image, 0);
+    if (action == HOP_RX_BATCH_FINISH_CANCELLED) {
+        if (rx->services.terminate_batch)
+            rx->services.terminate_batch(rx->services.context, batch, HOP_ABORT_CANCEL, 1);
+        return -1;
+    }
+    if (action == HOP_RX_BATCH_FINISH_STALE) return -1;
+
+    if (rx->services.close_file)
+        rx->services.close_file(rx->services.context);
+
+    int image_valid = rx->image_buffer.data &&
+        rx->image_state.received == rx->image_state.expected;
+    if (ok == total && rx->file_state.is_image && !image_valid)
+        hop_log(HOP_LOG_ERROR, "xfer: incomplete image rejected (%llu/%llu bytes)",
+            (unsigned long long)rx->image_state.received,
+            (unsigned long long)rx->image_state.expected);
+
+    if (rx->services.finish_clipboard)
+        rx->services.finish_clipboard(rx->services.context, batch,
+            rx->image_buffer.data, rx->image_state.width,
+            rx->image_state.height, rx->image_state.stride, image_valid,
+            (const void *const *)rx->tops, rx->ntop, ok == total);
+
+    if (rx->services.status_set_files_total)
+        rx->services.status_set_files_total(rx->services.context, total);
+    if (rx->file_state.is_image && ok == total && image_valid &&
+        rx->services.status_file_phase)
+        rx->services.status_file_phase(rx->services.context, batch, 0,
+            HOP_XFER_FILE_COMPLETED, 1);
+
+    action = hop_xfer_rx_batch_finish_decide(
+        batch, rx->batch_state.active, rx->batch_state.batch, 1,
+        ok, total, rx->file_state.is_image, image_valid);
+    int complete = action == HOP_RX_BATCH_FINISH_COMPLETE;
+    int image_failed = action == HOP_RX_BATCH_FINISH_IMAGE_FAILED;
+    hop_xfer_task_finish(&rx->task, complete ? HOP_XFER_TASK_COMPLETED :
+        (image_failed ? HOP_XFER_TASK_FAILED : HOP_XFER_TASK_PARTIAL));
+
+    if (rx->services.status_end)
+        rx->services.status_end(rx->services.context, batch,
+            complete ? HOP_XFER_COMPLETED :
+                (image_failed ? HOP_XFER_FAILED : HOP_XFER_PARTIAL),
+            complete ? "Receive completed" :
+                "Receive incomplete; clipboard not updated");
+
+    int result = complete ? HOP_DONE_ACK_COMPLETE :
+        (image_failed ? HOP_DONE_ACK_FAILED : HOP_DONE_ACK_PARTIAL);
+
+    /* The writer was drained/closed above. Clear the batch state directly:
+     * rx_reset would close it a second time and publish an "interrupted" status
+     * after the terminal result. */
+    if (rx->services.reset_batch_state)
+        rx->services.reset_batch_state(rx->services.context);
+    return result;
 }
 
 void hop_xfer_rx_handle_file_begin(void *context, const uint8_t *p, uint32_t len) {

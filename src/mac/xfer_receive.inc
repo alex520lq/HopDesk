@@ -114,6 +114,27 @@ static void rx_context_shutdown_data(void *context) {
     if (active >= 0) shutdown(active, SHUT_RDWR);
 }
 
+static void rx_context_clear_cancel_request(void *context) {
+    (void)context;
+    __sync_lock_test_and_set(&s_x.cancel_rx, 0);
+}
+
+static int rx_context_create_staging_directory(void *context, const char *session_hex, uint32_t batch) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (!rx || !session_hex) return 0;
+    int length = snprintf(rx->dir, sizeof(rx->dir), "%s/HopDesk/%s/%u",
+                          temp_root(), session_hex, batch);
+    if (length <= 0 || (size_t)length >= sizeof(rx->dir)) {
+        rx->dir[0] = '\0';
+        return 0;
+    }
+    if (hop_xfer_rx_fs_mkdir_p(rx->dir) != 0) {
+        rx->dir[0] = '\0';
+        return 0;
+    }
+    return 1;
+}
+
 static void rx_context_send_abort(void *context, uint32_t batch, uint8_t reason) {
     (void)context;
     send_abort(batch, reason);
@@ -325,7 +346,7 @@ static void rx_context_terminate_batch(void *context, uint32_t batch, uint8_t re
 static void rx_context_begin_batch(void *context, uint32_t batch) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx || rx != &s_rx) return;
-    rx_begin_batch(batch);
+    rx_begin_batch(rx, batch);
 }
 static int rx_context_finish_batch(void *context, uint32_t batch, uint32_t ok, uint32_t total) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
@@ -395,6 +416,8 @@ static void rx_context_configure(void) {
     s_rx.services.shutdown_data_channel = rx_context_shutdown_data;
     s_rx.services.mark_sender_aborted = rx_context_mark_sender_aborted;
     s_rx.services.send_abort = rx_context_send_abort;
+    s_rx.services.clear_cancel_request = rx_context_clear_cancel_request;
+    s_rx.services.create_staging_directory = rx_context_create_staging_directory;
     s_rx.services.send_file_ack = rx_context_send_file_ack;
     s_rx.services.send_done_ack = rx_context_send_done_ack;
     s_rx.services.deliver_ack = rx_context_deliver_ack;

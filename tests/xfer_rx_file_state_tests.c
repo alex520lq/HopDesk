@@ -71,6 +71,9 @@ int main(void) {
     hop_xfer_rx_file_state_set_size(&state, 10);
     assert(hop_xfer_rx_file_state_ack(&state, HOP_FILE_OK, 0, state.crc) == HOP_FILE_ACK_CRC);
     hop_xfer_rx_file_state_fail(&state, HOP_FILE_ACK_BADPATH);
+    end_result = hop_xfer_rx_file_state_evaluate_end(&state, HOP_FILE_IO_ERROR, 1, 0);
+    assert(end_result.ack_status == HOP_FILE_ACK_BADPATH);
+    assert(end_result.reason == HOP_RX_FILE_END_STORED_FAILURE);
     assert(hop_xfer_rx_file_state_ack(&state, HOP_FILE_IO_ERROR, 1, 0) == HOP_FILE_ACK_BADPATH);
     assert(hop_xfer_rx_file_state_check_chunk(&state, 9, 0) == HOP_RX_FILE_CHUNK_ALREADY_FAILED);
     assert(!hop_xfer_rx_file_state_record_chunk(&state, 9, 0, 0));

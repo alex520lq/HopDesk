@@ -45,7 +45,10 @@ hop_xfer_file_begin_msg msg;
 
             rx_handler_begin_batch(rx, batch);
             if (!rx->batch_state.active || rx->batch_state.batch != batch) return;
-            (void)hop_xfer_task_set_kind(&rx->task,HOP_TASK_KIND_FILES);
+            if (!hop_xfer_task_set_kind(&rx->task,HOP_TASK_KIND_FILES)) {
+                rx_handler_terminate(rx, batch, HOP_ABORT_CANCEL, 1);
+                return;
+            }
             if (id == 0 || id > HOP_XFER_FILE_LIMIT) {
                 rx_handler_terminate(rx, batch,HOP_ABORT_TOO_LARGE,1);
                 return;

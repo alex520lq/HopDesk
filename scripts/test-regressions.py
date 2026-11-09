@@ -386,9 +386,7 @@ int main(void){
         else:
             assert 'clipboard_complete_remote_paste(batch, (const char *const *)top_paths, top_count, 1)' in rx
             assert 'clipboard_complete_remote_paste(batch, NULL, 0, 0)' in rx
-            shared_rx_handlers=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
-    assert 'if (!hop_xfer_task_set_kind(&rx->task,HOP_TASK_KIND_IMAGE) || hop_xfer_task_cancel_requested(rx->task.id))' in shared_rx_handlers
-    clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
+            clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
             assert '[pb changeCount] != expected_count' in clip
             apply_objects=extract(clip,'apply_objects_retry')
             assert 'inject_paste_shortcut()' not in apply_objects
@@ -423,6 +421,8 @@ int main(void){
             assert 'static int wq_worker_take' not in rx
             assert 'hop_writer_queue_enqueue_write' in rx
         assert 'rx_buffer_slot' not in rx and 'wq_pool_acquire_locked' not in rx
+    shared_rx_handlers=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
+    assert 'if (!hop_xfer_task_set_kind(&rx->task,HOP_TASK_KIND_IMAGE) || hop_xfer_task_cancel_requested(rx->task.id))' in shared_rx_handlers
     clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
     assert 'send_image_data_async(imageType, cc, previous_change)' in clip
     assert 'budget_deferred = 1' in clip

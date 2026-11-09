@@ -751,7 +751,7 @@ int main(void){
             'CLOSE_FILE':extract(receiver,'rx_close_file'),
             'CLEAR_STATE':extract(receiver,'rx_clear_state'),
             'RESET_STATE':extract(receiver,'rx_reset'),
-            'TERMINATE':'\\n'.join(extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_abort_close_file','rx_abort_discard_staging','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end'])+'\\n'+extract(receiver,'rx_terminate'),
+            'TERMINATE':'\n'.join(extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_abort_close_file','rx_abort_discard_staging','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end'])+'\\n'+extract(receiver,'rx_terminate'),
             'BEGIN_BATCH':extract(receiver,'rx_begin_batch'),
             'FINISH_BATCH':extract(receiver,'rx_finish_batch'),
             'RX_SERVICE_CALLBACKS':'\n'.join([

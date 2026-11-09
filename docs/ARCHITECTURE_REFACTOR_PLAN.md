@@ -695,3 +695,4 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 独立 File State 测试覆盖所有结果原因，包括已记录 BADPATH 对其他错误的优先级；源码回归断言逐平台检查两个 Handler 均使用 Core 结果。
 - 不改变 FILE_END 的外部协议、ACK 数值、文件清理时机和图片批次无逐文件 ACK 规则。
 - CI：本切片提交已触发新的 Windows/macOS 全量流水线，结果待完成。
+- CI 复核记录：Run #974 中 Windows/macOS 应用编译通过，但 Core 回归脚本因新增断言缩进错误报 `IndentationError`；已修复断言缩进并确保在 Windows/macOS 两个平台循环内分别检查 FILE_END Core 调用。修复后的 Run #975 正在执行，不能将 #974 记为代码测试通过。

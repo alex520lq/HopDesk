@@ -530,7 +530,6 @@ static void clipboard_complete_remote_paste(uint32_t batch,const char *const *pa
 '''
         main=r'''
 int main(void){
-    (void)s_status_lock; (void)&wq_push; (void)&rate_now_ns; (void)&status_stage_time;
     s_rx.services.close_file=fixture_close_file;
     s_rx.services.finish_clipboard=fixture_finish_clipboard;
     s_rx.services.status_end=fixture_status_end;

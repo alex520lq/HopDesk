@@ -4,6 +4,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+int hop_xfer_rx_finish_batch(void *context, uint32_t batch, uint32_t ok, uint32_t total);
 void hop_xfer_rx_handle_file_begin(void *context, const uint8_t *payload, uint32_t length);
 void hop_xfer_rx_handle_file_end(void *context, const uint8_t *payload, uint32_t length);
 void hop_xfer_rx_handle_image_begin(void *context, const uint8_t *payload, uint32_t length);

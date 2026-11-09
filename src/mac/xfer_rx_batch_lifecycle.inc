@@ -130,50 +130,5 @@ static void rx_begin_batch(uint32_t batch) {
 }
 
 static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total) {
-    if (!hop_xfer_rx_batch_is_active(batch, s_rx.batch_state.active, s_rx.batch_state.batch)) {
-        hop_log(HOP_LOG_WARN, "xfer: stale DONE for batch %u ignored (active=%u)",
-                batch, s_rx.batch_state.active ? s_rx.batch_state.batch : 0);
-        return -1;
-    }
-    /* Completion and per-task cancellation serialize before clipboard effects. */
-    int completion_claimed = hop_xfer_task_begin_completion(&s_rx.task);
-    if (!completion_claimed) {
-        hop_xfer_rx_batch_finish_action cancelled = hop_xfer_rx_batch_finish_decide(
-            batch, s_rx.batch_state.active, s_rx.batch_state.batch, 0, ok, total, s_rx.file_state.is_image, 0);
-        if (cancelled == HOP_RX_BATCH_FINISH_CANCELLED)
-            rx_terminate(batch,HOP_ABORT_CANCEL,1);
-        return -1;
-    }
-
-    if (s_rx.services.close_file)
-        s_rx.services.close_file(s_rx.services.context);
-
-    int image_valid = s_rx.image_buffer.data &&
-                      s_rx.image_state.received == s_rx.image_state.expected;
-    if (ok == total && s_rx.file_state.is_image && !image_valid)
-        hop_log(HOP_LOG_ERROR, "xfer: incomplete image rejected (%llu/%llu bytes)",
-                (unsigned long long)s_rx.image_state.received,
-                (unsigned long long)s_rx.image_state.expected);
-    if (s_rx.services.finish_clipboard)
-        s_rx.services.finish_clipboard(s_rx.services.context, batch,
-            s_rx.image_buffer.data, s_rx.image_state.width,
-            s_rx.image_state.height, s_rx.image_state.stride, image_valid,
-            (const void *const *)s_rx.tops, s_rx.ntop, ok == total);
-
-    hop_log(HOP_LOG_INFO, "xfer: batch %u done (%d items, %u/%u ACKed)",
-            batch, s_rx.ntop, ok, total);
-    if (s_rx.services.status_set_files_total) s_rx.services.status_set_files_total(s_rx.services.context,total);
-    if(s_rx.file_state.is_image && ok==total && s_rx.image_state.received==s_rx.image_state.expected)
-        if (s_rx.services.status_file_phase) s_rx.services.status_file_phase(s_rx.services.context,batch,0,HOP_XFER_FILE_COMPLETED,1);
-    hop_xfer_rx_batch_finish_action finish_action = hop_xfer_rx_batch_finish_decide(
-        batch, s_rx.batch_state.active, s_rx.batch_state.batch, 1, ok, total, s_rx.file_state.is_image, image_valid);
-    int complete = finish_action == HOP_RX_BATCH_FINISH_COMPLETE;
-    hop_xfer_task_finish(&s_rx.task,complete?HOP_XFER_TASK_COMPLETED:(s_rx.file_state.is_image?HOP_XFER_TASK_FAILED:HOP_XFER_TASK_PARTIAL));
-    if (s_rx.services.status_end) s_rx.services.status_end(s_rx.services.context,batch,complete?HOP_XFER_COMPLETED:
-               (s_rx.file_state.is_image?HOP_XFER_FAILED:HOP_XFER_PARTIAL),
-               complete?"Receive completed":"Receive incomplete; clipboard not updated");
-    int result=finish_action==HOP_RX_BATCH_FINISH_COMPLETE?HOP_DONE_ACK_COMPLETE:
-               (finish_action==HOP_RX_BATCH_FINISH_IMAGE_FAILED?HOP_DONE_ACK_FAILED:HOP_DONE_ACK_PARTIAL);
-    rx_reset();
-    return result;
+    return hop_xfer_rx_finish_batch(&s_rx, batch, ok, total);
 }

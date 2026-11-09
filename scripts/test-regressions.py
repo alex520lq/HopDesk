@@ -840,7 +840,7 @@ int main(void){
         for writer_call in ['reset_file_error','open_file','write_file_chunk','close_file','file_error']:
             assert 'rx->services.'+writer_call in protocol_handlers or 'rx->services.'+writer_call in core_message_handlers
         assert not any(token in protocol_handlers for token in ['wq_push(', 'wq_push_data(', 'wq_error_get(', 'rx_close_file(', 'hop_writer_queue_error_reset('])
-        assert not re.search(r'(?<!services\\.)\\b(?:rx_add_top|rx_remove_top|status_add_received_file|status_image|status_stage_time|status_chunk_timed|status_file_phase|rate_now_ns)\\s*\\(', protocol_handlers)
+        assert not re.search(r'(?<!services\.)\b(?:rx_add_top|rx_remove_top|status_add_received_file|status_image|status_stage_time|status_chunk_timed|status_file_phase|rate_now_ns)\s*\(', protocol_handlers)
         for service in ['add_top_path','remove_top_path','finish_clipboard','cancel_clipboard','now_ns','status_begin','status_end','status_add_received_file','status_image','status_stage_time','status_chunk_received','status_file_phase','status_set_files_total','status_reset']:
             assert 'rx->services.'+service in protocol_handlers or service in receiver
         done_handler=extract(receiver,'hop_xfer_rx_handle_done')

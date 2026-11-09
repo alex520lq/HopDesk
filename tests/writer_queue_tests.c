@@ -12,6 +12,7 @@ typedef struct {
     volatile LONG open_errors;
     volatile LONG write_errors;
     int reject_reservation;
+    volatile LONG cancel_writes;
 } test_context;
 
 static int reserve_rx(void *opaque, void *owner, uint32_t bytes) {
@@ -21,6 +22,11 @@ static int reserve_rx(void *opaque, void *owner, uint32_t bytes) {
     InterlockedIncrement(&ctx->reserved_calls);
     return 1;
 }
+static int task_cancelled(void *opaque, void *owner) {
+    test_context *ctx = (test_context *)opaque;
+    return owner && InterlockedCompareExchange(&ctx->cancel_writes, 0, 0) != 0;
+}
+
 static void release_rx(void *opaque, void *owner, uint32_t bytes) {
     test_context *ctx = (test_context *)opaque;
     if (owner) {
@@ -76,7 +82,7 @@ int main(void) {
     test_context ctx;
     memset(&ctx, 0, sizeof(ctx));
     const hop_writer_queue_callbacks callbacks = {
-        30000, reserve_rx, release_rx, watchdog_begin, watchdog_end,
+        30000, reserve_rx, release_rx, task_cancelled, watchdog_begin, watchdog_end,
         now_ns, write_time, open_error, write_error
     };
     int task_token = 1;
@@ -112,6 +118,25 @@ int main(void) {
         InterlockedCompareExchange(&ctx.released_calls, 0, 0) != 2 ||
         InterlockedCompareExchange(&ctx.write_time_calls, 0, 0) != 2 ||
         hop_writer_queue_error(queue)) goto fail;
+    /* A cancelled Task may have a command accepted just before the worker runs;
+     * the worker must skip the disk write and still release its exact budget. */
+    wchar_t cancelled_path[MAX_PATH];
+    if (!GetTempFileNameW(temp_dir, L"hdc", 0, cancelled_path)) goto fail;
+    DeleteFileW(cancelled_path);
+    if (!hop_writer_queue_enqueue_open(queue, cancelled_path)) goto fail;
+    InterlockedExchange(&ctx.cancel_writes, 1);
+    if (!hop_writer_queue_enqueue_write(queue, &task_token, 0, first, sizeof(first))) goto fail;
+    hop_writer_queue_drain(queue);
+    if (!hop_writer_queue_enqueue_close(queue)) goto fail;
+    hop_writer_queue_drain(queue);
+    HANDLE cancelled_file = CreateFileW(cancelled_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (cancelled_file == INVALID_HANDLE_VALUE) goto fail;
+    LARGE_INTEGER cancelled_size;
+    int cancelled_empty = GetFileSizeEx(cancelled_file, &cancelled_size) && cancelled_size.QuadPart == 0;
+    CloseHandle(cancelled_file);
+    if (!cancelled_empty) goto fail;
+    InterlockedExchange(&ctx.cancel_writes, 0);
+    DeleteFileW(cancelled_path);
     if (!hop_writer_queue_stop(queue)) goto fail;
     hop_writer_queue_destroy(queue);
     DeleteFileW(path);

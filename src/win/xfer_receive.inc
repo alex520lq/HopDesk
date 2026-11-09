@@ -152,38 +152,34 @@ static void rx_context_deliver_ack(void *context, uint32_t batch, uint32_t id, i
 
 /* 关掉当前文件（排空写队列后）。断线时也要调，但不能清批次状态 ——
  * 发送端会带着同一个 batch 号回来重发剩下的条目。 */
-static void rx_close_file(void) {
-    wq_drain();
-    rx_task close_t;
-    memset(&close_t, 0, sizeof(close_t));
-    close_t.kind = RX_CLOSE;
-    wq_push(&close_t);
-    wq_drain();
+static void rx_close_file(xfer_rx_context *rx) {
+    if (rx && rx->services.close_file)
+        rx->services.close_file(rx->services.context);
 }
 
-static void rx_clear_state(void) {
-    free(s_rx.cur_path);
-    s_rx.cur_path = NULL;
-    hop_xfer_rx_image_buffer_dispose(&s_rx.image_buffer);
-    hop_xfer_rx_image_state_reset(&s_rx.image_state);
-    for (int i = 0; i < s_rx.ntop; ++i) free(s_rx.tops[i]);
-    free(s_rx.tops);
-    s_rx.tops = NULL;
-    s_rx.ntop = 0;
-    hop_xfer_rx_batch_state_reset(&s_rx.batch_state);
-    hop_xfer_rx_file_state_reset(&s_rx.file_state);
-    hop_xfer_rx_file_state_set_kind(&s_rx.file_state, 0, 0);
+static void rx_clear_state(xfer_rx_context *rx) {
+    free(rx->cur_path);
+    rx->cur_path = NULL;
+    hop_xfer_rx_image_buffer_dispose(&rx->image_buffer);
+    hop_xfer_rx_image_state_reset(&rx->image_state);
+    for (int i = 0; i < rx->ntop; ++i) free(rx->tops[i]);
+    free(rx->tops);
+    rx->tops = NULL;
+    rx->ntop = 0;
+    hop_xfer_rx_batch_state_reset(&rx->batch_state);
+    hop_xfer_rx_file_state_reset(&rx->file_state);
+    hop_xfer_rx_file_state_set_kind(&rx->file_state, 0, 0);
     
-    hop_xfer_rx_entry_reservations_reset(&s_rx.entry_reservations);
-    hop_xfer_task_dispose(&s_rx.task);
-    s_rx.dir[0] = L'\0';
+    hop_xfer_rx_entry_reservations_reset(&rx->entry_reservations);
+    hop_xfer_task_dispose(&rx->task);
+    rx->dir[0] = L'\0';
 }
 
-static void rx_reset(void) {
-    if(s_rx.batch_state.active && s_rx.services.status_end) s_rx.services.status_end(s_rx.services.context,s_rx.batch_state.batch,HOP_XFER_FAILED,"Receive interrupted");
+static void rx_reset(xfer_rx_context *rx) {
+    if(rx->batch_state.active && rx->services.status_end) rx->services.status_end(rx->services.context,rx->batch_state.batch,HOP_XFER_FAILED,"Receive interrupted");
     /* 先把队列排空并关掉文件，再清状态 —— 否则写线程可能还在用旧路径 */
-    rx_close_file();
-    rx_clear_state();
+    rx_close_file(rx);
+    rx_clear_state(rx);
 }
 
 /* Receiver-owned lifecycle boundary. Only a data reconnect in the SAME control
@@ -388,8 +384,7 @@ static void rx_context_status_reset(void *context) {
 }
 
 static void rx_context_reset_batch_state(void *context) {
-    (void)context;
-    rx_clear_state();
+    rx_clear_state((xfer_rx_context *)context);
 }
 
 static void rx_context_configure(void) {
@@ -430,27 +425,27 @@ static void rx_context_configure(void) {
     s_rx.services.status_set_files_total = rx_context_status_set_files_total;
     s_rx.services.status_reset = rx_context_status_reset;
 }
-static void rx_discard_dir(void);
+static void rx_discard_dir(xfer_rx_context *rx);
 static void rx_bind_session(const hop_session_id *session) {
     if (!hop_session_id_equal(hop_xfer_rx_lifecycle_session(&s_rx_lifecycle), session)) {
         hop_xfer_rx_done_receipt_clear(&s_done_receipt);
         /* A new control session cannot resume the old batch. Its staging files
          * were never published; close the writer before removing them. Completed
          * or deliberately retained partial batches are not active here. */
-        if (s_rx.batch_state.active && !hop_xfer_task_begin_completion(&s_rx.task) &&
-            hop_xfer_task_cancel_requested(s_rx.task.id))
+        if (rx->batch_state.active && !hop_xfer_task_begin_completion(&rx->task) &&
+            hop_xfer_task_cancel_requested(rx->task.id))
             /* The current socket may already belong to the new session. Never
              * send an old-session ABORT through it, even if batch IDs collide. */
-            rx_terminate(s_rx.batch_state.batch,HOP_ABORT_CANCEL,0);
-        if (s_rx.batch_state.active) {
-            rx_close_file();
-            rx_discard_dir();
-            if (s_rx.batch_state.batch & HOP_XFER_PASTE_BATCH_FLAG)
-                if (s_rx.services.cancel_clipboard) s_rx.services.cancel_clipboard(s_rx.services.context, s_rx.batch_state.batch);
+            rx_terminate(rx->batch_state.batch,HOP_ABORT_CANCEL,0);
+        if (rx->batch_state.active) {
+            rx_close_file(&s_rx);
+            rx_discard_dir(&s_rx);
+            if (rx->batch_state.batch & HOP_XFER_PASTE_BATCH_FLAG)
+                if (rx->services.cancel_clipboard) rx->services.cancel_clipboard(rx->services.context, rx->batch_state.batch);
         }
-        rx_reset();
-        if (s_rx.services.status_reset) s_rx.services.status_reset(s_rx.services.context);
-    } else rx_close_file();
+        rx_reset(&s_rx);
+        if (rx->services.status_reset) rx->services.status_reset(rx->services.context);
+    } else rx_close_file(&s_rx);
     (void)hop_xfer_rx_lifecycle_bind_session(&s_rx_lifecycle, session);
 }
 

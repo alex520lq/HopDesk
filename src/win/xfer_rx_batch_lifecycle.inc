@@ -1,9 +1,14 @@
 static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
-    if (!batch) return;
+    hop_xfer_rx_batch_abort_action action = hop_xfer_rx_batch_abort_decide(
+        batch, s_rx.batch_state.active, s_rx.batch_state.batch, notify_peer);
+    if (action == HOP_RX_BATCH_ABORT_IGNORE) return;
+    if (action == HOP_RX_BATCH_ABORT_REPLY_ONLY) {
+        send_abort_msg(s_x.client,batch,reason,HOP_ABORT_TO_SENDER);
+        return;
+    }
     if (batch & HOP_XFER_PASTE_BATCH_FLAG)
         if (s_rx.services.cancel_clipboard) s_rx.services.cancel_clipboard(s_rx.services.context, batch);
-    if (notify_peer) { send_abort_msg(s_x.client,batch,reason,HOP_ABORT_TO_SENDER); }
-    if (!hop_xfer_rx_batch_is_active(batch, s_rx.batch_state.active, s_rx.batch_state.batch)) return;
+    if (notify_peer) send_abort_msg(s_x.client,batch,reason,HOP_ABORT_TO_SENDER);
     if (s_rx.services.close_file) s_rx.services.close_file(s_rx.services.context);
     rx_discard_dir();
     hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle, batch, reason);

@@ -153,11 +153,12 @@ static void rx_context_deliver_ack(void *context, uint32_t batch, uint32_t id, i
 /* 关掉当前文件（排空写队列后）。断线时也要调，但不能清批次状态 ——
  * 发送端会带着同一个 batch 号回来重发剩下的条目。 */
 static void rx_close_file(void) {
-    hop_writer_queue *writer = (hop_writer_queue *)s_rx.writer;
-    if (!writer) return;
-    hop_writer_queue_drain(writer);
-    (void)hop_writer_queue_enqueue_close(writer);
-    hop_writer_queue_drain(writer);
+    wq_drain();
+    rx_task close_t;
+    memset(&close_t, 0, sizeof(close_t));
+    close_t.kind = RX_CLOSE;
+    wq_push(&close_t);
+    wq_drain();
 }
 
 static void rx_clear_state(void) {
@@ -212,8 +213,11 @@ static int rx_context_write_file_chunk(void *context, hop_xfer_task *task,
 }
 static void rx_context_close_file(void *context) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (!rx) return;
-    rx_close_file();
+    if (!rx || !rx->writer) return;
+    hop_writer_queue *writer = (hop_writer_queue *)rx->writer;
+    hop_writer_queue_drain(writer);
+    (void)hop_writer_queue_enqueue_close(writer);
+    hop_writer_queue_drain(writer);
 }
 static int rx_context_file_error(void *context) {
     xfer_rx_context *rx = (xfer_rx_context *)context;

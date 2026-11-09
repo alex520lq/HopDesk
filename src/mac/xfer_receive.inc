@@ -41,8 +41,9 @@ static void wq_write_time(void *context, void *owner, uint64_t elapsed_ns) {
     (void)context;
     hop_xfer_task_snapshot snapshot;
     if (owner && hop_xfer_task_get_snapshot(((hop_xfer_task *)owner)->id, &snapshot))
-        status_stage_time(HOP_XFER_DIR_RECEIVE, snapshot.transfer_id,
-                          HOP_XFER_TIME_WRITE, elapsed_ns);
+        if (s_rx.services.status_stage_time)
+            s_rx.services.status_stage_time(s_rx.services.context, snapshot.transfer_id,
+                                            HOP_XFER_TIME_WRITE, elapsed_ns);
 }
 static void wq_open_error(void *context, const char *path, int error) {
     (void)context;

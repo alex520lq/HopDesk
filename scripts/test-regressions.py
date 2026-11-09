@@ -496,6 +496,7 @@ int main(void){
 #include "xfer_budget.h"
 #include "xfer_task.h"
 #include "xfer_rx_services.h"
+#include "xfer_rx_context.h"
 #include <assert.h>
 #include <wchar.h>
 #include <string.h>
@@ -512,7 +513,7 @@ typedef struct {uint32_t batch;int is_image,ok,n;} xf_job;
 typedef xf_job xfer_job;
 static int applied;static uint8_t wire[20];
 static hop_xfer_tracking s_receive_status;
-static struct {hop_xfer_rx_batch_state batch_state;int ntop;char *dir;hop_xfer_rx_image_buffer image_buffer;hop_xfer_rx_image_state image_state;hop_xfer_rx_file_state file_state;void **tops;hop_xfer_task task;hop_xfer_rx_services services;} s_rx;
+static xfer_rx_context s_rx;
 static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t batch){(void)batch;(void)fd;(void)type;assert(n==20);memcpy(wire,p,n);return 1;}
 static void wq_drain(void){}
 static void rx_reset(void){hop_xfer_rx_batch_state_reset(&s_rx.batch_state);hop_xfer_task_dispose(&s_rx.task);}

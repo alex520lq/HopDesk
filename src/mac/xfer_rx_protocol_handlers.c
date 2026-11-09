@@ -10,8 +10,6 @@
 #include "xfer_rx_fs.h"
 #include "../core/xfer_rx_context.h"
 #include "../core/xfer_rx_message_handlers.h"
-#include "../core/xfer_rx_ack_handler.h"
-#include "../core/xfer_rx_protocol_adapter.h"
 #include "../core/xfer_rx_platform_dispatch.h"
 
 static int rx_reserve_entry_budget(void *context, uint64_t bytes) {

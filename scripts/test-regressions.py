@@ -397,6 +397,7 @@ int main(void){
         assert 'if (!hop_xfer_task_set_kind(&rx->task,HOP_TASK_KIND_FILES) || hop_xfer_task_cancel_requested(rx->task.id))' in platform_handlers
         assert 'if (!hop_xfer_decode_file_begin(p, len, &msg))' in platform_handlers
         assert 'hop_xfer_rx_file_state_prepare_entry(&rx->file_state, id, size,' in platform_handlers
+        begin = extract(platform_handlers,'rx_dispatch_file_begin')
         begin_reserve = begin.index('hop_xfer_rx_entry_reservations_reserve(')
         begin_remove_clipboard = begin.index('rx->services.remove_top_path')
         begin_fs_side_effect = min(i for i in [begin.find('hop_xfer_rx_fs_ensure_dirs('), begin.find('hop_xfer_rx_fs_mkdir_p('), begin.find('rx->services.open_file(')] if i >= 0)

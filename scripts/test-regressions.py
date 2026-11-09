@@ -756,6 +756,7 @@ int main(void){
             'BEGIN_BATCH':extract(receiver,'rx_begin_batch'),
             'FINISH_BATCH':extract(receiver,'rx_finish_batch'),
             'RX_SERVICE_CALLBACKS':'\n'.join([
+                'static void fixture_send_abort(void *context,uint32_t batch,uint8_t reason){(void)context;\n#ifdef FIXTURE_WINDOWS\nsend_abort_msg(s_x.client,batch,reason,HOP_ABORT_TO_SENDER);\n#else\nsend_abort(batch,reason);\n#endif\n}',
                 'static void fixture_terminate_batch(void *context,uint32_t batch,uint8_t reason,int notify_peer){(void)context;rx_terminate(batch,reason,notify_peer);}',
                 'static void fixture_begin_batch(void *context,uint32_t batch){(void)context;rx_begin_batch(batch);}',
                 'static int fixture_finish_batch(void *context,uint32_t batch,uint32_t ok,uint32_t total){(void)context;return rx_finish_batch(batch,ok,total);}',

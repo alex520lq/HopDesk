@@ -68,13 +68,10 @@ static int wq_push_data(hop_xfer_task *owner,uint64_t off,const uint8_t *data,ui
 }
 @RX_STATE@
 static void fixture_shutdown_data(void *context){(void)context;}
-static void fixture_terminate_batch(void *context,uint32_t batch,uint8_t reason,int notify_peer);
 static void fixture_send_abort(void *context,uint32_t batch,uint8_t reason);
 static void fixture_clear_cancel_request(void *context);
 static int fixture_create_staging_directory(void *context,const char *session_hex,uint32_t batch);
-static void fixture_begin_batch(void *context,uint32_t batch);
-static int fixture_finish_batch(void *context,uint32_t batch,uint32_t ok,uint32_t total);
-static void fixture_reset_batch_state(void *context);
+static void fixture_discard_staging_directory(void *context);
 static void fixture_reset_file_error(void *context);
 static int fixture_open_file(void *context,const void *native_path);
 static int fixture_write_file_chunk(void *context,hop_xfer_task *task,uint64_t offset,const uint8_t *data,uint32_t length);
@@ -122,13 +119,10 @@ static void fixture_configure_rx_context(void){
     s_rx.services.send_abort=fixture_send_abort;
     s_rx.services.clear_cancel_request=fixture_clear_cancel_request;
     s_rx.services.create_staging_directory=fixture_create_staging_directory;
+    s_rx.services.discard_staging_directory=fixture_discard_staging_directory;
     s_rx.services.send_file_ack=fixture_send_file_ack;
     s_rx.services.send_done_ack=fixture_send_done_ack;
     s_rx.services.deliver_ack=fixture_deliver_ack;
-    s_rx.services.terminate_batch=fixture_terminate_batch;
-    s_rx.services.begin_batch=fixture_begin_batch;
-    s_rx.services.finish_batch=fixture_finish_batch;
-    s_rx.services.reset_batch_state=fixture_reset_batch_state;
     s_rx.services.reset_file_error=fixture_reset_file_error;
     s_rx.services.open_file=fixture_open_file;
     s_rx.services.write_file_chunk=fixture_write_file_chunk;
@@ -164,6 +158,7 @@ static void checked_free(void*p){if(p)assert(closed);free(p);}
 @CLEAR_STATE@
 #undef free
 static void rx_discard_dir(xfer_rx_context *rx){assert(closed);discarded++;if(rx)rx->dir[0]=0;}
+static void fixture_discard_staging_directory(void *context){rx_discard_dir((xfer_rx_context*)context);}
 static void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n,int success){
     (void)batch;(void)paths;(void)n;(void)success;
 }
@@ -338,7 +333,7 @@ int main(void){
     assert(writer_result.ack_status==HOP_FILE_ACK_DISK &&
            writer_result.reason==HOP_RX_FILE_END_WRITER_ERROR);
     hop_xfer_task_finish(&s_rx.task,HOP_XFER_TASK_FAILED);
-    rx_clear_state(&s_rx);
+    hop_xfer_rx_reset_batch_state(&s_rx);
     hop_xfer_budget_snapshot writer_budget;hop_xfer_budget_get_snapshot(&writer_budget);
     assert(writer_budget.jobs==0 && writer_budget.pending_bytes==0 && writer_budget.entries==0);
 

@@ -114,6 +114,48 @@ static void rx_context_shutdown_data(void *context) {
     if (active != INVALID_SOCKET) shutdown(active, SD_BOTH);
 }
 
+static void rx_context_clear_cancel_request(void *context) {
+    (void)context;
+    InterlockedExchange(&s_x.cancel_rx, 0);
+}
+
+static int rx_context_create_staging_directory(void *context, const char *session_hex, uint32_t batch) {
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (!rx || !session_hex) return 0;
+    wchar_t tmp[MAX_PATH];
+    DWORD n = GetTempPathW(MAX_PATH, tmp);
+    if (n == 0 || n >= MAX_PATH) return 0;
+
+    wchar_t sub[80], number[16];
+    wcscpy(sub, XFER_RX_ROOT);
+    wcscat(sub, L"\\");
+    for (int i = 0; i < 32; ++i) {
+        size_t at = wcslen(sub);
+        sub[at] = (wchar_t)session_hex[i];
+        sub[at + 1] = L'\0';
+    }
+    wcscat(sub, L"\\");
+    if (swprintf(number, 16, L"%u", batch) <= 0) return 0;
+    wcscat(sub, number);
+
+    size_t sub_length = wcslen(sub);
+    if ((size_t)n + sub_length + 1u > HOP_XFER_RX_CONTEXT_PATH_CAPACITY)
+        return 0;
+    wcscpy(rx->dir, tmp);
+    wcscat(rx->dir, sub);
+    if (!hop_xfer_rx_fs_ensure_dirs(rx->dir) ||
+        !hop_xfer_rx_fs_create_directory_if_missing(rx->dir)) {
+        rx->dir[0] = L'\0';
+        return 0;
+    }
+
+    wchar_t full[MAX_PATH];
+    DWORD full_length = GetLongPathNameW(rx->dir, full, MAX_PATH);
+    if (full_length > 0 && full_length < MAX_PATH)
+        wcscpy(rx->dir, full);
+    return 1;
+}
+
 static void rx_context_send_abort(void *context, uint32_t batch, uint8_t reason) {
     (void)context;
     send_abort_msg(s_x.client, batch, reason, HOP_ABORT_TO_SENDER);
@@ -330,7 +372,7 @@ static void rx_context_terminate_batch(void *context, uint32_t batch, uint8_t re
 static void rx_context_begin_batch(void *context, uint32_t batch) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx || rx != &s_rx) return;
-    rx_begin_batch(batch);
+    rx_begin_batch(rx, batch);
 }
 static int rx_context_finish_batch(void *context, uint32_t batch, uint32_t ok, uint32_t total) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
@@ -400,6 +442,8 @@ static void rx_context_configure(void) {
     s_rx.services.shutdown_data_channel = rx_context_shutdown_data;
     s_rx.services.mark_sender_aborted = rx_context_mark_sender_aborted;
     s_rx.services.send_abort = rx_context_send_abort;
+    s_rx.services.clear_cancel_request = rx_context_clear_cancel_request;
+    s_rx.services.create_staging_directory = rx_context_create_staging_directory;
     s_rx.services.send_file_ack = rx_context_send_file_ack;
     s_rx.services.send_done_ack = rx_context_send_done_ack;
     s_rx.services.deliver_ack = rx_context_deliver_ack;

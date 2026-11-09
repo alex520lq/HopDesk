@@ -1181,6 +1181,11 @@ static void test_xfer_task_cancel_isolation_and_completion(void) {
     CHECK(!hop_xfer_task_request_cancel(internal.id));
     CHECK(hop_xfer_task_request_cancel(send.id)); CHECK(hop_xfer_task_request_cancel(send.id));
     CHECK(hop_xfer_task_cancel_requested(send.id) && !hop_xfer_task_cancel_requested(receive.id));
+    /* Cancellation is also an admission barrier for every new resource class. */
+    CHECK(!hop_xfer_task_reserve_job(&send));
+    CHECK(!hop_xfer_task_reserve_entry(&send, 16));
+    CHECK(!hop_xfer_task_reserve_image(&send, 16));
+    CHECK(!hop_xfer_task_reserve_rx_buffer(&send, 16));
     CHECK(!hop_xfer_task_begin_completion(&send)); CHECK(hop_xfer_task_begin_completion(&receive));
     CHECK(!hop_xfer_task_request_cancel(receive.id));
     CHECK(hop_xfer_task_get_snapshot(receive.id,&snap) && snap.completing && !snap.cancel_requested);

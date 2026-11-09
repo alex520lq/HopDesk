@@ -145,11 +145,6 @@ static void rx_context_deliver_ack(void *context, uint32_t batch, uint32_t id, i
 
 
 
-static int rx_reserve_entry_budget(void *context, uint64_t bytes) {
-    return hop_xfer_task_reserve_entry((hop_xfer_task *)context, bytes);
-}
-
-
 /* 关掉当前文件（排空写队列后）。断线时也要调，但不能清批次状态 ——
  * 发送端会带着同一个 batch 号回来重发剩下的条目。 */
 static void rx_close_file(void) {

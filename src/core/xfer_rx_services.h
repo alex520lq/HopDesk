@@ -49,6 +49,7 @@ typedef struct {
     void (*status_file_phase)(void *context, uint32_t batch, int index,
                               int phase, uint32_t attempts);
     void (*status_set_files_total)(void *context, uint32_t total);
+    void (*status_reset)(void *context);
 } hop_xfer_rx_services;
 
 #ifdef __cplusplus

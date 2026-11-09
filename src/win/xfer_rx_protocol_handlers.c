@@ -75,8 +75,11 @@ static void rx_dispatch_file_begin(void *context, const uint8_t *p, uint32_t len
             memcpy(relz, rel, plen);
             relz[plen] = '\0';
             wchar_t *path = hop_xfer_rx_fs_path_for(rx->dir, relz);
-            free(relz);
-            if (!path) { hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_BADPATH); return; }
+            if (!path) {
+                free(relz);
+                hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_BADPATH);
+                return;
+            }
 
             rx->cur_path = path;
 
@@ -85,11 +88,13 @@ static void rx_dispatch_file_begin(void *context, const uint8_t *p, uint32_t len
                     rx_reserve_entry_budget, &rx->task);
             if (reservation != HOP_RX_ENTRY_RESERVE_NEW &&
                 reservation != HOP_RX_ENTRY_RESERVE_ALREADY_HELD) {
+                free(relz);
                 rx_handler_terminate(rx, batch,HOP_ABORT_TOO_LARGE,1);
                 return;
             }
             if (rx->services.remove_top_path) rx->services.remove_top_path(rx->services.context, rx->cur_path);
             if (rx->services.status_add_received_file) rx->services.status_add_received_file(rx->services.context,batch,id,relz,size,rx->file_state.is_directory);
+            free(relz);
 
             if (rx->file_state.is_directory) {
                 if (!hop_xfer_rx_fs_ensure_dirs(path) || !hop_xfer_rx_fs_create_directory_if_missing(path)) {

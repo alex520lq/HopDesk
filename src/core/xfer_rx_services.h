@@ -18,6 +18,7 @@ typedef struct {
     void (*send_abort)(void *context, uint32_t batch, uint8_t reason);
     void (*clear_cancel_request)(void *context);
     int (*create_staging_directory)(void *context, const char *session_hex, uint32_t batch);
+    void (*discard_staging_directory)(void *context);
     void (*send_file_ack)(void *context, uint32_t batch, uint32_t id, int status);
     void (*send_done_ack)(void *context, uint32_t batch,
                           const uint8_t *payload, uint32_t length);

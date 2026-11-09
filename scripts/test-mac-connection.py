@@ -31,7 +31,9 @@ def run(work, name, source, extra=()):
     subprocess.run(cmd, cwd=work, check=True)
     subprocess.run([str(exe)], cwd=work, check=True, timeout=25)
 
-control = (ROOT / 'src/mac/net_client.c').read_text(encoding='utf-8')
+control = ((ROOT / 'src/mac/net_client.c').read_text(encoding='utf-8') + '\\n' +
+           (ROOT / 'src/mac/net_client_protocol.inc').read_text(encoding='utf-8') + '\\n' +
+           (ROOT / 'src/mac/net_client_transport.inc').read_text(encoding='utf-8'))
 data = (ROOT / 'src/mac/xfer_receive.inc').read_text(encoding='utf-8')
 with tempfile.TemporaryDirectory(prefix='hopdesk-mac-tcp-') as directory:
     work = pathlib.Path(directory)

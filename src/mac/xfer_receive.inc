@@ -178,7 +178,7 @@ static void rx_clear_state(void) {
 }
 
 static void rx_reset(void) {
-    if(s_rx.batch_state.active)status_end(HOP_XFER_DIR_RECEIVE,s_rx.batch_state.batch,HOP_XFER_FAILED,"Receive interrupted");
+    if(s_rx.batch_state.active && s_rx.services.status_end) s_rx.services.status_end(s_rx.services.context,s_rx.batch_state.batch,HOP_XFER_FAILED,"Receive interrupted");
     /* 先把队列排空并关掉文件，再清状态 —— 否则写线程可能还在用旧路径 */
     rx_close_file();
     rx_clear_state();

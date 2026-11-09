@@ -171,7 +171,7 @@ static void checked_free(void*p){if(p)assert(closed);free(p);}
 @CLEAR_STATE@
 #undef free
 @RESET_STATE@
-static void rx_discard_dir(void){assert(closed);discarded++;s_rx.dir[0]=0;}
+static void rx_discard_dir(xfer_rx_context *rx){assert(closed);discarded++;if(rx)rx->dir[0]=0;}
 static void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n,int success){
     (void)batch;(void)paths;(void)n;(void)success;
 }
@@ -346,7 +346,7 @@ int main(void){
     assert(writer_result.ack_status==HOP_FILE_ACK_DISK &&
            writer_result.reason==HOP_RX_FILE_END_WRITER_ERROR);
     hop_xfer_task_finish(&s_rx.task,HOP_XFER_TASK_FAILED);
-    rx_clear_state();
+    rx_clear_state(&s_rx);
     hop_xfer_budget_snapshot writer_budget;hop_xfer_budget_get_snapshot(&writer_budget);
     assert(writer_budget.jobs==0 && writer_budget.pending_bytes==0 && writer_budget.entries==0);
 

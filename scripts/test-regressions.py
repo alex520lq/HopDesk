@@ -831,7 +831,13 @@ int main(void){
         fixture=fixture.replace('@FUNCTIONS@',functions)
         run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_state.c'],threads=True)
 
-    control=(ROOT/'src/mac/net_client.c').read_text(encoding='utf-8')
+    control=(ROOT/'src/mac/net_client.c').read_text(encoding='utf-8')+'\n'+(ROOT/'src/mac/net_client_protocol.inc').read_text(encoding='utf-8')
+    for platform,source_name,module_name in [('win','net_server.c','net_server_protocol.inc'),('mac','net_client.c','net_client_protocol.inc')]:
+        transport=(ROOT/f'src/{platform}/{source_name}').read_text(encoding='utf-8')
+        protocol=(ROOT/f'src/{platform}/{module_name}').read_text(encoding='utf-8')
+        assert '#include "'+module_name+'"' in transport
+        assert 'HOP_MSG_HELLO' in protocol and 'HOP_MSG_PING' in protocol
+
     dispatch=extract(control,'dispatch_message')
     dispatch=dispatch.replace('dispatch_async(dispatch_get_main_queue(),^{mac_capture_peer_geometry(pw,ph);});','mac_capture_peer_geometry(pw,ph);')
     dispatch=dispatch.replace('dispatch_async(dispatch_get_main_queue(),^{mac_capture_return();});','mac_capture_return();')

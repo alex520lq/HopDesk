@@ -597,7 +597,12 @@ int main(void){
     rx_finish_batch(&s_rx,11,1,1);assert(applied==1 && s_receive_status.status.phase==HOP_XFER_FAILED);
 
     /* Requested file paste must use the validated callback, not generic paths. */
-    const char *one_path="received.txt";void *tops[1]={(void *)one_path};
+#ifdef FIXTURE_WINDOWS
+    const wchar_t *one_path=L"received.txt";
+#else
+    const char *one_path="received.txt";
+#endif
+    hop_xfer_rx_path_char *tops[1]={(hop_xfer_rx_path_char *)one_path};
     uint32_t paste_batch=HOP_XFER_PASTE_BATCH_FLAG|12u;
     assert(hop_xfer_task_init(&s_rx.task,0,0,paste_batch));
     assert(hop_xfer_task_reserve_job(&s_rx.task));

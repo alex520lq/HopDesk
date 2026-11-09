@@ -676,3 +676,13 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - Core Handler 只接收 `xfer_rx_context` 与协议 payload，通过 Services 完成批次生命周期、写盘、路径、剪贴板和遥测；不读取 `s_rx`、`s_x`、`s_wq` 等平台全局变量。
 - 更新 abort/重连回归夹具，注入 Writer、Clipboard、Telemetry doubles，并验证 Core Handler 不依赖平台全局状态。
 - CI：等待最新提交的 Windows/macOS 全量构建、Core 测试、传输协议测试、TCP/双角色集成及打包。
+
+### 2026-11-09：FILE_BEGIN 公共准入规则下沉 Core（第七切片）
+
+- 新增 `hop_xfer_rx_file_state_prepare_entry`，将文件条目状态初始化、文件/目录类型、声明大小与相对路径安全校验收敛到 Core。
+- Windows/macOS FILE_BEGIN Adapter 共用同一入口；平台层仅负责原生路径分配/拼接、目录创建、预算预留、Writer 打开和平台状态副作用。
+- 非法路径仍保留当前条目 ID，并记录 `HOP_FILE_ACK_BADPATH`，确保后续 FILE_END 能按既有协议回 ACK；非法 ID 不会覆盖当前条目。
+- Windows 在分配临时 UTF-8 路径副本前先登记共享文件状态，确保内存分配失败时仍有正确的 FILE_END 错误回执上下文。
+- 扩展 `tests/xfer_rx_file_state_tests.c`，覆盖普通文件、目录、路径穿越拒绝、非法 ID 不修改现有状态；更新源码回归断言，确保两端不再各自调用路径安全校验或重复初始化 File State。
+- 本切片只统一 FILE_BEGIN 的元数据准入，不包含平台路径创建、预算预留和文件打开；这些副作用仍由平台 Adapter 负责。FILE_END 的完整 ACK/清理编排仍待下一切片继续收敛。
+- CI：提交后由 GitHub Actions Run #964 验证 Windows/macOS 全量构建与测试，结果待完成。

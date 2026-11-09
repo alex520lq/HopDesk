@@ -387,6 +387,11 @@ static void rx_context_status_reset(void *context) {
     ReleaseSRWLockExclusive(&s_status_lock);
 }
 
+static void rx_context_reset_batch_state(void *context) {
+    (void)context;
+    rx_clear_state();
+}
+
 static void rx_context_configure(void) {
     s_rx.lifecycle = &s_rx_lifecycle;
     s_rx.done_receipt = &s_done_receipt;
@@ -400,6 +405,7 @@ static void rx_context_configure(void) {
     s_rx.services.terminate_batch = rx_context_terminate_batch;
     s_rx.services.begin_batch = rx_context_begin_batch;
     s_rx.services.finish_batch = rx_context_finish_batch;
+    s_rx.services.reset_batch_state = rx_context_reset_batch_state;
     s_rx.services.build_path = rx_context_build_path;
     s_rx.services.prepare_file_path = rx_context_prepare_file_path;
     s_rx.services.is_top_level_path = rx_context_is_top_level_path;

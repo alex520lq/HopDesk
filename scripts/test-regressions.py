@@ -899,10 +899,14 @@ int main(void){
         receive_impl=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
         assert 's_rx.services.context = &s_rx;' in receive_impl
         assert 's_rx.writer = s_wq;' in receive_impl
+        assert 's_rx.services.build_path = rx_context_build_path;' in receive_impl
+        assert 's_rx.services.prepare_file_path = rx_context_prepare_file_path;' in receive_impl
+        assert 's_rx.services.is_top_level_path = rx_context_is_top_level_path;' in receive_impl
+        assert 's_rx.services.remove_file = rx_context_remove_file;' in receive_impl
         assert 'task != &rx->task' in receive_impl
         assert 'rx->writer' in receive_impl
         assert 'typedef struct xfer_rx_context' not in receiver
-        assert all(name in services for name in ['shutdown_data_channel','mark_sender_aborted','send_file_ack','send_done_ack','deliver_ack','terminate_batch','begin_batch','finish_batch','reset_file_error','open_file','write_file_chunk','close_file','file_error'])
+        assert all(name in services for name in ['shutdown_data_channel','mark_sender_aborted','send_file_ack','send_done_ack','deliver_ack','terminate_batch','begin_batch','finish_batch','reset_file_error','open_file','write_file_chunk','close_file','file_error','build_path','prepare_file_path','is_top_level_path','remove_file'])
         on_data_msg=extract(receiver,'on_data_msg')
         assert 'rx_context_configure();' in on_data_msg and '&hop_xfer_rx_platform_dispatch_handlers, &s_rx' in on_data_msg
         assert 'hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, rx)' in file_ack_handler

@@ -63,8 +63,6 @@ static void rx_dispatch_file_begin(void *context, const uint8_t *p, uint32_t len
              * 漏回一次，发送端就要白等 10 秒超时再重试。 */
             free(rx->cur_path);
             rx->cur_path     = NULL;
-            hop_xfer_rx_file_state_begin(&rx->file_state, id);
-            hop_xfer_rx_file_state_set_kind(&rx->file_state, 0, (flags & HOP_FILE_FLAG_DIR) != 0);
             if (rx->services.reset_file_error) rx->services.reset_file_error(rx->services.context);
 
             char *relz = (char *)malloc((size_t)plen + 1);
@@ -72,10 +70,10 @@ static void rx_dispatch_file_begin(void *context, const uint8_t *p, uint32_t len
             memcpy(relz, rel, plen);
             relz[plen] = '\0';
 
-            if (!hop_xfer_relpath_bytes_safe(rel, plen)) {
+            if (!hop_xfer_rx_file_state_prepare_entry(&rx->file_state, id, size,
+                    (flags & HOP_FILE_FLAG_DIR) != 0, rel, plen)) {
                 hop_log(HOP_LOG_WARN, "xfer: unsafe rel path rejected: %s", relz);
                 free(relz);
-                hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_BADPATH);
                 return;
             }
             if (rx->services.status_add_received_file) rx->services.status_add_received_file(rx->services.context,batch,id,relz,size,rx->file_state.is_directory);
@@ -85,7 +83,6 @@ static void rx_dispatch_file_begin(void *context, const uint8_t *p, uint32_t len
 
             rx->cur_path = path;
             if (rx->services.remove_top_path) rx->services.remove_top_path(rx->services.context, rx->cur_path);
-            hop_xfer_rx_file_state_set_size(&rx->file_state, size);
             hop_xfer_rx_entry_reserve_result reservation =
                 hop_xfer_rx_entry_reservations_reserve(&rx->entry_reservations, id, size,
                     rx_reserve_entry_budget, &rx->task);

@@ -61,14 +61,12 @@ static void rx_dispatch_file_begin(void *context, const uint8_t *p, uint32_t len
             /* 先登记当前条目，确保坏路径也能在 FILE_END 时回 ACK。 */
             free(rx->cur_path);
             rx->cur_path     = NULL;
-            hop_xfer_rx_file_state_begin(&rx->file_state, id);
-            hop_xfer_rx_file_state_set_kind(&rx->file_state, 0, (flags & HOP_FILE_FLAG_DIR) != 0);
             if (rx->services.reset_file_error) rx->services.reset_file_error(rx->services.context);
 
             char rel[HOP_PATH_LEN_MAX + 1];
-            if (!hop_xfer_relpath_bytes_safe(msg.relpath, plen)) {
+            if (!hop_xfer_rx_file_state_prepare_entry(&rx->file_state, id, size,
+                    (flags & HOP_FILE_FLAG_DIR) != 0, msg.relpath, plen)) {
                 hop_log(HOP_LOG_WARN, "xfer: unsafe relative path rejected");
-                hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_BADPATH);
                 return;
             }
             memcpy(rel, msg.relpath, plen);
@@ -77,7 +75,6 @@ static void rx_dispatch_file_begin(void *context, const uint8_t *p, uint32_t len
 
             rx->cur_path = hop_xfer_rx_fs_path_for(rx->dir, rel);
             char *path = rx->cur_path;
-            hop_xfer_rx_file_state_set_size(&rx->file_state, size);
             if (!rx->cur_path) { hop_xfer_rx_file_state_fail(&rx->file_state, HOP_FILE_ACK_DISK); return; }
             if (rx->services.remove_top_path) rx->services.remove_top_path(rx->services.context, rx->cur_path);
             hop_xfer_rx_entry_reserve_result reservation =

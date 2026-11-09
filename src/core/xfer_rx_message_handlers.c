@@ -134,8 +134,7 @@ void hop_xfer_rx_bind_session(void *context, const hop_session_id *session) {
                 rx->services.cancel_clipboard)
                 rx->services.cancel_clipboard(rx->services.context, rx->batch_state.batch);
         }
-        if (rx->services.reset_batch_state)
-            rx->services.reset_batch_state(rx->services.context);
+        hop_xfer_rx_reset_batch_state(rx);
     }
 
     if (rx->services.status_reset)

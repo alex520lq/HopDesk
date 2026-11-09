@@ -860,10 +860,12 @@ int main(void){
         context_header=(ROOT/'src/core/xfer_rx_context.h').read_text(encoding='utf-8')
         assert 'typedef struct xfer_rx_context' in context_header
         assert 'hop_xfer_rx_services services;' in context_header
-        assert 'void *writer;' not in context_header
+        assert 'void *writer;' in context_header
         receive_impl=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
         assert 's_rx.services.context = &s_rx;' in receive_impl
+        assert 's_rx.writer = s_wq;' in receive_impl
         assert 'task != &rx->task' in receive_impl
+        assert 'rx->writer' in receive_impl
         assert 'typedef struct xfer_rx_context' not in receiver
         assert all(name in services for name in ['shutdown_data_channel','mark_sender_aborted','send_file_ack','send_done_ack','deliver_ack','terminate_batch','begin_batch','finish_batch','reset_file_error','open_file','write_file_chunk','close_file','file_error'])
         on_data_msg=extract(receiver,'on_data_msg')

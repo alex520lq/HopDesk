@@ -425,6 +425,8 @@ int main(void){
             assert 'static int wq_worker_take' not in rx
             assert 'hop_writer_queue_enqueue_write' in rx
         assert 'rx_buffer_slot' not in rx and 'wq_pool_acquire_locked' not in rx
+        assert 'queue->callbacks.task_cancelled' in writer
+        assert 'if (!cancelled) run_command(queue, command);' in writer
     shared_rx_handlers=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
     assert 'if (rx->batch_state.active && hop_xfer_task_cancel_requested(rx->task.id))' in shared_rx_handlers
     assert 'if (!hop_xfer_task_set_kind(&rx->task,HOP_TASK_KIND_IMAGE) || hop_xfer_task_cancel_requested(rx->task.id))' in shared_rx_handlers

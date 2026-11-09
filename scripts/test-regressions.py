@@ -757,7 +757,7 @@ int main(void){
             'FINISH_BATCH':extract(receiver,'rx_finish_batch'),
             'RX_SERVICE_CALLBACKS':'\n'.join([
                 'static void fixture_send_abort(void *context,uint32_t batch,uint8_t reason){(void)context;\n#ifdef FIXTURE_WINDOWS\nsend_abort_msg(s_x.client,batch,reason,HOP_ABORT_TO_SENDER);\n#else\nsend_abort(batch,reason);\n#endif\n}',
-                'static void fixture_terminate_batch(void *context,uint32_t batch,uint8_t reason,int notify_peer){(void)context;rx_terminate(batch,reason,notify_peer);}',
+                'static void fixture_terminate_batch(void *context,uint32_t batch,uint8_t reason,int notify_peer){(void)context;rx_terminate(&s_rx,batch,reason,notify_peer);}',
                 'static void fixture_begin_batch(void *context,uint32_t batch){(void)context;rx_begin_batch(batch);}',
                 'static int fixture_finish_batch(void *context,uint32_t batch,uint32_t ok,uint32_t total){(void)context;return rx_finish_batch(batch,ok,total);}',
                 'static int fixture_add_top_path(void *context,const void *path){(void)context;(void)path;return 1;}',
@@ -908,7 +908,7 @@ int main(void){
         assert 'task != &rx->task' in receive_impl
         assert 'rx->writer' in receive_impl
         assert 'typedef struct xfer_rx_context' not in receiver
-        assert all(name in services for name in ['shutdown_data_channel','mark_sender_aborted','send_file_ack','send_done_ack','deliver_ack','terminate_batch','begin_batch','finish_batch','reset_file_error','open_file','write_file_chunk','close_file','file_error','build_path','prepare_file_path','is_top_level_path','remove_file'])
+        assert all(name in services for name in ['shutdown_data_channel','mark_sender_aborted','send_abort','send_file_ack','send_done_ack','deliver_ack','terminate_batch','begin_batch','finish_batch','reset_file_error','open_file','write_file_chunk','close_file','file_error','build_path','prepare_file_path','is_top_level_path','remove_file'])
         on_data_msg=extract(receiver,'on_data_msg')
         assert 'rx_context_configure();' in on_data_msg and '&hop_xfer_rx_platform_dispatch_handlers, &s_rx' in on_data_msg
         assert 'hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, rx)' in file_ack_handler

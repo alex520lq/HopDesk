@@ -23,6 +23,20 @@ void hop_xfer_rx_file_state_set_size(hop_xfer_rx_file_state *state, uint64_t siz
     if (state) state->declared_size = size;
 }
 
+int hop_xfer_rx_file_state_prepare_entry(hop_xfer_rx_file_state *state,
+    uint32_t id, uint64_t size, int is_directory,
+    const uint8_t *relative_path, uint32_t relative_path_length) {
+    if (!state || !id || id > HOP_XFER_FILE_LIMIT) return 0;
+    hop_xfer_rx_file_state_begin(state, id);
+    hop_xfer_rx_file_state_set_kind(state, 0, is_directory);
+    hop_xfer_rx_file_state_set_size(state, size);
+    if (!hop_xfer_relpath_bytes_safe(relative_path, relative_path_length)) {
+        hop_xfer_rx_file_state_fail(state, HOP_FILE_ACK_BADPATH);
+        return 0;
+    }
+    return 1;
+}
+
 void hop_xfer_rx_file_state_fail(hop_xfer_rx_file_state *state, uint8_t ack_status) {
     if (state) state->failure = (int)ack_status;
 }

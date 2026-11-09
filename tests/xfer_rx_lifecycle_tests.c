@@ -2,7 +2,8 @@
 #include <assert.h>
 #include <stdio.h>
 
-static int events[16], event_count, observed_batch, observed_reason, observed_cancelled;
+static int events[16], event_count, observed_reason, observed_cancelled;
+static uint32_t observed_batch;
 static void record(int event){assert(event_count<(int)(sizeof(events)/sizeof(events[0])));events[event_count++]=event;}
 static void cb_send(void *ctx,uint32_t batch,uint8_t reason){(void)ctx;observed_batch=batch;observed_reason=reason;record(1);}
 static void cb_cancel(void *ctx,uint32_t batch){(void)ctx;assert(batch==observed_batch);record(2);}

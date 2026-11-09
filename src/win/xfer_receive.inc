@@ -679,7 +679,7 @@ static DWORD WINAPI listen_thread(LPVOID arg) {
             uint8_t buf[65536];
             int n = recv(active, (char *)buf, sizeof(buf), 0);
             if (n <= 0 || !hop_decoder_feed(dec, buf, (uint32_t)n)) {
-                retire_data_socket(active); active = INVALID_SOCKET; rx_close_file();
+                retire_data_socket(active); active = INVALID_SOCKET; rx_close_file(&s_rx);
                 hop_log(HOP_LOG_WARN, "xfer: data channel closed");
             }
         }
@@ -777,7 +777,7 @@ static DWORD WINAPI data_client_thread(LPVOID unused){
             if(n==SOCKET_ERROR){int e=WSAGetLastError();if(e==WSAETIMEDOUT||e==WSAEWOULDBLOCK||e==WSAEINTR)continue;break;}
             if(n<=0||!hop_decoder_feed(dec,buf,(uint32_t)n))break;
         }
-        retire_data_socket(sock);rx_close_file();
+        retire_data_socket(sock);rx_close_file(&s_rx);
         delay=authed?500:(delay<8000?delay*2:8000);
         for(unsigned waited=0;waited<delay;waited+=200){
             rx_poll_cancel();

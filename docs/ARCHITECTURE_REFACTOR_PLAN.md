@@ -696,3 +696,12 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 不改变 FILE_END 的外部协议、ACK 数值、文件清理时机和图片批次无逐文件 ACK 规则。
 - CI：本切片提交已触发新的 Windows/macOS 全量流水线，结果待完成。
 - CI 复核记录：Run #974 中 Windows/macOS 应用编译通过，但 Core 回归脚本因新增断言缩进错误报 `IndentationError`；已修复断言缩进并确保在 Windows/macOS 两个平台循环内分别检查 FILE_END Core 调用。修复后的 Run #975 正在执行，不能将 #974 记为代码测试通过。
+### 2026-11-09：Receiver 预算准入、终结决策与上下文依赖收敛（第九切片）
+
+- FILE_BEGIN：两端先完成公共文件状态/路径校验与纯路径构造，再进行 Task entry 预算预留；只有预留成功后才允许移除旧剪贴板路径、写入接收状态、创建目录或打开文件。Windows 临时 UTF-8 路径缓冲区保留到预算成功后的状态登记完成，避免 use-after-free。
+- ABORT：新增 `hop_xfer_rx_batch_abort_decide`，明确区分忽略、仅重发 ABORT 回执、终止当前活动批次。过期/重复 ABORT 不再触发剪贴板取消、Writer 关闭、临时目录删除或当前 Task 清理；墓碑批次仍可收到 ABORT 重复回执。
+- DONE：继续使用 Core `hop_xfer_rx_batch_finish_decide` 与 Task Manager completion claim；测试覆盖取消与完成竞争、DONE 重复回执以及终结后资源账本归零。
+- Context：移除未使用的 Writer 字段后发现其实际可作为依赖注入点，现恢复为显式 Writer Queue handle；Writer open/write/close/error/reset 服务均从 `rx->writer` 访问，写入回调验证 Task owner 必须是当前 `rx->task`。服务 context 从 NULL 改为 `&s_rx`；顶层路径注册/去重/删除改为操作传入的 `xfer_rx_context`，不再隐式读取 `s_rx.tops`。
+- 故障测试：接收生命周期 fixture 注入 Writer Queue 入队拒绝与 Writer I/O 错误，确认失败状态与 ACK reason；新增 POSIX 500 轮并发 Cancel-vs-DONE completion race；保留已有断线超时、重连复位、时钟回退、取消优先级和资源释放测试。
+- 回归脚本增加逐平台断言：预算预留必须先于剪贴板/文件系统副作用；两端 Handler 使用相同 Core ABORT/DONE 规则；Writer 与路径服务使用显式 Context。
+- 仍需 CI 验证本切片。发送端、剪贴板和连接模块尚未开始本轮重构，按后续阶段处理，不在本切片标记完成。

@@ -133,7 +133,7 @@ static void rx_begin_batch(uint32_t batch) {
     wchar_t sub[80];
     char session_hex[33]; hop_session_hex(&s_x.session, session_hex);
     wchar_t num[16];
-    if (swprintf(num, 16, L"%u", batch) <= 0) { rx_terminate(batch,HOP_ABORT_DISK,1); return; }
+    if (swprintf(num, 16, L"%u", batch) <= 0) { rx_terminate(&s_rx,batch,HOP_ABORT_DISK,1); return; }
     wcscpy(sub, XFER_RX_ROOT);
     wcscat(sub, L"\\");
     for (int i=0;i<32;i++) { size_t at=wcslen(sub); sub[at]=(wchar_t)session_hex[i];sub[at+1]=0; }
@@ -143,7 +143,7 @@ static void rx_begin_batch(uint32_t batch) {
     size_t sub_len = wcslen(sub);
     if ((size_t)n + sub_len + 1 > MAX_PATH) {
         hop_log(HOP_LOG_WARN, "xfer: temp path too long, batch %u dropped", batch);
-        rx_terminate(batch,HOP_ABORT_DISK,1);
+        rx_terminate(&s_rx,batch,HOP_ABORT_DISK,1);
         return;
     }
 
@@ -152,7 +152,7 @@ static void rx_begin_batch(uint32_t batch) {
 
 
     if (!hop_xfer_rx_fs_ensure_dirs(s_rx.dir) || !hop_xfer_rx_fs_create_directory_if_missing(s_rx.dir)) {
-        rx_terminate(batch,HOP_ABORT_DISK,1);
+        rx_terminate(&s_rx,batch,HOP_ABORT_DISK,1);
         return;
     }
 

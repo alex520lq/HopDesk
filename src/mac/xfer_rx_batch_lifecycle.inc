@@ -16,8 +16,7 @@ static void rx_abort_close_file(void *context) {
 }
 
 static void rx_abort_discard_staging(void *context) {
-    (void)context;
-    rx_discard_dir();
+    rx_discard_dir((xfer_rx_context *)context);
 }
 
 static void rx_abort_mark_dead(void *context, uint32_t batch, uint8_t reason) {
@@ -33,8 +32,7 @@ static void rx_abort_finish_task(void *context, int cancelled) {
 }
 
 static void rx_abort_clear_state(void *context) {
-    (void)context;
-    rx_clear_state();
+    rx_clear_state((xfer_rx_context *)context);
 }
 
 static void rx_abort_status_end(void *context, uint32_t batch, int cancelled) {
@@ -45,11 +43,11 @@ static void rx_abort_status_end(void *context, uint32_t batch, int cancelled) {
             cancelled ? "Receive cancelled" : "Receive aborted");
 }
 
-static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer) {
+static void rx_terminate(xfer_rx_context *rx, uint32_t batch, uint8_t reason, int notify_peer) {
     hop_xfer_rx_batch_abort_action action = hop_xfer_rx_batch_abort_decide(
-        batch, s_rx.batch_state.active, s_rx.batch_state.batch, notify_peer);
+        batch, rx->batch_state.active, rx->batch_state.batch, notify_peer);
     const hop_xfer_rx_abort_ops ops = {
-        &s_rx, rx_abort_send, rx_abort_cancel_clipboard, rx_abort_close_file,
+        rx, rx_abort_send, rx_abort_cancel_clipboard, rx_abort_close_file,
         rx_abort_discard_staging, rx_abort_mark_dead, rx_abort_finish_task,
         rx_abort_clear_state, rx_abort_status_end
     };
@@ -69,7 +67,7 @@ static void rx_begin_batch(uint32_t batch) {
             return; /* already committed in this session; never recreate its task */
         case HOP_RX_BATCH_BEGIN_REJECT_DEAD:
             /* A cancelled/aborted batch must never recreate its staging directory. */
-            rx_terminate(batch, dead_reason, 1);
+            rx_terminate(&s_rx, batch, dead_reason, 1);
             return;
         case HOP_RX_BATCH_BEGIN_RESUME:
             return; /* duplicate BEGIN for the active batch */
@@ -124,7 +122,7 @@ static void rx_begin_batch(uint32_t batch) {
     char session_hex[33]; hop_session_hex(&s_x.session, session_hex);
     snprintf(s_rx.dir, sizeof(s_rx.dir), "%s/HopDesk/%s/%u", temp_root(), session_hex, batch);
     if (hop_xfer_rx_fs_mkdir_p(s_rx.dir) != 0) {
-        rx_terminate(batch,HOP_ABORT_DISK,1);
+        rx_terminate(&s_rx,batch,HOP_ABORT_DISK,1);
         return;
     }
 }

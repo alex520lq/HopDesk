@@ -803,7 +803,7 @@ int main(void){
                 'static void fixture_status_reset(void *context){(void)context;memset(&s_receive_status,0,sizeof(s_receive_status));}',
                 'static void fixture_clear_cancel_request(void *context){(void)context;}',
                 'static int fixture_create_staging_directory(void *context,const char *session_hex,uint32_t batch){xfer_rx_context *rx=(xfer_rx_context*)context;(void)session_hex;(void)batch;if(!rx||fail_directory)return 0;\n#ifdef FIXTURE_WINDOWS\nwcscpy(rx->dir,L"tmp\\\\HopDesk\\\\fixture");\n#else\nstrcpy(rx->dir,"/tmp/HopDesk/fixture");\n#endif\nreturn 1;}',
-                'static void fixture_reset_batch_state(void *context){(void)context;rx_clear_state(&s_rx);}'
+                'static void fixture_reset_batch_state(void *context){rx_clear_state((xfer_rx_context*)context);}'
             ]),
             'RX_WRITER_CALLBACKS':'\n'.join([
                 'static void fixture_reset_file_error(void *context){(void)context;}',

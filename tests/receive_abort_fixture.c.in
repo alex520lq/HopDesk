@@ -326,12 +326,17 @@ int main(void){
     assert(hop_xfer_rx_file_state_prepare_entry(&s_rx.file_state,1,4,0,file_path,sizeof(file_path)-1));
     fail_write=1;chunk(1,0,0);fail_write=0;
     assert(s_rx.file_state.failure==HOP_FILE_ACK_DISK && s_rx.file_state.received==0);
-    fail_writer_io=1;
     hop_xfer_rx_file_end_result writer_result=hop_xfer_rx_file_state_evaluate_end(
-        &s_rx.file_state,HOP_FILE_OK,1,0);
-    fail_writer_io=0;
+        &s_rx.file_state,HOP_FILE_OK,0,0);
     assert(writer_result.ack_status==HOP_FILE_ACK_DISK &&
            writer_result.reason==HOP_RX_FILE_END_STORED_FAILURE);
+    assert(hop_xfer_rx_file_state_prepare_entry(&s_rx.file_state,2,4,0,file_path,sizeof(file_path)-1));
+    fail_writer_io=1;
+    writer_result=hop_xfer_rx_file_state_evaluate_end(&s_rx.file_state,HOP_FILE_OK,
+        s_rx.services.file_error(s_rx.services.context),0);
+    fail_writer_io=0;
+    assert(writer_result.ack_status==HOP_FILE_ACK_DISK &&
+           writer_result.reason==HOP_RX_FILE_END_WRITER_ERROR);
     hop_xfer_task_finish(&s_rx.task,HOP_XFER_TASK_FAILED);
     rx_clear_state();
     hop_xfer_budget_snapshot writer_budget;hop_xfer_budget_get_snapshot(&writer_budget);

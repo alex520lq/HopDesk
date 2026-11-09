@@ -313,14 +313,14 @@ static void rx_context_finish_clipboard(void *context, uint32_t batch,
     }
 }
 
-static void rx_terminate(uint32_t batch, uint8_t reason, int notify_peer);
+static void rx_terminate(xfer_rx_context *rx, uint32_t batch, uint8_t reason, int notify_peer);
 static void rx_begin_batch(uint32_t batch);
 static int rx_finish_batch(uint32_t batch, uint32_t ok, uint32_t total);
 
 static void rx_context_terminate_batch(void *context, uint32_t batch, uint8_t reason, int notify_peer) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx || rx != &s_rx) return;
-    rx_terminate(batch, reason, notify_peer);
+    rx_terminate(rx, batch, reason, notify_peer);
 }
 static void rx_context_begin_batch(void *context, uint32_t batch) {
     xfer_rx_context *rx = (xfer_rx_context *)context;

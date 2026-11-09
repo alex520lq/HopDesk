@@ -6,6 +6,8 @@
 extern "C" {
 #endif
 void hop_xfer_rx_bind_session(void *context, const hop_session_id *session);
+void hop_xfer_rx_terminate_batch(void *context, uint32_t batch, uint8_t reason, int notify_peer);
+void hop_xfer_rx_reset_batch_state(void *context);
 void hop_xfer_rx_begin_batch(void *context, uint32_t batch);
 int hop_xfer_rx_finish_batch(void *context, uint32_t batch, uint32_t ok, uint32_t total);
 void hop_xfer_rx_handle_file_begin(void *context, const uint8_t *payload, uint32_t length);

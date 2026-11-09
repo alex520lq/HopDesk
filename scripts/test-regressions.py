@@ -476,12 +476,10 @@ uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
 typedef int SOCKET;
 typedef struct {uint32_t batch;int is_image,ok,n;} xf_job;
 typedef xf_job xfer_job;
-typedef struct {int kind;} rx_task;
-static int s_status_lock,applied;static uint8_t wire[20];
+static int applied;static uint8_t wire[20];
 static hop_xfer_tracking s_receive_status;
 static struct {hop_xfer_rx_batch_state batch_state;int ntop;char *dir;hop_xfer_rx_image_buffer image_buffer;hop_xfer_rx_image_state image_state;hop_xfer_rx_file_state file_state;void **tops;hop_xfer_task task;hop_xfer_rx_services services;} s_rx;
 static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t batch){(void)batch;(void)fd;(void)type;assert(n==20);memcpy(wire,p,n);return 1;}
-static void wq_push(rx_task*t){(void)t;}
 static void wq_drain(void){}
 static void rx_reset(void){hop_xfer_rx_batch_state_reset(&s_rx.batch_state);hop_xfer_task_dispose(&s_rx.task);}
 static void rx_terminate(uint32_t batch,uint8_t reason,int notify){(void)batch;(void)reason;(void)notify;assert(!"unexpected cancellation in successful fixture");}
@@ -489,10 +487,6 @@ static void status_file_phase(int d,uint32_t b,int i,int p,uint32_t a){assert(d=
 static void status_end(int d,uint32_t b,int p,const char*s){assert(d==HOP_XFER_DIR_RECEIVE);hop_xfer_tracking_end(&s_receive_status,b,p,s);}
 static void apply_image(const uint8_t*p,int w,int h,int stride){(void)p;(void)w;(void)h;(void)stride;applied++;}
 static void apply_paths(const void*p,int n){(void)p;(void)n;}
-static uint64_t rate_now_ns(void){static uint64_t now=100;return ++now;}
-static void status_stage_time(int direction,uint32_t batch,int stage,uint64_t elapsed_ns){
-    (void)batch;(void)stage;(void)elapsed_ns;assert(direction==HOP_XFER_DIR_RECEIVE);
-}
 static void fixture_close_file(void *context){(void)context;wq_drain();}
 static void fixture_status_end(void *context,uint32_t batch,int phase,const char *detail){(void)context;status_end(HOP_XFER_DIR_RECEIVE,batch,phase,detail);}
 static void fixture_status_file_phase(void *context,uint32_t batch,int index,int phase,uint32_t attempts){(void)context;status_file_phase(HOP_XFER_DIR_RECEIVE,batch,index,phase,attempts);}

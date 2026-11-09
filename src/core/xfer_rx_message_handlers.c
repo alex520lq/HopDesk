@@ -1,6 +1,7 @@
 #include "hop.h"
 #include "xfer_rx_context.h"
 #include "xfer_rx_message_handlers.h"
+#include "xfer_rx_ack_handler.h"
 #include "xfer_tracking.h"
 #include <stdint.h>
 #include <stdio.h>

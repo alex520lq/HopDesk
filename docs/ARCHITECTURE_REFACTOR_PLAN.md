@@ -705,3 +705,10 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 故障测试：接收生命周期 fixture 注入 Writer Queue 入队拒绝与 Writer I/O 错误，确认失败状态与 ACK reason；新增 POSIX 500 轮并发 Cancel-vs-DONE completion race；保留已有断线超时、重连复位、时钟回退、取消优先级和资源释放测试。
 - 回归脚本增加逐平台断言：预算预留必须先于剪贴板/文件系统副作用；两端 Handler 使用相同 Core ABORT/DONE 规则；Writer 与路径服务使用显式 Context。
 - 仍需 CI 验证本切片。发送端、剪贴板和连接模块尚未开始本轮重构，按后续阶段处理，不在本切片标记完成。
+### 2026-11-09：发送端提交与发送 Worker 拆分（第十切片）
+
+- Windows/macOS `xfer.c` 的提交入口、Task/预算准入、路径扫描后的作业封装、图片任务提交和公开 submit wrappers 移至平台各自的 `xfer_submit.inc`；传输层保留队列/连接/协议运行时。
+- 两端发送队列取消摘链、Job 释放与 `send_thread` 移至 `xfer_sender_worker.inc`，让 FIFO 队列调度、重连等待、Task 终结和发送 Worker 生命周期成为独立层。
+- 保持平台差异：Windows 线程事件/锁与 macOS pthread/QoS/条件变量不强行抽象；共享的 ACK Window、Task Manager、Rate Limiter 继续留在 Core。
+- 回归脚本改为从拆分后的 Worker 文件提取真实生产实现，继续覆盖发送线程的重连策略、队列取消、DONE ACK 与取消逻辑；增加模块边界断言。
+- 当前切片待新的 Windows/macOS CI 全量验证。剪贴板与控制连接模块仍在后续阶段。

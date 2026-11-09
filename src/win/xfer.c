@@ -755,7 +755,7 @@ void xfer_shutdown(void) {
         return;
     }
 
-    rx_reset();      /* 先把写盘队列排空并关掉文件，再停写线程 */
+    rx_reset(&s_rx);      /* 先把写盘队列排空并关掉文件，再停写线程 */
     wq_stop();
     hop_xfer_task_history_store_close();
     CloseHandle(s_x.stop);

@@ -26,6 +26,10 @@ static void wq_release_task_rx(void *context, void *owner, uint32_t bytes) {
     (void)context;
     (void)hop_xfer_task_release_rx_buffer((hop_xfer_task *)owner, bytes);
 }
+static int wq_task_cancelled(void *context, void *owner) {
+    (void)context;
+    return owner && hop_xfer_task_cancel_requested(((hop_xfer_task *)owner)->id);
+}
 static int wq_watchdog_begin(void *context, const char *label, uint32_t deadline) {
     (void)context;
     return hop_watchdog_begin(label, deadline);
@@ -60,7 +64,7 @@ static int wq_start(void) {
     if (s_wq) return 0;
     const hop_writer_queue_callbacks callbacks = {
         HOP_IO_DEADLINE_MS,
-        wq_reserve_task_rx, wq_release_task_rx,
+        wq_reserve_task_rx, wq_release_task_rx, wq_task_cancelled,
         wq_watchdog_begin, wq_watchdog_end, wq_now_ns,
         wq_write_time, wq_open_error, wq_write_error
     };

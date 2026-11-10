@@ -2,7 +2,6 @@
 #define HOP_XFER_SCANNER_H
 
 #include <stdint.h>
-#include "../core/xfer_task.h"
 
 #define HOP_XFER_SCAN_MAX_ENTRIES 8192
 

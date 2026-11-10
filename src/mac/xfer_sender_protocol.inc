@@ -278,18 +278,19 @@ static void sender_logf(const hop_xfer_sender_context *context, int level,
         hop_log((hop_log_level)level, "%s", message);
 }
 
-static int rate_wait_for_chunk(uint32_t bytes) {
-    if (!hop_xfer_sender_context_valid(&s_sender_context)) return 0;
+static int rate_wait_for_chunk(const hop_xfer_sender_context *context,
+                                uint32_t bytes) {
+    if (!hop_xfer_sender_context_clock_valid(context)) return 0;
     for (;;) {
         uint64_t delay = hop_xfer_rate_wait_ns(
-            &s_x.rate, bytes, s_sender_context.now_ns(s_sender_context.user));
+            &s_x.rate, bytes, context->now_ns(context->user));
         if (delay == UINT64_MAX) {
-            hop_log(HOP_LOG_ERROR, "xfer: chunk exceeds token-bucket burst");
+            sender_logf(context, HOP_LOG_ERROR, "xfer: chunk exceeds token-bucket burst");
             return 0;
         }
-        if (!delay) return !s_sender_context.is_stopping(s_sender_context.user);
-        if (s_sender_context.is_stopping(s_sender_context.user)) return 0;
-        if (!s_sender_context.wait_ns(s_sender_context.user, delay)) return 0;
+        if (!delay) return !context->is_stopping(context->user);
+        if (context->is_stopping(context->user)) return 0;
+        if (!context->wait_ns(context->user, delay)) return 0;
     }
 }
 
@@ -313,18 +314,20 @@ static void rate_feedback(uint64_t ack_rtt_us) {
     }
 }
 
-static int send_chunk(int fd, uint8_t *tx, uint32_t batch, uint32_t id, uint64_t off,
+static int send_chunk(const hop_xfer_sender_context *context, int fd,
+                      uint8_t *tx, uint32_t batch, uint32_t id, uint64_t off,
                       const uint8_t *data, uint32_t len, uint32_t crc,
-                      uint64_t read_ns,uint64_t crc_ns) {
-    if (!rate_wait_for_chunk(len)) {
-        status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_READ,read_ns);
-        status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_CRC,crc_ns);
+                      uint64_t read_ns, uint64_t crc_ns) {
+    if (!context) context = &s_sender_context;
+    if (!rate_wait_for_chunk(context, len)) {
+        sender_status_stage_time(context, batch, HOP_XFER_TIME_READ, read_ns);
+        sender_status_stage_time(context, batch, HOP_XFER_TIME_CRC, crc_ns);
         return 0;
     }
     int send_guard = hop_watchdog_begin("data frame send", 10000);
     hop_session_id session;
     uint64_t epoch = 0;
-    int current = sender_context_snapshot_session(s_sender_context.user, fd, &session, &epoch);
+    int current = sender_context_snapshot_session(context->user, fd, &session, &epoch);
     hop_encode_header(tx, HOP_MSG_FILE_CHUNK, 20 + HOP_DATA_PREFIX + len);
     hop_put_be32(tx + HOP_DATA_PREFIX + 5, id);
     hop_put_be64(tx + HOP_DATA_PREFIX + 9, off);
@@ -340,20 +343,26 @@ static int send_chunk(int fd, uint8_t *tx, uint32_t batch, uint32_t id, uint64_t
         parts[1] = (hop_xfer_sender_frame_part){data, len};
         part_count = 2;
     }
-    uint64_t send_started = rate_now_ns();
-    int ok = current && s_sender_context.write_frame &&
-             s_sender_context.write_frame(s_sender_context.user, fd, epoch,
-                                          parts, part_count);
-    uint64_t send_us = (rate_now_ns() - send_started) / 1000ull;
+    uint64_t send_started = context->now_ns
+        ? context->now_ns(context->user) : rate_now_ns();
+    int ok = current && context->write_frame &&
+             context->write_frame(context->user, (intptr_t)fd, epoch,
+                                  parts, part_count);
+    uint64_t send_finished = context->now_ns
+        ? context->now_ns(context->user) : rate_now_ns();
+    uint64_t send_us = send_finished >= send_started
+        ? (send_finished - send_started) / 1000ull : 0;
     hop_xfer_rate_note_send_time(&s_x.rate, len, send_us);
     int feedback_due = (s_x.rate.send_samples & 7u) == 0;
     if (feedback_due) rate_feedback(0);
-    uint64_t send_ns=send_us*1000ull;
-    if(ok) status_chunk_timed(HOP_XFER_DIR_SEND,batch,id,off,len,read_ns,crc_ns,send_ns,0);
-    else {
-        status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_READ,read_ns);
-        status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_CRC,crc_ns);
-        status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_SEND,send_ns);
+    uint64_t send_ns = send_us * 1000ull;
+    if (ok) {
+        sender_status_chunk_timed(context, batch, id, off, len,
+                                  read_ns, crc_ns, send_ns, 0);
+    } else {
+        sender_status_stage_time(context, batch, HOP_XFER_TIME_READ, read_ns);
+        sender_status_stage_time(context, batch, HOP_XFER_TIME_CRC, crc_ns);
+        sender_status_stage_time(context, batch, HOP_XFER_TIME_SEND, send_ns);
     }
     hop_watchdog_end(send_guard);
     return ok;
@@ -667,7 +676,8 @@ static int sender_engine_file_send_chunk(void *user, uint32_t batch,
                                          uint32_t crc, uint64_t read_ns,
                                          uint64_t crc_ns) {
     sender_file_engine_call *call = (sender_file_engine_call *)user;
-    return send_chunk(call->fd, call->tx, batch, id, offset, data, length,
+    return send_chunk(&call->job->sender_context, call->fd,
+                      call->tx, batch, id, offset, data, length,
                       crc, read_ns, crc_ns);
 }
 
@@ -848,7 +858,8 @@ static int sender_engine_send_image_chunk(void *user, uint32_t batch,
                                           const uint8_t *data, uint32_t length,
                                           uint32_t crc, uint64_t crc_ns) {
     sender_file_engine_call *call = (sender_file_engine_call *)user;
-    return send_chunk(call->fd, call->tx, batch, id, offset, data,
+    return send_chunk(&call->job->sender_context, call->fd,
+                      call->tx, batch, id, offset, data,
                       length, crc, 0, crc_ns);
 }
 

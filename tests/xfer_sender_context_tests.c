@@ -87,6 +87,20 @@ int main(void) {
     memset(&state, 0, sizeof(state));
     hop_xfer_sender_context ctx = make_context(&state);
 
+    /* The platform sender has adopted the clock/wait subset first; the full
+     * execution contract remains separately validated for the next slice. */
+    hop_xfer_sender_context clock_only;
+    memset(&clock_only, 0, sizeof(clock_only));
+    clock_only.user = &state;
+    clock_only.now_ns = fake_now;
+    clock_only.wait_ns = fake_wait;
+    clock_only.is_stopping = fake_stopping;
+    assert(hop_xfer_sender_context_clock_valid(&clock_only));
+    assert(!hop_xfer_sender_context_valid(&clock_only));
+    clock_only.wait_ns = NULL;
+    assert(!hop_xfer_sender_context_clock_valid(&clock_only));
+
+    assert(hop_xfer_sender_context_clock_valid(&ctx));
     assert(hop_xfer_sender_context_valid(&ctx));
     assert(ctx.now_ns(ctx.user) == 0);
     assert(ctx.wait_ns(ctx.user, 250) == 1);

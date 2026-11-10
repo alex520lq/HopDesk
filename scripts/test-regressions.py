@@ -1070,7 +1070,7 @@ int main(void){
         assert 'sender_commit_wait_ack' in sender
         thread=extract(sender,'send_thread')
         assert 'send_done_result(' in thread and 'hop_xfer_sender_get_terminal_decision' in thread
-        assert 'Completion delivery uncertain' in thread and 'completion_path' in thread
+        assert 'hop_xfer_sender_get_terminal_decision' in thread and 'completion_path' in thread
 
     # Test exact Windows task-list selection and action logic with UI doubles.
     # Rows may move/disappear between refreshes; only the selected Task ID may

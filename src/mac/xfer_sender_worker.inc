@@ -484,7 +484,7 @@ static void *send_thread(void *arg) {
         pthread_mutex_unlock(&s_x.slock);
         job_bind_session(j,&transport_session);
         if (hop_session_id_valid(&j->session))
-            (void)hop_xfer_sender_context_task_bind_session(&j->sender_context,&j->task,&j->session);
+            (void)hop_xfer_sender_context_task_bind_session(&j->sender_context,&j->task,j->session.bytes);
         if (!hop_xfer_sender_context_task_set_state(&j->sender_context,&j->task,HOP_XFER_TASK_ACTIVE)) {
             sender_worker_clear_active_job(j);
             j->pending_finish_state=HOP_XFER_TASK_FAILED;

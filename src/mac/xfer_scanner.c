@@ -8,17 +8,18 @@
 #include <string.h>
 #include <sys/stat.h>
 
-static int elist_push(elist *list, xf_entry *entry) {
+static int elist_push(elist *list, xf_entry *entry, const hop_xfer_scan_services *services) {
     if (!entry || !entry->name || !entry->rel ||
         strlen(entry->name) > HOP_NAME_LEN_MAX ||
         strlen(entry->rel) > HOP_PATH_LEN_MAX ||
         list->n >= HOP_XFER_SCAN_MAX_ENTRIES) {
-        list->failed = 1;
+        scan_fail(list, (list->n >= HOP_XFER_SCAN_MAX_ENTRIES) ?
+                  HOP_XFER_SCAN_ENTRY_LIMIT : HOP_XFER_SCAN_PATH_TOO_LONG);
         return 0;
     }
-    if (!hop_xfer_task_reserve_entry(&list->task, entry->size)) {
+    if (!services->reserve_entry(services->context, entry->size)) {
         list->budget_rejected = 1;
-        list->failed = 1;
+        scan_fail(list, HOP_XFER_SCAN_BUDGET_REJECTED);
         return 0;
     }
     if (list->n == list->cap) {
@@ -44,32 +45,35 @@ void elist_free(elist *list) {
     list->n = list->cap = 0;
     list->failed = 0;
     list->budget_rejected = 0;
-    hop_xfer_task_dispose(&list->task);
+    list->error = HOP_XFER_SCAN_OK;
 }
 
-static struct dirent *guarded_readdir(DIR *directory) {
-    int guard = hop_watchdog_begin("directory next", HOP_IO_DEADLINE_MS);
+static struct dirent *guarded_readdir(DIR *directory,
+                                      const hop_xfer_scan_services *services,
+                                      int *read_error) {
+    errno = 0;
+    int guard = scan_watchdog_begin(services, "directory next");
     struct dirent *entry = readdir(directory);
-    hop_watchdog_end(guard);
+    int error = errno;
+    scan_watchdog_end(services, guard);
+    if (!entry && error && read_error) *read_error = error;
     return entry;
 }
 
-static void walk_into(elist *list, const char *full, const char *relative) {
+static void walk_into(elist *list, const char *full, const char *relative, const hop_xfer_scan_services *services) {
     if (!list || list->failed) return;
-    if (hop_xfer_task_cancel_requested(list->task.id)) { list->failed = 1; return; }
+    if (services->is_cancelled(services->context)) { scan_fail(list, HOP_XFER_SCAN_CANCELLED); return; }
 
     struct stat st;
-    int stat_guard = hop_watchdog_begin("file attributes", HOP_IO_DEADLINE_MS);
+    int stat_guard = scan_watchdog_begin(services, "file attributes");
     int stat_ok = lstat(full, &st);
-    hop_watchdog_end(stat_guard);
+    scan_watchdog_end(services, stat_guard);
     if (stat_ok != 0) {
-        list->failed = 1;
-        hop_log(HOP_LOG_WARN, "xfer: source path disappeared or is inaccessible");
+        scan_fail(list, HOP_XFER_SCAN_SOURCE_UNAVAILABLE);
         return;
     }
     if (S_ISLNK(st.st_mode)) {
-        list->failed = 1;
-        hop_log(HOP_LOG_WARN, "xfer: symbolic link rejected from file selection");
+        scan_fail(list, HOP_XFER_SCAN_LINK_REJECTED);
         return;
     }
 
@@ -90,13 +94,12 @@ static void walk_into(elist *list, const char *full, const char *relative) {
     if (!S_ISDIR(st.st_mode)) {
         if (!S_ISREG(st.st_mode)) {
             free(entry.full); free(entry.name); free(entry.rel);
-            list->failed = 1;
-            hop_log(HOP_LOG_WARN, "xfer: non-regular source entry rejected");
+            scan_fail(list, HOP_XFER_SCAN_UNSUPPORTED_ENTRY);
             return;
         }
         entry.size = (uint64_t)st.st_size;
         entry.flags = 0;
-        if (!elist_push(list, &entry)) {
+        if (!elist_push(list, &entry, services)) {
             free(entry.full); free(entry.name); free(entry.rel);
         }
         return;
@@ -109,17 +112,17 @@ static void walk_into(elist *list, const char *full, const char *relative) {
         return;
     }
 
-    int open_guard = hop_watchdog_begin("directory open", HOP_IO_DEADLINE_MS);
+    int open_guard = scan_watchdog_begin(services, "directory open");
     DIR *directory = opendir(full);
-    hop_watchdog_end(open_guard);
+    scan_watchdog_end(services, open_guard);
     if (!directory) {
-        list->failed = 1;
-        hop_log(HOP_LOG_WARN, "xfer: cannot enumerate selected directory");
+        scan_fail(list, HOP_XFER_SCAN_ENUMERATION_FAILED);
         return;
     }
 
     struct dirent *de;
-    while ((de = guarded_readdir(directory)) != NULL) {
+    int read_error = 0;
+    while ((de = guarded_readdir(directory, services, &read_error)) != NULL) {
         if (list->failed) break;
         if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
 
@@ -128,29 +131,33 @@ static void walk_into(elist *list, const char *full, const char *relative) {
         char *child_rel = (char *)malloc(rel_len + name_len + 2);
         if (!child || !child_rel) {
             free(child); free(child_rel);
-            list->failed = 1;
+            scan_fail(list, HOP_XFER_SCAN_OUT_OF_MEMORY);
             break;
         }
         snprintf(child, full_len + name_len + 2, "%s/%s", full, de->d_name);
         snprintf(child_rel, rel_len + name_len + 2, "%s/%s", relative, de->d_name);
-        walk_into(list, child, child_rel);
+        walk_into(list, child, child_rel, services);
         free(child);
         free(child_rel);
         if (list->failed) break;
     }
     closedir(directory);
+    if (!list->failed && read_error)
+        scan_fail(list, HOP_XFER_SCAN_ENUMERATION_FAILED);
 }
 
-void hop_xfer_scan_paths(elist *list, const hop_xfer_scan_path *paths, int count) {
-    if (!list || !paths || count <= 0) {
-        if (list) list->failed = 1;
+void hop_xfer_scan_paths(elist *list, const hop_xfer_scan_path *paths, int count,
+                         const hop_xfer_scan_services *services) {
+    if (!list || !paths || count <= 0 || !services || !services->reserve_entry ||
+        !services->is_cancelled || !services->watchdog_begin || !services->watchdog_end) {
+        if (list) scan_fail(list, HOP_XFER_SCAN_INVALID_INPUT);
         return;
     }
     for (int i = 0; i < count; ++i) {
-        if (!paths[i] || !paths[i][0]) { list->failed = 1; break; }
+        if (!paths[i] || !paths[i][0]) { scan_fail(list, HOP_XFER_SCAN_INVALID_INPUT); break; }
         const char *base = strrchr(paths[i], '/');
         base = base ? base + 1 : paths[i];
-        walk_into(list, paths[i], base);
+        walk_into(list, paths[i], base, services);
         if (list->failed) break;
     }
 }

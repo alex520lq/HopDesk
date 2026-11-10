@@ -52,8 +52,8 @@ static int sender_wait_retry(const hop_xfer_sender_engine_ops *ops,
                  attempt, path ? path : "(unknown)", delay, status);
     }
     sender_log(ops, 1, message);
-    if (ops->wait_ms(ops->user, delay)) return 1;
-    return 0;
+    if (!ops->wait_ms(ops->user, delay)) return 0;
+    return !sender_cancelled(ops, batch) && !sender_aborted(ops, batch);
 }
 
 static void sender_unregister(const hop_xfer_sender_engine_ops *ops,

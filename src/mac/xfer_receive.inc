@@ -152,10 +152,8 @@ static void rx_context_send_abort(void *context, uint32_t batch, uint8_t reason)
 static void rx_context_mark_sender_aborted(void *context, uint32_t batch, uint8_t reason) {
     (void)context;
     pthread_mutex_lock(&s_x.qlock);
-    if (s_x.cur_batch == batch) {
-        s_x.abort_batch = batch;
-        s_x.abort_reason = reason;
-    }
+    (void)hop_xfer_sender_active_job_record_peer_abort(
+        &s_x.active_job,batch,(uint8_t)reason);
     pthread_mutex_unlock(&s_x.qlock);
     sender_context_wake_ack();
 }
@@ -676,7 +674,7 @@ static void *conn_thread(void *arg) {
         pthread_mutex_unlock(&s_x.slock);
 
         pthread_mutex_lock(&s_x.qlock);
-        s_x.abort_batch = 0;          /* 新会话，上一轮的 ABORT 不再算数 */
+        hop_xfer_sender_active_job_reset_peer_abort(&s_x.active_job); /* 新会话，清除上一轮 ABORT */
         pthread_mutex_unlock(&s_x.qlock);
 
         hop_decoder_reset(dec);

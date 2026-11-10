@@ -23,8 +23,8 @@ static uint64_t sender_context_now_ns(void *user) {
 }
 
 static int sender_context_is_stopping(void *user) {
-    (void)user;
-    return s_x.stop != 0;
+    sender_platform_context *ctx = (sender_platform_context *)user;
+    return !ctx || !ctx->stop || atomic_load(ctx->stop) != 0;
 }
 
 static int sender_context_is_cancelled(void *user, uint32_t batch,
@@ -37,21 +37,23 @@ static int sender_context_is_cancelled(void *user, uint32_t batch,
 }
 
 static int sender_context_peer_aborted(void *user, uint32_t batch) {
-    (void)user;
-    pthread_mutex_lock(&s_x.qlock);
-    int aborted = s_x.abort_batch == batch;
-    pthread_mutex_unlock(&s_x.qlock);
+    sender_platform_context *ctx = (sender_platform_context *)user;
+    if (!ctx || !ctx->queue_lock || !ctx->abort_batch) return 0;
+    pthread_mutex_lock(ctx->queue_lock);
+    int aborted = *ctx->abort_batch == batch;
+    pthread_mutex_unlock(ctx->queue_lock);
     return aborted;
 }
 
 /* wait_ns is an interruptible full-duration wait. Long waits are split into
  * short slices so shutdown is observed promptly without reporting early success. */
 static int sender_context_wait_ns(void *user, uint64_t duration_ns) {
-    (void)user;
+    sender_platform_context *ctx = (sender_platform_context *)user;
+    if (!ctx || !ctx->stop || sender_context_is_stopping(user)) return 0;
     uint64_t start = rate_now_ns();
     uint64_t deadline = duration_ns > UINT64_MAX - start
         ? UINT64_MAX : start + duration_ns;
-    while (!s_x.stop) {
+    while (!sender_context_is_stopping(user)) {
         uint64_t now = rate_now_ns();
         if (now >= deadline) return 1;
         uint64_t remaining = deadline - now;
@@ -61,7 +63,7 @@ static int sender_context_wait_ns(void *user, uint64_t duration_ns) {
             (long)(remaining % 1000000000ull)
         };
         while (nanosleep(&ts, &ts) != 0) {
-            if (errno != EINTR || s_x.stop) return 0;
+            if (errno != EINTR || sender_context_is_stopping(user)) return 0;
         }
     }
     return 0;
@@ -110,7 +112,17 @@ static void sender_context_log_message(void *user, int level,
 }
 
 static void sender_context_init(void) {
+    memset(&s_sender_platform, 0, sizeof(s_sender_platform));
+    s_sender_platform.session_lock = &s_x.slock;
+    s_sender_platform.queue_lock = &s_x.qlock;
+    s_sender_platform.tx_lock = &s_txlock;
+    s_sender_platform.sock = &s_x.sock;
+    s_sender_platform.session = &s_x.session;
+    s_sender_platform.epoch = &s_x.epoch;
+    s_sender_platform.stop = &s_x.stop;
+    s_sender_platform.abort_batch = &s_x.abort_batch;
     memset(&s_sender_context, 0, sizeof(s_sender_context));
+    s_sender_context.user = &s_sender_platform;
     s_sender_context.now_ns = sender_context_now_ns;
     s_sender_context.wait_ns = sender_context_wait_ns;
     s_sender_context.is_stopping = sender_context_is_stopping;
@@ -212,7 +224,7 @@ static int send_chunk(int fd, uint8_t *tx, uint32_t batch, uint32_t id, uint64_t
     int send_guard = hop_watchdog_begin("data frame send", 10000);
     hop_session_id session;
     uint64_t epoch = 0;
-    int current = sender_context_snapshot_session(fd, &session, &epoch);
+    int current = sender_context_snapshot_session(s_sender_context.user, fd, &session, &epoch);
     hop_encode_header(tx, HOP_MSG_FILE_CHUNK, 20 + HOP_DATA_PREFIX + len);
     hop_put_be32(tx + HOP_DATA_PREFIX + 5, id);
     hop_put_be64(tx + HOP_DATA_PREFIX + 9, off);

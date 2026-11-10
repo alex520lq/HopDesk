@@ -923,7 +923,7 @@ int main(void){
         job=extract(sender,'run_job')
         assert 'hop_xfer_sender_run_files' in job
         assert 'window_item' not in job
-        assert 'send_image_job' in job or 'HOP_MSG_IMAGE_BEGIN' in job
+        assert 'hop_xfer_sender_run_image' in job
         engine=(ROOT/'src/core/xfer_sender_engine.c').read_text(encoding='utf-8')
         assert 'int acknowledged;' in engine
         assert 'HOP_XFER_SENDER_SEND_PENDING' in engine
@@ -939,6 +939,10 @@ int main(void){
         assert 'xfer_kick();' in reconnect
         assert 'sender_engine_wait_ack' in sender
         assert 'sender_engine_send_entry' in sender
+        assert 'sender_engine_send_image_begin' in sender
+        assert 'sender_engine_send_image_chunk' in sender
+        assert 'hop_xfer_sender_run_image' in engine
+        assert 'hop_crc32(0, pixels + offset, length)' in engine
 
         begin=extract(receiver,'hop_xfer_rx_handle_file_begin')
         end=extract(receiver,'hop_xfer_rx_handle_file_end')

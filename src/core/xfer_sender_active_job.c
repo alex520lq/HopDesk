@@ -5,6 +5,11 @@ int hop_xfer_sender_active_job_is_active(
     return active && active->batch != 0;
 }
 
+int hop_xfer_sender_active_job_matches(
+    const hop_xfer_sender_active_job *active, uint32_t batch) {
+    return active && batch && active->batch == batch;
+}
+
 uint32_t hop_xfer_sender_active_job_cancel_target(
     const hop_xfer_sender_active_job *active, uint32_t queued_head_batch) {
     return active && active->batch ? active->batch : queued_head_batch;

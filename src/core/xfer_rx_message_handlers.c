@@ -123,17 +123,19 @@ void hop_xfer_rx_bind_session(void *context, const hop_session_id *session) {
     }
 
     if (!terminated) {
+        uint32_t interrupted_batch = 0;
         if (was_active && rx->batch_state.active) {
-            uint32_t previous_batch = rx->batch_state.batch;
-            if ((previous_batch & HOP_XFER_PASTE_BATCH_FLAG) &&
+            interrupted_batch = rx->batch_state.batch;
+            if ((interrupted_batch & HOP_XFER_PASTE_BATCH_FLAG) &&
                 rx->services.cancel_clipboard)
-                rx->services.cancel_clipboard(rx->services.context, previous_batch);
-            if (rx->services.status_end)
-                rx->services.status_end(rx->services.context, previous_batch,
-                    HOP_XFER_FAILED, "Receive interrupted");
+                rx->services.cancel_clipboard(rx->services.context, interrupted_batch);
         }
         rx_release_terminal_resources(rx, 1, was_active);
+        if (was_active) rx_abort_finish_task(rx, 0);
         rx_abort_clear_state(rx);
+        if (interrupted_batch && rx->services.status_end)
+            rx->services.status_end(rx->services.context, interrupted_batch,
+                HOP_XFER_FAILED, "Receive interrupted");
     }
 
     if (rx->services.status_reset)

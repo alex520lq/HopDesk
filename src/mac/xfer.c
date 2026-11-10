@@ -616,16 +616,14 @@ int xfer_init(const hop_config *cfg) {
     if (!wq_start()) {
         hop_log(HOP_LOG_ERROR, "xfer: writer thread start failed");
         pthread_rwlock_unlock(&s_x_lifecycle_lock);
-        xfer_shutdown();
-        return;
+        return 0;
     }
 
     if (!hop_mac_sender_threads_start(
             &s_x.sender_threads, send_thread, conn_thread, NULL)) {
         hop_log(HOP_LOG_ERROR, "xfer: sender/connection thread start failed");
         pthread_rwlock_unlock(&s_x_lifecycle_lock);
-        xfer_shutdown();
-        return;
+        return 0;
     }
 
     hop_log(HOP_LOG_INFO, "xfer: chunk %u KB", ck);

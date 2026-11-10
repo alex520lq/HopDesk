@@ -356,7 +356,7 @@ No physical two-device or weak-network acceptance is claimed by the unit/CI test
 - macOS preserves the lock order by snapshotting peer readiness under the session lock before acquiring the queue lock. Windows captures peer socket/session/epoch while holding its existing queue/state critical section. Both retain the 200 ms reconnect/cancel poll.
 - Added production-linked scheduler tests for immediate ready selection, cancelled middle-node removal while offline, peer-state refresh after wait, offline deadline expiry, FIFO head priority, stop while waiting, lock release on wait failure, and invalid adapters. Wired tests into Windows and macOS Core suites; app build scripts pick up the new Core file automatically.
 - Source-contract regressions ensure platform worker loops no longer perform queue take policy themselves and that native wait callbacks preserve lock semantics.
-- **Validation: pending exact-head Windows MSVC and macOS Apple Clang Actions run.**
+- **Validation: GitHub Actions Run #1522 (ID `42854615651`, tested commit `7c0c2f48e486b470e7d099b0120d455a310295b5`) passed Windows MSVC, macOS Apple Clang, portable Core tests and the Windows HA fixture.**
 - Next: extract active-job/peer-ABORT arbitration and the platform worker runtime context into an explicit adapter, then remove remaining duplicated sender worker orchestration from the platform include fragments. Keep all native socket/session and thread handles in platform-owned code.
 
 
@@ -367,5 +367,5 @@ No physical two-device or weak-network acceptance is claimed by the unit/CI test
 - Receiver ABORT handling, new-session reset, UI cancellation targeting, scheduler Job claim and worker completion now use the shared active-job API. The sender platform context points to the shared ABORT batch field for existing engine cancellation checks.
 - Worker disposal and early-stop/task-state-failure paths explicitly clear the matching active marker. A stale callback cannot clear a different Job because the Core helper requires both batch and Task ID to match.
 - Added portable tests for active-job start, cancellation target, batch-scoped peer ABORT, exact Task-ID matching, non-cancel ABORT, session reset and invalid identities. Wired them into Windows/macOS Core tests and the Windows HA fixture.
-- **Validation: pending exact-head Windows MSVC, macOS Apple Clang and HA fixture Actions run.**
+- **Validation: GitHub Actions Run #1522 (ID `42854615651`, tested commit `7c0c2f48e486b470e7d099b0120d455a310295b5`) passed Windows MSVC, macOS Apple Clang, portable Core tests and the Windows HA fixture.**
 - Next: consolidate the remaining platform worker runtime callbacks and extract the remaining sender protocol compatibility include fragments into independent compile units. Do not move socket handles, native synchronization or UI callbacks into Core.

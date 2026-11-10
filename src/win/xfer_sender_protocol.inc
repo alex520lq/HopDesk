@@ -525,14 +525,20 @@ static int ack_wait(const hop_xfer_sender_context *context,
 }
 
 /* Image payloads share the same rate limiter and owned-buffer path as files. */
-static int send_done(SOCKET c, uint32_t batch, uint32_t ok,
-                      uint32_t total) {
+static int send_done_with_context(const hop_xfer_sender_context *context,
+                                    SOCKET c, uint32_t batch, uint32_t ok,
+                                    uint32_t total) {
     uint8_t dp[20];
     hop_put_be32(dp, batch);
     hop_put_be32(dp + 4, ok);
     hop_put_be32(dp + 8, total);
     hop_put_be64(dp + 12, 0);
-    return send_small(c, HOP_MSG_XFER_DONE, dp, sizeof(dp), batch);
+    return send_small_with_context(context, c, HOP_MSG_XFER_DONE,
+                                   dp, sizeof(dp), batch);
+}
+
+static int send_done(SOCKET c, uint32_t batch, uint32_t ok, uint32_t total) {
+    return send_done_with_context(&s_sender_context, c, batch, ok, total);
 }
 
 /* run_job 的结局 */
@@ -567,8 +573,8 @@ static int sender_commit_session_matches(void *user, const uint8_t *session) {
 static int sender_commit_current_connection(void *user, intptr_t *socket_handle,
                                             uint64_t *epoch, uint8_t *session,
                                             size_t session_capacity) {
-    (void)user;
-    if (!socket_handle || !epoch || !session ||
+    xfer_job *job = (xfer_job *)user;
+    if (!job || !socket_handle || !epoch || !session ||
         session_capacity < HOP_SESSION_BYTES) return 0;
     EnterCriticalSection(&s_x.lock);
     int ready = s_x.peer_ready && s_x.client != INVALID_SOCKET;
@@ -576,6 +582,8 @@ static int sender_commit_current_connection(void *user, intptr_t *socket_handle,
         *socket_handle = (intptr_t)s_x.client;
         *epoch = s_x.epoch;
         memcpy(session, s_x.session.bytes, HOP_SESSION_BYTES);
+        job->commit_socket = *socket_handle;
+        job->commit_epoch = *epoch;
     }
     LeaveCriticalSection(&s_x.lock);
     return ready;
@@ -583,9 +591,11 @@ static int sender_commit_current_connection(void *user, intptr_t *socket_handle,
 static int sender_commit_send_done(void *user, intptr_t socket_handle,
                                    uint64_t epoch, uint32_t batch,
                                    uint32_t ok_count, uint32_t total_count) {
-    (void)user;
+    const xfer_job *job = (const xfer_job *)user;
+    if (!job) return 0;
     s_send_epoch = (unsigned long)epoch;
-    return send_done((SOCKET)socket_handle, batch, ok_count, total_count);
+    return send_done_with_context(&job->sender_context, (SOCKET)socket_handle,
+                                  batch, ok_count, total_count);
 }
 static int sender_commit_ack_register(void *user, uint32_t batch, uint32_t slot) {
     (void)user; return ack_register(batch, slot);

@@ -10,6 +10,7 @@ typedef struct {
     uint64_t last_task;
     int stopping;
     int cancelled;
+    int batch_cancelled;
     int aborted;
     int writes;
     int status_start_calls;
@@ -52,6 +53,11 @@ static int fake_cancelled(void *user, uint32_t batch, uint64_t task_id) {
     f->last_batch = batch;
     f->last_task = task_id;
     return f->cancelled;
+}
+static int fake_batch_cancelled(void *user, uint32_t batch) {
+    fake_sender *f = (fake_sender *)user;
+    f->last_batch = batch;
+    return f->batch_cancelled;
 }
 static int fake_peer_aborted(void *user, uint32_t batch) {
     fake_sender *f = (fake_sender *)user;
@@ -125,6 +131,7 @@ static hop_xfer_sender_context make_context(fake_sender *f) {
     ctx.session_current = fake_session_current;
     ctx.write_frame = fake_write_frame;
     ctx.is_cancelled = fake_cancelled;
+    ctx.is_batch_cancelled = fake_batch_cancelled;
     ctx.peer_aborted = fake_peer_aborted;
     ctx.status_start_job = fake_status_start;
     ctx.status_end = fake_status_end;
@@ -183,6 +190,9 @@ int main(void) {
     assert(state.last_batch == 42 && state.last_task == 99);
     state.cancelled = 1;
     assert(ctx.is_cancelled(ctx.user, 42, 99) == 1);
+    assert(ctx.is_batch_cancelled(ctx.user, 42) == 0);
+    state.batch_cancelled = 1;
+    assert(ctx.is_batch_cancelled(ctx.user, 42) == 1);
     state.aborted = 1;
     assert(ctx.peer_aborted(ctx.user, 42) == 1);
     hop_xfer_task task = {99, 1};
@@ -222,6 +232,7 @@ int main(void) {
     REQUIRE_INVALID(session_current);
     REQUIRE_INVALID(write_frame);
     REQUIRE_INVALID(is_cancelled);
+    REQUIRE_INVALID(is_batch_cancelled);
     REQUIRE_INVALID(peer_aborted);
     REQUIRE_INVALID(task_bind_session);
     REQUIRE_INVALID(task_set_state);

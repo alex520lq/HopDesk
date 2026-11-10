@@ -485,8 +485,9 @@ static uint64_t sender_commit_now_ns(void *user) {
     return rate_now_ns();
 }
 static int sender_commit_is_stopping(void *user) {
-    (void)user;
-    return sender_context_is_stopping(NULL);
+    const xf_job *job = (const xf_job *)user;
+    return !job || !job->sender_context.is_stopping ||
+           job->sender_context.is_stopping(job->sender_context.user);
 }
 static int sender_commit_session_matches(void *user, const uint8_t *session) {
     (void)user;
@@ -544,16 +545,17 @@ static hop_xfer_sender_commit_ack_result sender_commit_wait_ack(
     return HOP_XFER_SENDER_COMMIT_ACK_OTHER;
 }
 static int sender_commit_wait_ms(void *user, uint32_t duration_ms) {
-    (void)user;
-    return s_sender_context.wait_ns &&
-           s_sender_context.wait_ns(s_sender_context.user,
-                                    (uint64_t)duration_ms * 1000000ull);
+    const xf_job *job = (const xf_job *)user;
+    return job && job->sender_context.wait_ns &&
+           job->sender_context.wait_ns(job->sender_context.user,
+                                       (uint64_t)duration_ms * 1000000ull);
 }
 
 static int send_done_result(int fd, const xf_job *job) {
     (void)fd;
     hop_xfer_sender_commit_ops ops;
     memset(&ops, 0, sizeof(ops));
+    ops.user = (void *)job;
     ops.now_ms = sender_commit_now_ms;
     ops.now_ns = sender_commit_now_ns;
     ops.is_stopping = sender_commit_is_stopping;

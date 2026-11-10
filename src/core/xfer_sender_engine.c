@@ -2,6 +2,7 @@
 
 #include "xfer_ack_window.h"
 #include "xfer_status.h"
+#include "hop.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -294,5 +295,68 @@ int hop_xfer_sender_run_files(const hop_xfer_sender_engine_ops *ops,
     }
 
     sender_unregister(ops, batch);
+    return HOP_XFER_SENDER_JOB_DONE;
+}
+ 
+int hop_xfer_sender_run_image(const hop_xfer_sender_image_ops *ops,
+                              uint32_t batch, const uint8_t *pixels,
+                              uint32_t width, uint32_t height,
+                              uint32_t stride, uint32_t chunk_size,
+                              uint8_t file_ok_status, int entry_count,
+                              int *next_index, int *ok_count) {
+    if (!ops || !batch || !pixels || !width || !height ||
+        (uint64_t)stride < (uint64_t)width * 4ull || !chunk_size ||
+        entry_count < 0 || !next_index || !ok_count ||
+        *next_index < 0 || *next_index > entry_count ||
+        !ops->cancel_requested || !ops->peer_aborted ||
+        !ops->send_image_begin || !ops->send_image_chunk ||
+        !ops->send_image_end || !ops->status_file_phase) {
+        return HOP_XFER_SENDER_JOB_NET_DOWN;
+    }
+
+    if (ops->cancel_requested(ops->user, batch))
+        return HOP_XFER_SENDER_JOB_CANCELLED;
+    if (ops->peer_aborted(ops->user, batch))
+        return HOP_XFER_SENDER_JOB_PEER_ABORT;
+
+    if (!ops->send_image_begin(ops->user, batch, width, height, stride))
+        return HOP_XFER_SENDER_JOB_NET_DOWN;
+
+    const uint64_t total = (uint64_t)stride * (uint64_t)height;
+    uint64_t offset = 0;
+    while (offset < total) {
+        if (ops->cancel_requested(ops->user, batch))
+            return HOP_XFER_SENDER_JOB_CANCELLED;
+        if (ops->peer_aborted(ops->user, batch))
+            return HOP_XFER_SENDER_JOB_PEER_ABORT;
+
+        uint64_t remaining = total - offset;
+        uint32_t length = (uint32_t)(remaining < chunk_size ? remaining : chunk_size);
+        uint64_t started_ns = ops->now_ns ? ops->now_ns(ops->user) : 0;
+        uint32_t crc = hop_crc32(0, pixels + offset, length);
+        uint64_t elapsed_ns = 0;
+        if (ops->now_ns) {
+            uint64_t finished_ns = ops->now_ns(ops->user);
+            elapsed_ns = finished_ns >= started_ns ? finished_ns - started_ns : 0;
+        }
+        if (!ops->send_image_chunk(ops->user, batch, 1, offset,
+                                   pixels + offset, length, crc, elapsed_ns))
+            return HOP_XFER_SENDER_JOB_NET_DOWN;
+
+        offset += length;
+        if (ops->yield_cpu) ops->yield_cpu(ops->user);
+        if (ops->cancel_requested(ops->user, batch))
+            return HOP_XFER_SENDER_JOB_CANCELLED;
+        if (ops->peer_aborted(ops->user, batch))
+            return HOP_XFER_SENDER_JOB_PEER_ABORT;
+    }
+
+    if (!ops->send_image_end(ops->user, batch, 1, file_ok_status, 0))
+        return HOP_XFER_SENDER_JOB_NET_DOWN;
+
+    *ok_count = 1;
+    *next_index = entry_count;
+    if (ops->rate_feedback) ops->rate_feedback(ops->user, 0);
+    ops->status_file_phase(ops->user, batch, 0, HOP_XFER_FILE_COMPLETED, 1);
     return HOP_XFER_SENDER_JOB_DONE;
 }

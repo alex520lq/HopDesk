@@ -386,6 +386,18 @@ static __declspec(thread) unsigned long s_send_epoch;
 #else
 static __thread unsigned long s_send_epoch;
 #endif
+typedef struct {
+    CRITICAL_SECTION *state_lock;
+    CRITICAL_SECTION *tx_lock;
+    SOCKET *client;
+    hop_session_id *session;
+    unsigned long *epoch;
+    HANDLE *stop;
+    HANDLE *rate_timer;
+    uint32_t *abort_batch;
+} sender_platform_context;
+
+static sender_platform_context s_sender_platform;
 static hop_xfer_sender_context s_sender_context;
 
 
@@ -406,12 +418,14 @@ static int send_all(SOCKET c, const char *p, int len) {
 
 static int sender_context_session_current(void *user, intptr_t socket_handle,
                                           uint64_t epoch) {
-    (void)user;
+    sender_platform_context *ctx = (sender_platform_context *)user;
+    if (!ctx || !ctx->state_lock || !ctx->client || !ctx->epoch || !ctx->session)
+        return 0;
     SOCKET sock = (SOCKET)socket_handle;
-    EnterCriticalSection(&s_x.lock);
-    int current = s_x.client == sock && (!epoch || s_x.epoch == epoch) &&
-                  hop_session_matches(&s_x.session);
-    LeaveCriticalSection(&s_x.lock);
+    EnterCriticalSection(ctx->state_lock);
+    int current = *ctx->client == sock && (!epoch || *ctx->epoch == epoch) &&
+                  hop_session_matches(ctx->session);
+    LeaveCriticalSection(ctx->state_lock);
     return current;
 }
 
@@ -419,11 +433,11 @@ static int sender_context_write_frame(void *user, intptr_t socket_handle,
                                       uint64_t epoch,
                                       const hop_xfer_sender_frame_part *parts,
                                       size_t part_count) {
-    (void)user;
-    if (!parts || !part_count) return 0;
+    sender_platform_context *ctx = (sender_platform_context *)user;
+    if (!ctx || !ctx->tx_lock || !parts || !part_count) return 0;
     SOCKET sock = (SOCKET)socket_handle;
-    EnterCriticalSection(&s_txlock);
-    int ok = sender_context_session_current(NULL, socket_handle, epoch);
+    EnterCriticalSection(ctx->tx_lock);
+    int ok = sender_context_session_current(user, socket_handle, epoch);
     for (size_t i = 0; ok && i < part_count; ++i) {
         if ((!parts[i].data && parts[i].size) || parts[i].size > (size_t)INT_MAX) {
             ok = 0;
@@ -432,22 +446,25 @@ static int sender_context_write_frame(void *user, intptr_t socket_handle,
         if (parts[i].size)
             ok = send_all(sock, (const char *)parts[i].data, (int)parts[i].size);
     }
-    LeaveCriticalSection(&s_txlock);
+    LeaveCriticalSection(ctx->tx_lock);
     return ok;
 }
 
-static int sender_context_snapshot_session(SOCKET sock, hop_session_id *session,
+static int sender_context_snapshot_session(void *user, SOCKET sock,
+                                           hop_session_id *session,
                                            uint64_t *epoch) {
-    if (!session || !epoch) return 0;
-    EnterCriticalSection(&s_x.lock);
-    int current = s_x.client == sock &&
-                  (!s_send_epoch || s_x.epoch == s_send_epoch) &&
-                  hop_session_matches(&s_x.session);
+    sender_platform_context *ctx = (sender_platform_context *)user;
+    if (!ctx || !ctx->state_lock || !ctx->client || !ctx->epoch ||
+        !ctx->session || !session || !epoch) return 0;
+    EnterCriticalSection(ctx->state_lock);
+    int current = *ctx->client == sock &&
+                  (!s_send_epoch || *ctx->epoch == s_send_epoch) &&
+                  hop_session_matches(ctx->session);
     if (current) {
-        *session = s_x.session;
-        *epoch = s_x.epoch;
+        *session = *ctx->session;
+        *epoch = *ctx->epoch;
     }
-    LeaveCriticalSection(&s_x.lock);
+    LeaveCriticalSection(ctx->state_lock);
     return current;
 }
 
@@ -463,7 +480,7 @@ static int send_small(SOCKET c, uint8_t type, const uint8_t *p, uint32_t len, ui
     hop_session_id session;
     uint64_t epoch = 0;
     int ok = s_sender_context.write_frame != NULL &&
-             sender_context_snapshot_session(c, &session, &epoch);
+             sender_context_snapshot_session(s_sender_context.user, c, &session, &epoch);
     hop_xfer_sender_frame_part parts[3];
     size_t part_count = 0;
     if (ok && type != HOP_MSG_XFER_HELLO) {

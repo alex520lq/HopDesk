@@ -35,6 +35,7 @@
 #include "../core/xfer_rate.h"
 #include "../core/xfer_sender_context.h"
 #include "../core/xfer_sender_engine.h"
+#include "../core/xfer_sender_queue.h"
 #include "../core/xfer_ack_window.h"
 #include "../core/xfer_buffer_pool.h"
 

@@ -552,6 +552,7 @@ static int send_small(SOCKET c, uint8_t type, const uint8_t *p,
 /* ---------------- 对外接口 ---------------- */
 
 int xfer_init(HWND hwnd, const hop_config *cfg) {
+    AcquireSRWLockExclusive(&s_x_lifecycle_lock);
     history_load();
     task_history_store_open();
     memset(&s_x, 0, sizeof(s_x));
@@ -596,10 +597,11 @@ int xfer_init(HWND hwnd, const hop_config *cfg) {
 
     hop_log(HOP_LOG_INFO, "xfer: listening on port %u, chunk %u KB",
             (unsigned)cfg->data_port, ck);
+    ReleaseSRWLockExclusive(&s_x_lifecycle_lock);
     return 1;
 
 fail:
-    xfer_shutdown();
+    ReleaseSRWLockExclusive(&s_x_lifecycle_lock);
     return 0;
 }
 
@@ -624,13 +626,13 @@ static int xfer_shutdown_task_audit(void) {
     return 1;
 }
 
-void xfer_shutdown(void) {
+int xfer_shutdown(void) {
     /* Exclusive admission lock waits for all in-flight scans/submitters and
      * prevents new ones from entering while native state is being destroyed. */
     AcquireSRWLockExclusive(&s_x_lifecycle_lock);
     if (!s_x.sync_initialized) {
         ReleaseSRWLockExclusive(&s_x_lifecycle_lock);
-        return;
+        return 1;
     }
     s_x.shutting_down = 1;
     if (s_x.stop) SetEvent(s_x.stop);
@@ -649,7 +651,7 @@ void xfer_shutdown(void) {
     if (!joined) {
         hop_log(HOP_LOG_WARN, "xfer: sender/connection threads still alive; preserve Jobs, Tasks and shared state for retry");
         ReleaseSRWLockExclusive(&s_x_lifecycle_lock);
-        return;
+        return 0;
     }
 
     /* No worker or submitter can mutate the queue now. Shutdown becomes the
@@ -657,18 +659,18 @@ void xfer_shutdown(void) {
     if (!sender_shutdown_drain_jobs()) {
         hop_log(HOP_LOG_ERROR, "xfer: sender Job disposal deferred; preserve Task/Reservation state for retry");
         ReleaseSRWLockExclusive(&s_x_lifecycle_lock);
-        return;
+        return 0;
     }
 
     rx_reset(&s_rx);
     if (!wq_stop()) {
         hop_log(HOP_LOG_WARN, "xfer: writer worker still owns receive resources; preserve shared state for retry");
         ReleaseSRWLockExclusive(&s_x_lifecycle_lock);
-        return;
+        return 0;
     }
     if (!xfer_shutdown_task_audit()) {
         ReleaseSRWLockExclusive(&s_x_lifecycle_lock);
-        return;
+        return 0;
     }
 
     hop_xfer_task_history_store_close();
@@ -680,6 +682,7 @@ void xfer_shutdown(void) {
     DeleteCriticalSection(&s_x.lock);
     DeleteCriticalSection(&s_txlock);
     ReleaseSRWLockExclusive(&s_x_lifecycle_lock);
+    return 1;
 }
 
 int xfer_connected(void) {

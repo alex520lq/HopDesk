@@ -686,13 +686,16 @@ static void sender_engine_file_ack_unregister(void *user, uint32_t batch, uint32
     ack_unregister(batch, id);
 }
 static uint64_t sender_engine_file_now_ns(void *user) {
-    (void)user;
-    return rate_now_ns();
+    sender_file_engine_call *call = (sender_file_engine_call *)user;
+    return call && call->job->sender_context.now_ns
+        ? call->job->sender_context.now_ns(call->job->sender_context.user)
+        : rate_now_ns();
 }
 static void sender_engine_file_status_stage_time(void *user, uint32_t batch,
                                                   int stage, uint64_t elapsed_ns) {
-    (void)user;
-    status_stage_time(HOP_XFER_DIR_SEND, batch, stage, elapsed_ns);
+    sender_file_engine_call *call = (sender_file_engine_call *)user;
+    sender_status_stage_time(call ? &call->job->sender_context : NULL,
+                             batch, stage, elapsed_ns);
 }
 static void sender_engine_file_yield(void *user) {
     (void)user;
@@ -710,13 +713,19 @@ static const char *sender_engine_entry_path(void *user, const void *entry) {
 }
 
 static int sender_engine_cancel_requested(void *user, uint32_t batch) {
-    (void)user;
-    return cancel_requested(batch);
+    sender_file_engine_call *call = (sender_file_engine_call *)user;
+    return cancel_requested(batch) ||
+        (call && call->job->sender_context.is_cancelled &&
+         call->job->sender_context.is_cancelled(
+             call->job->sender_context.user, batch, call->job->task.id));
 }
 
 static int sender_engine_peer_aborted(void *user, uint32_t batch) {
-    (void)user;
-    return peer_aborted(batch);
+    sender_file_engine_call *call = (sender_file_engine_call *)user;
+    return call && call->job->sender_context.peer_aborted
+        ? call->job->sender_context.peer_aborted(
+              call->job->sender_context.user, batch)
+        : peer_aborted(batch);
 }
 
 static hop_xfer_sender_send_result sender_engine_send_entry(
@@ -782,8 +791,9 @@ static void sender_engine_rate_feedback(void *user, uint64_t rtt_us) {
 static void sender_engine_status_file_phase(void *user, uint32_t batch,
                                              int index, int phase,
                                              uint32_t attempts) {
-    (void)user;
-    status_file_phase(HOP_XFER_DIR_SEND, batch, index, phase, attempts);
+    sender_file_engine_call *call = (sender_file_engine_call *)user;
+    sender_status_file_phase(call ? &call->job->sender_context : NULL,
+                             batch, index, phase, attempts);
 }
 
 static unsigned sender_engine_retry_delay_ms(void *user, unsigned attempt) {
@@ -792,10 +802,10 @@ static unsigned sender_engine_retry_delay_ms(void *user, unsigned attempt) {
 }
 
 static int sender_engine_wait_ms(void *user, unsigned duration_ms) {
-    (void)user;
-    return s_sender_context.wait_ns &&
-           s_sender_context.wait_ns(s_sender_context.user,
-                                    (uint64_t)duration_ms * 1000000ull);
+    sender_file_engine_call *call = (sender_file_engine_call *)user;
+    const hop_xfer_sender_context *context = call ? &call->job->sender_context : NULL;
+    return context && context->wait_ns &&
+           context->wait_ns(context->user, (uint64_t)duration_ms * 1000000ull);
 }
 
 static void sender_engine_request_reconnect(void *user) {
@@ -804,13 +814,16 @@ static void sender_engine_request_reconnect(void *user) {
 }
 
 static void sender_engine_log(void *user, int level, const char *message) {
-    (void)user;
-    hop_log((hop_log_level)level, "%s", message ? message : "");
+    sender_file_engine_call *call = (sender_file_engine_call *)user;
+    sender_logf(call ? &call->job->sender_context : NULL, level, "%s",
+                message ? message : "");
 }
 
 static uint64_t sender_engine_now_ns(void *user) {
-    (void)user;
-    return rate_now_ns();
+    sender_file_engine_call *call = (sender_file_engine_call *)user;
+    return call && call->job->sender_context.now_ns
+        ? call->job->sender_context.now_ns(call->job->sender_context.user)
+        : rate_now_ns();
 }
 
 static int sender_engine_send_image_begin(void *user, uint32_t batch,

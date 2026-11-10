@@ -9,6 +9,7 @@
 static int reserve_calls;
 static int reject_after = -1;
 static int cancel_requested;
+static int allocation_fail;
 
 static int scan_reserve(void *context, uint64_t bytes) {
     (void)context; (void)bytes;
@@ -20,6 +21,11 @@ static int scan_cancel(void *context) {
     (void)context;
     return cancel_requested;
 }
+static void *scan_realloc(void *context, void *memory, uint64_t bytes) {
+    (void)context;
+    if (allocation_fail) return NULL;
+    return realloc(memory, (size_t)bytes);
+}
 static int scan_watchdog_begin(void *context, const char *operation, unsigned timeout_ms) {
     (void)context; (void)operation; (void)timeout_ms;
     return 1;
@@ -28,7 +34,7 @@ static void scan_watchdog_end(void *context, int ticket) {
     (void)context; (void)ticket;
 }
 static const hop_xfer_scan_services scan_services = {
-    NULL, scan_reserve, scan_cancel, scan_watchdog_begin, scan_watchdog_end
+    NULL, scan_reserve, scan_cancel, scan_realloc, scan_watchdog_begin, scan_watchdog_end
 };
 
 static void reset_scan(elist *list) {
@@ -36,6 +42,7 @@ static void reset_scan(elist *list) {
     reserve_calls = 0;
     reject_after = -1;
     cancel_requested = 0;
+    allocation_fail = 0;
 }
 
 #ifdef _WIN32
@@ -82,6 +89,11 @@ int main(void) {
     reset_scan(&list); reject_after = 2;
     hop_xfer_scan_paths(&list, paths, 1, &scan_services);
     assert(list.failed && list.budget_rejected && list.error == HOP_XFER_SCAN_BUDGET_REJECTED);
+    elist_free(&list);
+
+    reset_scan(&list); allocation_fail = 1;
+    hop_xfer_scan_paths(&list, paths, 1, &scan_services);
+    assert(list.failed && list.error == HOP_XFER_SCAN_OUT_OF_MEMORY);
     elist_free(&list);
 
     reset_scan(&list); cancel_requested = 1;

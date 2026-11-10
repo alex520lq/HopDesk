@@ -51,8 +51,14 @@ typedef struct hop_xfer_sender_context {
     void (*task_finish)(void *user, uint64_t task_id, int outcome);
 } hop_xfer_sender_context;
 
-/* Validate mandatory callbacks before starting a job; optional observability
- * callbacks may be NULL. */
+/* The clock subset can be adopted independently while the remaining Sender
+ * dependencies are migrated in later slices. */
+static inline int hop_xfer_sender_context_clock_valid(const hop_xfer_sender_context *ctx) {
+    return ctx && ctx->now_ns && ctx->wait_ns && ctx->is_stopping;
+}
+
+/* Validate the complete execution contract before starting a fully migrated
+ * Sender operation; optional observability callbacks may be NULL. */
 static inline int hop_xfer_sender_context_valid(const hop_xfer_sender_context *ctx) {
     return ctx && ctx->now_ns && ctx->wait_ns && ctx->is_stopping &&
            ctx->session_current && ctx->write_frame && ctx->is_cancelled &&

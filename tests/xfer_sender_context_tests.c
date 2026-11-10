@@ -30,9 +30,12 @@ static int fake_session_current(void *user, intptr_t socket_handle, uint64_t epo
     return socket_handle != (intptr_t)-1 && epoch != 0;
 }
 static int fake_write_frame(void *user, intptr_t socket_handle, uint64_t epoch,
-                            const uint8_t *frame, size_t frame_size) {
+                            const hop_xfer_sender_frame_part *parts,
+                            size_t part_count) {
     fake_sender *f = (fake_sender *)user;
-    if (socket_handle == (intptr_t)-1 || !epoch || (!frame && frame_size)) return 0;
+    if (socket_handle == (intptr_t)-1 || !epoch || (!parts && part_count)) return 0;
+    for (size_t i = 0; i < part_count; ++i)
+        if (!parts[i].data && parts[i].size) return 0;
     f->writes++;
     return 1;
 }
@@ -53,14 +56,14 @@ static void fake_stage_time(void *user, uint32_t batch, int stage, uint64_t ns) 
 static void fake_log(void *user, int level, const char *message) {
     (void)user; (void)level; (void)message;
 }
-static int fake_task_state(void *user, uint64_t task_id, int state) {
-    (void)user; (void)task_id; (void)state; return 1;
+static int fake_task_state(void *user, hop_xfer_task *task, int state) {
+    (void)user; (void)state; return task && task->id == 99;
 }
-static int fake_task_completion(void *user, uint64_t task_id) {
-    (void)user; (void)task_id; return 1;
+static int fake_task_completion(void *user, const hop_xfer_task *task) {
+    (void)user; return task && task->id == 99;
 }
-static void fake_task_finish(void *user, uint64_t task_id, int outcome) {
-    (void)user; (void)task_id; (void)outcome;
+static void fake_task_finish(void *user, hop_xfer_task *task, int outcome) {
+    (void)user; (void)outcome; assert(task && task->id == 99);
 }
 
 static hop_xfer_sender_context make_context(fake_sender *f) {
@@ -112,8 +115,14 @@ int main(void) {
     assert(!ctx.is_stopping(ctx.user));
     assert(ctx.session_current(ctx.user, 7, 3));
     assert(!ctx.session_current(ctx.user, (intptr_t)-1, 3));
-    const uint8_t frame[] = {1, 2, 3};
-    assert(ctx.write_frame(ctx.user, 7, 3, frame, sizeof(frame)));
+    const uint8_t header[] = {1, 2, 3};
+    const uint8_t prefix[] = {4, 5};
+    const uint8_t payload[] = {6, 7, 8, 9};
+    const hop_xfer_sender_frame_part parts[] = {
+        {header, sizeof(header)}, {prefix, sizeof(prefix)},
+        {payload, sizeof(payload)}
+    };
+    assert(ctx.write_frame(ctx.user, 7, 3, parts, 3));
     assert(state.writes == 1);
     assert(ctx.is_cancelled(ctx.user, 42, 99) == 0);
     assert(state.last_batch == 42 && state.last_task == 99);
@@ -121,9 +130,10 @@ int main(void) {
     assert(ctx.is_cancelled(ctx.user, 42, 99) == 1);
     state.aborted = 1;
     assert(ctx.peer_aborted(ctx.user, 42) == 1);
-    assert(ctx.task_set_state(ctx.user, 99, 1));
-    assert(ctx.task_begin_completion(ctx.user, 99));
-    ctx.task_finish(ctx.user, 99, 2);
+    hop_xfer_task task = {99, 1};
+    assert(ctx.task_set_state(ctx.user, &task, 1));
+    assert(ctx.task_begin_completion(ctx.user, &task));
+    ctx.task_finish(ctx.user, &task, 2);
 
     /* Observability is optional and must not make a valid execution context
      * invalid. Every execution/lifecycle dependency remains mandatory. */

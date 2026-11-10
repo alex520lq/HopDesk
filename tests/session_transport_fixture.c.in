@@ -51,7 +51,6 @@ static unsigned long s_send_epoch;
 static uint64_t rate_now_ns(void){return 0;}
 static int rate_wait_for_chunk(uint32_t bytes){(void)bytes;return 1;}
 static void rate_feedback(uint64_t ack_rtt_us){(void)ack_rtt_us;}
-static int send_session_current(int fd){return fd==7 && hop_session_matches(&s_x.session);}
 static int send_all(int fd,const void *p,size_t n){assert(fd==7);assert(captured_len+n<=sizeof(captured));memcpy(captured+captured_len,p,n);captured_len+=n;return 1;}
 static void status_stage_time(int d,uint32_t batch,int stage,uint64_t ns){(void)d;(void)batch;(void)stage;(void)ns;}
 static void status_chunk_timed(int d,uint32_t batch,uint32_t id,uint64_t off,uint32_t len,uint64_t rd,uint64_t crc,uint64_t send,uint64_t rx){(void)d;(void)batch;(void)id;(void)off;(void)len;(void)rd;(void)crc;(void)send;(void)rx;}

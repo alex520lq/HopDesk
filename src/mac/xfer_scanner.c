@@ -2,6 +2,7 @@
 
 #include "../core/hop.h"
 #include <dirent.h>
+#include <stdio.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>

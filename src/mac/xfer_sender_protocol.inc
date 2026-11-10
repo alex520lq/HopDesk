@@ -508,14 +508,20 @@ static int ack_wait(const hop_xfer_sender_context *context,
 /* 收尾：告诉接收端本批实际送达了多少。
  * ok < total 时接收端会报"部分成功" —— 这是用户唯一能拿到准确结论的地方，
  * 所以 count 必须是真实值，不能像以前那样写死 0。 */
-static int send_done(int fd, uint32_t batch, uint32_t ok,
-                      uint32_t total) {
+static int send_done_with_context(const hop_xfer_sender_context *context,
+                                    int fd, uint32_t batch, uint32_t ok,
+                                    uint32_t total) {
     uint8_t dp[20];
     hop_put_be32(dp, batch);
     hop_put_be32(dp + 4, ok);
     hop_put_be32(dp + 8, total);
     hop_put_be64(dp + 12, 0);
-    return send_small(fd, HOP_MSG_XFER_DONE, dp, sizeof(dp), batch);
+    return send_small_with_context(context, fd, HOP_MSG_XFER_DONE,
+                                   dp, sizeof(dp), batch);
+}
+
+static int send_done(int fd, uint32_t batch, uint32_t ok, uint32_t total) {
+    return send_done_with_context(&s_sender_context, fd, batch, ok, total);
 }
 
 /* Re-send only DONE, never file contents, while the same control session
@@ -542,8 +548,8 @@ static int sender_commit_session_matches(void *user, const uint8_t *session) {
 static int sender_commit_current_connection(void *user, intptr_t *socket_handle,
                                             uint64_t *epoch, uint8_t *session,
                                             size_t session_capacity) {
-    (void)user;
-    if (!socket_handle || !epoch || !session ||
+    xf_job *job = (xf_job *)user;
+    if (!job || !socket_handle || !epoch || !session ||
         session_capacity < HOP_SESSION_BYTES) return 0;
     pthread_mutex_lock(&s_x.slock);
     int ready = s_x.peer_ready && s_x.sock >= 0;
@@ -551,6 +557,8 @@ static int sender_commit_current_connection(void *user, intptr_t *socket_handle,
         *socket_handle = (intptr_t)s_x.sock;
         *epoch = s_x.epoch;
         memcpy(session, s_x.session.bytes, HOP_SESSION_BYTES);
+        job->commit_socket = *socket_handle;
+        job->commit_epoch = *epoch;
     }
     pthread_mutex_unlock(&s_x.slock);
     return ready;
@@ -558,9 +566,11 @@ static int sender_commit_current_connection(void *user, intptr_t *socket_handle,
 static int sender_commit_send_done(void *user, intptr_t socket_handle,
                                    uint64_t epoch, uint32_t batch,
                                    uint32_t ok_count, uint32_t total_count) {
-    (void)user;
+    const xf_job *job = (const xf_job *)user;
+    if (!job) return 0;
     s_send_epoch = (unsigned long)epoch;
-    return send_done((int)socket_handle, batch, ok_count, total_count);
+    return send_done_with_context(&job->sender_context, (int)socket_handle,
+                                  batch, ok_count, total_count);
 }
 static int sender_commit_ack_register(void *user, uint32_t batch, uint32_t slot) {
     (void)user; return ack_register(batch, slot);

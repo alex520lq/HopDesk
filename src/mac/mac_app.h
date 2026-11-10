@@ -19,6 +19,7 @@ void local_addresses(char *out,size_t cap);
 
 /* net_client.c */
 void net_loop_run(void);                 /* 连接 + 重连 + 接收（后台线程） */
+void net_loop_shutdown(void);             /* stop and join control workers */
 int  net_send(uint8_t type, const void *p, uint32_t len);
 void net_request_stop(void);
 void net_request_reconnect(void); /* close current socket; background loop reconnects */

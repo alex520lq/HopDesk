@@ -941,8 +941,11 @@ static void sender_engine_yield(void *user) {
 
 static int run_job(int fd, uint8_t *tx, xf_job *j) {
     ack_unregister_batch(j->batch);
-    if (cancel_requested(j->batch)) return JOB_CANCELLED;
-    if (peer_aborted(j->batch)) return JOB_PEER_ABORT;
+    if (sender_job_cancel_requested(&j->sender_context, j->batch, j->task.id))
+        return JOB_CANCELLED;
+    if (j->sender_context.peer_aborted &&
+        j->sender_context.peer_aborted(j->sender_context.user, j->batch))
+        return JOB_PEER_ABORT;
     sender_file_engine_call call = {fd, tx, j};
     if (j->is_image) {
         hop_xfer_sender_image_ops image_ops;

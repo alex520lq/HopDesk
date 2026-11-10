@@ -631,7 +631,7 @@ void xfer_shutdown(void) {
     pthread_cond_broadcast(&s_x.qcond);
     pthread_mutex_unlock(&s_x.qlock);
 
-    hop_xfer_ack_coordinator_wake(s_ack);
+    if (s_ack) hop_xfer_ack_coordinator_wake(s_ack);
 
     /* 必须 join：两个线程都会碰写盘队列，销毁队列时它们还活着就是释放后使用。
      * read/write 都是阻塞的，靠上面 shutdown(sock) 和 SO_SNDTIMEO 让它们返回。 */

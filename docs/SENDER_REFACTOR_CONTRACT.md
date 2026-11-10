@@ -219,3 +219,12 @@ No physical two-device or weak-network acceptance is claimed by the unit/CI test
 - Validation status: implementation is pushed to PR #11; the new dual-platform Actions run is the acceptance gate and is not yet recorded here. No runtime or CI pass is claimed for this slice.
 - Remaining worker extraction: move native thread start/stop/join and queue synchronization behind explicit platform worker adapters; move retry scheduling and terminal Task/status/history ordering behind a Worker Context; remove the xfer_sender_worker.inc include fragments only after production-linked tests cover stop/join timeout, shutdown drain, cancel/ABORT, retry requeue and exactly-once Task/Reservation release.
 
+## 15. Shared Sender reconnect retry policy (2026-11-10)
+
+- Added src/core/xfer_sender_retry.[ch] as a pure Core policy for incrementing reconnect attempts, initializing/preserving the reconnect give-up deadline, deciding whether another retry is permitted, and calculating the next retry timestamp.
+- Windows/macOS workers now call the same policy and only apply its returned attempt/deadline values to their native job record. Backoff delay values still come from the existing shared hop_xfer_job_retry_delay_ms helper; protocol sequencing, retry count limit, reconnect budget, queue-front reinsert and checkpoint ownership are unchanged.
+- Retry deadline addition saturates at UINT64_MAX instead of wrapping. Attempt count is bounded by the existing HOP_XFER_JOB_RETRY_MAX policy.
+- Added tests/xfer_sender_retry_tests.c for first/repeated retry, attempt exhaustion, exact give-up boundary, saturating deadlines and invalid input. Wired the production Core module and test into both platform Core scripts and the Windows HA link target; regression assertions verify both workers use the shared planner.
+- Validation status: the retry module's standalone policy test passed a local C11 build with -Wall -Wextra -Werror and ASan/UBSan. Full Windows/macOS GitHub Actions validation remains pending; no app-build or full regression pass is claimed for this slice.
+- Next worker slice: extract the shared terminal outcome decision and Task/Reservation finish gate behind explicit Worker Context callbacks, then split native thread start/stop/join adapters from the remaining worker orchestration.
+

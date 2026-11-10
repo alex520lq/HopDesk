@@ -255,3 +255,19 @@ if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
 if ($LASTEXITCODE -ne 0) { throw "Sender engine test compilation failed ($LASTEXITCODE)" }
 & $senderEngine
 if ($LASTEXITCODE -ne 0) { throw "Sender engine tests failed ($LASTEXITCODE)" }
+
+$senderImage = Join-Path $build 'hopdesk-sender-image-tests.exe'
+$senderImageSources = @(
+    (Join-Path $root 'tests/xfer_sender_image_tests.c'),
+    (Join-Path $root 'src/core/xfer_sender_engine.c'),
+    (Join-Path $root 'src/core/xfer_ack_window.c'),
+    (Join-Path $root 'src/core/crc32.c')
+)
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /O2 /W4 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I $inc /Fe:$senderImage @senderImageSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $senderImage @senderImageSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Sender image test compilation failed ($LASTEXITCODE)" }
+& $senderImage
+if ($LASTEXITCODE -ne 0) { throw "Sender image tests failed ($LASTEXITCODE)" }

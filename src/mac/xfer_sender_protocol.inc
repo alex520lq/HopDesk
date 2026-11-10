@@ -455,48 +455,6 @@ static void send_ack(int fd, uint32_t batch, uint32_t id, int status) {
     send_small(fd, HOP_MSG_FILE_ACK, b, 9, batch);
 }
 
-static int run_job(int fd, uint8_t *tx, xf_job *j) {
-
-    ack_unregister_batch(j->batch);
-    if(cancel_requested(j->batch))return JOB_CANCELLED;
-    if(peer_aborted(j->batch))return JOB_PEER_ABORT;
-    if (j->is_image) {
-        uint8_t bp[20];
-        hop_put_be32(bp, j->batch);
-        hop_put_be32(bp + 4, 1);
-        hop_put_be32(bp + 8, (uint32_t)j->w);
-        hop_put_be32(bp + 12, (uint32_t)j->h);
-        hop_put_be32(bp + 16, (uint32_t)j->stride);
-        if (!send_small(fd, HOP_MSG_IMAGE_BEGIN, bp, 20, j->batch)) return JOB_NET_DOWN;
-
-        uint64_t total = (uint64_t)j->stride * (uint64_t)j->h;
-        uint64_t off = 0;
-        while (off < total) {
-            uint32_t n = (uint32_t)((total - off) < s_x.chunk ? (total - off) : s_x.chunk);
-            uint64_t crc_started_ns=rate_now_ns();
-            uint32_t crc = hop_crc32(0, j->pixels + off, n);
-            uint64_t crc_elapsed_ns=rate_now_ns()-crc_started_ns;
-            if (!send_chunk(fd,tx,j->batch,1,off,j->pixels+off,n,crc,0,crc_elapsed_ns))
-                return JOB_NET_DOWN;
-            off += n;
-            yield_cpu();
-            if (cancel_requested(j->batch)) return JOB_CANCELLED;
-            if (peer_aborted(j->batch)) return JOB_PEER_ABORT;
-            if (cancel_requested(j->batch)) return JOB_CANCELLED;
-        }
-
-        uint8_t endp[9];
-        hop_put_be32(endp, 1);
-        endp[4] = HOP_FILE_OK;
-        hop_put_be32(endp + 5, 0);      /* 图片不做整文件 CRC，块 CRC 已足够 */
-        if (!send_small(fd, HOP_MSG_FILE_END, endp, 9, j->batch)) return JOB_NET_DOWN;
-        rate_feedback(0);
-
-        j->ok = 1;
-        j->next_i = j->n;
-        status_file_phase(HOP_XFER_DIR_SEND,j->batch,0,HOP_XFER_FILE_COMPLETED,1);
-        return JOB_DONE;
-    }
 typedef struct {
     int fd;
     uint8_t *tx;
@@ -589,6 +547,50 @@ static void sender_engine_log(void *user, int level, const char *message) {
     (void)user;
     hop_log((hop_log_level)level, "%s", message ? message : "");
 }
+
+static int run_job(int fd, uint8_t *tx, xf_job *j) {
+    ack_unregister_batch(j->batch);
+    if (cancel_requested(j->batch)) return JOB_CANCELLED;
+    if (peer_aborted(j->batch)) return JOB_PEER_ABORT;
+    if (j->is_image) {
+        uint8_t bp[20];
+        hop_put_be32(bp, j->batch);
+        hop_put_be32(bp + 4, 1);
+        hop_put_be32(bp + 8, (uint32_t)j->w);
+        hop_put_be32(bp + 12, (uint32_t)j->h);
+        hop_put_be32(bp + 16, (uint32_t)j->stride);
+        if (!send_small(fd, HOP_MSG_IMAGE_BEGIN, bp, 20, j->batch))
+            return JOB_NET_DOWN;
+
+        uint64_t total = (uint64_t)j->stride * (uint64_t)j->h;
+        uint64_t off = 0;
+        while (off < total) {
+            uint32_t n = (uint32_t)((total - off) < s_x.chunk ? (total - off) : s_x.chunk);
+            uint64_t crc_started_ns = rate_now_ns();
+            uint32_t crc = hop_crc32(0, j->pixels + off, n);
+            uint64_t crc_elapsed_ns = rate_now_ns() - crc_started_ns;
+            if (!send_chunk(fd, tx, j->batch, 1, off, j->pixels + off,
+                            n, crc, 0, crc_elapsed_ns))
+                return JOB_NET_DOWN;
+            off += n;
+            yield_cpu();
+            if (cancel_requested(j->batch)) return JOB_CANCELLED;
+            if (peer_aborted(j->batch)) return JOB_PEER_ABORT;
+        }
+
+        uint8_t endp[9];
+        hop_put_be32(endp, 1);
+        endp[4] = HOP_FILE_OK;
+        hop_put_be32(endp + 5, 0);
+        if (!send_small(fd, HOP_MSG_FILE_END, endp, 9, j->batch))
+            return JOB_NET_DOWN;
+        rate_feedback(0);
+        j->ok = 1;
+        j->next_i = j->n;
+        status_file_phase(HOP_XFER_DIR_SEND, j->batch, 0,
+                          HOP_XFER_FILE_COMPLETED, 1);
+        return JOB_DONE;
+    }
 
     sender_file_engine_call call = {fd, tx, j};
     hop_xfer_sender_engine_ops ops;

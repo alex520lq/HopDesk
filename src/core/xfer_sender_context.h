@@ -56,6 +56,10 @@ typedef struct hop_xfer_sender_context {
                               int phase, uint32_t attempts);
     void (*status_stage_time)(void *user, uint32_t batch, int stage,
                               uint64_t elapsed_ns);
+    void (*status_chunk_timed)(void *user, uint32_t batch, uint32_t id,
+                               uint64_t offset, uint32_t length,
+                               uint64_t read_ns, uint64_t crc_ns,
+                               uint64_t send_ns, uint64_t receive_ns);
     void (*log_message)(void *user, int level, const char *message);
 
     /* Task state remains owned by the existing Task service. */

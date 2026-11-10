@@ -283,7 +283,8 @@ void net_loop_run(void) {
 /* The control reader can call xfer_kick while handling disconnect/reconnect.
  * Join both control workers before xfer_shutdown destroys the transfer locks. */
 void net_loop_shutdown(void) {
-    net_request_stop();
+    if (!atomic_load_explicit(&s_stop, memory_order_acquire))
+        net_request_stop();
     if (s_net_thread_started) {
         pthread_join(s_net_thread, NULL);
         s_net_thread_started = 0;

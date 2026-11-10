@@ -126,11 +126,8 @@ static struct {
  * 帧字节搅在一起 —— 锁的粒度必须是"整帧"，不是"单次 write"。 */
 static pthread_mutex_t s_txlock = PTHREAD_MUTEX_INITIALIZER;
 static _Thread_local unsigned long s_send_epoch;
-static int send_session_current(int fd) {
-    pthread_mutex_lock(&s_x.slock);
-    int ok = s_x.sock == fd && (!s_send_epoch || s_x.epoch == s_send_epoch) && hop_session_matches(&s_x.session);
-    pthread_mutex_unlock(&s_x.slock); return ok;
-}
+static hop_xfer_sender_context s_sender_context;
+
 static pthread_mutex_t s_status_lock = PTHREAD_MUTEX_INITIALIZER;
 static hop_xfer_tracking s_send_status, s_receive_status;
 static uint64_t s_status_revision;
@@ -410,23 +407,77 @@ static int send_all(int fd, const void *buf, size_t len) {
     return 1;
 }
 
+static int sender_context_session_current(void *user, intptr_t socket_handle,
+                                          uint64_t epoch) {
+    (void)user;
+    int fd = (int)socket_handle;
+    pthread_mutex_lock(&s_x.slock);
+    int current = s_x.sock == fd && (!epoch || s_x.epoch == epoch) &&
+                  hop_session_matches(&s_x.session);
+    pthread_mutex_unlock(&s_x.slock);
+    return current;
+}
+
+static int sender_context_write_frame(void *user, intptr_t socket_handle,
+                                      uint64_t epoch,
+                                      const hop_xfer_sender_frame_part *parts,
+                                      size_t part_count) {
+    (void)user;
+    if (!parts || !part_count) return 0;
+    int fd = (int)socket_handle;
+    pthread_mutex_lock(&s_txlock);
+    int ok = sender_context_session_current(NULL, socket_handle, epoch);
+    for (size_t i = 0; ok && i < part_count; ++i) {
+        if ((!parts[i].data && parts[i].size) || parts[i].size > (size_t)INT_MAX) {
+            ok = 0;
+            break;
+        }
+        if (parts[i].size)
+            ok = send_all(fd, parts[i].data, parts[i].size);
+    }
+    pthread_mutex_unlock(&s_txlock);
+    return ok;
+}
+
+static int sender_context_snapshot_session(int fd, hop_session_id *session,
+                                           uint64_t *epoch) {
+    if (!session || !epoch) return 0;
+    pthread_mutex_lock(&s_x.slock);
+    int current = s_x.sock == fd &&
+                  (!s_send_epoch || s_x.epoch == s_send_epoch) &&
+                  hop_session_matches(&s_x.session);
+    if (current) {
+        *session = s_x.session;
+        *epoch = s_x.epoch;
+    }
+    pthread_mutex_unlock(&s_x.slock);
+    return current;
+}
+
 static int send_small(int fd, uint8_t type, const uint8_t *p, uint32_t len, uint32_t batch) {
     int send_guard = hop_watchdog_begin("data frame send", 10000);
     uint8_t hdr[HOP_HEADER_SIZE], prefix[HOP_DATA_PREFIX];
-    pthread_mutex_lock(&s_txlock);
-    int ok = send_session_current(fd);
+    hop_session_id session;
+    uint64_t epoch = 0;
+    int ok = s_sender_context.write_frame != NULL &&
+             sender_context_snapshot_session(fd, &session, &epoch);
+    hop_xfer_sender_frame_part parts[3];
+    size_t part_count = 0;
     if (ok && type != HOP_MSG_XFER_HELLO) {
-        pthread_mutex_lock(&s_x.slock);
-        hop_data_prefix(prefix, &s_x.session, batch);
-        pthread_mutex_unlock(&s_x.slock);
-        hop_encode_header(hdr, type, len + HOP_DATA_PREFIX);
-        ok = send_all(fd, hdr, HOP_HEADER_SIZE) && send_all(fd, prefix, HOP_DATA_PREFIX);
+        if (len > UINT32_MAX - HOP_DATA_PREFIX) ok = 0;
+        else {
+            hop_data_prefix(prefix, &session, batch);
+            hop_encode_header(hdr, type, len + HOP_DATA_PREFIX);
+            parts[part_count++] = (hop_xfer_sender_frame_part){hdr, sizeof(hdr)};
+            parts[part_count++] = (hop_xfer_sender_frame_part){prefix, sizeof(prefix)};
+        }
     } else if (ok) {
         hop_encode_header(hdr, type, len);
-        ok = send_all(fd, hdr, HOP_HEADER_SIZE);
+        parts[part_count++] = (hop_xfer_sender_frame_part){hdr, sizeof(hdr)};
     }
-    if (ok && len) ok = send_all(fd, p, len);
-    pthread_mutex_unlock(&s_txlock);
+    if (ok && len) parts[part_count++] = (hop_xfer_sender_frame_part){p, len};
+    if (ok) ok = s_sender_context.write_frame(s_sender_context.user, fd, epoch,
+                                               parts, part_count);
     hop_watchdog_end(send_guard);
     return ok;
 }

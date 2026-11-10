@@ -500,6 +500,8 @@ int main(void){
 #include <assert.h>
 #include <wchar.h>
 #include <string.h>
+#include <stdlib.h>
+static void hop_xfer_rx_terminate_batch(void *context,uint32_t batch,uint8_t reason,int notify_peer){(void)context;(void)batch;(void)reason;(void)notify_peer;}
 #define hop_log(...) ((void)0)
 #define HOP_MSG_XFER_DONE 54
 #define RX_CLOSE 1
@@ -595,9 +597,9 @@ int main(void){
 
     /* Requested file paste must use the validated callback, not generic paths. */
 #ifdef FIXTURE_WINDOWS
-    const wchar_t *one_path=L"received.txt";
+    const wchar_t one_path[]=L"received.txt";
 #else
-    const char *one_path="received.txt";
+    const char one_path[]="received.txt";
 #endif
     s_rx.tops=malloc(sizeof(*s_rx.tops));assert(s_rx.tops);
     s_rx.tops[0]=malloc(sizeof(one_path));assert(s_rx.tops[0]);memcpy(s_rx.tops[0],one_path,sizeof(one_path));s_rx.ntop=1;

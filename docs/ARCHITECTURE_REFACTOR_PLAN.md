@@ -730,3 +730,15 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 故障测试：增加 writer queue 拒绝、writer I/O 错误和资源账本释放断言；回归脚本增加预算先于副作用的顺序断言。
 - CI 纠错记录：Run #1032 在 Receiver ABORT fixture 生成阶段失败，定位为拼接函数时误用了字面量 `\\n`；已改为真实换行。Run #1033 正在重新执行 Windows/macOS 全量流水线，尚未验收通过。
 - 后续仍需：补齐可控断线/重连期间的取消与终结测试；继续审计服务回调对平台全局对象的依赖；再进入发送端、剪贴板和连接模块的独立性重构。
+
+### 2026-11-10：Receiver 第一阶段最终收口（已完成）
+
+- 将 FILE_BEGIN、IMAGE_BEGIN、FILE_CHUNK、FILE_END、FILE_ACK、ABORT、DONE、DONE_ACK 的业务 handler 收敛到共享 Core 编译单元 `src/core/xfer_rx_message_handlers.c`；每类消息有独立函数边界。Windows/macOS 的 `xfer_rx_protocol_handlers.c` 只导出同一语义的 dispatch table。
+- `xfer_receive.inc` 不再承载上述消息的核心业务编排；保留握手/连接线程、平台服务绑定与原生适配。路径构造、目录/文件操作经 Services 和平台 FS Adapter；Writer Queue、Clipboard、状态/时钟、ACK wire send 分别通过明确接口注入。
+- `xfer_rx_context.h` 统一拥有批次、Task、File/Image state、Entry Reservation、Session/Tombstone、DONE receipt、路径和平台 Services。Core handler 不引用 `s_rx`、`s_x`、`g_mac`、`g_win` 等平台全局变量。
+- ABORT 与 DONE 共用终结资源释放入口：Writer 关闭、按需丢弃 staging、Task 完成、Receiver state reset、最终状态发布有明确顺序。Session rollover 也复用同一资源释放与 state reset，并先终结被中断 Task；DONE 不会误删成功接收的文件。
+- 删除 Windows/macOS 旧 `xfer_rx_batch_lifecycle.inc`，移除 Services 中已不再需要的平台生命周期编排回调。
+- 回归覆盖真实生产 handler：FILE_BEGIN/CHUNK/FILE_END、IMAGE DONE、ABORT 重复/过期/取消、session rollover、晚到帧、Task 取消与 DONE 竞争（500 轮）、资源清理顺序及 once-only history。修复期间 CI 曾发现并纠正 fixture 原型、链接依赖、函数提取顺序与终结事件断言问题。
+- **最终验证：GitHub Actions Run #1154（ID `42729812348`，head `a820228c830f088ccbb140df9246ac8eba94e69c`）Windows MSVC 与 macOS 全流程均 PASS**：应用构建、portable Core/regression、文件传输协议、TCP loopback、Windows native role/reconnect、macOS control/listener、updater/bundle 检查与打包。Release publication 按 PR 流程跳过。
+- 第一阶段验收项 1–6 已完成。此结论是自动化构建/回归验收，不代表真实双机网络、物理键鼠、剪贴板端到端及长时间弱网压力验证。
+- 下一步不再继续改 Receiver 第一阶段范围；后续进入独立阶段的传输故障注入与性能/资源压测，以及其他模块重构。

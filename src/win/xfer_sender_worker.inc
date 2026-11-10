@@ -313,9 +313,6 @@ static DWORD WINAPI send_thread(LPVOID arg) {
 
             if (!j) break;
             if (sender_context_is_stopping(&s_sender_platform)) {
-                sender_task_finish(&j->sender_context,&j->task,HOP_XFER_TASK_INTERRUPTED);
-                sender_status_end(&j->sender_context,j->batch,HOP_XFER_FAILED,
-                                  "Transfer interrupted during shutdown");
                 (void)job_free(j,XFER_JOB_OWNER_WORKER);
                 continue;
             }

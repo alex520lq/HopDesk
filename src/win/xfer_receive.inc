@@ -152,7 +152,8 @@ static int rx_context_create_staging_directory(void *context, const char *sessio
     wcscat(rx->dir, sub);
     if (!hop_xfer_rx_fs_ensure_dirs(rx->dir) ||
         !hop_xfer_rx_fs_create_directory_if_missing(rx->dir)) {
-        rx->dir[0] = L'\0';
+        rx->staging_cleanup_pending = 1;
+        (void)rx_discard_dir(rx);
         return 0;
     }
 

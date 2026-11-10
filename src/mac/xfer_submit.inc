@@ -22,17 +22,14 @@ static void scanner_watchdog_end(void *context, int ticket) {
 static int submit(xf_job *j) {
     int duplicate = 0;
     pthread_mutex_lock(&s_x.qlock);
-    if (s_x.cur_batch == j->batch) duplicate = 1;
-    for (xf_job *q = s_x.q_head; q && !duplicate; q = q->next)
-        if (q->batch == j->batch) duplicate = 1;
-    if (!duplicate) {
-        if (s_x.q_tail) s_x.q_tail->next = j;
-        else            s_x.q_head = j;
-        s_x.q_tail = j;
-        pthread_cond_signal(&s_x.qcond);
-    }
+    if (s_x.cur_batch == j->batch ||
+        hop_xfer_sender_queue_contains_batch(&s_x.queue, &s_sender_queue_ops, j->batch))
+        duplicate = 1;
+    int queued = !duplicate &&
+        hop_xfer_sender_queue_push_back(&s_x.queue, &s_sender_queue_ops, j);
+    if (queued) pthread_cond_signal(&s_x.qcond);
     pthread_mutex_unlock(&s_x.qlock);
-    return !duplicate;
+    return queued;
 }
 
 static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requested_batch, uint64_t offer_id) {

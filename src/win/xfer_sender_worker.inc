@@ -333,100 +333,158 @@ static int sender_shutdown_drain_jobs(void) {
     return 1;
 }
 
+typedef struct {
+    SOCKET client;
+    hop_session_id transport_session;
+} sender_scheduler_state;
+
+static int sender_scheduler_begin_pass(void *user, int *peer_ready,
+                                       uint64_t *now, uint32_t *cancel_batch) {
+    sender_scheduler_state *state=(sender_scheduler_state *)user;
+    if (!state || !peer_ready || !now || !cancel_batch) return 0;
+    EnterCriticalSection(&s_x.lock);
+    state->client=s_x.peer_ready?s_x.client:INVALID_SOCKET;
+    state->transport_session=s_x.session;
+    s_send_epoch=s_x.epoch;
+    *peer_ready=(state->client!=INVALID_SOCKET);
+    *now=now_ms();
+    *cancel_batch=s_x.cancel_batch;
+    return 1; /* queue lock remains held until end_pass */
+}
+static int sender_scheduler_is_stopping(void *user) {
+    (void)user;
+    return sender_context_is_stopping(&s_sender_platform);
+}
+static int sender_scheduler_wait_locked(void *user, uint32_t timeout_ms) {
+    (void)user;
+    HANDLE events[2]={s_x.stop,s_x.q_evt};
+    LeaveCriticalSection(&s_x.lock);
+    DWORD result=WaitForMultipleObjects(2,events,FALSE,timeout_ms);
+    if (result==WAIT_FAILED) {
+        hop_log(HOP_LOG_WARN,"xfer: sender queue wait failed; falling back to bounded poll");
+        Sleep(timeout_ms);
+    }
+    EnterCriticalSection(&s_x.lock);
+    return 1;
+}
+static void sender_scheduler_claim_locked(void *user, void *node, int expired) {
+    (void)user;
+    xfer_job *job=(xfer_job *)node;
+    job->owner=XFER_JOB_OWNER_WORKER;
+    if (!expired) {
+        s_x.cur_batch=job->batch;
+        s_x.cur_task_id=job->task.id;
+        s_x.abort_batch=0;
+        s_x.abort_reason=0;
+    }
+}
+static void sender_scheduler_end_pass(void *user) {
+    (void)user;
+    LeaveCriticalSection(&s_x.lock);
+}
+
 static DWORD WINAPI send_thread(LPVOID arg) {
     (void)arg;
 
-    /* 主动降到 BELOW_NORMAL。控制通道承载的是键鼠，钩子回调跑在主线程
-     * （NORMAL 优先级）—— 降级之后输入路径永远能直接抢占传输线程，
-     * 不会出现"传文件时鼠标发涩"。这是"传输不影响控制"的主要保障。 */
+    /* Keep file transfer below the foreground keyboard/mouse control path. */
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 
-    uint8_t *tx = (uint8_t *)malloc(CHUNK_HDR + s_x.chunk);
-    if (!tx) { hop_log(HOP_LOG_ERROR, "xfer: tx buffer alloc failed"); return 1; }
+    uint8_t *tx=(uint8_t *)malloc(CHUNK_HDR+s_x.chunk);
+    if (!tx) { hop_log(HOP_LOG_ERROR,"xfer: tx buffer alloc failed"); return 1; }
 
-    HANDLE ev[2] = { s_x.stop, s_x.q_evt };
+    sender_scheduler_state state;
+    memset(&state,0,sizeof(state));
+    hop_xfer_sender_scheduler_ops scheduler={
+        &state,
+        sender_scheduler_begin_pass,
+        sender_scheduler_is_stopping,
+        sender_scheduler_wait_locked,
+        sender_scheduler_claim_locked,
+        sender_scheduler_end_pass
+    };
+
     for (;;) {
-        /* 200 ms 一次：既够快响应用户的取消，又不至于空转烧 CPU。
-         * 队列里有等待重连的作业时，这个轮询就是它唯一的唤醒源。 */
-        DWORD w = WaitForMultipleObjects(2, ev, FALSE, 200);
-        if (w == WAIT_OBJECT_0) break;
-
-        for (;;) {
-            EnterCriticalSection(&s_x.lock);
-            SOCKET c = s_x.peer_ready ? s_x.client : INVALID_SOCKET;
-            s_send_epoch = s_x.epoch;
-            hop_session_id transport_session = s_x.session;
-            xfer_job *j = NULL, *expired = NULL;
-            uint64_t now = now_ms();
-
-            /* 一次只摘一个，摘到就跳出、在锁外处理 —— 队列操作留在锁里，
-             * 释放和日志留在锁外，锁的持有时间永远是最短的。 */
-            if (sender_context_is_stopping(&s_sender_platform)) {
-                LeaveCriticalSection(&s_x.lock);
-                break;
-            }
-            expired=(xfer_job *)hop_xfer_sender_queue_take_cancelled(&s_x.queue, &s_sender_queue_ops);
-            if (!expired) {
-                hop_xfer_sender_queue_take_result take_result = HOP_XFER_SENDER_QUEUE_NONE;
-                xfer_job *taken = (xfer_job *)hop_xfer_sender_queue_take_head(&s_x.queue, &s_sender_queue_ops, now, s_x.cancel_batch, c != INVALID_SOCKET, 1, &take_result);
-                if (take_result == HOP_XFER_SENDER_QUEUE_EXPIRED) expired = taken;
-                else if (take_result == HOP_XFER_SENDER_QUEUE_READY) j = taken;
-            }
-            if (expired) expired->owner=XFER_JOB_OWNER_WORKER;
-            if (j) { j->owner=XFER_JOB_OWNER_WORKER; s_x.cur_batch = j->batch; s_x.cur_task_id = j->task.id; s_x.abort_batch=0; s_x.abort_reason=0; }
-            LeaveCriticalSection(&s_x.lock);
-
-            if (expired) {
-                sender_logf(&expired->sender_context, HOP_LOG_ERROR,
-                            "xfer: batch %u abandoned, peer never came back (%d/%d delivered)",
-                            expired->batch, expired->ok, expired->n);
-                int was_cancelled = sender_job_cancel_requested(
-                    &expired->sender_context, expired->batch, expired->task.id);
-                if (was_cancelled && c != INVALID_SOCKET && hop_session_id_equal(&expired->session,&transport_session))
-                    send_abort_msg_with_context(&expired->sender_context, c,
-                                                expired->batch, HOP_ABORT_CANCEL,
-                                                HOP_ABORT_TO_RECEIVER);
-                AcquireSRWLockShared(&s_status_lock);
-                int show_status=!s_send_status.status.active || s_send_status.status.batch==expired->batch;
-                ReleaseSRWLockShared(&s_status_lock);
-                if (show_status) sender_status_start_job(&expired->sender_context, expired);
-                expired->pending_finish_state=was_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED;
-                expired->pending_finish_valid=1;
-                if (show_status) {
-                    expired->pending_status_end=1;
-                    expired->pending_status_phase=was_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED;
-                    snprintf(expired->pending_status_detail,sizeof(expired->pending_status_detail),"%s",
-                             "Transfer stopped while queued");
-                }
-                (void)job_free(expired,XFER_JOB_OWNER_WORKER);
-                continue;
-            }
-
-            if (!j) break;
-            if (sender_context_is_stopping(&s_sender_platform)) {
-                (void)job_free(j,XFER_JOB_OWNER_WORKER);
-                continue;
-            }
-            job_bind_session(j, &transport_session);
-            if (hop_session_id_valid(&j->session)) (void)sender_task_bind_session(&j->sender_context, &j->task,&j->session);
-            if(!sender_task_set_state(&j->sender_context, &j->task,HOP_XFER_TASK_ACTIVE)){
-                j->pending_finish_state=HOP_XFER_TASK_FAILED;j->pending_finish_valid=1;(void)job_free(j,XFER_JOB_OWNER_WORKER);continue;
-            }
-            sender_status_start_job(&j->sender_context, j);
-
-            int r = run_job(c, tx, j);
-
-            EnterCriticalSection(&s_x.lock);
-            int peer_cancelled=(s_x.abort_batch==j->batch && s_x.abort_reason==HOP_ABORT_CANCEL);
-            int completion_path=(r==JOB_DONE);
-            if (!completion_path) { s_x.cur_batch = 0; s_x.cur_task_id = 0; }
-            LeaveCriticalSection(&s_x.lock);
-
-            hop_xfer_sender_worker_action action = sender_worker_finish_job(
-                j, c, r, completion_path, peer_cancelled);
-            if (action == HOP_XFER_SENDER_WORKER_REQUEUED) continue;
+        void *node=NULL;
+        hop_xfer_sender_scheduler_result selected =
+            hop_xfer_sender_scheduler_wait_next(
+                &s_x.queue,&s_sender_queue_ops,&scheduler,200,&node);
+        if (selected==HOP_XFER_SENDER_SCHEDULER_STOPPED) break;
+        if (selected==HOP_XFER_SENDER_SCHEDULER_ERROR) {
+            hop_log(HOP_LOG_ERROR,"xfer: sender scheduler adapter failed");
+            break;
         }
+
+        SOCKET c=state.client;
+        hop_session_id transport_session=state.transport_session;
+        xfer_job *expired = selected==HOP_XFER_SENDER_SCHEDULER_EXPIRED
+            ? (xfer_job *)node : NULL;
+        xfer_job *j = selected==HOP_XFER_SENDER_SCHEDULER_READY
+            ? (xfer_job *)node : NULL;
+
+        if (expired) {
+            sender_logf(&expired->sender_context,HOP_LOG_ERROR,
+                        "xfer: batch %u abandoned, peer never came back (%d/%d delivered)",
+                        expired->batch,expired->ok,expired->n);
+            int was_cancelled=sender_job_cancel_requested(
+                &expired->sender_context,expired->batch,expired->task.id);
+            if (was_cancelled && c!=INVALID_SOCKET &&
+                hop_session_id_equal(&expired->session,&transport_session))
+                send_abort_msg_with_context(&expired->sender_context,c,
+                                            expired->batch,HOP_ABORT_CANCEL,
+                                            HOP_ABORT_TO_RECEIVER);
+            AcquireSRWLockShared(&s_status_lock);
+            int show_status=!s_send_status.status.active ||
+                            s_send_status.status.batch==expired->batch;
+            ReleaseSRWLockShared(&s_status_lock);
+            if (show_status) sender_status_start_job(&expired->sender_context,expired);
+            expired->pending_finish_state=was_cancelled
+                ? HOP_XFER_TASK_CANCELLED : HOP_XFER_TASK_FAILED;
+            expired->pending_finish_valid=1;
+            if (show_status) {
+                expired->pending_status_end=1;
+                expired->pending_status_phase=was_cancelled
+                    ? HOP_XFER_CANCELLED : HOP_XFER_FAILED;
+                snprintf(expired->pending_status_detail,
+                         sizeof(expired->pending_status_detail),"%s",
+                         "Transfer stopped while queued");
+            }
+            (void)job_free(expired,XFER_JOB_OWNER_WORKER);
+            continue;
+        }
+
+        if (!j) continue;
+        if (sender_context_is_stopping(&s_sender_platform)) {
+            (void)job_free(j,XFER_JOB_OWNER_WORKER);
+            continue;
+        }
+        job_bind_session(j,&transport_session);
+        if (hop_session_id_valid(&j->session))
+            (void)sender_task_bind_session(&j->sender_context,&j->task,&j->session);
+        if (!sender_task_set_state(&j->sender_context,&j->task,HOP_XFER_TASK_ACTIVE)) {
+            j->pending_finish_state=HOP_XFER_TASK_FAILED;
+            j->pending_finish_valid=1;
+            (void)job_free(j,XFER_JOB_OWNER_WORKER);
+            continue;
+        }
+        sender_status_start_job(&j->sender_context,j);
+
+        int result=run_job(c,tx,j);
+
+        EnterCriticalSection(&s_x.lock);
+        int peer_cancelled=(s_x.abort_batch==j->batch &&
+                            s_x.abort_reason==HOP_ABORT_CANCEL);
+        int completion_path=(result==JOB_DONE);
+        if (!completion_path) {
+            s_x.cur_batch=0;
+            s_x.cur_task_id=0;
+        }
+        LeaveCriticalSection(&s_x.lock);
+
+        hop_xfer_sender_worker_action action=sender_worker_finish_job(
+            j,c,result,completion_path,peer_cancelled);
+        if (action==HOP_XFER_SENDER_WORKER_REQUEUED) continue;
     }
+
     free(tx);
     return 0;
 }

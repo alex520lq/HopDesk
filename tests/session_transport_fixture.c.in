@@ -19,6 +19,17 @@
 #define INVALID_SOCKET -1
 typedef int SOCKET;
 static struct {int client,sock,lock,slock;unsigned long epoch;hop_session_id session;hop_xfer_rate_limiter rate;} s_x;
+typedef struct {
+    int *state_lock;
+    int *session_lock;
+    int *tx_lock;
+    int *queue_lock;
+    int *client;
+    int *sock;
+    hop_session_id *session;
+    unsigned long *epoch;
+} sender_platform_context;
+static sender_platform_context s_sender_platform;
 static hop_xfer_sender_context s_sender_context;
 static xfer_rx_context s_rx;
 static hop_xfer_rx_done_receipt s_done_receipt;
@@ -65,6 +76,11 @@ int main(void){
  s_rx.services.close_file=fixture_close_file;s_rx.services.discard_staging_directory=fixture_discard_dir;
 s_rx.services.cancel_clipboard=fixture_cancel_clipboard;s_rx.services.status_reset=fixture_status_reset;
  s_x.session.bytes[0]=1;s_x.client=s_x.sock=7;s_x.epoch=3;hop_session_publish(&s_x.session);
+ s_sender_platform.state_lock=&s_x.lock;s_sender_platform.session_lock=&s_x.slock;
+ s_sender_platform.tx_lock=&s_txlock;s_sender_platform.queue_lock=&s_x.lock;
+ s_sender_platform.client=&s_x.client;s_sender_platform.sock=&s_x.sock;
+ s_sender_platform.session=&s_x.session;s_sender_platform.epoch=&s_x.epoch;
+ s_sender_context.user=&s_sender_platform;
  s_sender_context.session_current=sender_context_session_current;
  s_sender_context.write_frame=sender_context_write_frame;
  hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle,42,HOP_ABORT_CANCEL);s_receive_status.marker=9;rx_bind_session(&s_x.session);

@@ -50,12 +50,10 @@ hop_xfer_rx_abort_result hop_xfer_rx_abort_execute(
         ops->cancel_clipboard(ops->context, batch);
     if (notify_peer && ops->send_abort)
         ops->send_abort(ops->context, batch, reason);
-    if (ops->close_file) ops->close_file(ops->context);
-    if (ops->discard_staging) ops->discard_staging(ops->context);
+    if (ops->release_resources) ops->release_resources(ops->context, 1);
     if (ops->mark_dead) ops->mark_dead(ops->context, batch, reason);
     if (ops->finish_task)
         ops->finish_task(ops->context, reason == HOP_ABORT_CANCEL);
-    if (ops->clear_state) ops->clear_state(ops->context);
     if (ops->status_end)
         ops->status_end(ops->context, batch, reason == HOP_ABORT_CANCEL);
     return HOP_RX_ABORT_TERMINATED;

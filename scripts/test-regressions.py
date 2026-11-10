@@ -769,7 +769,9 @@ int main(void){
         assert '#include "xfer_sender_protocol.inc"' in transport
         assert '#include "xfer_submit.inc"' in transport
         assert 'static void' in worker and 'send_thread' in worker
-        assert 'hop_xfer_sender_queue_take_cancelled' in worker and 'hop_xfer_sender_queue_take_head' in worker
+        scheduler=(ROOT/'src/core/xfer_sender_scheduler.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_queue_take_cancelled' in scheduler and 'hop_xfer_sender_queue_take_head' in scheduler
+        assert 'hop_xfer_sender_scheduler_wait_next' in worker
         assert 'queue_unlink' not in worker
         protocol=(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
         assert 'sender_engine_send_entry' in protocol and 'send_done_result' in protocol and 'run_job' in protocol

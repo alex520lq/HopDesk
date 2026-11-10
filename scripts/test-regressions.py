@@ -1076,6 +1076,14 @@ int main(void){
         assert 'sender_context_is_stopping(NULL)' not in commit_stop
         thread=extract(sender,'send_thread')
         assert 'send_done_result(' in thread and 'hop_xfer_sender_get_terminal_decision' in thread
+        assert 'sender_status_start_job(&j->sender_context' in thread
+        assert 'sender_status_end(&j->sender_context' in thread
+        assert 'status_start_job(' not in thread and 'status_end(' not in thread
+        protocol=(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
+        assert 'send_chunk(&call->job->sender_context' in protocol
+        assert 'send_small_with_context(&call->job->sender_context' in protocol
+        assert 'sender_status_file_phase(call ? &call->job->sender_context' in protocol
+        assert 'sender_status_stage_time(call ? &call->job->sender_context' in protocol
         assert 'hop_xfer_sender_get_terminal_decision' in thread and 'completion_path' in thread
 
     # Test exact Windows task-list selection and action logic with UI doubles.

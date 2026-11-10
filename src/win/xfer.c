@@ -475,13 +475,16 @@ static int sender_context_snapshot_session(void *user, SOCKET sock,
 static void yield_cpu(void) { Sleep(0); }
 
 /* 小帧：头 + 载荷两次 send。载荷都在 1 KB 级别，不值得拼缓冲。 */
-static int send_small(SOCKET c, uint8_t type, const uint8_t *p, uint32_t len, uint32_t batch) {
+static int send_small_with_context(const hop_xfer_sender_context *context,
+                                     SOCKET c, uint8_t type, const uint8_t *p,
+                                     uint32_t len, uint32_t batch) {
+    if (!context) context = &s_sender_context;
     int send_guard = hop_watchdog_begin("data frame send", 10000);
     uint8_t hdr[HOP_HEADER_SIZE], prefix[HOP_DATA_PREFIX];
     hop_session_id session;
     uint64_t epoch = 0;
-    int ok = s_sender_context.write_frame != NULL &&
-             sender_context_snapshot_session(s_sender_context.user, c, &session, &epoch);
+    int ok = context->write_frame != NULL &&
+             sender_context_snapshot_session(context->user, c, &session, &epoch);
     hop_xfer_sender_frame_part parts[3];
     size_t part_count = 0;
     if (ok && type != HOP_MSG_XFER_HELLO) {
@@ -497,10 +500,15 @@ static int send_small(SOCKET c, uint8_t type, const uint8_t *p, uint32_t len, ui
         parts[part_count++] = (hop_xfer_sender_frame_part){hdr, sizeof(hdr)};
     }
     if (ok && len) parts[part_count++] = (hop_xfer_sender_frame_part){p, len};
-    if (ok) ok = s_sender_context.write_frame(s_sender_context.user, c, epoch,
-                                               parts, part_count);
+    if (ok) ok = context->write_frame(context->user, (intptr_t)c, epoch,
+                                      parts, part_count);
     hop_watchdog_end(send_guard);
     return ok;
+}
+
+static int send_small(SOCKET c, uint8_t type, const uint8_t *p,
+                      uint32_t len, uint32_t batch) {
+    return send_small_with_context(&s_sender_context, c, type, p, len, batch);
 }
 
 /* 分块：一次 send 发完头 + 分块头 + 数据。

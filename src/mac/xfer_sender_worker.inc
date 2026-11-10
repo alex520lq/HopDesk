@@ -185,10 +185,10 @@ static int sender_worker_requeue_front(void *user) {
     return queued;
 }
 static int sender_worker_peer_cancelled_and_clear_current(void *user,uint32_t batch,uint64_t task_id) {
-    (void)user;(void)task_id;
+    (void)user;
     pthread_mutex_lock(&s_x.qlock);
-    int cancelled=s_x.abort_batch==batch&&s_x.abort_reason==HOP_ABORT_CANCEL;
-    s_x.cur_batch=0;s_x.cur_task_id=0;
+    int cancelled=hop_xfer_sender_active_job_take_cancelled_and_clear(
+        &s_x.active_job,batch,task_id,HOP_ABORT_CANCEL);
     pthread_mutex_unlock(&s_x.qlock);
     return cancelled;
 }
@@ -380,12 +380,10 @@ static void sender_scheduler_claim_locked(void *user, void *node, int expired) {
     (void)user;
     xf_job *job=(xf_job *)node;
     job->owner=XFER_JOB_OWNER_WORKER;
-    if (!expired) {
-        s_x.cur_batch=job->batch;
-        s_x.cur_task_id=job->task.id;
-        s_x.abort_batch=0;
-        s_x.abort_reason=0;
-    }
+    if (!expired && !hop_xfer_sender_active_job_begin(
+            &s_x.active_job,job->batch,job->task.id))
+        hop_log(HOP_LOG_ERROR,"xfer: failed to publish active Sender Job (batch=%u task=%llu)",
+                job->batch,(unsigned long long)job->task.id);
 }
 static void sender_scheduler_end_pass(void *user) {
     (void)user;
@@ -487,15 +485,14 @@ static void *send_thread(void *arg) {
 
         int result=(fd>=0)?run_job(fd,tx,j):JOB_NET_DOWN;
 
-        pthread_mutex_lock(&s_x.qlock);
-        int peer_cancelled=(s_x.abort_batch==j->batch &&
-                            s_x.abort_reason==HOP_ABORT_CANCEL);
         int completion_path=(result==JOB_DONE);
+        int peer_cancelled=0;
         if (!completion_path) {
-            s_x.cur_batch=0;
-            s_x.cur_task_id=0;
+            pthread_mutex_lock(&s_x.qlock);
+            peer_cancelled=hop_xfer_sender_active_job_take_cancelled_and_clear(
+                &s_x.active_job,j->batch,j->task.id,HOP_ABORT_CANCEL);
+            pthread_mutex_unlock(&s_x.qlock);
         }
-        pthread_mutex_unlock(&s_x.qlock);
 
         hop_xfer_sender_worker_action action=sender_worker_finish_job(
             j,fd,result,completion_path,peer_cancelled);

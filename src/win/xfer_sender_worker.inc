@@ -48,9 +48,15 @@ static int job_release_task_resources(xfer_job *j) {
     if (j->pixels) {
         free(j->pixels);
         j->pixels = NULL;
+        j->image_payload_released = 1;
     }
     if (j->task.initialized) {
         uint64_t bytes = hop_xfer_task_image_temp_bytes(&j->task);
+        if (bytes && !j->image_payload_released) {
+            hop_log(HOP_LOG_ERROR, "xfer: image-temp Reservation has no owned pixel buffer (batch=%u task=%llu bytes=%llu)",
+                    j->batch, (unsigned long long)j->task.id, (unsigned long long)bytes);
+            return 0;
+        }
         if (bytes && !hop_xfer_task_release_image_temp(&j->task, bytes)) {
             hop_log(HOP_LOG_ERROR, "xfer: Job image-temp Reservation release deferred (batch=%u task=%llu bytes=%llu)",
                     j->batch, (unsigned long long)j->task.id, (unsigned long long)bytes);

@@ -1130,8 +1130,12 @@ int main(void){
         assert 'expected_owner == XFER_JOB_OWNER_SUBMITTER' in job_free
         assert 'terminal_was_pending && !job->pending_finish_valid' in shutdown_drain
         status_end_callback=extract(worker,'sender_worker_status_end')
-        assert 'pending_status_end=0' in status_end_callback
+        assert 'sender_status_end(' not in status_end_callback
+        assert 'pending_status_end=1' in status_end_callback
+        assert 'pending_status_phase=phase' in status_end_callback
         assert 'pending_finish_valid=0' not in status_end_callback
+        assert job_free.index('sender_task_dispose') < job_free.index('sender_status_end')
+        assert 'Invalid sender worker context' in worker and 'Transfer stopped while queued' in worker
         assert 'shutdown_jobs' in lifecycle and 's_x.shutting_down' in lifecycle
         assert 'XFER_JOB_OWNER_QUEUE' in submit and 'XFER_JOB_OWNER_QUEUE' in requeue
         assert 'XFER_JOB_OWNER_WORKER' in requeue and 'sender_worker_is_stopping' in requeue

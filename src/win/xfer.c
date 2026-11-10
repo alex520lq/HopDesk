@@ -602,6 +602,10 @@ int xfer_init(HWND hwnd, const hop_config *cfg) {
 
 fail:
     ReleaseSRWLockExclusive(&s_x_lifecycle_lock);
+    /* Partial startup may already own ACK, writer or native thread state. Use
+     * the same retryable teardown path instead of abandoning that ownership. */
+    if (!xfer_shutdown())
+        hop_log(HOP_LOG_ERROR, "xfer: startup rollback incomplete; Shutdown must be retried");
     return 0;
 }
 

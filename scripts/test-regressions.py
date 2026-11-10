@@ -18,11 +18,11 @@ def extract(source,name):
 
 with tempfile.TemporaryDirectory(prefix='hopdesk-regression-') as directory:
     work=pathlib.Path(directory)
-    def run(name,source,extra=(),threads=False):
+    def run(name,source,extra=(),threads=False,libraries=()):
         path=work/(name+'.c');path.write_text(source,encoding='utf-8')
         exe=work/(name+('.exe' if os.name=='nt' else ''))
         if os.name=='nt' and shutil.which('cl'):
-            cmd=['cl','/nologo','/std:c11','/W4','/utf-8','/D_CRT_SECURE_NO_WARNINGS','/I'+str(ROOT/'src/core'),'/Fe:'+str(exe),str(path)]+[str(ROOT/x) for x in extra]
+            cmd=['cl','/nologo','/std:c11','/W4','/utf-8','/D_CRT_SECURE_NO_WARNINGS','/I'+str(ROOT/'src/core'),'/I'+str(ROOT/'src/win'),'/Fe:'+str(exe),str(path)]+[str(ROOT/x) for x in extra]+list(libraries)
         else:
             cc=os.environ.get('CC') or shutil.which('clang') or shutil.which('cc')
             cmd=[cc,'-std=c11','-D_POSIX_C_SOURCE=200809L','-Wall','-Wextra','-Werror','-I',str(ROOT/'src/core'),str(path)]+[str(ROOT/x) for x in extra]+['-o',str(exe)]
@@ -62,6 +62,38 @@ int main(void) {
     return 0;
 }
 ''',['src/core/xfer_rx_protocol_adapter.c','src/core/xfer_rx_dispatch.c'])
+
+     # Exercise the real Windows filesystem adapter with the exact staging
+     # path shape produced by xfer_receive.inc, not a generic "HopDesk" prefix.
+     if os.name == 'nt':
+         run('win_rx_fs_staging_cleanup',r"""
+ #include "xfer_rx_fs.h"
+ #include <assert.h>
+ #include <stdio.h>
+ #include <windows.h>
+ int main(void) {
+     wchar_t temp[MAX_PATH], root[MAX_PATH], session[MAX_PATH], batch[MAX_PATH], file[MAX_PATH];
+     DWORD n=GetTempPathW(MAX_PATH,temp); assert(n>0 && n<MAX_PATH);
+     assert(swprintf(root,MAX_PATH,L"%sHopDesk",temp)>0);
+     assert(CreateDirectoryW(root,NULL) || GetLastError()==ERROR_ALREADY_EXISTS);
+     assert(swprintf(session,MAX_PATH,L"%s\\rx-fs-session",root)>0);
+     assert(CreateDirectoryW(session,NULL));
+     assert(swprintf(batch,MAX_PATH,L"%s\\batch",session)>0);
+     assert(CreateDirectoryW(batch,NULL));
+     assert(swprintf(file,MAX_PATH,L"%s\\payload.bin",batch)>0);
+     HANDLE h=CreateFileW(file,GENERIC_WRITE,0,NULL,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,NULL);
+     assert(h!=INVALID_HANDLE_VALUE); CloseHandle(h);
+     assert(hop_xfer_rx_fs_remove_tree(batch,L"\\HopDesk\\")==0);
+     assert(GetFileAttributesW(batch)==INVALID_FILE_ATTRIBUTES);
+     /* The previous over-escaped fragment must be rejected by the guard. */
+     assert(hop_xfer_rx_fs_remove_tree(batch,L"\\\\HopDesk\\\\")==-2);
+     assert(RemoveDirectoryW(session));
+     assert(RemoveDirectoryW(root));
+     puts("PASS: Windows staging tree is deleted with the exact production path guard");
+     return 0;
+ }
+ """,['src/win/xfer_rx_fs.c'],libraries=['shell32.lib'])
+
     assert not list(work.glob('*.tmp.*')), 'failed migration leaked temporary files'
     run('ack_window_checkpoint',r'''
 #include "xfer_ack_window.h"

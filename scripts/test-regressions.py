@@ -1431,6 +1431,30 @@ int main(void){
     assert 'pthread_join(s_net_thread' in mac_transport
     assert 'pthread_join(s_control_sender_thread' in mac_transport
 
+    # Clipboard image-work Tasks own image-temp Reservations independently
+    # of sender Jobs. Failed release/dispose must retain an explicit owner.
+    for platform in ['win','mac']:
+        clip=(ROOT/f'src/{platform}/clipboard.c').read_text(encoding='utf-8') if platform=='win' else (ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
+        clip_header=(ROOT/'src/win/app.h').read_text(encoding='utf-8') if platform=='win' else (ROOT/'src/mac/mac_app.h').read_text(encoding='utf-8')
+        clip_shutdown=extract(clip,'clip_shutdown' if platform=='win' else 'clipboard_shutdown')
+        finish_attempt=extract(clip,'image_work_task_finish_attempt')
+        retry_pending=extract(clip,'image_work_retry_pending')
+        assert 'image_work_task_owner' in clip and 's_pending_image_tasks' in clip
+        assert 'hop_xfer_task_release_image_temp' in finish_attempt
+        assert 'hop_xfer_task_is_terminal' in finish_attempt and 'hop_xfer_task_finish' in finish_attempt
+        assert 'hop_xfer_task_dispose' in finish_attempt
+        assert 'return 0;' in finish_attempt and 'return !task->initialized && !task->id;' in finish_attempt
+        assert 'image_work_retry_pending' in clip_shutdown and 'return 0;' in clip_shutdown
+        if platform=='win':
+            assert 'WaitForSingleObject(s_image_thread' in clip_shutdown
+            assert 'int clip_shutdown(HWND hwnd);' in clip_header
+            assert 'while (!clip_shutdown(g_app.hwnd)) Sleep(100)' in win_main
+        else:
+            assert 'dispatch_group_wait(s_paste_group' in clip_shutdown
+            assert 'pthread_mutex_lock(&s_offer_lock)' in retry_pending
+            assert 'int  clipboard_shutdown(void);' in clip_header
+            assert 'while (!clipboard_shutdown()) usleep(100000)' in mac_main
+
     # hop_xfer_tracking embeds 8192 file records with 1024-byte paths
     # (~8 MiB). Keep these fixtures off Windows' default 1 MiB thread stack.
     core_tests=(ROOT/'tests/core_tests.c').read_text(encoding='utf-8')

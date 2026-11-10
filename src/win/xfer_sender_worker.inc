@@ -261,7 +261,6 @@ static hop_xfer_sender_worker_action sender_worker_finish_job(
         job->pending_finish_valid=1;
         sender_status_end(&job->sender_context,job->batch,HOP_XFER_FAILED,
                           "Invalid sender worker context");
-        job->pending_finish_valid=0;
         (void)job_free(job,XFER_JOB_OWNER_WORKER);
         return HOP_XFER_SENDER_WORKER_FINISHED;
     }
@@ -369,7 +368,6 @@ static DWORD WINAPI send_thread(LPVOID arg) {
                 if (show_status) sender_status_end(&expired->sender_context, expired->batch,
                     was_cancelled ? HOP_XFER_CANCELLED : HOP_XFER_FAILED,
                     "Transfer stopped while queued");
-                expired->pending_finish_valid=0;
                 (void)job_free(expired,XFER_JOB_OWNER_WORKER);
                 continue;
             }

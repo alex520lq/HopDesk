@@ -29,19 +29,44 @@ static int sender_context_is_stopping(void *user) {
     return s_x.stop != 0;
 }
 
+static int sender_context_is_cancelled(void *user, uint32_t batch,
+                                      uint64_t task_id) {
+    (void)user;
+    pthread_mutex_lock(&s_x.qlock);
+    int cancelled = s_x.cancel_batch == batch;
+    pthread_mutex_unlock(&s_x.qlock);
+    return cancelled || (task_id && hop_xfer_task_cancel_requested(task_id));
+}
+
+static int sender_context_peer_aborted(void *user, uint32_t batch) {
+    (void)user;
+    pthread_mutex_lock(&s_x.qlock);
+    int aborted = s_x.abort_batch == batch;
+    pthread_mutex_unlock(&s_x.qlock);
+    return aborted;
+}
+
+/* wait_ns is an interruptible full-duration wait. Long waits are split into
+ * short slices so shutdown is observed promptly without reporting early success. */
 static int sender_context_wait_ns(void *user, uint64_t duration_ns) {
     (void)user;
-    if (s_x.stop) return 0;
-    /* Bound each sleep so cancellation/shutdown remains observable. */
-    if (duration_ns > 10000000ull) duration_ns = 10000000ull;
-    struct timespec ts = {
-        (time_t)(duration_ns / 1000000000ull),
-        (long)(duration_ns % 1000000000ull)
-    };
-    while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {
-        if (s_x.stop) return 0;
+    uint64_t start = rate_now_ns();
+    uint64_t deadline = duration_ns > UINT64_MAX - start
+        ? UINT64_MAX : start + duration_ns;
+    while (!s_x.stop) {
+        uint64_t now = rate_now_ns();
+        if (now >= deadline) return 1;
+        uint64_t remaining = deadline - now;
+        if (remaining > 10000000ull) remaining = 10000000ull;
+        struct timespec ts = {
+            (time_t)(remaining / 1000000000ull),
+            (long)(remaining % 1000000000ull)
+        };
+        while (nanosleep(&ts, &ts) != 0) {
+            if (errno != EINTR || s_x.stop) return 0;
+        }
     }
-    return !s_x.stop;
+    return 0;
 }
 
 static void sender_context_init(void) {
@@ -49,6 +74,8 @@ static void sender_context_init(void) {
     s_sender_context.now_ns = sender_context_now_ns;
     s_sender_context.wait_ns = sender_context_wait_ns;
     s_sender_context.is_stopping = sender_context_is_stopping;
+    s_sender_context.is_cancelled = sender_context_is_cancelled;
+    s_sender_context.peer_aborted = sender_context_peer_aborted;
 }
 
 static int rate_wait_for_chunk(uint32_t bytes) {
@@ -174,18 +201,17 @@ static void ack_deliver(uint32_t batch, uint32_t id, int status) {
 /* 用户取消了这个批次？每块之后查一次，锁开销可以忽略。 */
 static int cancel_requested(uint32_t batch) {
     pthread_mutex_lock(&s_x.qlock);
-    int c = (s_x.cancel_batch == batch);
     hop_xfer_task_id id = s_x.cur_batch == batch ? s_x.cur_task_id : 0;
     pthread_mutex_unlock(&s_x.qlock);
-    return c || (id && hop_xfer_task_cancel_requested(id));
+    return s_sender_context.is_cancelled
+        ? s_sender_context.is_cancelled(s_sender_context.user, batch, id)
+        : (id && hop_xfer_task_cancel_requested(id));
 }
 
-/* 对端中止过这个批次？（ABORT 是批量级的，比如图片超限、接收端建不了目录） */
+/* 对端中止过这个批次？统一经 Sender Context 查询。 */
 static int peer_aborted(uint32_t batch) {
-    pthread_mutex_lock(&s_x.qlock);
-    int a = (s_x.abort_batch == batch);
-    pthread_mutex_unlock(&s_x.qlock);
-    return a;
+    return s_sender_context.peer_aborted
+        ? s_sender_context.peer_aborted(s_sender_context.user, batch) : 0;
 }
 
 /* 发送线程调用。返回 status，超时返回 XFER_ACK_TIMEOUT。
@@ -471,180 +497,116 @@ static int run_job(int fd, uint8_t *tx, xf_job *j) {
         status_file_phase(HOP_XFER_DIR_SEND,j->batch,0,HOP_XFER_FILE_COMPLETED,1);
         return JOB_DONE;
     }
+typedef struct {
+    int fd;
+    uint8_t *tx;
+    xf_job *job;
+} sender_file_engine_call;
 
-    typedef struct {
-        const xf_entry *entry;
-        uint32_t id;
-        int index;
-        int attempts;
-        int pending;
-        int acknowledged;
-        uint64_t deadline_ns;
-    } window_item;
+static const void *sender_engine_entry_at(void *user, int index) {
+    sender_file_engine_call *call = (sender_file_engine_call *)user;
+    return index >= 0 && index < call->job->n ? &call->job->e[index] : NULL;
+}
 
-    while (j->next_i < j->n) {
-        window_item window[HOP_XFER_ACK_WINDOW_CAPACITY];
-        uint32_t window_count = 0;
-        int send_index = j->next_i;
-        int fill_result = JOB_DONE;
+static const char *sender_engine_entry_path(void *user, const void *entry) {
+    (void)user;
+    return entry ? ((const xf_entry *)entry)->rel : NULL;
+}
 
-        /* Fill a bounded window using a local cursor. j->next_i is the
-         * durable resume point and must advance only after each entry has a
-         * final ACK/result; a disconnect during fill must not skip sent files. */
-        while (window_count < HOP_XFER_ACK_WINDOW_CAPACITY && send_index < j->n) {
-            if (cancel_requested(j->batch)) {
-                ack_unregister_batch(j->batch);
-                return JOB_CANCELLED;
-            }
-            if (peer_aborted(j->batch)) {
-                ack_unregister_batch(j->batch);
-                return JOB_PEER_ABORT;
-            }
+static int sender_engine_cancel_requested(void *user, uint32_t batch) {
+    (void)user;
+    return cancel_requested(batch);
+}
 
-            int index = send_index;
-            const xf_entry *e = &j->e[index];
-            uint32_t id = (uint32_t)(index + 1);
-            window_item *item = &window[window_count];
-            memset(item,0,sizeof(*item));
-            item->entry = e;
-            item->id = id;
-            item->index = index;
-            status_file_phase(HOP_XFER_DIR_SEND,j->batch,index,HOP_XFER_FILE_SENDING,0);
+static int sender_engine_peer_aborted(void *user, uint32_t batch) {
+    (void)user;
+    return peer_aborted(batch);
+}
 
-            int attempts = 0;
-            int st = XFER_LOCAL_IO;
-            uint64_t deadline_ns = 0;
-            for (;;) {
-                ++attempts;
-                st = send_file_entry(fd,tx,j->batch,id,e,&deadline_ns);
-                if (st == XFER_ACK_PENDING) break;
-                if (st == XFER_SEND_DEAD || st == XFER_PEER_ABORT ||
-                    st == XFER_CANCELLED || st == HOP_FILE_ACK_BADPATH) break;
-                if (attempts >= HOP_XFER_FILE_RETRY_MAX) break;
-                unsigned d = hop_xfer_file_retry_delay_ms((unsigned)attempts);
-                hop_log(HOP_LOG_WARN, "xfer: retry %d/%d for %s in %u ms (send status %d)",
-                        attempts,HOP_XFER_FILE_RETRY_MAX,e->rel,d,st);
-                usleep((useconds_t)d * 1000);
-            }
+static hop_xfer_sender_send_result sender_engine_send_entry(
+    void *user, uint32_t batch, uint32_t id, const void *entry,
+    uint64_t *ack_deadline_ns) {
+    sender_file_engine_call *call = (sender_file_engine_call *)user;
+    int result = send_file_entry(call->fd, call->tx, batch, id,
+                                 (const xf_entry *)entry, ack_deadline_ns);
+    if (result == XFER_ACK_PENDING) return HOP_XFER_SENDER_SEND_PENDING;
+    if (result == XFER_SEND_DEAD) return HOP_XFER_SENDER_SEND_DEAD;
+    if (result == XFER_PEER_ABORT) return HOP_XFER_SENDER_SEND_PEER_ABORT;
+    if (result == XFER_CANCELLED) return HOP_XFER_SENDER_SEND_CANCELLED;
+    return HOP_XFER_SENDER_SEND_RETRYABLE;
+}
 
-            if (st == XFER_SEND_DEAD) {
-                /* Do not discard earlier ACKs already in this partially-filled
-                 * window. Drain the contiguous prefix before reconnecting. */
-                fill_result = JOB_NET_DOWN;
-                break;
-            }
-            if (st == XFER_PEER_ABORT) {
-                ack_unregister_batch(j->batch);
-                return JOB_PEER_ABORT;
-            }
-            if (st == XFER_CANCELLED) {
-                ack_unregister_batch(j->batch);
-                return JOB_CANCELLED;
-            }
+static hop_xfer_sender_ack_result sender_engine_wait_ack(
+    void *user, uint32_t batch, uint32_t id, uint64_t deadline_ns,
+    uint64_t *rtt_us) {
+    (void)user;
+    int result = ack_wait(batch, id, deadline_ns, rtt_us);
+    if (result == HOP_FILE_ACK_OK) return HOP_XFER_SENDER_ACK_OK;
+    if (result == HOP_FILE_ACK_BADPATH) return HOP_XFER_SENDER_ACK_BADPATH;
+    if (result == XFER_ACK_TIMEOUT) return HOP_XFER_SENDER_ACK_TIMEOUT;
+    if (result == XFER_SEND_DEAD) return HOP_XFER_SENDER_ACK_SEND_DEAD;
+    if (result == XFER_PEER_ABORT) return HOP_XFER_SENDER_ACK_PEER_ABORT;
+    if (result == XFER_CANCELLED) return HOP_XFER_SENDER_ACK_CANCELLED;
+    return result >= 0 ? HOP_XFER_SENDER_ACK_OTHER_REMOTE
+                       : HOP_XFER_SENDER_ACK_LOCAL_FAILURE;
+}
 
-            if (st != XFER_ACK_PENDING) {
-                /* No remote FILE_ACK exists for this entry. Stop filling here;
-                 * drain only earlier in-flight entries, then reconnect from
-                 * this exact checkpoint instead of treating local failure as
-                 * a completed result. */
-                status_file_phase(HOP_XFER_DIR_SEND,j->batch,index,HOP_XFER_FILE_FAILED,(uint32_t)attempts);
-                hop_log(HOP_LOG_ERROR, "xfer: no ACK for %s after %d attempt(s) (status %d); keep checkpoint",
-                        e->rel,attempts,st);
-                fill_result = JOB_NET_DOWN;
-                break;
-            }
-            item->attempts = attempts;
-            item->pending = 1;
-            item->deadline_ns = deadline_ns;
-            ++window_count;
-            ++send_index;
-        }
+static void sender_engine_unregister_batch(void *user, uint32_t batch) {
+    (void)user;
+    ack_unregister_batch(batch);
+}
 
-        /* Drain in file order. If the link dies, j->next_i still points at
-         * the first unresolved entry, while earlier confirmed entries remain
-         * committed and are not retransmitted after reconnect. */
-        for (uint32_t wi = 0; wi < window_count; ++wi) {
-            window_item *item = &window[wi];
-            if (item->pending) {
-                uint64_t rtt_us = 0;
-                int st = ack_wait(j->batch,item->id,item->deadline_ns,&rtt_us);
-                if (st >= 0) item->acknowledged = 1;
-                if (rtt_us) rate_feedback(rtt_us);
-                int attempts = item->attempts;
+static void sender_engine_rate_feedback(void *user, uint64_t rtt_us) {
+    (void)user;
+    rate_feedback(rtt_us);
+}
 
-                while (st != HOP_FILE_ACK_OK && st != HOP_FILE_ACK_BADPATH) {
-                    if (st == XFER_ACK_TIMEOUT) {
-                        /* A timeout is not a peer result. Reset this data
-                         * connection before retrying the same batch/id so a
-                         * delayed ACK from the old attempt cannot satisfy the
-                         * new one. The contiguous checkpoint stays unchanged. */
-                        hop_log(HOP_LOG_WARN,
-                                "xfer: ACK timeout for %s; reconnect before retrying entry %d",
-                                item->entry->rel,item->index);
-                        ack_unregister_batch(j->batch);
-                        xfer_kick();
-                        return JOB_NET_DOWN;
-                    }
-                    if (st == XFER_SEND_DEAD) {
-                        ack_unregister_batch(j->batch);
-                        return JOB_NET_DOWN;
-                    }
-                    if (st == XFER_PEER_ABORT) {
-                        ack_unregister_batch(j->batch);
-                        return JOB_PEER_ABORT;
-                    }
-                    if (st == XFER_CANCELLED) {
-                        ack_unregister_batch(j->batch);
-                        return JOB_CANCELLED;
-                    }
-                    if (attempts >= HOP_XFER_FILE_RETRY_MAX) break;
+static void sender_engine_status_file_phase(void *user, uint32_t batch,
+                                             int index, int phase,
+                                             uint32_t attempts) {
+    (void)user;
+    status_file_phase(HOP_XFER_DIR_SEND, batch, index, phase, attempts);
+}
 
-                    unsigned d = hop_xfer_file_retry_delay_ms((unsigned)attempts);
-                    hop_log(HOP_LOG_WARN, "xfer: retry %d/%d for %s in %u ms (ACK status %d)",
-                            attempts,HOP_XFER_FILE_RETRY_MAX,item->entry->rel,d,st);
-                    usleep((useconds_t)d * 1000);
+static unsigned sender_engine_retry_delay_ms(void *user, unsigned attempt) {
+    (void)user;
+    return hop_xfer_file_retry_delay_ms((int)attempt);
+}
 
-                    ++attempts;
-                    uint64_t retry_deadline_ns = 0;
-                    st = send_file_entry(fd,tx,j->batch,item->id,item->entry,&retry_deadline_ns);
-                    if (st == XFER_ACK_PENDING) {
-                        rtt_us = 0;
-                        st = ack_wait(j->batch,item->id,retry_deadline_ns,&rtt_us);
-                        if (st >= 0) item->acknowledged = 1;
-                        if (rtt_us) rate_feedback(rtt_us);
-                    }
-                }
+static int sender_engine_wait_ms(void *user, unsigned duration_ms) {
+    (void)user;
+    return s_sender_context.wait_ns &&
+           s_sender_context.wait_ns(s_sender_context.user,
+                                    (uint64_t)duration_ms * 1000000ull);
+}
 
-                if (st == HOP_FILE_ACK_OK) {
-                    j->ok++;
-                    status_file_phase(HOP_XFER_DIR_SEND,j->batch,item->index,
-                                      HOP_XFER_FILE_COMPLETED,(uint32_t)attempts);
-                } else {
-                    status_file_phase(HOP_XFER_DIR_SEND,j->batch,item->index,
-                                      HOP_XFER_FILE_FAILED,(uint32_t)attempts);
-                    hop_log(HOP_LOG_ERROR, "xfer: giving up on %s after %d attempt(s) (status %d)",
-                            item->entry->rel,attempts,st);
-                }
-            }
-            /* This is the only place that advances the reconnect checkpoint. */
-            if (!item->acknowledged) {
-                hop_log(HOP_LOG_ERROR, "xfer: entry %d has no remote ACK; checkpoint remains %d",
-                        item->index,j->next_i);
-                ack_unregister_batch(j->batch);
-                return JOB_NET_DOWN;
-            }
-            if (!hop_xfer_ack_window_advance_checkpoint(&j->next_i,item->index,1)) {
-                hop_log(HOP_LOG_ERROR, "xfer: non-contiguous checkpoint batch=%u current=%d resolved=%d",
-                        j->batch,j->next_i,item->index);
-                ack_unregister_batch(j->batch);
-                return JOB_NET_DOWN;
-            }
-        }
-        if (fill_result != JOB_DONE) {
-            ack_unregister_batch(j->batch);
-            return fill_result;
-        }
-    }
-    ack_unregister_batch(j->batch);
-    return JOB_DONE;
+static void sender_engine_request_reconnect(void *user) {
+    (void)user;
+    xfer_kick();
+}
+
+static void sender_engine_log(void *user, int level, const char *message) {
+    (void)user;
+    hop_log((hop_log_level)level, "%s", message ? message : "");
+}
+
+    sender_file_engine_call call = {fd, tx, j};
+    hop_xfer_sender_engine_ops ops;
+    memset(&ops, 0, sizeof(ops));
+    ops.user = &call;
+    ops.cancel_requested = sender_engine_cancel_requested;
+    ops.peer_aborted = sender_engine_peer_aborted;
+    ops.entry_at = sender_engine_entry_at;
+    ops.entry_path = sender_engine_entry_path;
+    ops.send_entry = sender_engine_send_entry;
+    ops.wait_ack = sender_engine_wait_ack;
+    ops.unregister_batch = sender_engine_unregister_batch;
+    ops.rate_feedback = sender_engine_rate_feedback;
+    ops.status_file_phase = sender_engine_status_file_phase;
+    ops.retry_delay_ms = sender_engine_retry_delay_ms;
+    ops.wait_ms = sender_engine_wait_ms;
+    ops.request_reconnect = sender_engine_request_reconnect;
+    ops.log_message = sender_engine_log;
+    return hop_xfer_sender_run_files(&ops, j->batch, j->n, &j->next_i,
+                                     &j->ok, HOP_XFER_FILE_RETRY_MAX);
 }

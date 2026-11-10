@@ -537,6 +537,7 @@ void xfer_init(const hop_config *cfg) {
     history_load();
     task_history_store_open();
     memset(&s_x, 0, sizeof(s_x));
+    hop_xfer_sender_queue_init(&s_x.queue);
     sender_context_init();
     s_x.sock = -1;
 

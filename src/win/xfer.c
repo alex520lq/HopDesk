@@ -83,6 +83,7 @@ typedef struct xfer_job {
     int         n;              /* JOB_FILES 的条目数 */
     xfer_entry *e;
     uint8_t    *pixels;         /* JOB_IMAGE */
+    int         image_payload_released;
     int         w, h, stride;
 
     /* ---- 重试状态 ----

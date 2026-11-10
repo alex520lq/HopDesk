@@ -56,6 +56,10 @@ static void fake_stage_time(void *user, uint32_t batch, int stage, uint64_t ns) 
 static void fake_log(void *user, int level, const char *message) {
     (void)user; (void)level; (void)message;
 }
+static int fake_task_bind_session(void *user, const hop_xfer_task *task,
+                                    const uint8_t session[HOP_TASK_SESSION_BYTES]) {
+    (void)user; return task && task->id == 99 && session != NULL;
+}
 static int fake_task_state(void *user, hop_xfer_task *task, int state) {
     (void)user; (void)state; return task && task->id == 99;
 }
@@ -64,6 +68,9 @@ static int fake_task_completion(void *user, const hop_xfer_task *task) {
 }
 static void fake_task_finish(void *user, hop_xfer_task *task, int outcome) {
     (void)user; (void)outcome; assert(task && task->id == 99);
+}
+static void fake_task_dispose(void *user, hop_xfer_task *task) {
+    (void)user; assert(task && task->id == 99); task->initialized = 0;
 }
 
 static hop_xfer_sender_context make_context(fake_sender *f) {
@@ -79,9 +86,11 @@ static hop_xfer_sender_context make_context(fake_sender *f) {
     ctx.peer_aborted = fake_peer_aborted;
     ctx.status_stage_time = fake_stage_time;
     ctx.log_message = fake_log;
+    ctx.task_bind_session = fake_task_bind_session;
     ctx.task_set_state = fake_task_state;
     ctx.task_begin_completion = fake_task_completion;
     ctx.task_finish = fake_task_finish;
+    ctx.task_dispose = fake_task_dispose;
     return ctx;
 }
 
@@ -131,9 +140,13 @@ int main(void) {
     state.aborted = 1;
     assert(ctx.peer_aborted(ctx.user, 42) == 1);
     hop_xfer_task task = {99, 1};
+    const uint8_t session[HOP_TASK_SESSION_BYTES] = {1};
+    assert(ctx.task_bind_session(ctx.user, &task, session));
     assert(ctx.task_set_state(ctx.user, &task, 1));
     assert(ctx.task_begin_completion(ctx.user, &task));
     ctx.task_finish(ctx.user, &task, 2);
+    ctx.task_dispose(ctx.user, &task);
+    assert(!task.initialized);
 
     /* Observability is optional and must not make a valid execution context
      * invalid. Every execution/lifecycle dependency remains mandatory. */
@@ -153,9 +166,11 @@ int main(void) {
     REQUIRE_INVALID(write_frame);
     REQUIRE_INVALID(is_cancelled);
     REQUIRE_INVALID(peer_aborted);
+    REQUIRE_INVALID(task_bind_session);
     REQUIRE_INVALID(task_set_state);
     REQUIRE_INVALID(task_begin_completion);
     REQUIRE_INVALID(task_finish);
+    REQUIRE_INVALID(task_dispose);
 #undef REQUIRE_INVALID
 
     assert(!hop_xfer_sender_context_valid(NULL));

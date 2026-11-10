@@ -184,6 +184,13 @@ static int sender_worker_requeue_front(void *user) {
     pthread_mutex_unlock(&s_x.qlock);
     return queued;
 }
+static void sender_worker_clear_active_job(xf_job *job) {
+    if (!job) return;
+    pthread_mutex_lock(&s_x.qlock);
+    (void)hop_xfer_sender_active_job_clear_if_matches(
+        &s_x.active_job,job->batch,job->task.id);
+    pthread_mutex_unlock(&s_x.qlock);
+}
 static int sender_worker_peer_cancelled_and_clear_current(void *user,uint32_t batch,uint64_t task_id) {
     (void)user;
     pthread_mutex_lock(&s_x.qlock);
@@ -228,6 +235,7 @@ static void sender_worker_status_end(void *user,uint32_t batch,int phase,const c
 static void sender_worker_dispose_job(void *user) {
     sender_worker_call *call=(sender_worker_call *)user;
     if(call&&call->job){
+        sender_worker_clear_active_job(call->job);
         int released=job_free(call->job,XFER_JOB_OWNER_WORKER);
         if(released>=0)call->job=NULL; /* 0 transfers ownership to shutdown_jobs */
     }
@@ -284,6 +292,7 @@ static hop_xfer_sender_worker_action sender_worker_finish_job(
     hop_xfer_sender_worker_action action =
         hop_xfer_sender_worker_finish_job(&ops,&state);
     if (action == HOP_XFER_SENDER_WORKER_INVALID) {
+        sender_worker_clear_active_job(job);
         job->pending_finish_state=HOP_XFER_TASK_FAILED;
         job->pending_finish_valid=1;
         job->pending_status_end=1;
@@ -463,6 +472,7 @@ static void *send_thread(void *arg) {
 
         if (!j) continue;
         if (sender_context_is_stopping(&s_sender_platform)) {
+            sender_worker_clear_active_job(j);
             (void)job_free(j,XFER_JOB_OWNER_WORKER);
             continue;
         }
@@ -476,6 +486,7 @@ static void *send_thread(void *arg) {
         if (hop_session_id_valid(&j->session))
             (void)sender_task_bind_session(&j->sender_context,&j->task,&j->session);
         if (!sender_task_set_state(&j->sender_context,&j->task,HOP_XFER_TASK_ACTIVE)) {
+            sender_worker_clear_active_job(j);
             j->pending_finish_state=HOP_XFER_TASK_FAILED;
             j->pending_finish_valid=1;
             (void)job_free(j,XFER_JOB_OWNER_WORKER);

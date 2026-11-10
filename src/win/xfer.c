@@ -131,7 +131,7 @@ static void task_history_store_open(void) {
     if (!s_history_path[0]) return;
     wchar_t path_w[MAX_PATH], directory[MAX_PATH];
     wcsncpy(directory,s_history_path,MAX_PATH-1); directory[MAX_PATH-1]=0;
-    wchar_t *slash=wcsrchr(directory,L'\\\\');
+    wchar_t *slash=wcsrchr(directory,L'\\');
     if (!slash) return;
     *slash=0;
     if (swprintf(path_w,MAX_PATH,L"%ls\\\\task-history.bin",directory)<0) return;

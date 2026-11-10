@@ -578,8 +578,11 @@ static void sender_commit_ack_unregister(void *user, uint32_t batch,
 }
 static hop_xfer_sender_commit_ack_result sender_commit_wait_ack(
     void *user, uint32_t batch, uint32_t slot, uint64_t deadline_ns) {
-    (void)user;
-    int result = ack_wait(batch, slot, deadline_ns, NULL);
+    const xf_job *job = (const xf_job *)user;
+    if (!job) return HOP_XFER_SENDER_COMMIT_ACK_OTHER;
+    int result = ack_wait(&job->sender_context, job->commit_socket,
+                          job->commit_epoch, batch, job->task.id,
+                          slot, deadline_ns, NULL);
     if (result == HOP_DONE_ACK_COMPLETE) return HOP_XFER_SENDER_COMMIT_ACK_COMPLETE;
     if (result == HOP_DONE_ACK_PARTIAL) return HOP_XFER_SENDER_COMMIT_ACK_PARTIAL;
     if (result == HOP_DONE_ACK_FAILED) return HOP_XFER_SENDER_COMMIT_ACK_FAILED;
@@ -763,10 +766,8 @@ static const char *sender_engine_entry_path(void *user, const void *entry) {
 
 static int sender_engine_cancel_requested(void *user, uint32_t batch) {
     sender_file_engine_call *call = (sender_file_engine_call *)user;
-    return cancel_requested(batch) ||
-        (call && call->job->sender_context.is_cancelled &&
-         call->job->sender_context.is_cancelled(
-             call->job->sender_context.user, batch, call->job->task.id));
+    return call && sender_job_cancel_requested(
+        &call->job->sender_context, batch, call->job->task.id);
 }
 
 static int sender_engine_peer_aborted(void *user, uint32_t batch) {
@@ -815,8 +816,11 @@ static hop_xfer_sender_send_result sender_engine_send_entry(
 static hop_xfer_sender_ack_result sender_engine_wait_ack(
     void *user, uint32_t batch, uint32_t id, uint64_t deadline_ns,
     uint64_t *rtt_us) {
-    (void)user;
-    int result = ack_wait(batch, id, deadline_ns, rtt_us);
+    sender_file_engine_call *call = (sender_file_engine_call *)user;
+    if (!call || !call->job) return HOP_XFER_SENDER_ACK_LOCAL_FAILURE;
+    int result = ack_wait(&call->job->sender_context,
+                          (intptr_t)call->fd, s_send_epoch,
+                          batch, call->job->task.id, id, deadline_ns, rtt_us);
     if (result == HOP_FILE_ACK_OK) return HOP_XFER_SENDER_ACK_OK;
     if (result == HOP_FILE_ACK_BADPATH) return HOP_XFER_SENDER_ACK_BADPATH;
     if (result == XFER_ACK_TIMEOUT) return HOP_XFER_SENDER_ACK_TIMEOUT;

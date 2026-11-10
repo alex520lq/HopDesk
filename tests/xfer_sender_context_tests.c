@@ -12,6 +12,14 @@ typedef struct {
     int cancelled;
     int aborted;
     int writes;
+    int status_start_calls;
+    int status_end_calls;
+    int status_file_calls;
+    int status_stage_calls;
+    int status_chunk_calls;
+    const void *last_job;
+    uint32_t status_batch;
+    int status_phase;
 } fake_sender;
 
 static uint64_t fake_now(void *user) {
@@ -50,8 +58,42 @@ static int fake_peer_aborted(void *user, uint32_t batch) {
     f->last_batch = batch;
     return f->aborted;
 }
+static void fake_status_start(void *user, const void *job) {
+    fake_sender *f = (fake_sender *)user;
+    f->status_start_calls++;
+    f->last_job = job;
+}
+static void fake_status_end(void *user, uint32_t batch, int phase,
+                            const char *detail) {
+    fake_sender *f = (fake_sender *)user;
+    assert(detail != NULL);
+    f->status_end_calls++;
+    f->status_batch = batch;
+    f->status_phase = phase;
+}
+static void fake_status_file_phase(void *user, uint32_t batch, int index,
+                                   int phase, uint32_t attempts) {
+    fake_sender *f = (fake_sender *)user;
+    assert(index >= 0);
+    (void)attempts;
+    f->status_file_calls++;
+    f->status_batch = batch;
+    f->status_phase = phase;
+}
 static void fake_stage_time(void *user, uint32_t batch, int stage, uint64_t ns) {
-    (void)user; (void)batch; (void)stage; (void)ns;
+    fake_sender *f = (fake_sender *)user;
+    (void)batch; (void)stage; (void)ns;
+    f->status_stage_calls++;
+}
+static void fake_status_chunk(void *user, uint32_t batch, uint32_t id,
+                              uint64_t offset, uint32_t length,
+                              uint64_t read_ns, uint64_t crc_ns,
+                              uint64_t send_ns, uint64_t receive_ns) {
+    fake_sender *f = (fake_sender *)user;
+    (void)id; (void)offset; (void)length; (void)read_ns;
+    (void)crc_ns; (void)send_ns; (void)receive_ns;
+    f->status_chunk_calls++;
+    f->status_batch = batch;
 }
 static void fake_log(void *user, int level, const char *message) {
     (void)user; (void)level; (void)message;
@@ -84,7 +126,11 @@ static hop_xfer_sender_context make_context(fake_sender *f) {
     ctx.write_frame = fake_write_frame;
     ctx.is_cancelled = fake_cancelled;
     ctx.peer_aborted = fake_peer_aborted;
+    ctx.status_start_job = fake_status_start;
+    ctx.status_end = fake_status_end;
+    ctx.status_file_phase = fake_status_file_phase;
     ctx.status_stage_time = fake_stage_time;
+    ctx.status_chunk_timed = fake_status_chunk;
     ctx.log_message = fake_log;
     ctx.task_bind_session = fake_task_bind_session;
     ctx.task_set_state = fake_task_state;
@@ -141,6 +187,17 @@ int main(void) {
     assert(ctx.peer_aborted(ctx.user, 42) == 1);
     hop_xfer_task task = {99, 1};
     const uint8_t session[HOP_TASK_SESSION_BYTES] = {1};
+    int opaque_job = 123;
+    ctx.status_start_job(ctx.user, &opaque_job);
+    ctx.status_end(ctx.user, 42, 7, "test terminal");
+    ctx.status_file_phase(ctx.user, 42, 3, 4, 2);
+    ctx.status_stage_time(ctx.user, 42, 5, 900);
+    ctx.status_chunk_timed(ctx.user, 42, 3, 128, 64, 10, 20, 30, 40);
+    assert(state.status_start_calls == 1 && state.last_job == &opaque_job);
+    assert(state.status_end_calls == 1 && state.status_file_calls == 1);
+    assert(state.status_stage_calls == 1 && state.status_chunk_calls == 1);
+    assert(state.status_batch == 42);
+
     assert(ctx.task_bind_session(ctx.user, &task, session));
     assert(ctx.task_set_state(ctx.user, &task, 1));
     assert(ctx.task_begin_completion(ctx.user, &task));

@@ -50,6 +50,7 @@ static void *s_retry_paths[HOP_XFER_FILE_LIMIT];
 static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];static int s_history_count;
 static int saved,closed,closes,discarded,applied,fail_directory,fail_alloc,fail_send,fail_write,fail_writer_io;
 static int notified, done_acks, last_done_status;static uint8_t last_reason;
+static int file_acks,last_file_ack,opened_files,written_chunks,fail_open,fail_prepare,fail_path;
 static void history_save(void);
 static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t batch){(void)batch;
     (void)fd;
@@ -100,7 +101,7 @@ static hop_xfer_rx_done_receipt s_done_receipt;
 static int ack_deliveries;static uint32_t ack_id;
 static void ack_deliver(uint32_t batch,uint32_t id,int status){(void)batch;(void)status;ack_deliveries++;ack_id=id;}
 static void fixture_send_file_ack(void *context,uint32_t batch,uint32_t id,int status){
-    (void)context;(void)batch;(void)id;(void)status;
+    (void)context;(void)batch;(void)id;file_acks++;last_file_ack=status;
 }
 static void fixture_send_done_ack(void *context,uint32_t batch,const uint8_t *payload,uint32_t length){
     (void)context;

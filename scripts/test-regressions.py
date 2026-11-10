@@ -1114,11 +1114,17 @@ int main(void){
         shutdown=extract(lifecycle,'xfer_shutdown')
         shutdown_drain=extract(worker,'sender_shutdown_drain_jobs')
         job_free=extract(worker,'job_free')
+        release_job_resources=extract(worker,'job_release_task_resources')
+        finish_callback=extract(worker,'sender_worker_task_finish')
         requeue=extract(worker,'sender_worker_requeue_front')
         submit_enter=extract(submit,'sender_submit_enter')
         assert 'XFER_JOB_OWNER_WORKER' in worker and 'XFER_JOB_OWNER_SUBMITTER' in submit
         assert 'XFER_JOB_OWNER_SHUTDOWN' in job_free and 'XFER_JOB_OWNER_RELEASED' in job_free
         assert 'hop_xfer_task_is_terminal' in job_free and 'sender_task_dispose' in job_free
+        assert release_job_resources.index('free(j->pixels)') < release_job_resources.index('hop_xfer_task_release_image_temp')
+        assert job_free.index('job_release_task_resources(j)') < job_free.index('sender_task_finish')
+        assert finish_callback.index('job_release_task_resources(job)') < finish_callback.index('sender_task_finish')
+        assert 'pending_finish_state' in job_free and 'pending_status_end' in worker
         assert 'shutdown_jobs' in lifecycle and 's_x.shutting_down' in lifecycle
         assert 'XFER_JOB_OWNER_QUEUE' in submit and 'XFER_JOB_OWNER_QUEUE' in requeue
         assert 'XFER_JOB_OWNER_WORKER' in requeue and 'sender_worker_is_stopping' in requeue

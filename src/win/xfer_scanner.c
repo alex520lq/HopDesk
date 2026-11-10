@@ -68,7 +68,7 @@ static int elist_push(elist *list, xfer_entry *entry, const hop_xfer_scan_servic
     }
     if (list->n == list->cap) {
         int next_cap = list->cap ? list->cap * 2 : 32;
-        xfer_entry *next = (xfer_entry *)realloc(list->v, (size_t)next_cap * sizeof(*next));
+        xfer_entry *next = (xfer_entry *)services->realloc_entries(services->context, list->v, (uint64_t)next_cap * sizeof(*next));
         if (!next) { scan_fail(list, HOP_XFER_SCAN_OUT_OF_MEMORY); return 0; }
         list->v = next;
         list->cap = next_cap;
@@ -205,7 +205,7 @@ static void walk_into(elist *list, const wchar_t *full, const char *relative, co
 void hop_xfer_scan_paths(elist *list, const hop_xfer_scan_path *paths, int count,
                          const hop_xfer_scan_services *services) {
     if (!list || !paths || count <= 0 || !services || !services->reserve_entry ||
-        !services->is_cancelled || !services->watchdog_begin || !services->watchdog_end) {
+        !services->is_cancelled || !services->realloc_entries || !services->watchdog_begin || !services->watchdog_end) {
         if (list) scan_fail(list, HOP_XFER_SCAN_INVALID_INPUT);
         return;
     }

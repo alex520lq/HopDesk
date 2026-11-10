@@ -282,3 +282,13 @@ No physical two-device or weak-network acceptance is claimed by the unit/CI test
 - Validation status: pending the next dual-platform Actions run for the exact head containing this slice. Stop/join timeout behavior is still not tested with an intentionally stuck production worker; physical two-device shutdown and long-duration soak remain unverified.
 - Next: extract reconnect-kick and ACK coordinator ownership behind explicit platform Sender adapters, then separate worker orchestration from the remaining platform-specific I/O and shutdown code.
 
+
+
+## 22. Per-job reconnect-kick callback (2026-11-10)
+
+- Added the mandatory `request_reconnect` callback to `hop_xfer_sender_context`. The shared Sender engine no longer calls the global `xfer_kick()` entry point directly; it requests reconnect through the active job's captured context.
+- Windows and macOS platform contexts now bind the peer-ready flag together with their native session lock and socket. The adapter preserves the existing behavior: mark the peer not ready and shutdown the current data socket while holding the same lock.
+- The public `xfer_kick()` API remains for existing receiver/network callers, but delegates to the same platform context adapter so there is only one implementation of the reconnect side effect per platform.
+- Extended the production-linked Sender Context test to exercise the reconnect callback and reject a context missing it. Source-contract regression checks ensure the shared engine uses the job context and the public wrapper delegates to the adapter.
+- **Validation: GitHub Actions Run #1429 (ID `42812591315`, tested commit `1d917dcd3711705287376cb3f9eac337ddee3cac`) passed on Windows MSVC and macOS Apple Clang.** Both app builds, portable Core/regression suites, transfer protocol tests, TCP loopback tests, native connection/reconnect integration tests, and packaging passed. Release publication was skipped for the PR.
+- Next: move ACK coordinator ownership and all ACK register/deliver/wait/wake operations behind the same explicit platform Sender Context, then extract worker scheduling/retry/terminal ordering. The ACK adapter must preserve exact `(batch,id)` identity, early-ACK/deadline behavior, wake-up semantics, and destroy-only-after-join lifetime.

@@ -11,6 +11,7 @@ extern "C" {
 typedef struct {
     void *head;
     void *tail;
+    uint32_t count;
 } hop_xfer_sender_queue;
 
 typedef struct {
@@ -28,6 +29,22 @@ typedef enum {
     HOP_XFER_SENDER_QUEUE_READY,
     HOP_XFER_SENDER_QUEUE_EXPIRED
 } hop_xfer_sender_queue_take_result;
+
+/* Queue storage and intrusive-link mutation are shared Core responsibilities.
+ * The caller owns synchronization and node storage. */
+void hop_xfer_sender_queue_init(hop_xfer_sender_queue *queue);
+int hop_xfer_sender_queue_push_back(hop_xfer_sender_queue *queue,
+                                    const hop_xfer_sender_queue_ops *ops,
+                                    void *node);
+int hop_xfer_sender_queue_push_front(hop_xfer_sender_queue *queue,
+                                     const hop_xfer_sender_queue_ops *ops,
+                                     void *node);
+int hop_xfer_sender_queue_contains_batch(const hop_xfer_sender_queue *queue,
+                                         const hop_xfer_sender_queue_ops *ops,
+                                         uint32_t batch);
+uint32_t hop_xfer_sender_queue_count(const hop_xfer_sender_queue *queue);
+int hop_xfer_sender_queue_empty(const hop_xfer_sender_queue *queue);
+void *hop_xfer_sender_queue_detach_all(hop_xfer_sender_queue *queue);
 
 /* Removes the first individually-cancelled task, even when it is not the head.
  * The remaining FIFO order and tail pointer are preserved. */

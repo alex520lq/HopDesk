@@ -228,3 +228,12 @@ No physical two-device or weak-network acceptance is claimed by the unit/CI test
 - Validation status: the retry module's standalone policy test passed a local C11 build with -Wall -Wextra -Werror and ASan/UBSan. Full Windows/macOS GitHub Actions validation remains pending; no app-build or full regression pass is claimed for this slice.
 - Next worker slice: extract the shared terminal outcome decision and Task/Reservation finish gate behind explicit Worker Context callbacks, then split native thread start/stop/join adapters from the remaining worker orchestration.
 
+## 16. Shared Sender terminal lifecycle decision (2026-11-10)
+
+- Extended the shared Sender job-result enum with COMMIT_UNKNOWN and COMMIT_REJECTED, matching the existing platform protocol outcomes.
+- Added src/core/xfer_sender_lifecycle.[ch] to map every terminal sender result to one Task terminal state, status phase and user-visible detail. The mapping covers complete/partial success, local cancellation, receiver cancellation versus peer failure, rejected DONE, uncertain DONE delivery, and exhausted reconnect.
+- Windows/macOS workers now use the same terminal decision after the existing completion/cancellation arbitration and before Task finish/status publication. Platform-specific ABORT/DONE sends and completion-gate ordering remain in the worker.
+- Added tests/xfer_sender_lifecycle_tests.c for every result branch and invalid input; wired it into both Core test scripts, the Windows HA link target and source-contract regressions.
+- Validation status: standalone retry-policy C tests passed locally; lifecycle tests and the combined queue/retry/lifecycle app integration still require the current dual-platform Actions run. No full CI pass is claimed.
+- Remaining Worker Context work: move completion-gate ownership, terminal finish/dispose and status publication behind explicit per-operation callbacks; then split native thread start/stop/join adapters from worker orchestration.
+

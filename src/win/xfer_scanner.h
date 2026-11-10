@@ -60,6 +60,7 @@ typedef struct {
     void *context;
     int (*reserve_entry)(void *context, uint64_t bytes);
     int (*is_cancelled)(void *context);
+    void *(*realloc_entries)(void *context, void *memory, uint64_t bytes);
     int (*watchdog_begin)(void *context, const char *operation, unsigned timeout_ms);
     void (*watchdog_end)(void *context, int ticket);
 } hop_xfer_scan_services;

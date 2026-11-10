@@ -50,7 +50,7 @@ static void *s_retry_paths[HOP_XFER_FILE_LIMIT];
 static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];static int s_history_count;
 static int saved,closed,closes,discarded,applied,fail_directory,fail_alloc,fail_send,fail_write,fail_writer_io;
 static int notified, done_acks, last_done_status;static uint8_t last_reason;
-static int file_acks,last_file_ack,opened_files,written_chunks,fail_open,fail_prepare,fail_path;
+static int file_acks,last_file_ack;
 static void history_save(void);
 static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t batch){(void)batch;
     (void)fd;

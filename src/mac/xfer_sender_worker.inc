@@ -1,23 +1,52 @@
-/* 从作业队列里摘掉 cur。prev 是它的前驱（cur 是头时为 NULL）。
- *
- * 尾指针不能简单地"摘到尾巴就置 NULL"：cur 是尾巴但前面还有节点时，
- * q_tail 必须指回前驱。置 NULL 之后下一次入队会走
- * `if (q_tail) ... else q_head = j` 的 else 分支，把 q_head 直接覆盖掉 ——
- * 前面排队的作业既不会被发送，也不会被释放，凭空消失。
- * 调用方必须持有 s_x.qlock。 */
-static void queue_unlink(xf_job *prev, xf_job *cur) {
-    if (prev) prev->next = cur->next;
-    else      s_x.q_head = cur->next;
-    if (s_x.q_tail == cur) s_x.q_tail = prev;
+/* Platform node accessors; queue ordering/removal policy lives in Core. */
+static void *sender_queue_next(void *user, const void *node) {
+    (void)user;
+    return ((const xf_job *)node)->next;
 }
+static void sender_queue_set_next(void *user, void *node, void *next) {
+    (void)user;
+    ((xf_job *)node)->next = (xf_job *)next;
+}
+static int sender_queue_is_cancelled(void *user, const void *node) {
+    (void)user;
+    const xf_job *job = (const xf_job *)node;
+    return sender_task_cancel_requested(job->batch, &job->task);
+}
+static uint32_t sender_queue_batch(void *user, const void *node) {
+    (void)user;
+    return ((const xf_job *)node)->batch;
+}
+static uint64_t sender_queue_retry_at(void *user, const void *node) {
+    (void)user;
+    return ((const xf_job *)node)->retry_at;
+}
+static uint64_t sender_queue_give_up_at(void *user, const void *node) {
+    (void)user;
+    return ((const xf_job *)node)->give_up_at;
+}
+static const hop_xfer_sender_queue_ops s_sender_queue_ops = {
+    NULL, sender_queue_next, sender_queue_set_next, sender_queue_is_cancelled,
+    sender_queue_batch, sender_queue_retry_at, sender_queue_give_up_at
+};
 
-/* Caller holds the queue lock. Removing a cancelled later entry must not
- * change FIFO order or lose the tail of the remaining queue. */
+/* Caller holds s_x.lock. Copy the platform links into the shared Core view. */
 static xf_job *queue_take_cancelled(void) {
-    xf_job *prev=NULL, *cur=s_x.q_head;
-    while (cur && !sender_task_cancel_requested(cur->batch, &cur->task)) { prev=cur; cur=cur->next; }
-    if (cur) { queue_unlink(prev,cur); cur->next=NULL; }
-    return cur;
+    hop_xfer_sender_queue queue = {s_x.q_head, s_x.q_tail};
+    xf_job *job = (xf_job *)hop_xfer_sender_queue_take_cancelled(
+        &queue, &s_sender_queue_ops);
+    s_x.q_head = (xf_job *)queue.head;
+    s_x.q_tail = (xf_job *)queue.tail;
+    return job;
+}
+static xf_job *queue_take_head(uint64_t now, int peer_ready, int allow_ready,
+                                 hop_xfer_sender_queue_take_result *result) {
+    hop_xfer_sender_queue queue = {s_x.q_head, s_x.q_tail};
+    xf_job *job = (xf_job *)hop_xfer_sender_queue_take_head(
+        &queue, &s_sender_queue_ops, now, s_x.cancel_batch,
+        peer_ready, allow_ready, result);
+    s_x.q_head = (xf_job *)queue.head;
+    s_x.q_tail = (xf_job *)queue.tail;
+    return job;
 }
 
 static void job_free(xf_job *j) {
@@ -88,21 +117,12 @@ static void *send_thread(void *arg) {
 
         uint64_t now = now_ms();
         expired=queue_take_cancelled();
-        xf_job *prev=NULL, *cur=expired ? NULL : s_x.q_head;
-        while (cur) {
-            /* 重连预算用完：连接在不在都放弃 */
-            if (cur->batch==s_x.cancel_batch || (cur->give_up_at && now >= cur->give_up_at)) {
-                expired = cur;
-                queue_unlink(prev, cur);
-                expired->next = NULL;
-                break;
-            }
-            if (!waited_for_queue && peer_ready_snapshot && cur->retry_at <= now) {
-                j = cur;
-                queue_unlink(prev, cur);
-                break;
-            }
-            break; /* FIFO: do not overtake a paused batch. */
+        if (!expired) {
+            hop_xfer_sender_queue_take_result take_result = HOP_XFER_SENDER_QUEUE_NONE;
+            xf_job *taken = queue_take_head(now, peer_ready_snapshot,
+                                            !waited_for_queue, &take_result);
+            if (take_result == HOP_XFER_SENDER_QUEUE_EXPIRED) expired = taken;
+            else if (take_result == HOP_XFER_SENDER_QUEUE_READY) j = taken;
         }
         if (j) { s_x.cur_batch = j->batch; s_x.cur_task_id = j->task.id; s_x.abort_batch=0; s_x.abort_reason=0; }
         pthread_mutex_unlock(&s_x.qlock);

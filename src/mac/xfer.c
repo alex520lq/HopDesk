@@ -609,6 +609,8 @@ int xfer_init(const hop_config *cfg) {
     if (!sender_context_ack_create()) {
         hop_log(HOP_LOG_ERROR, "xfer: ACK coordinator initialization failed");
         pthread_rwlock_unlock(&s_x_lifecycle_lock);
+        if (!xfer_shutdown())
+            hop_log(HOP_LOG_ERROR, "xfer: ACK startup rollback incomplete; Shutdown must be retried");
         return 0;
     }
 
@@ -616,6 +618,8 @@ int xfer_init(const hop_config *cfg) {
     if (!wq_start()) {
         hop_log(HOP_LOG_ERROR, "xfer: writer thread start failed");
         pthread_rwlock_unlock(&s_x_lifecycle_lock);
+        if (!xfer_shutdown())
+            hop_log(HOP_LOG_ERROR, "xfer: writer startup rollback incomplete; Shutdown must be retried");
         return 0;
     }
 
@@ -623,6 +627,8 @@ int xfer_init(const hop_config *cfg) {
             &s_x.sender_threads, send_thread, conn_thread, NULL)) {
         hop_log(HOP_LOG_ERROR, "xfer: sender/connection thread start failed");
         pthread_rwlock_unlock(&s_x_lifecycle_lock);
+        if (!xfer_shutdown())
+            hop_log(HOP_LOG_ERROR, "xfer: sender startup rollback incomplete; Shutdown must be retried");
         return 0;
     }
 

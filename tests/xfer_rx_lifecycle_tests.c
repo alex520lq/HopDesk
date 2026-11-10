@@ -31,9 +31,9 @@ static void test_abort_terminal_order(void){
 
     event_count=0;observed_batch=42;observed_reason=HOP_ABORT_DISK;
     assert(hop_xfer_rx_abort_execute(HOP_RX_BATCH_ABORT_TERMINATE_ACTIVE,42,HOP_ABORT_DISK,0,0,&ops)==HOP_RX_ABORT_TERMINATED);
-    const int normal_order[]={3,5,6,7,8};
-    assert(event_count==5);
-    for(int i=0;i<5;i++)assert(events[i]==normal_order[i]);
+    const int normal_order[]={3,4,5,6,7,8};
+    assert(event_count==6);
+    for(int i=0;i<6;i++)assert(events[i]==normal_order[i]);
     assert(observed_cancelled==0);
 }
 

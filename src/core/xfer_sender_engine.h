@@ -130,7 +130,8 @@ typedef struct {
 hop_xfer_sender_send_result hop_xfer_sender_send_file_entry(
     const hop_xfer_sender_file_ops *ops, uint32_t batch, uint32_t id,
     const hop_xfer_sender_file_entry *entry, uint8_t *begin_buffer,
-    uint8_t *chunk_buffer, uint32_t chunk_size, uint64_t ack_timeout_ns,
+    uint32_t begin_buffer_size, uint8_t *chunk_buffer, uint32_t chunk_size,
+    uint64_t ack_timeout_ns,
     uint32_t directory_flag, uint8_t file_ok_status,
     uint8_t file_io_error_status, uint8_t file_begin_message,
     uint8_t file_end_message,

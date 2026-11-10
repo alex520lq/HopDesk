@@ -126,6 +126,11 @@ static int job_free(xf_job *j, xfer_job_owner expected_owner) {
         }
     }
 
+    if (j->pending_status_end) {
+        sender_status_end(&j->sender_context,j->batch,j->pending_status_phase,
+                          j->pending_status_detail[0] ? j->pending_status_detail : "Transfer ended");
+        j->pending_status_end=0;
+    }
     j->owner = XFER_JOB_OWNER_RELEASED;
     for (int i = 0; i < j->n; ++i) {
         free(j->e[i].full);
@@ -210,8 +215,16 @@ static void sender_worker_task_finish(void *user,hop_xfer_task_state state) {
 static void sender_worker_status_end(void *user,uint32_t batch,int phase,const char *detail) {
     sender_worker_call *call=(sender_worker_call *)user;
     if(call&&call->job){
-        sender_status_end(&call->job->sender_context,batch,phase,detail);
-        call->job->pending_status_end=0;
+        xf_job *job=call->job;
+        if (hop_xfer_task_is_terminal(&job->task)) {
+            sender_status_end(&job->sender_context,batch,phase,detail);
+            job->pending_status_end=0;
+        } else {
+            job->pending_status_end=1;
+            job->pending_status_phase=phase;
+            snprintf(job->pending_status_detail,sizeof(job->pending_status_detail),"%s",
+                     detail?detail:"Transfer terminalization pending");
+        }
     }
 }
 static void sender_worker_dispose_job(void *user) {
@@ -305,18 +318,15 @@ static int sender_shutdown_drain_jobs(void) {
         if (terminal_was_pending && !job->pending_finish_valid) {
             job->pending_finish_state=was_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_INTERRUPTED;
             job->pending_finish_valid=1;
-            job->pending_status_end=1;
         }
-        hop_xfer_sender_context status_context=job->sender_context;
-        uint32_t status_batch=job->batch;
-        int emit_status=job->pending_status_end;
-        hop_xfer_task_state finish_state=job->pending_finish_state;
+        if (terminal_was_pending && !job->pending_status_end) {
+            job->pending_status_end=1;
+            job->pending_status_phase=was_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED;
+            snprintf(job->pending_status_detail,sizeof(job->pending_status_detail),"%s",
+                     was_cancelled?"Cancelled":"Transfer interrupted during shutdown");
+        }
         int released=job_free(job,XFER_JOB_OWNER_SHUTDOWN);
         if (released!=1) return 0; /* retain the list head and its Reservation */
-        if (emit_status)
-            sender_status_end(&status_context,status_batch,
-                finish_state==HOP_XFER_TASK_CANCELLED?HOP_XFER_CANCELLED:HOP_XFER_FAILED,
-                finish_state==HOP_XFER_TASK_CANCELLED?"Cancelled":"Transfer interrupted during shutdown");
         s_x.shutdown_jobs=next;
     }
     return 1;

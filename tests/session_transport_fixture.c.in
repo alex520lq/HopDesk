@@ -48,7 +48,12 @@ static void fixture_cancel_clipboard(void *context,uint32_t batch){(void)context
 static void fixture_status_reset(void *context){(void)context;s_receive_status.marker=0;resets++;}
 #define clip_complete_remote_paste finish_paste
 #define clipboard_complete_remote_paste finish_paste
-typedef struct {hop_session_id session;int next_i,ok;} xf_job;
+typedef struct {
+    hop_session_id session;
+    int next_i,ok;
+    hop_xfer_sender_context sender_context;
+    hop_xfer_task task;
+} xf_job;
 typedef xf_job xfer_job;
 #define AcquireSRWLockExclusive(p) ((void)(p))
 #define ReleaseSRWLockExclusive(p) ((void)(p))
@@ -61,6 +66,15 @@ static int s_txlock;
 static unsigned long s_send_epoch;
 static uint64_t rate_now_ns(void){return 0;}
 static int rate_wait_for_chunk(uint32_t bytes){(void)bytes;return 1;}
+typedef struct {int stopping;uint64_t waited_ns;} fixture_sender_wait;
+static int fixture_sender_is_stopping(void *user){
+    return ((fixture_sender_wait *)user)->stopping;
+}
+static int fixture_sender_wait_ns(void *user,uint64_t duration_ns){
+    fixture_sender_wait *state=(fixture_sender_wait *)user;
+    state->waited_ns+=duration_ns;
+    return !state->stopping;
+}
 static void rate_feedback(uint64_t ack_rtt_us){(void)ack_rtt_us;}
 static int send_all(int fd,const void *p,size_t n){assert(fd==7);assert(captured_len+n<=sizeof(captured));memcpy(captured+captured_len,p,n);captured_len+=n;return 1;}
 static void status_stage_time(int d,uint32_t batch,int stage,uint64_t ns){(void)d;(void)batch;(void)stage;(void)ns;}
@@ -95,6 +109,17 @@ s_rx.services.cancel_clipboard=fixture_cancel_clipboard;s_rx.services.status_res
  rx_expire_stale_session();assert(discarded==2);
  hop_session_publish(&s_x.session);rx_bind_session(&s_x.session);assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,42));
  xf_job job={0};job.session=next;job.next_i=3;job.ok=3;s_send_status.marker=9;
+ fixture_sender_wait wait_state={0};
+ job.sender_context.user=&wait_state;
+ job.sender_context.is_stopping=fixture_sender_is_stopping;
+ job.sender_context.wait_ns=fixture_sender_wait_ns;
+ assert(!sender_commit_is_stopping(&job));
+ assert(sender_commit_wait_ms(&job,17));
+ assert(wait_state.waited_ns==17000000ull);
+ wait_state.stopping=1;
+ assert(sender_commit_is_stopping(&job));
+ assert(!sender_commit_wait_ms(&job,1));
+ wait_state.stopping=0;
  job_bind_session(&job, &s_x.session);assert(!job.next_i && !job.ok && !s_send_status.marker);
  job.next_i=2;job.ok=2;job_bind_session(&job, &s_x.session);assert(job.next_i==2 && job.ok==2);
  uint8_t end[9]={0};hop_put_be32(end,3);

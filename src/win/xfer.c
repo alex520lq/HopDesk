@@ -7,6 +7,7 @@
 
 #include "app.h"
 #include "xfer.h"
+#include "xfer_scanner.h"
 #include "xfer_rx_fs.h"
 #include "../core/xfer_rx_receipt.h"
 #include "../core/xfer_rx_lifecycle.h"
@@ -45,19 +46,9 @@
 #include <io.h>
 #include <time.h>
 
-#define XFER_MAX_ENTRIES  8192     /* 一次提交的条目上限，防跑飞 */
 #define XFER_RX_ROOT      L"HopDesk"
 
 /* ---------------- 条目 / 作业 ---------------- */
-
-typedef struct {
-    wchar_t *full;      /* 本机绝对路径（目录条目也用它建目录） */
-    char    *name;      /* UTF-8 文件名 */
-    char    *rel;       /* UTF-8 相对路径，用 '/' 分隔 */
-    uint64_t size;
-    uint64_t mtime;     /* Unix 秒 */
-    uint32_t flags;
-} xfer_entry;
 
 typedef struct xfer_job {
     struct xfer_job *next;
@@ -80,14 +71,6 @@ typedef struct xfer_job {
     uint64_t    give_up_at;     /* 断线重连预算的截止时刻，0 = 未开始计时 */
     uint64_t    scan_ns;        /* source enumeration duration, recorded on first visible attempt */
 } xfer_job;
-
-typedef struct {
-    xfer_entry *v;
-    int n, cap;
-    int failed; /* incomplete/unsafe snapshots are never queued */
-    int budget_rejected;
-    hop_xfer_task task;
-} elist;
 
 /* ---------------- 全局状态 ---------------- */
 
@@ -383,198 +366,7 @@ void xfer_get_budget_snapshot(hop_xfer_budget_snapshot *out) {
     hop_xfer_budget_get_snapshot(out);
 }
 
-/* ---------------- UTF-8 转换 ---------------- */
-
-static char *w2u(const wchar_t *w) {
-    int need = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
-    if (need <= 1) return NULL;
-    char *o = (char *)malloc((size_t)need);
-    if (!o) return NULL;
-    WideCharToMultiByte(CP_UTF8, 0, w, -1, o, need, NULL, NULL);
-    return o;
-}
-
-/* 返回 malloc 的宽字符串；非法序列返回 NULL */
-static wchar_t *u2w(const char *u, int len) {
-    int need = MultiByteToWideChar(CP_UTF8, 0, u, len, NULL, 0);
-    if (need <= 0) return NULL;
-    wchar_t *o = (wchar_t *)malloc(((size_t)need + 1) * sizeof(wchar_t));
-    if (!o) return NULL;
-    MultiByteToWideChar(CP_UTF8, 0, u, len, o, need);
-    o[need] = L'\0';
-    return o;
-}
-
-static const wchar_t *base_name(const wchar_t *p) {
-    const wchar_t *b = p;
-    for (const wchar_t *q = p; *q; ++q)
-        if (*q == L'\\' || *q == L'/') b = q + 1;
-    return b;
-}
-
-/* Relative path validation is shared in src/core/xfer_validate.c. */
-
-/* FILETIME -> Unix 秒 */
-static uint64_t ft_to_unix(const FILETIME *ft) {
-    ULARGE_INTEGER u;
-    u.LowPart = ft->dwLowDateTime;
-    u.HighPart = ft->dwHighDateTime;
-    if (u.QuadPart < 116444736000000000ULL) return 0;
-    return (u.QuadPart - 116444736000000000ULL) / 10000000ULL;
-}
-
-/* ---------------- 条目列表 ---------------- */
-
-static int elist_push(elist *l, xfer_entry *e) {
-    if (!e || !e->name || !e->rel ||
-        strlen(e->name) > HOP_NAME_LEN_MAX ||
-        strlen(e->rel) > HOP_PATH_LEN_MAX ||
-        l->n >= XFER_MAX_ENTRIES) {
-        l->failed = 1;
-        return 0;
-    }
-    if (!hop_xfer_task_reserve_entry(&l->task, e->size)) {
-        l->budget_rejected = 1;
-        l->failed = 1;
-        return 0;
-    }
-    if (l->n == l->cap) {
-        int nc = l->cap ? l->cap * 2 : 32;
-        xfer_entry *nv = (xfer_entry *)realloc(l->v, (size_t)nc * sizeof(*nv));
-        if (!nv) { l->failed = 1; return 0; }
-        l->v = nv;
-        l->cap = nc;
-    }
-    l->v[l->n++] = *e;
-    return 1;
-}
-
-static void elist_free(elist *l) {
-    for (int i = 0; i < l->n; ++i) {
-        free(l->v[i].full);
-        free(l->v[i].name);
-        free(l->v[i].rel);
-    }
-    free(l->v);
-    l->v = NULL;
-    l->n = l->cap = 0;
-    l->failed = 0;
-    hop_xfer_task_dispose(&l->task);
-}
-
-/* 递归收集。rel 是 UTF-8 相对路径（不含首尾斜杠）。 */
-static BOOL guarded_find_next(HANDLE h, WIN32_FIND_DATAW *data) {
-    int guard = hop_watchdog_begin("directory next", HOP_IO_DEADLINE_MS);
-    BOOL ok = FindNextFileW(h, data);
-    DWORD error = ok ? ERROR_SUCCESS : GetLastError();
-    hop_watchdog_end(guard);
-    if (!ok) SetLastError(error);
-    return ok;
-}
-static void walk_into(elist *l, const wchar_t *full, const char *rel) {
-    if (!l || l->failed) return;
-    if (hop_xfer_task_cancel_requested(l->task.id)) { l->failed=1; return; }
-    WIN32_FILE_ATTRIBUTE_DATA fad;
-    int stat_guard = hop_watchdog_begin("file attributes", HOP_IO_DEADLINE_MS);
-    int stat_ok = GetFileAttributesExW(full, GetFileExInfoStandard, &fad);
-    hop_watchdog_end(stat_guard);
-    if (!stat_ok) {
-        l->failed = 1;
-        hop_log(HOP_LOG_WARN, "xfer: source path disappeared or is inaccessible");
-        return;
-    }
-    /* Do not follow symlinks, junctions or other reparse points. */
-    if (fad.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
-        l->failed = 1;
-        hop_log(HOP_LOG_WARN, "xfer: reparse point rejected from file selection");
-        return;
-    }
-
-    int is_dir = (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-    const wchar_t *bn = base_name(full);
-
-    xfer_entry e;
-    memset(&e, 0, sizeof(e));
-    e.full  = _wcsdup(full);
-    e.name  = w2u(bn);
-    e.rel   = rel ? _strdup(rel) : NULL;
-    e.mtime = ft_to_unix(&fad.ftLastWriteTime);
-
-    if (!e.full || !e.name || !e.rel) {
-        free(e.full); free(e.name); free(e.rel);
-        l->failed = 1;
-        return;
-    }
-
-    if (!is_dir) {
-        e.size  = ((uint64_t)fad.nFileSizeHigh << 32) | fad.nFileSizeLow;
-        e.flags = 0;
-        if (!elist_push(l, &e)) {
-            free(e.full); free(e.name); free(e.rel);
-        }
-        return;
-    }
-
-    /* 目录：先登记自身（保住空目录），再递归子项 */
-    e.size  = 0;
-    e.flags = HOP_FILE_FLAG_DIR;
-    if (!elist_push(l, &e)) {
-        free(e.full); free(e.name); free(e.rel);
-        return;
-    }
-
-    size_t dl = wcslen(full);
-    wchar_t *pat = (wchar_t *)malloc((dl + 3) * sizeof(wchar_t));
-    if (!pat) { l->failed = 1; return; }
-    wcscpy(pat, full);
-    if (dl && pat[dl - 1] != L'\\' && pat[dl - 1] != L'/') wcscat(pat, L"\\");
-    wcscat(pat, L"*");
-
-    WIN32_FIND_DATAW fd;
-    int find_guard = hop_watchdog_begin("directory enumerate", HOP_IO_DEADLINE_MS);
-    HANDLE h = FindFirstFileW(pat, &fd);
-    hop_watchdog_end(find_guard);
-    free(pat);
-    if (h == INVALID_HANDLE_VALUE) {
-        l->failed = 1;
-        hop_log(HOP_LOG_WARN, "xfer: cannot enumerate selected directory");
-        return;
-    }
-
-    do {
-        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
-
-        size_t fl = wcslen(full);
-        int need_sep = (fl && full[fl - 1] != L'\\' && full[fl - 1] != L'/');
-        wchar_t *child = (wchar_t *)malloc((fl + wcslen(fd.cFileName) + 3) * sizeof(wchar_t));
-        if (!child) { l->failed = 1; break; }
-        wcscpy(child, full);
-        if (need_sep) wcscat(child, L"\\");
-        wcscat(child, fd.cFileName);
-
-        /* 子项相对路径 = 父相对路径 + '/' + 文件名 */
-        char *cname = w2u(fd.cFileName);
-        char *crel = NULL;
-        if (cname) {
-            size_t rl = strlen(rel), cl = strlen(cname);
-            crel = (char *)malloc(rl + cl + 2);
-            if (crel) {
-                memcpy(crel, rel, rl);
-                crel[rl] = '/';
-                memcpy(crel + rl + 1, cname, cl + 1);
-            }
-            free(cname);
-        }
-        if (!crel) l->failed = 1;
-        else walk_into(l, child, crel);
-        free(crel);
-        free(child);
-        if (l->failed) break;
-    } while (guarded_find_next(h, &fd));
-
-    if (!l->failed && GetLastError() != ERROR_NO_MORE_FILES) l->failed = 1;
-    FindClose(h);
-}
+/* Source scanning is implemented by xfer_scanner.c. */
 
 /* ---------------- 发送 ---------------- */
 

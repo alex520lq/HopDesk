@@ -33,8 +33,12 @@ static void rx_release_terminal_resources(xfer_rx_context *rx,
     if (!rx) return;
     if (close_writer && rx->services.close_file)
         rx->services.close_file(rx->services.context);
-    if (discard_staging && rx->services.discard_staging_directory)
-        rx->services.discard_staging_directory(rx->services.context);
+    if (discard_staging) {
+        int removed = rx->services.discard_staging_directory
+            ? rx->services.discard_staging_directory(rx->services.context)
+            : !rx->dir[0];
+        rx->staging_cleanup_pending = !removed;
+    }
 }
 static void rx_abort_release_resources(void *context, int discard_staging) {
     rx_release_terminal_resources((xfer_rx_context *)context, 1, discard_staging);
@@ -90,7 +94,7 @@ void hop_xfer_rx_reset_batch_state(void *context) {
     hop_xfer_rx_file_state_set_kind(&rx->file_state, 0, 0);
     hop_xfer_rx_entry_reservations_reset(&rx->entry_reservations);
     hop_xfer_task_dispose(&rx->task);
-    rx->dir[0] = 0;
+    if (!rx->staging_cleanup_pending) rx->dir[0] = 0;
 }
 
 static void rx_handler_terminate(xfer_rx_context *rx, uint32_t batch,

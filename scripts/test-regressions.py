@@ -945,7 +945,8 @@ int main(void){
         net_down=engine.index('return HOP_XFER_SENDER_JOB_NET_DOWN;',kick)
         assert timeout < unregister < kick < net_down
         reconnect=extract(sender,'sender_engine_request_reconnect')
-        assert 'call->job->sender_context.request_reconnect' in reconnect
+        assert 'call->job->sender_context' in reconnect
+        assert 'context->request_reconnect' in reconnect
         assert 'xfer_kick();' not in reconnect
         kick=extract(sender,'xfer_kick')
         assert 'sender_context_request_reconnect(&s_sender_platform)' in kick

@@ -8,6 +8,20 @@
 #include <string.h>
 #include <sys/stat.h>
 
+static void scan_fail(elist *list, hop_xfer_scan_error error) {
+    if (!list) return;
+    if (!list->failed) list->error = error;
+    list->failed = 1;
+}
+
+static int scan_watchdog_begin(const hop_xfer_scan_services *services, const char *operation) {
+    return services->watchdog_begin(services->context, operation, HOP_IO_DEADLINE_MS);
+}
+
+static void scan_watchdog_end(const hop_xfer_scan_services *services, int ticket) {
+    services->watchdog_end(services->context, ticket);
+}
+
 static int elist_push(elist *list, xf_entry *entry, const hop_xfer_scan_services *services) {
     if (!entry || !entry->name || !entry->rel ||
         strlen(entry->name) > HOP_NAME_LEN_MAX ||
@@ -25,7 +39,7 @@ static int elist_push(elist *list, xf_entry *entry, const hop_xfer_scan_services
     if (list->n == list->cap) {
         int next_cap = list->cap ? list->cap * 2 : 32;
         xf_entry *next = (xf_entry *)realloc(list->v, (size_t)next_cap * sizeof(*next));
-        if (!next) { list->failed = 1; return 0; }
+        if (!next) { scan_fail(list, HOP_XFER_SCAN_OUT_OF_MEMORY); return 0; }
         list->v = next;
         list->cap = next_cap;
     }

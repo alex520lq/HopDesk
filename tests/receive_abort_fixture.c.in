@@ -287,7 +287,7 @@ int main(void){
         peer_abort(batch+1,HOP_ABORT_CANCEL);rx_cancel_local();assert(saved==before+2);
     }
     /* A failed staging delete must preserve the native path and retry state. */
-    before=saved;image_begin(301,1);seed_resources();
+    int cleanup_before=saved;image_begin(301,1);seed_resources();
 #ifdef FIXTURE_WINDOWS
     wcscpy(s_rx.dir,L"tmp\\HopDesk\\pending");
 #else
@@ -297,7 +297,7 @@ int main(void){
     assert(!s_rx.batch_state.active && s_rx.dir[0] && s_rx.staging_cleanup_pending);
     assert(fixture_discard_staging_directory(&s_rx));
     assert(!s_rx.dir[0] && !s_rx.staging_cleanup_pending);
-    assert_terminal(301,HOP_ABORT_DISK,before);
+    assert_terminal(301,HOP_ABORT_DISK,cleanup_before);
     /* Setup errors now start and terminate a tracked batch, including its tombstone. */
     int before=saved;fail_directory=1;image_begin(200,1);fail_directory=0;
     assert_terminal(200,HOP_ABORT_DISK,before);

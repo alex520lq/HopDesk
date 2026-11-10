@@ -92,6 +92,8 @@ typedef struct xf_job {
     hop_xfer_task_state pending_finish_state;
     int pending_finish_valid;
     int pending_status_end;
+    int pending_status_phase;
+    char pending_status_detail[96];
     hop_xfer_sender_context sender_context;
     intptr_t  commit_socket;
     uint64_t  commit_epoch;

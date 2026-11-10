@@ -255,6 +255,20 @@ if ($LASTEXITCODE -ne 0) { throw "Sender queue policy test compilation failed ($
 & $senderQueue
 if ($LASTEXITCODE -ne 0) { throw "Sender queue policy tests failed ($LASTEXITCODE)" }
 
+$senderRetry = Join-Path $build 'hopdesk-sender-retry-tests.exe'
+$senderRetrySources = @(
+    (Join-Path $root 'tests/xfer_sender_retry_tests.c'),
+    (Join-Path $root 'src/core/xfer_sender_retry.c')
+)
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$senderRetry @senderRetrySources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $senderRetry @senderRetrySources
+}
+if ($LASTEXITCODE -ne 0) { throw "Sender retry policy test compilation failed ($LASTEXITCODE)" }
+& $senderRetry
+if ($LASTEXITCODE -ne 0) { throw "Sender retry policy tests failed ($LASTEXITCODE)" }
+
 $senderEngine = Join-Path $build 'hopdesk-sender-engine-tests.exe'
 $senderEngineSources = @(
     (Join-Path $root 'tests/xfer_sender_engine_tests.c'),

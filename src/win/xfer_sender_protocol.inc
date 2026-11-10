@@ -54,8 +54,6 @@ static void rate_sleep_ns(uint64_t ns) {
              (uint64_t)frequency.QuadPart < ns);
 }
 
-static hop_xfer_sender_context s_sender_context;
-
 static uint64_t sender_context_now_ns(void *user) {
     (void)user;
     return rate_now_ns();
@@ -108,6 +106,8 @@ static void sender_context_init(void) {
     s_sender_context.is_stopping = sender_context_is_stopping;
     s_sender_context.is_cancelled = sender_context_is_cancelled;
     s_sender_context.peer_aborted = sender_context_peer_aborted;
+    s_sender_context.session_current = sender_context_session_current;
+    s_sender_context.write_frame = sender_context_write_frame;
 }
 
 static int rate_wait_for_chunk(uint32_t bytes) {
@@ -154,25 +154,31 @@ static int send_chunk(SOCKET c, uint8_t *tx, uint32_t batch, uint32_t id, uint64
         return 0;
     }
     int send_guard = hop_watchdog_begin("data frame send", 10000);
+    hop_session_id session;
+    uint64_t epoch = 0;
+    int current = sender_context_snapshot_session(c, &session, &epoch);
     hop_encode_header(tx, HOP_MSG_FILE_CHUNK, 20 + HOP_DATA_PREFIX + len);
     hop_put_be32(tx + HOP_DATA_PREFIX + 5, id);
     hop_put_be64(tx + HOP_DATA_PREFIX + 9, off);
     hop_put_be32(tx + HOP_DATA_PREFIX + 17, len);
     hop_put_be32(tx + HOP_DATA_PREFIX + 21, crc);
-    EnterCriticalSection(&s_txlock);
-    EnterCriticalSection(&s_x.lock);
-    hop_data_prefix(tx + HOP_HEADER_SIZE, &s_x.session, batch);
-    LeaveCriticalSection(&s_x.lock);
+    if (current) hop_data_prefix(tx + HOP_HEADER_SIZE, &session, batch);
+    hop_xfer_sender_frame_part parts[2];
+    size_t part_count = 1;
+    parts[0] = (hop_xfer_sender_frame_part){tx, CHUNK_HDR};
+    if (data == tx + CHUNK_HDR) {
+        parts[0].size = CHUNK_HDR + len;
+    } else {
+        parts[1] = (hop_xfer_sender_frame_part){data, len};
+        part_count = 2;
+    }
     uint64_t send_started = rate_now_ns();
-    int ok = send_session_current(c) &&
-             (data == tx + CHUNK_HDR ?
-              send_all(c, (const char *)tx, (int)(CHUNK_HDR + len)) :
-              (send_all(c, (const char *)tx, (int)CHUNK_HDR) &&
-               send_all(c, (const char *)data, (int)len)));
+    int ok = current && s_sender_context.write_frame &&
+             s_sender_context.write_frame(s_sender_context.user, c, epoch,
+                                          parts, part_count);
     uint64_t send_us = (rate_now_ns() - send_started) / 1000ull;
     hop_xfer_rate_note_send_time(&s_x.rate, len, send_us);
     int feedback_due = (s_x.rate.send_samples & 7u) == 0;
-    LeaveCriticalSection(&s_txlock);
     if (feedback_due) rate_feedback(0);
     uint64_t send_ns=send_us*1000ull;
     if(ok) status_chunk_timed(HOP_XFER_DIR_SEND,batch,id,off,len,read_ns,crc_ns,send_ns,0);

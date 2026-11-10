@@ -38,7 +38,7 @@ static int submit(xf_job *j) {
     j->sender_context = s_sender_context;
     int duplicate = 0;
     pthread_mutex_lock(&s_x.qlock);
-    if (s_x.cur_batch == j->batch ||
+    if (hop_xfer_sender_active_job_matches(&s_x.active_job,j->batch) ||
         hop_xfer_sender_queue_contains_batch(&s_x.queue, &s_sender_queue_ops, j->batch))
         duplicate = 1;
     int queued = !duplicate && !s_x.shutting_down &&

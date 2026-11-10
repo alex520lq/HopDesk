@@ -201,3 +201,13 @@ Remaining Sender work:
 5. Run dual-platform CI, then physical two-device clipboard/file transfer, reconnect, cancel/ABORT, weak-network and long-duration stress tests.
 
 No physical two-device or weak-network acceptance is claimed by the unit/CI tests.
+
+
+## 13. Shared DONE/DONE_ACK commit policy (2026-11-10)
+
+- Added `hop_xfer_sender_run_commit` to the shared Sender Core. Windows/macOS `send_done_result` now only adapt current connection/session snapshots, DONE frame emission, ACK Coordinator calls, monotonic clocks and interruptible waits.
+- Core owns reconnect-budget deadline, session replacement rejection, retry after send failure/ACK timeout/send-dead, DONE_ACK expected COMPLETE/PARTIAL classification, explicit FAILED rejection, and peer ABORT outcome.
+- Preserved the existing 100 ms retry cadence, DONE_ACK slot, ACK timeout cap, reconnect budget, and wire payload (`batch`, `ok`, `total`, zero reserved bytes). The adapter sets the send epoch before writing so stale connections cannot receive a DONE frame.
+- Added production-linked `xfer_sender_commit_tests.c` covering complete/partial, failed ACK, peer abort, timeout/send-dead retry, unavailable connection recovery, transient send failure, session replacement, shutdown and ACK reservation failures.
+- The previous platform-specific completion-loop fixture has been replaced with assertions that both adapters call the shared Core. The dedicated Core suite now owns deterministic commit-policy behavior.
+

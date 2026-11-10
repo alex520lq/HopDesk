@@ -124,5 +124,10 @@ int main(int argc, char **argv) {
     net_loop_run();
     hop_watchdog_end(startup_guard);
     app_run();
+    /* clipboard workers may still own image-temp Reservations; the control
+     * reader may still call xfer_kick. Join both before tearing down xfer. */
+    clipboard_shutdown();
+    net_loop_shutdown();
+    xfer_shutdown();
     return 0;
 }

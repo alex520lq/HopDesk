@@ -70,6 +70,14 @@ static int job_free(xfer_job *j, xfer_job_owner expected_owner) {
         return -1;
     }
 
+    /* A submitter-side rejection is a failure even if resource return must
+     * be retried later. Preserve that terminal intent before any early defer. */
+    if ((j->task.initialized || j->task.id) &&
+        expected_owner == XFER_JOB_OWNER_SUBMITTER && !j->pending_finish_valid) {
+        j->pending_finish_state = HOP_XFER_TASK_FAILED;
+        j->pending_finish_valid = 1;
+    }
+
     /* No Task may terminate while the Job still owns image-temp bytes. */
     if (!job_release_task_resources(j)) {
         job_defer_to_shutdown(j, expected_owner);
@@ -286,7 +294,7 @@ static int sender_shutdown_drain_jobs(void) {
         int terminal_was_pending=!hop_xfer_task_is_terminal(&job->task);
         int was_cancelled=sender_job_cancel_requested(&job->sender_context,
                                                        job->batch,job->task.id);
-        if (terminal_was_pending) {
+        if (terminal_was_pending && !job->pending_finish_valid) {
             job->pending_finish_state=was_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_INTERRUPTED;
             job->pending_finish_valid=1;
             job->pending_status_end=1;

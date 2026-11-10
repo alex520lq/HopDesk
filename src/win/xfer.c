@@ -382,11 +382,8 @@ static __declspec(thread) unsigned long s_send_epoch;
 #else
 static __thread unsigned long s_send_epoch;
 #endif
-static int send_session_current(SOCKET sock) {
-    EnterCriticalSection(&s_x.lock);
-    int ok = s_x.client == sock && (!s_send_epoch || s_x.epoch == s_send_epoch) && hop_session_matches(&s_x.session);
-    LeaveCriticalSection(&s_x.lock); return ok;
-}
+static hop_xfer_sender_context s_sender_context;
+
 
 static int send_all(SOCKET c, const char *p, int len) {
     while (len > 0) {
@@ -403,6 +400,53 @@ static int send_all(SOCKET c, const char *p, int len) {
     return 1;
 }
 
+static int sender_context_session_current(void *user, intptr_t socket_handle,
+                                          uint64_t epoch) {
+    (void)user;
+    SOCKET sock = (SOCKET)socket_handle;
+    EnterCriticalSection(&s_x.lock);
+    int current = s_x.client == sock && (!epoch || s_x.epoch == epoch) &&
+                  hop_session_matches(&s_x.session);
+    LeaveCriticalSection(&s_x.lock);
+    return current;
+}
+
+static int sender_context_write_frame(void *user, intptr_t socket_handle,
+                                      uint64_t epoch,
+                                      const hop_xfer_sender_frame_part *parts,
+                                      size_t part_count) {
+    (void)user;
+    if (!parts || !part_count) return 0;
+    SOCKET sock = (SOCKET)socket_handle;
+    EnterCriticalSection(&s_txlock);
+    int ok = sender_context_session_current(NULL, socket_handle, epoch);
+    for (size_t i = 0; ok && i < part_count; ++i) {
+        if ((!parts[i].data && parts[i].size) || parts[i].size > (size_t)INT_MAX) {
+            ok = 0;
+            break;
+        }
+        if (parts[i].size)
+            ok = send_all(sock, (const char *)parts[i].data, (int)parts[i].size);
+    }
+    LeaveCriticalSection(&s_txlock);
+    return ok;
+}
+
+static int sender_context_snapshot_session(SOCKET sock, hop_session_id *session,
+                                           uint64_t *epoch) {
+    if (!session || !epoch) return 0;
+    EnterCriticalSection(&s_x.lock);
+    int current = s_x.client == sock &&
+                  (!s_send_epoch || s_x.epoch == s_send_epoch) &&
+                  hop_session_matches(&s_x.session);
+    if (current) {
+        *session = s_x.session;
+        *epoch = s_x.epoch;
+    }
+    LeaveCriticalSection(&s_x.lock);
+    return current;
+}
+
 /* 每块之后让一次 CPU。传输是后台工作，键鼠才是前台 ——
  * 真正起作用的保障是 send_thread 里的 BELOW_NORMAL 优先级（输入线程
  * 是 NORMAL，会直接抢占）；这里让一次是给同优先级的其他工作减压。 */
@@ -412,20 +456,27 @@ static void yield_cpu(void) { Sleep(0); }
 static int send_small(SOCKET c, uint8_t type, const uint8_t *p, uint32_t len, uint32_t batch) {
     int send_guard = hop_watchdog_begin("data frame send", 10000);
     uint8_t hdr[HOP_HEADER_SIZE], prefix[HOP_DATA_PREFIX];
-    EnterCriticalSection(&s_txlock);
-    int ok = send_session_current(c);
+    hop_session_id session;
+    uint64_t epoch = 0;
+    int ok = s_sender_context.write_frame != NULL &&
+             sender_context_snapshot_session(c, &session, &epoch);
+    hop_xfer_sender_frame_part parts[3];
+    size_t part_count = 0;
     if (ok && type != HOP_MSG_XFER_HELLO) {
-        EnterCriticalSection(&s_x.lock);
-        hop_data_prefix(prefix, &s_x.session, batch);
-        LeaveCriticalSection(&s_x.lock);
-        hop_encode_header(hdr, type, len + HOP_DATA_PREFIX);
-        ok = send_all(c, (const char *)hdr, HOP_HEADER_SIZE) && send_all(c, (const char *)prefix, HOP_DATA_PREFIX);
+        if (len > UINT32_MAX - HOP_DATA_PREFIX) ok = 0;
+        else {
+            hop_data_prefix(prefix, &session, batch);
+            hop_encode_header(hdr, type, len + HOP_DATA_PREFIX);
+            parts[part_count++] = (hop_xfer_sender_frame_part){hdr, sizeof(hdr)};
+            parts[part_count++] = (hop_xfer_sender_frame_part){prefix, sizeof(prefix)};
+        }
     } else if (ok) {
         hop_encode_header(hdr, type, len);
-        ok = send_all(c, (const char *)hdr, HOP_HEADER_SIZE);
+        parts[part_count++] = (hop_xfer_sender_frame_part){hdr, sizeof(hdr)};
     }
-    if (ok && len) ok = send_all(c, (const char *)p, len);
-    LeaveCriticalSection(&s_txlock);
+    if (ok && len) parts[part_count++] = (hop_xfer_sender_frame_part){p, len};
+    if (ok) ok = s_sender_context.write_frame(s_sender_context.user, c, epoch,
+                                               parts, part_count);
     hop_watchdog_end(send_guard);
     return ok;
 }

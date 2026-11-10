@@ -131,11 +131,8 @@ static int send_chunk(SOCKET c, uint8_t *tx, uint32_t batch, uint32_t id, uint64
  *
  * 最多允许 4 个文件等待接收端落盘 ACK。数据帧仍然串行写入同一 TCP
  * stream；ACK 由接收端 writer 异步返回，按 batch/id 独立归位。 */
-static struct {
-    CRITICAL_SECTION lock;
-    HANDLE           ev;        /* 自动重置：任一已登记 ACK 到达时唤醒 sender */
-    hop_xfer_ack_window window;
-} s_ack;
+#include "xfer_ack_coordinator.h"
+static hop_xfer_ack_coordinator *s_ack;
 
 /* 返回值：>=0 是接收端 ACK 的 status；负数是本地/链路层面的失败 */
 #define XFER_ACK_TIMEOUT  (-1)
@@ -148,44 +145,28 @@ static struct {
 static uint64_t now_ms(void) { return (uint64_t)GetTickCount64(); }
 
 static int ack_register(uint32_t batch, uint32_t id) {
-    EnterCriticalSection(&s_ack.lock);
-    int ok = hop_xfer_ack_window_register(&s_ack.window, batch, id);
-    LeaveCriticalSection(&s_ack.lock);
-    return ok;
+    return hop_xfer_ack_coordinator_register(s_ack, batch, id);
 }
 
 static int ack_mark_sent(uint32_t batch, uint32_t id) {
-    EnterCriticalSection(&s_ack.lock);
-    int ok = hop_xfer_ack_window_mark_sent(&s_ack.window, batch, id, rate_now_ns());
-    LeaveCriticalSection(&s_ack.lock);
-    return ok;
+    return hop_xfer_ack_coordinator_mark_sent(s_ack, batch, id, rate_now_ns());
 }
 
 static int ack_set_deadline(uint32_t batch, uint32_t id, uint64_t deadline_ns) {
-    EnterCriticalSection(&s_ack.lock);
-    int ok = hop_xfer_ack_window_set_deadline(&s_ack.window,batch,id,deadline_ns);
-    LeaveCriticalSection(&s_ack.lock);
-    return ok;
+    return hop_xfer_ack_coordinator_set_deadline(s_ack, batch, id, deadline_ns);
 }
 
 static void ack_unregister(uint32_t batch, uint32_t id) {
-    EnterCriticalSection(&s_ack.lock);
-    hop_xfer_ack_window_unregister(&s_ack.window, batch, id);
-    LeaveCriticalSection(&s_ack.lock);
+    hop_xfer_ack_coordinator_unregister(s_ack, batch, id);
 }
 
 static void ack_unregister_batch(uint32_t batch) {
-    EnterCriticalSection(&s_ack.lock);
-    hop_xfer_ack_window_unregister_batch(&s_ack.window, batch);
-    LeaveCriticalSection(&s_ack.lock);
+    hop_xfer_ack_coordinator_unregister_batch(s_ack, batch);
 }
 
 /* Receiver writer thread stores ACKs only in their pre-registered batch/id slot. */
 static void ack_deliver(uint32_t batch, uint32_t id, int status) {
-    EnterCriticalSection(&s_ack.lock);
-    int delivered = hop_xfer_ack_window_deliver(&s_ack.window, batch, id, status, rate_now_ns());
-    LeaveCriticalSection(&s_ack.lock);
-    if (delivered) SetEvent(s_ack.ev);
+    (void)hop_xfer_ack_coordinator_deliver(s_ack, batch, id, status, rate_now_ns());
 }
 
 /* 用户取消了这个批次？每块之后查一次，锁开销可以忽略。 */
@@ -212,21 +193,21 @@ static int peer_aborted(uint32_t batch) {
 static int ack_wait(uint32_t batch, uint32_t id, uint64_t deadline_ns, uint64_t *rtt_us) {
     if (rtt_us) *rtt_us = 0;
     for (;;) {
-        EnterCriticalSection(&s_ack.lock);
+        uint64_t n = rate_now_ns();
+        if (n >= deadline_ns) { ack_unregister(batch, id); return XFER_ACK_TIMEOUT; }
+        uint64_t remaining_ns = deadline_ns - n;
+        uint64_t wait_ms = (remaining_ns + 999999ull) / 1000000ull;
+        if (wait_ms > (uint64_t)(MAXDWORD - 1u)) wait_ms = MAXDWORD - 1u;
+
         int status = 0, deadline_expired = 0;
         uint64_t rtt_ns = 0;
-        int hit = hop_xfer_ack_window_take_ex(&s_ack.window,batch,id,&status,&rtt_ns,
-                                              &deadline_expired);
-        LeaveCriticalSection(&s_ack.lock);
+        int hit = hop_xfer_ack_coordinator_wait_take(s_ack, batch, id,
+                    (uint32_t)wait_ms, &status, &rtt_ns, &deadline_expired);
         if (hit) {
-            /* ACK arrival may race with FILE_END send completion. The
-             * window stores the exact receive timestamp and the deadline is
-             * anchored immediately after FILE_END is fully written. */
             if (deadline_expired) return XFER_ACK_TIMEOUT;
             if (rtt_us) *rtt_us = rtt_ns / 1000ull;
             return status;
         }
-
         if (peer_aborted(batch)) { ack_unregister(batch,id); return XFER_PEER_ABORT; }
         if (cancel_requested(batch)) { ack_unregister(batch,id); return XFER_CANCELLED; }
         if (WaitForSingleObject(s_x.stop, 0) == WAIT_OBJECT_0) {
@@ -236,17 +217,7 @@ static int ack_wait(uint32_t batch, uint32_t id, uint64_t deadline_ns, uint64_t 
         EnterCriticalSection(&s_x.lock);
         int peer_ready = s_x.peer_ready;
         LeaveCriticalSection(&s_x.lock);
-        if (!peer_ready) {
-            ack_unregister(batch,id);
-            return XFER_SEND_DEAD;
-        }
-
-        uint64_t n = rate_now_ns();
-        if (n >= deadline_ns) { ack_unregister(batch,id); return XFER_ACK_TIMEOUT; }
-        uint64_t remaining_ns = deadline_ns - n;
-        uint64_t wait_ms = (remaining_ns + 999999ull) / 1000000ull;
-        if (wait_ms > (uint64_t)(MAXDWORD - 1u)) wait_ms = MAXDWORD - 1u;
-        WaitForSingleObject(s_ack.ev, (DWORD)wait_ms);
+        if (!peer_ready) { ack_unregister(batch,id); return XFER_SEND_DEAD; }
     }
 }
 

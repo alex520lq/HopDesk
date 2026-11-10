@@ -484,7 +484,7 @@ hop_xfer_sender_send_result hop_xfer_sender_send_file_entry(
                                  "xfer: source changed while queued, %s",
                                  entry->relative_path);
                     }
-                    sender_log(ops, 1, message);
+                    sender_file_log(ops, 1, message);
                     end_status = file_io_error_status;
                     local_failure = 1;
                 }

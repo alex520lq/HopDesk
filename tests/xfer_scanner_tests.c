@@ -3,7 +3,6 @@
 #include "../src/core/hop.h"
 
 #include <assert.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -31,27 +30,6 @@ static void scan_watchdog_end(void *context, int ticket) {
 static const hop_xfer_scan_services scan_services = {
     NULL, scan_reserve, scan_cancel, scan_watchdog_begin, scan_watchdog_end
 };
-
-int hop_xfer_task_reserve_entry(hop_xfer_task *task, uint64_t bytes) {
-    (void)task; (void)bytes;
-    if (reject_after >= 0 && reserve_calls >= reject_after) return 0;
-    ++reserve_calls;
-    return 1;
-}
-int hop_xfer_task_cancel_requested(hop_xfer_task_id id) {
-    (void)id;
-    return cancel_requested;
-}
-void hop_xfer_task_dispose(hop_xfer_task *task) {
-    if (task) memset(task, 0, sizeof(*task));
-}
-int hop_watchdog_begin(const char *operation, unsigned timeout_ms) {
-    (void)operation; (void)timeout_ms; return 1;
-}
-void hop_watchdog_end(int ticket) { (void)ticket; }
-void hop_log(hop_log_level level, const char *fmt, ...) {
-    (void)level; (void)fmt;
-}
 
 static void reset_scan(elist *list) {
     memset(list, 0, sizeof(*list));

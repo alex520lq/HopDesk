@@ -1043,11 +1043,12 @@ int main(void){
         if platform=='mac':
             queue=extract(sender,'send_thread')
             assert 'peer_ready_snapshot' in queue and 'waited_for_queue' in queue
-            assert 'queue_take_head(now, peer_ready_snapshot' in queue
-            assert '!waited_for_queue' in queue
+            assert 'hop_xfer_sender_queue_take_head(' in queue
+            assert 'peer_ready_snapshot, !waited_for_queue' in queue
         else:
             queue=extract(sender,'send_thread')
-            assert 'queue_take_head(now, c != INVALID_SOCKET, 1' in queue
+            assert 'hop_xfer_sender_queue_take_head(' in queue
+            assert 'c != INVALID_SOCKET, 1' in queue
 
     # DONE/DONE_ACK retry policy is now shared Core; platform files only adapt
     # current connection/session, wire send, ACK coordinator and wait callbacks.
@@ -1233,6 +1234,10 @@ int main(void){
     queue_core=(ROOT/'src/core/xfer_sender_queue.c').read_text(encoding='utf-8')
     queue_header=(ROOT/'src/core/xfer_sender_queue.h').read_text(encoding='utf-8')
     queue_tests=(ROOT/'tests/xfer_sender_queue_tests.c').read_text(encoding='utf-8')
+    assert 'hop_xfer_sender_queue_push_back' in queue_core
+    assert 'hop_xfer_sender_queue_push_front' in queue_core
+    assert 'hop_xfer_sender_queue_detach_all' in queue_core
+    assert 'hop_xfer_sender_queue_contains_batch' in queue_core
     assert 'hop_xfer_sender_queue_take_cancelled' in queue_core
     assert 'hop_xfer_sender_queue_take_head' in queue_core
     assert 'now_ms >= give_up_at' in queue_core
@@ -1241,6 +1246,7 @@ int main(void){
     assert 'HOP_XFER_SENDER_QUEUE_EXPIRED' in queue_header
     assert 'test_cancelled_middle_and_tail' in queue_tests
     assert 'test_head_readiness_and_fifo' in queue_tests
+    assert 'test_front_insert_lookup_and_detach' in queue_tests
     assert 'test_expiry_while_offline' in queue_tests
     for platform in ['win','mac']:
         worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')

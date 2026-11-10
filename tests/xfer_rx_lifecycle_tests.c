@@ -7,18 +7,15 @@ static uint32_t observed_batch;
 static void record(int event){assert(event_count<(int)(sizeof(events)/sizeof(events[0])));events[event_count++]=event;}
 static void cb_send(void *ctx,uint32_t batch,uint8_t reason){(void)ctx;observed_batch=batch;observed_reason=reason;record(1);}
 static void cb_cancel(void *ctx,uint32_t batch){(void)ctx;assert(batch==observed_batch);record(2);}
-static void cb_close(void *ctx){(void)ctx;record(3);}
-static void cb_discard(void *ctx){(void)ctx;record(4);}
+static void cb_release(void *ctx,int discard){(void)ctx;record(3);if(discard)record(4);record(7);}
 static void cb_dead(void *ctx,uint32_t batch,uint8_t reason){(void)ctx;assert(batch==observed_batch&&reason==observed_reason);record(5);}
 static void cb_finish(void *ctx,int cancelled){(void)ctx;observed_cancelled=cancelled;record(6);}
-static void cb_clear(void *ctx){(void)ctx;record(7);}
 static void cb_status(void *ctx,uint32_t batch,int cancelled){(void)ctx;assert(batch==observed_batch&&cancelled==observed_cancelled);record(8);}
 
 static void test_abort_terminal_order(void){
     hop_xfer_rx_abort_ops ops={0};
-    ops.send_abort=cb_send;ops.cancel_clipboard=cb_cancel;ops.close_file=cb_close;
-    ops.discard_staging=cb_discard;ops.mark_dead=cb_dead;ops.finish_task=cb_finish;
-    ops.clear_state=cb_clear;ops.status_end=cb_status;
+    ops.send_abort=cb_send;ops.cancel_clipboard=cb_cancel;ops.release_resources=cb_release;
+    ops.mark_dead=cb_dead;ops.finish_task=cb_finish;ops.status_end=cb_status;
     observed_batch=41;observed_reason=HOP_ABORT_CANCEL;event_count=0;
     assert(hop_xfer_rx_abort_execute(HOP_RX_BATCH_ABORT_IGNORE,41,HOP_ABORT_CANCEL,1,1,&ops)==HOP_RX_ABORT_IGNORED);
     assert(event_count==0);
@@ -33,9 +30,9 @@ static void test_abort_terminal_order(void){
 
     event_count=0;observed_batch=42;observed_reason=HOP_ABORT_DISK;
     assert(hop_xfer_rx_abort_execute(HOP_RX_BATCH_ABORT_TERMINATE_ACTIVE,42,HOP_ABORT_DISK,0,0,&ops)==HOP_RX_ABORT_TERMINATED);
-    const int normal_order[]={3,4,5,6,7,8};
-    assert(event_count==6);
-    for(int i=0;i<6;i++)assert(events[i]==normal_order[i]);
+    const int normal_order[]={3,5,6,7,8};
+    assert(event_count==5);
+    for(int i=0;i<5;i++)assert(events[i]==normal_order[i]);
     assert(observed_cancelled==0);
 }
 

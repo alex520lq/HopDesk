@@ -1,5 +1,6 @@
 #include "../src/mac/xfer_sender_threads.h"
 
+#include <stdio.h>
 #include <assert.h>
 #include <stdatomic.h>
 #include <pthread.h>

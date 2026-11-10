@@ -26,7 +26,14 @@ static int sender_thread_wait_exited(
     while (!control->exited) {
         int result = pthread_cond_timedwait(
             &threads->exit_cv, &threads->exit_lock, deadline);
-        if (result == ETIMEDOUT || result != 0) {
+        if (result == ETIMEDOUT) {
+            if (!control->exited) {
+                pthread_mutex_unlock(&threads->exit_lock);
+                return 0;
+            }
+            break; /* Exit signal won the deadline race. */
+        }
+        if (result != 0) {
             pthread_mutex_unlock(&threads->exit_lock);
             return 0;
         }

@@ -648,6 +648,8 @@ void xfer_init(const hop_config *cfg) {
     /* 写盘线程要先起来，接收路径一进来就会往队列里塞 */
     if (!wq_start()) {
         hop_log(HOP_LOG_ERROR, "xfer: writer thread start failed");
+        hop_xfer_ack_coordinator_destroy(s_ack);
+        s_ack = NULL;
         return;
     }
 

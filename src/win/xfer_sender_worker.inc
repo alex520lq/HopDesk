@@ -155,7 +155,16 @@ static hop_xfer_sender_worker_action sender_worker_finish_job(
     ops.send_abort=sender_worker_send_abort;ops.send_done=sender_worker_send_done;
     ops.task_finish=sender_worker_task_finish;ops.status_end=sender_worker_status_end;
     ops.dispose_job=sender_worker_dispose_job;ops.log_event=sender_worker_log_event;
-    return hop_xfer_sender_worker_finish_job(&ops,&state);
+    hop_xfer_sender_worker_action action =
+        hop_xfer_sender_worker_finish_job(&ops,&state);
+    if (action == HOP_XFER_SENDER_WORKER_INVALID) {
+        sender_task_finish(&job->sender_context,&job->task,HOP_XFER_TASK_FAILED);
+        sender_status_end(&job->sender_context,job->batch,HOP_XFER_FAILED,
+                          "Invalid sender worker context");
+        job_free(job);
+        return HOP_XFER_SENDER_WORKER_FINISHED;
+    }
+    return action;
 }
 static DWORD WINAPI send_thread(LPVOID arg) {
     (void)arg;
@@ -236,12 +245,6 @@ static DWORD WINAPI send_thread(LPVOID arg) {
             hop_xfer_sender_worker_action action = sender_worker_finish_job(
                 j, c, r, completion_path, peer_cancelled);
             if (action == HOP_XFER_SENDER_WORKER_REQUEUED) continue;
-            if (action == HOP_XFER_SENDER_WORKER_INVALID) {
-                sender_task_finish(&j->sender_context, &j->task, HOP_XFER_TASK_FAILED);
-                sender_status_end(&j->sender_context, j->batch,
-                                  HOP_XFER_FAILED, "Invalid sender worker context");
-                job_free(j);
-            }
         }
     }
     free(tx);

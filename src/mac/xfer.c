@@ -78,6 +78,7 @@ typedef struct xf_job {
     uint32_t  batch;
     int       is_image;
     hop_xfer_task task;
+    hop_xfer_sender_context sender_context;
     int       n;
     xf_entry *e;
     uint8_t  *pixels;

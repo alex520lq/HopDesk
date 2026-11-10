@@ -133,6 +133,50 @@ hop_xfer_sender_send_result hop_xfer_sender_send_file_entry(
     uint8_t file_end_message,
     uint64_t *ack_deadline_ns);
 
+typedef enum {
+    HOP_XFER_SENDER_COMMIT_ACK_COMPLETE = 0,
+    HOP_XFER_SENDER_COMMIT_ACK_PARTIAL,
+    HOP_XFER_SENDER_COMMIT_ACK_FAILED,
+    HOP_XFER_SENDER_COMMIT_ACK_PEER_ABORT,
+    HOP_XFER_SENDER_COMMIT_ACK_TIMEOUT,
+    HOP_XFER_SENDER_COMMIT_ACK_SEND_DEAD,
+    HOP_XFER_SENDER_COMMIT_ACK_OTHER
+} hop_xfer_sender_commit_ack_result;
+
+typedef enum {
+    HOP_XFER_SENDER_COMMIT_DONE = 0,
+    HOP_XFER_SENDER_COMMIT_REJECTED,
+    HOP_XFER_SENDER_COMMIT_PEER_ABORT,
+    HOP_XFER_SENDER_COMMIT_UNKNOWN
+} hop_xfer_sender_commit_result;
+
+typedef struct {
+    void *user;
+    uint64_t (*now_ms)(void *user);
+    uint64_t (*now_ns)(void *user);
+    int (*is_stopping)(void *user);
+    int (*session_matches)(void *user, const uint8_t *session);
+    int (*current_connection)(void *user, intptr_t *socket_handle,
+                              uint64_t *epoch, uint8_t *session,
+                              size_t session_capacity);
+    int (*send_done)(void *user, intptr_t socket_handle, uint64_t epoch,
+                     uint32_t batch, uint32_t ok_count, uint32_t total_count);
+    int (*ack_register)(void *user, uint32_t batch, uint32_t slot);
+    int (*ack_mark_sent)(void *user, uint32_t batch, uint32_t slot);
+    int (*ack_set_deadline)(void *user, uint32_t batch, uint32_t slot,
+                            uint64_t deadline_ns);
+    void (*ack_unregister)(void *user, uint32_t batch, uint32_t slot);
+    hop_xfer_sender_commit_ack_result (*wait_ack)(
+        void *user, uint32_t batch, uint32_t slot, uint64_t deadline_ns);
+    int (*wait_ms)(void *user, uint32_t duration_ms);
+} hop_xfer_sender_commit_ops;
+
+hop_xfer_sender_commit_result hop_xfer_sender_run_commit(
+    const hop_xfer_sender_commit_ops *ops, const uint8_t *session,
+    uint32_t batch, int is_image, int entry_count, int ok_count,
+    uint32_t done_ack_slot, uint32_t ack_timeout_ms,
+    uint32_t reconnect_budget_ms, uint32_t retry_delay_ms);
+
 typedef struct {
     void *user;
     int (*cancel_requested)(void *user, uint32_t batch);

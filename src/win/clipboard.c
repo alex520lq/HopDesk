@@ -70,6 +70,8 @@ static HANDLE s_paste_workers_done;
 
 #include "clipboard_offer.inc"
 
+static int image_work_retry_pending(void);
+
 static void discard_pending(void) {
     if(s_pending_global)GlobalFree(s_pending_global);
     s_pending_global=NULL;

@@ -45,6 +45,7 @@ typedef struct hop_xfer_sender_context {
 
     /* Batch/task cancellation and receiver-originated ABORT. */
     int (*is_cancelled)(void *user, uint32_t batch, uint64_t task_id);
+    /* Called outside the native queue lock; the adapter may acquire it. */
     int (*is_batch_cancelled)(void *user, uint32_t batch);
     int (*peer_aborted)(void *user, uint32_t batch);
 

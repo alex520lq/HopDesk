@@ -899,9 +899,9 @@ int main(void){
             assert 's_x.' not in extract(context_protocol,callback)
         for callback in ['sender_context_session_current','sender_context_write_frame','sender_context_snapshot_session']:
             assert 's_x.' not in extract(sender,callback)
-        functions='\n'.join([extract(sender,'sender_context_session_current'),extract(sender,'sender_context_write_frame'),extract(sender,'sender_context_snapshot_session'),extract(sender,'sender_status_stage_time'),extract(sender,'sender_status_chunk_timed'),extract(sender,'send_small_with_context'),extract(sender,'job_bind_session'),extract(sender,'sender_commit_is_stopping'),extract(sender,'sender_commit_wait_ms'),extract(sender,'send_small'),extract(sender,'send_chunk')]+[extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_release_terminal_resources','rx_abort_release_resources','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end','hop_xfer_rx_reset_batch_state','hop_xfer_rx_terminate_batch','hop_xfer_rx_bind_session','rx_bind_session','rx_expire_stale_session','on_data_frame_checked','on_data_frame']])
+        functions='\n'.join([extract(sender,'sender_context_session_current'),extract(sender,'sender_context_write_frame'),extract(sender,'sender_context_snapshot_session'),extract(sender,'send_small_with_context'),extract(sender,'job_bind_session'),extract(sender,'sender_commit_is_stopping'),extract(sender,'sender_commit_wait_ms'),extract(sender,'send_small'),extract(sender,'send_chunk')]+[extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_release_terminal_resources','rx_abort_release_resources','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end','hop_xfer_rx_reset_batch_state','hop_xfer_rx_terminate_batch','hop_xfer_rx_bind_session','rx_bind_session','rx_expire_stale_session','on_data_frame_checked','on_data_frame']])
         fixture=fixture.replace('@FUNCTIONS@',functions)
-        run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_task.c','src/core/xfer_budget.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c'],threads=True)
+        run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_task.c','src/core/xfer_budget.c','src/core/xfer_sender_context_adapter.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c'],threads=True)
 
     control=(ROOT/'src/mac/net_client.c').read_text(encoding='utf-8')+'\n'+(ROOT/'src/mac/net_client_protocol.inc').read_text(encoding='utf-8')
     for platform,source_name,module_name in [('win','net_server.c','net_server_protocol.inc'),('mac','net_client.c','net_client_protocol.inc')]:
@@ -1100,9 +1100,9 @@ int main(void){
         assert 'hop_xfer_sender_get_terminal_decision(' not in worker
         assert 'hop_xfer_sender_plan_retry(' in flow_core
         assert 'hop_xfer_sender_get_terminal_decision(' in flow_core
-        assert 'sender_status_start_job(&j->sender_context' in thread
-        assert 'sender_status_end(&j->sender_context' not in thread
-        assert 'sender_status_end(' in worker
+        assert 'hop_xfer_sender_context_status_start_job(&j->sender_context' in thread
+        assert 'hop_xfer_sender_context_status_end(&j->sender_context' not in thread
+        assert 'hop_xfer_sender_context_status_end(' in worker
         assert ' status_start_job(' not in thread and ' status_end(' not in thread
 
         # Shutdown is an ownership transfer, not a best-effort queue cleanup.
@@ -1118,20 +1118,20 @@ int main(void){
         submit_enter=extract(submit,'sender_submit_enter')
         assert 'XFER_JOB_OWNER_WORKER' in worker and 'XFER_JOB_OWNER_SUBMITTER' in submit
         assert 'XFER_JOB_OWNER_SHUTDOWN' in defer_job and 'XFER_JOB_OWNER_RELEASED' in job_free
-        assert 'hop_xfer_task_is_terminal' in job_free and 'sender_task_dispose' in job_free
+        assert 'hop_xfer_task_is_terminal' in job_free and 'hop_xfer_sender_context_task_dispose' in job_free
         assert release_job_resources.index('free(j->pixels)') < release_job_resources.index('hop_xfer_task_release_image_temp')
         assert 'image_payload_released' in release_job_resources and 'lost its pixel owner' in release_job_resources
-        assert job_free.index('job_release_task_resources(j)') < job_free.index('sender_task_finish')
-        assert finish_callback.index('job_release_task_resources(job)') < finish_callback.index('sender_task_finish')
+        assert job_free.index('job_release_task_resources(j)') < job_free.index('hop_xfer_sender_context_task_finish')
+        assert finish_callback.index('job_release_task_resources(job)') < finish_callback.index('hop_xfer_sender_context_task_finish')
         assert 'pending_finish_state' in job_free and 'pending_status_end' in worker
         assert 'expected_owner == XFER_JOB_OWNER_SUBMITTER' in job_free
         assert 'terminal_was_pending && !job->pending_finish_valid' in shutdown_drain
         status_end_callback=extract(worker,'sender_worker_status_end')
-        assert 'sender_status_end(' not in status_end_callback
+        assert 'hop_xfer_sender_context_status_end(' not in status_end_callback
         assert 'pending_status_end=1' in status_end_callback
         assert 'pending_status_phase=phase' in status_end_callback
         assert 'pending_finish_valid=0' not in status_end_callback
-        assert job_free.index('sender_task_dispose') < job_free.index('sender_status_end')
+        assert job_free.index('hop_xfer_sender_context_task_dispose') < job_free.index('hop_xfer_sender_context_status_end')
         assert 'Invalid sender worker context' in worker and 'Transfer stopped while queued' in worker
         assert 'shutdown_jobs' in lifecycle and 's_x.shutting_down' in lifecycle
         # Queue take/wait policy is shared; only native lock/wait/claim effects remain in adapters.
@@ -1206,12 +1206,12 @@ int main(void){
         protocol=(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
         assert 'send_chunk(&call->job->sender_context' in protocol
         assert 'send_small_with_context(&call->job->sender_context' in protocol
-        assert 'sender_status_file_phase(call ? &call->job->sender_context' in protocol
-        assert 'sender_status_stage_time(call ? &call->job->sender_context' in protocol
+        assert 'hop_xfer_sender_context_status_file_phase(call ? &call->job->sender_context' in protocol
+        assert 'hop_xfer_sender_context_status_stage_time(call ? &call->job->sender_context' in protocol
         ack_wait=extract(protocol,'ack_wait')
         assert 's_x.' not in ack_wait
         assert 'context->session_current' in ack_wait
-        assert 'sender_job_cancel_requested(context' in ack_wait
+        assert 'hop_xfer_sender_context_job_cancel_requested(context' in ack_wait
         assert 'context->peer_aborted' in ack_wait
         commit_wait_ack=extract(protocol,'sender_commit_wait_ack')
         assert 'job->commit_socket' in commit_wait_ack

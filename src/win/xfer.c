@@ -75,7 +75,8 @@ typedef struct xfer_job {
     int         is_image;
     hop_xfer_task task;
     hop_xfer_task_state pending_finish_state;
-    int pending_finish_valid; /* terminal state requested; status end may still be pending */
+    int pending_finish_valid;
+    int pending_status_end;
     hop_xfer_sender_context sender_context;
     intptr_t    commit_socket;
     uint64_t    commit_epoch;

@@ -230,6 +230,20 @@ if ($LASTEXITCODE -ne 0) { throw "RX image buffer test compilation failed ($LAST
 & $rxImageBuffer
 if ($LASTEXITCODE -ne 0) { throw "RX image buffer tests failed ($LASTEXITCODE)" }
 
+$senderThreads = Join-Path $build 'hopdesk-sender-threads-tests.exe'
+$senderThreadsSources = @(
+    (Join-Path $root 'tests/win_sender_threads_tests.c'),
+    (Join-Path $root 'src/win/xfer_sender_threads.c')
+)
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I (Join-Path $root 'src/win') /Fe:$senderThreads @senderThreadsSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I (Join-Path $root 'src/win') -o $senderThreads @senderThreadsSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Sender thread adapter test compilation failed ($LASTEXITCODE)" }
+& $senderThreads
+if ($LASTEXITCODE -ne 0) { throw "Sender thread adapter tests failed ($LASTEXITCODE)" }
+
 $senderContext = Join-Path $build 'hopdesk-sender-context-tests.exe'
 $senderContextSources = @((Join-Path $root 'tests/xfer_sender_context_tests.c'))
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {

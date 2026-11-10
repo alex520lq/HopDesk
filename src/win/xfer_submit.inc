@@ -20,6 +20,8 @@ static void scanner_watchdog_end(void *context, int ticket) {
 }
 
 static int submit(xfer_job *j) {
+    if (!j) return 0;
+    j->sender_context = s_sender_context;
     int ok = 0, duplicate = 0;
     EnterCriticalSection(&s_x.lock);
     if (s_x.cur_batch == j->batch ||

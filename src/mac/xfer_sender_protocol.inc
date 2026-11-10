@@ -256,12 +256,14 @@ static void sender_task_finish(const hop_xfer_sender_context *context,
         (void)hop_xfer_task_finish(task, state);
 }
 
-static void sender_task_dispose(const hop_xfer_sender_context *context,
-                                hop_xfer_task *task) {
+static int sender_task_dispose(const hop_xfer_sender_context *context,
+                               hop_xfer_task *task) {
+    if (!task) return 0;
     if (context && context->task_dispose)
         context->task_dispose(context->user, task);
     else
         hop_xfer_task_dispose(task);
+    return !task->initialized && !task->id;
 }
 
 static void sender_status_start_job(const hop_xfer_sender_context *context,

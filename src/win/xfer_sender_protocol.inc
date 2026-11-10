@@ -992,7 +992,11 @@ static void send_abort_msg_with_context(
 
 static void send_abort_msg(SOCKET c, uint32_t batch, uint8_t reason,
                            uint8_t target) {
-    send_abort_msg_with_context(&s_sender_context, c, batch, reason, target);
+    uint8_t ab[6];
+    hop_put_be32(ab, batch);
+    ab[4] = reason;
+    ab[5] = target;
+    send_small(c, HOP_MSG_XFER_ABORT, ab, sizeof(ab), batch);
 }
 
 /* 接收线程调用：把一个文件的结论真正发回对端。

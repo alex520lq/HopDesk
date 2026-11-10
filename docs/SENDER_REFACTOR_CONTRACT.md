@@ -194,11 +194,10 @@ Next slice: route cancellation and peer-abort observations through the context, 
 - The first CI attempt exposed a forward declaration and timing-stage include omission in the new Core file; those were corrected. The next full Windows/macOS Actions run is the acceptance gate. Do not treat the earlier failed run as validation.
 
 Remaining Sender work:
-1. Extract DONE/DONE_ACK commit and reconnect policy into shared Core while preserving current ACK/commit ordering.
-2. Move platform Sender Protocol adapters into independent `.c` compilation units; eliminate the remaining `xfer_sender_protocol.inc` compatibility fragments.
-3. Extract worker queue scheduling, retry deadlines, terminal Task/status/history ordering behind an explicit worker context; keep OS thread/QoS and socket primitives in platform adapters.
-4. Remove remaining Sender global captures and `xfer_sender_worker.inc` / `xfer_submit.inc` include-fragment dependencies.
-5. Run dual-platform CI, then physical two-device clipboard/file transfer, reconnect, cancel/ABORT, weak-network and long-duration stress tests.
+1. Move platform Sender Protocol adapters into independent `.c` compilation units; eliminate the remaining `xfer_sender_protocol.inc` compatibility fragments.
+2. Extract worker queue scheduling, retry deadlines, terminal Task/status/history ordering behind an explicit worker context; keep OS thread/QoS and socket primitives in platform adapters.
+3. Remove remaining Sender global captures and `xfer_sender_worker.inc` / `xfer_submit.inc` include-fragment dependencies.
+4. Run dual-platform CI, then physical two-device clipboard/file transfer, reconnect, cancel/ABORT, weak-network and long-duration stress tests.
 
 No physical two-device or weak-network acceptance is claimed by the unit/CI tests.
 

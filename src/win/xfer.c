@@ -675,10 +675,8 @@ int xfer_init(HWND hwnd, const hop_config *cfg) {
 
     InitializeCriticalSection(&s_x.lock);
     InitializeCriticalSection(&s_txlock);
-    InitializeCriticalSection(&s_ack.lock);
-    hop_xfer_ack_window_reset(&s_ack.window);
-    s_ack.ev = CreateEventW(NULL, FALSE, FALSE, NULL);   /* 自动重置 */
-    if (!s_ack.ev) goto fail;
+    s_ack = hop_xfer_ack_coordinator_create();
+    if (!s_ack) goto fail;
     s_x.stop = CreateEventW(NULL, TRUE, FALSE, NULL);
     s_x.q_evt = CreateEventW(NULL, FALSE, FALSE, NULL);
     s_x.rate_timer = CreateWaitableTimerExW(NULL, NULL,
@@ -709,16 +707,18 @@ fail:
     if (s_x.stop) CloseHandle(s_x.stop);
     if (s_x.q_evt) CloseHandle(s_x.q_evt);
     if (s_x.rate_timer) { CloseHandle(s_x.rate_timer); s_x.rate_timer = NULL; }
-    if (s_ack.ev) { CloseHandle(s_ack.ev); s_ack.ev = NULL; }
+    hop_xfer_ack_coordinator_destroy(s_ack);
+    s_ack = NULL;
+    hop_xfer_ack_coordinator_destroy(s_ack);
+    s_ack = NULL;
     DeleteCriticalSection(&s_x.lock);
     DeleteCriticalSection(&s_txlock);
-    DeleteCriticalSection(&s_ack.lock);
     return 0;
 }
 
 void xfer_shutdown(void) {
     SetEvent(s_x.stop);
-    SetEvent(s_ack.ev);          /* 踢醒可能正卡在等 ACK 的发送线程 */
+    hop_xfer_ack_coordinator_wake(s_ack); /* 踢醒可能正卡在等 ACK 的发送线程 */
     /* listener/connection thread owns closesocket; shutdown only wakes I/O. */
 
     EnterCriticalSection(&s_x.lock);
@@ -761,10 +761,12 @@ void xfer_shutdown(void) {
     CloseHandle(s_x.stop);
     CloseHandle(s_x.q_evt);
     if (s_x.rate_timer) { CloseHandle(s_x.rate_timer); s_x.rate_timer = NULL; }
-    if (s_ack.ev) { CloseHandle(s_ack.ev); s_ack.ev = NULL; }
+    hop_xfer_ack_coordinator_destroy(s_ack);
+    s_ack = NULL;
+    hop_xfer_ack_coordinator_destroy(s_ack);
+    s_ack = NULL;
     DeleteCriticalSection(&s_x.lock);
     DeleteCriticalSection(&s_txlock);
-    DeleteCriticalSection(&s_ack.lock);
 }
 
 int xfer_connected(void) {
@@ -803,14 +805,14 @@ void xfer_cancel(void) {
     s_x.cancel_rx = 1;
     LeaveCriticalSection(&s_x.lock);
     SetEvent(s_x.q_evt);      /* 唤醒发送线程，别让它等满 200 ms */
-    SetEvent(s_ack.ev);       /* 唤醒可能正卡在等 ACK 的发送线程 */
+    hop_xfer_ack_coordinator_wake(s_ack); /* 唤醒可能正卡在等 ACK 的发送线程 */
     hop_log(HOP_LOG_INFO, "xfer: cancel requested");
 }
 
 int xfer_cancel_task(hop_xfer_task_id id) {
     if (!hop_xfer_task_request_cancel(id)) return 0;
     SetEvent(s_x.q_evt);
-    SetEvent(s_ack.ev);
+    hop_xfer_ack_coordinator_wake(s_ack);
     return 1;
 }
 

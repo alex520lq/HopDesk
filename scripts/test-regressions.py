@@ -1125,6 +1125,11 @@ int main(void){
         assert job_free.index('job_release_task_resources(j)') < job_free.index('sender_task_finish')
         assert finish_callback.index('job_release_task_resources(job)') < finish_callback.index('sender_task_finish')
         assert 'pending_finish_state' in job_free and 'pending_status_end' in worker
+        assert 'expected_owner == XFER_JOB_OWNER_SUBMITTER' in job_free
+        assert 'terminal_was_pending && !job->pending_finish_valid' in shutdown_drain
+        status_end_callback=extract(worker,'sender_worker_status_end')
+        assert 'pending_status_end=0' in status_end_callback
+        assert 'pending_finish_valid=0' not in status_end_callback
         assert 'shutdown_jobs' in lifecycle and 's_x.shutting_down' in lifecycle
         assert 'XFER_JOB_OWNER_QUEUE' in submit and 'XFER_JOB_OWNER_QUEUE' in requeue
         assert 'XFER_JOB_OWNER_WORKER' in requeue and 'sender_worker_is_stopping' in requeue

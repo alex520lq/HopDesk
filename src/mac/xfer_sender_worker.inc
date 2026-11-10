@@ -213,26 +213,17 @@ static void *send_thread(void *arg) {
             s_x.cur_batch=0; s_x.cur_task_id=0;
             pthread_mutex_unlock(&s_x.qlock);
         }
-        if (r == JOB_DONE) {
-            int complete=j->ok==(int)hop_xfer_job_total(j->is_image,j->n);
-            sender_task_finish(&j->task,complete?HOP_XFER_TASK_COMPLETED:HOP_XFER_TASK_PARTIAL);
-            status_end(HOP_XFER_DIR_SEND,j->batch,complete?HOP_XFER_COMPLETED:HOP_XFER_PARTIAL,
-                       complete?"Transfer completed":"Some files failed");
-        } else if (r == JOB_CANCELLED) {
-            sender_task_finish(&j->task,HOP_XFER_TASK_CANCELLED);
-            status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_CANCELLED,"Cancelled");
-        } else if (r == JOB_PEER_ABORT) {
-            sender_task_finish(&j->task,peer_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
-            status_end(HOP_XFER_DIR_SEND,j->batch,peer_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED,peer_cancelled?"Cancelled by receiver":"Peer aborted transfer");
-        } else if (r == JOB_COMMIT_REJECTED) {
-            sender_task_finish(&j->task,HOP_XFER_TASK_FAILED);
-            status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Receiver rejected completion");
-        } else if (r == JOB_COMMIT_UNKNOWN) {
-            sender_task_finish(&j->task,HOP_XFER_TASK_INTERRUPTED);
-            status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Completion delivery uncertain; peer may have received it");
-        } else if (r == JOB_NET_DOWN) {
-            sender_task_finish(&j->task,HOP_XFER_TASK_FAILED);
-            status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Reconnect attempts exhausted");
+        int complete = j->ok == (int)hop_xfer_job_total(j->is_image, j->n);
+        hop_xfer_sender_terminal_decision terminal;
+        if (hop_xfer_sender_get_terminal_decision(
+                (hop_xfer_sender_job_result)r, peer_cancelled, complete, &terminal)) {
+            sender_task_finish(&j->task, terminal.task_state);
+            status_end(HOP_XFER_DIR_SEND, j->batch,
+                       terminal.status_phase, terminal.detail);
+        } else {
+            sender_task_finish(&j->task, HOP_XFER_TASK_FAILED);
+            status_end(HOP_XFER_DIR_SEND, j->batch,
+                       HOP_XFER_FAILED, "Unknown sender result");
         }
         job_free(j);
     }

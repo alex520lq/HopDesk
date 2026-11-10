@@ -118,7 +118,11 @@ int main(int argc, char **argv) {
 
     inject_init();
     if(g_mac.cfg.role==HOP_ROLE_SERVER)mac_capture_init();
-    xfer_init(&g_mac.cfg);
+    if (!xfer_init(&g_mac.cfg)) {
+        hop_log(HOP_LOG_ERROR, "xfer: initialization failed; settling partial startup before exit");
+        while (!xfer_shutdown()) usleep(100000);
+        return 1;
+    }
     statusbar_init();
     clipboard_init();
     net_loop_run();
@@ -128,6 +132,7 @@ int main(int argc, char **argv) {
      * reader may still call xfer_kick. Join both before tearing down xfer. */
     clipboard_shutdown();
     net_loop_shutdown();
-    xfer_shutdown();
+    /* No control or clipboard worker may call into xfer after this point. */
+    while (!xfer_shutdown()) usleep(100000);
     return 0;
 }

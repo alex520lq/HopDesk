@@ -1,5 +1,5 @@
-#include <stdarg.h>
 #include "../core/xfer_sender_ack_adapter.h"
+#include "../core/xfer_sender_context_adapter.h"
 
 static int sender_context_ack_create(void);
 static void sender_context_ack_destroy(void);
@@ -207,125 +207,6 @@ static void sender_context_init(void) {
     s_sender_context.log_message = sender_context_log_message;
 }
 
-static int sender_task_cancel_requested(
-    const hop_xfer_sender_context *context, uint32_t batch,
-    const hop_xfer_task *task) {
-    if (!task || !task->id) return 0;
-    return context && context->is_cancelled
-        ? context->is_cancelled(context->user, batch, task->id)
-        : hop_xfer_task_cancel_requested(task->id);
-}
-
-static int sender_job_cancel_requested(
-    const hop_xfer_sender_context *context, uint32_t batch,
-    uint64_t task_id) {
-    if (!context) return 0;
-    int batch_cancelled = context->is_batch_cancelled &&
-        context->is_batch_cancelled(context->user, batch);
-    int task_cancelled = task_id && context->is_cancelled &&
-        context->is_cancelled(context->user, batch, task_id);
-    return batch_cancelled || task_cancelled;
-}
-
-static int sender_task_bind_session(const hop_xfer_sender_context *context,
-                                    const hop_xfer_task *task,
-                                    const hop_session_id *session) {
-    return context && task && session && context->task_bind_session
-        ? context->task_bind_session(context->user, task, session->bytes) : 0;
-}
-
-static int sender_task_set_state(const hop_xfer_sender_context *context,
-                                 hop_xfer_task *task,
-                                 hop_xfer_task_state state) {
-    return context && context->task_set_state
-        ? context->task_set_state(context->user, task, state) : 0;
-}
-
-static int sender_task_begin_completion(const hop_xfer_sender_context *context,
-                                        const hop_xfer_task *task) {
-    return context && context->task_begin_completion
-        ? context->task_begin_completion(context->user, task) : 0;
-}
-
-static void sender_task_finish(const hop_xfer_sender_context *context,
-                               hop_xfer_task *task,
-                               hop_xfer_task_state state) {
-    if (context && context->task_finish)
-        context->task_finish(context->user, task, state);
-    else
-        (void)hop_xfer_task_finish(task, state);
-}
-
-static int sender_task_dispose(const hop_xfer_sender_context *context,
-                               hop_xfer_task *task) {
-    if (!task) return 0;
-    if (context && context->task_dispose)
-        context->task_dispose(context->user, task);
-    else
-        hop_xfer_task_dispose(task);
-    return !task->initialized && !task->id;
-}
-
-static void sender_status_start_job(const hop_xfer_sender_context *context,
-                                     const void *job) {
-    if (context && context->status_start_job)
-        context->status_start_job(context->user, job);
-    else if (job)
-        status_start_job((const xf_job *)job);
-}
-
-static void sender_status_end(const hop_xfer_sender_context *context,
-                              uint32_t batch, int phase, const char *detail) {
-    if (context && context->status_end)
-        context->status_end(context->user, batch, phase, detail);
-    else
-        status_end(HOP_XFER_DIR_SEND, batch, phase, detail);
-}
-
-static void sender_status_file_phase(const hop_xfer_sender_context *context,
-                                     uint32_t batch, int index, int phase,
-                                     uint32_t attempts) {
-    if (context && context->status_file_phase)
-        context->status_file_phase(context->user, batch, index, phase, attempts);
-    else
-        status_file_phase(HOP_XFER_DIR_SEND, batch, index, phase, attempts);
-}
-
-static void sender_status_stage_time(const hop_xfer_sender_context *context,
-                                     uint32_t batch, int stage,
-                                     uint64_t elapsed_ns) {
-    if (context && context->status_stage_time)
-        context->status_stage_time(context->user, batch, stage, elapsed_ns);
-    else
-        status_stage_time(HOP_XFER_DIR_SEND, batch, stage, elapsed_ns);
-}
-
-static void sender_status_chunk_timed(const hop_xfer_sender_context *context,
-                                      uint32_t batch, uint32_t id,
-                                      uint64_t offset, uint32_t length,
-                                      uint64_t read_ns, uint64_t crc_ns,
-                                      uint64_t send_ns, uint64_t receive_ns) {
-    if (context && context->status_chunk_timed)
-        context->status_chunk_timed(context->user, batch, id, offset, length,
-                                    read_ns, crc_ns, send_ns, receive_ns);
-    else
-        status_chunk_timed(HOP_XFER_DIR_SEND, batch, id, offset, length,
-                           read_ns, crc_ns, send_ns, receive_ns);
-}
-
-static void sender_logf(const hop_xfer_sender_context *context, int level,
-                        const char *format, ...) {
-    char message[512];
-    va_list args;
-    va_start(args, format);
-    (void)vsnprintf(message, sizeof(message), format, args);
-    va_end(args);
-    if (context && context->log_message)
-        context->log_message(context->user, level, message);
-    else
-        hop_log((hop_log_level)level, "%s", message);
-}
-
 static int rate_wait_for_chunk(const hop_xfer_sender_context *context,
                                 uint32_t bytes) {
     if (!hop_xfer_sender_context_clock_valid(context)) return 0;
@@ -333,7 +214,7 @@ static int rate_wait_for_chunk(const hop_xfer_sender_context *context,
         uint64_t delay = hop_xfer_rate_wait_ns(
             &s_x.rate, bytes, context->now_ns(context->user));
         if (delay == UINT64_MAX) {
-            sender_logf(context, HOP_LOG_ERROR, "xfer: chunk exceeds token-bucket burst");
+            hop_xfer_sender_context_logf(context, HOP_LOG_ERROR, "xfer: chunk exceeds token-bucket burst");
             return 0;
         }
         if (!delay) return !context->is_stopping(context->user);
@@ -368,8 +249,8 @@ static int send_chunk(const hop_xfer_sender_context *context, int fd,
                       uint64_t read_ns, uint64_t crc_ns) {
     if (!context) context = &s_sender_context;
     if (!rate_wait_for_chunk(context, len)) {
-        sender_status_stage_time(context, batch, HOP_XFER_TIME_READ, read_ns);
-        sender_status_stage_time(context, batch, HOP_XFER_TIME_CRC, crc_ns);
+        hop_xfer_sender_context_status_stage_time(context, batch, HOP_XFER_TIME_READ, read_ns);
+        hop_xfer_sender_context_status_stage_time(context, batch, HOP_XFER_TIME_CRC, crc_ns);
         return 0;
     }
     int send_guard = hop_watchdog_begin("data frame send", 10000);
@@ -405,12 +286,12 @@ static int send_chunk(const hop_xfer_sender_context *context, int fd,
     if (feedback_due) rate_feedback(0);
     uint64_t send_ns = send_us * 1000ull;
     if (ok) {
-        sender_status_chunk_timed(context, batch, id, off, len,
+        hop_xfer_sender_context_status_chunk_timed(context, batch, id, off, len,
                                   read_ns, crc_ns, send_ns, 0);
     } else {
-        sender_status_stage_time(context, batch, HOP_XFER_TIME_READ, read_ns);
-        sender_status_stage_time(context, batch, HOP_XFER_TIME_CRC, crc_ns);
-        sender_status_stage_time(context, batch, HOP_XFER_TIME_SEND, send_ns);
+        hop_xfer_sender_context_status_stage_time(context, batch, HOP_XFER_TIME_READ, read_ns);
+        hop_xfer_sender_context_status_stage_time(context, batch, HOP_XFER_TIME_CRC, crc_ns);
+        hop_xfer_sender_context_status_stage_time(context, batch, HOP_XFER_TIME_SEND, send_ns);
     }
     hop_watchdog_end(send_guard);
     return ok;
@@ -533,7 +414,7 @@ static int ack_wait(const hop_xfer_sender_context *context,
             ack_unregister(context, batch, id);
             return XFER_PEER_ABORT;
         }
-        if (sender_job_cancel_requested(context, batch, task_id)) {
+        if (hop_xfer_sender_context_job_cancel_requested(context, batch, task_id)) {
             ack_unregister(context, batch, id);
             return XFER_CANCELLED;
         }
@@ -825,7 +706,7 @@ static uint64_t sender_engine_file_now_ns(void *user) {
 static void sender_engine_file_status_stage_time(void *user, uint32_t batch,
                                                   int stage, uint64_t elapsed_ns) {
     sender_file_engine_call *call = (sender_file_engine_call *)user;
-    sender_status_stage_time(call ? &call->job->sender_context : NULL,
+    hop_xfer_sender_context_status_stage_time(call ? &call->job->sender_context : NULL,
                              batch, stage, elapsed_ns);
 }
 static void sender_engine_file_yield(void *user) {
@@ -845,7 +726,7 @@ static const char *sender_engine_entry_path(void *user, const void *entry) {
 
 static int sender_engine_cancel_requested(void *user, uint32_t batch) {
     sender_file_engine_call *call = (sender_file_engine_call *)user;
-    return call && sender_job_cancel_requested(
+    return call && hop_xfer_sender_context_job_cancel_requested(
         &call->job->sender_context, batch, call->job->task.id);
 }
 
@@ -924,7 +805,7 @@ static void sender_engine_status_file_phase(void *user, uint32_t batch,
                                              int index, int phase,
                                              uint32_t attempts) {
     sender_file_engine_call *call = (sender_file_engine_call *)user;
-    sender_status_file_phase(call ? &call->job->sender_context : NULL,
+    hop_xfer_sender_context_status_file_phase(call ? &call->job->sender_context : NULL,
                              batch, index, phase, attempts);
 }
 
@@ -950,7 +831,7 @@ static void sender_engine_request_reconnect(void *user) {
 
 static void sender_engine_log(void *user, int level, const char *message) {
     sender_file_engine_call *call = (sender_file_engine_call *)user;
-    sender_logf(call ? &call->job->sender_context : NULL, level, "%s",
+    hop_xfer_sender_context_logf(call ? &call->job->sender_context : NULL, level, "%s",
                 message ? message : "");
 }
 
@@ -1006,7 +887,7 @@ static void sender_engine_yield(void *user) {
 
 static int run_job(int fd, uint8_t *tx, xf_job *j) {
     ack_unregister_batch(&j->sender_context, j->batch);
-    if (sender_job_cancel_requested(&j->sender_context, j->batch, j->task.id))
+    if (hop_xfer_sender_context_job_cancel_requested(&j->sender_context, j->batch, j->task.id))
         return JOB_CANCELLED;
     if (j->sender_context.peer_aborted &&
         j->sender_context.peer_aborted(j->sender_context.user, j->batch))

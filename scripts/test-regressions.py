@@ -1084,6 +1084,21 @@ int main(void){
         assert 'send_small_with_context(&call->job->sender_context' in protocol
         assert 'sender_status_file_phase(call ? &call->job->sender_context' in protocol
         assert 'sender_status_stage_time(call ? &call->job->sender_context' in protocol
+        ack_wait=extract(protocol,'ack_wait')
+        assert 's_x.' not in ack_wait
+        assert 'context->session_current' in ack_wait
+        assert 'sender_job_cancel_requested(context' in ack_wait
+        assert 'context->peer_aborted' in ack_wait
+        commit_wait_ack=extract(protocol,'sender_commit_wait_ack')
+        assert 'job->commit_socket' in commit_wait_ack
+        assert 'job->commit_epoch' in commit_wait_ack
+        file_wait_ack=extract(protocol,'sender_engine_wait_ack')
+        assert 'call->job->sender_context' in file_wait_ack
+        commit_send=extract(protocol,'sender_commit_send_done')
+        assert 'send_done_with_context(&job->sender_context' in commit_send
+        abort_send=extract(protocol,'send_abort_msg_with_context')
+        assert 'send_small_with_context(context' in abort_send
+        assert 'send_abort_msg_with_context(&j->sender_context' in thread
         assert 'hop_xfer_sender_get_terminal_decision' in thread and 'completion_path' in thread
 
     # Test exact Windows task-list selection and action logic with UI doubles.

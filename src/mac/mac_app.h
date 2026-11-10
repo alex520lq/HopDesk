@@ -46,7 +46,7 @@ void inject_release_all(void);            /* 断线时松开所有修饰键 */
 
 /* clipboard.m */
 void clipboard_init(void);
-void clipboard_shutdown(void);
+int  clipboard_shutdown(void);
 void clipboard_on_link(int connected);
 void clipboard_on_remote_file_offer(const uint8_t *p, uint32_t len);
 void clipboard_on_remote_file_offer_clear(const uint8_t *p, uint32_t len);

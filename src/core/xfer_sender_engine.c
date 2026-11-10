@@ -316,13 +316,13 @@ static void sender_file_unregister(const hop_xfer_sender_file_ops *ops,
 hop_xfer_sender_send_result hop_xfer_sender_send_file_entry(
     const hop_xfer_sender_file_ops *ops, uint32_t batch, uint32_t id,
     const hop_xfer_sender_file_entry *entry, uint8_t *begin_buffer,
-    uint8_t *chunk_buffer, uint32_t chunk_size, uint64_t ack_timeout_ns,
-    uint32_t directory_flag, uint8_t file_ok_status,
+    uint32_t begin_buffer_size, uint8_t *chunk_buffer, uint32_t chunk_size,
+    uint64_t ack_timeout_ns, uint32_t directory_flag, uint8_t file_ok_status,
     uint8_t file_io_error_status, uint8_t file_begin_message,
     uint8_t file_end_message, uint64_t *ack_deadline_ns) {
     if (!ops || !entry || !entry->platform_entry || !entry->name ||
-        !entry->relative_path || !begin_buffer || !chunk_buffer ||
-        !chunk_size || !ack_timeout_ns || !ack_deadline_ns ||
+        !entry->relative_path || !begin_buffer || !begin_buffer_size ||
+        !chunk_buffer || !chunk_size || !ack_timeout_ns || !ack_deadline_ns ||
         !ops->cancel_requested || !ops->peer_aborted || !ops->open_file ||
         !ops->read_file || !ops->close_file || !ops->send_message ||
         !ops->send_chunk || !ops->ack_register || !ops->ack_mark_sent ||
@@ -337,7 +337,7 @@ hop_xfer_sender_send_result hop_xfer_sender_send_file_entry(
         return HOP_XFER_SENDER_SEND_RETRYABLE;
     size_t begin_length = 4u + 4u + 8u + 8u + 1u + 2u +
                           name_length + 2u + path_length;
-    if (begin_length > chunk_size || begin_length > UINT32_MAX)
+    if (begin_length > begin_buffer_size || begin_length > UINT32_MAX)
         return HOP_XFER_SENDER_SEND_RETRYABLE;
 
     if (!ops->ack_register(ops->user, batch, id))

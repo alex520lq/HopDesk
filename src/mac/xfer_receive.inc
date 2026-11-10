@@ -136,7 +136,8 @@ static int rx_context_create_staging_directory(void *context, const char *sessio
         return 0;
     }
     if (hop_xfer_rx_fs_mkdir_p(rx->dir) != 0) {
-        rx->dir[0] = '\0';
+        rx->staging_cleanup_pending = 1;
+        (void)rx_discard_dir(rx);
         return 0;
     }
     return 1;

@@ -294,3 +294,21 @@ if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
 if ($LASTEXITCODE -ne 0) { throw "Sender file test compilation failed ($LASTEXITCODE)" }
 & $senderFile
 if ($LASTEXITCODE -ne 0) { throw "Sender file tests failed ($LASTEXITCODE)" }
+
+$senderCommit = Join-Path $build 'hopdesk-sender-commit-tests.exe'
+$senderCommitSources = @(
+    (Join-Path $root 'tests/xfer_sender_commit_tests.c'),
+    (Join-Path $root 'src/core/xfer_sender_engine.c'),
+    (Join-Path $root 'src/core/xfer_ack_window.c'),
+    (Join-Path $root 'src/core/xfer_validate.c'),
+    (Join-Path $root 'src/core/protocol.c'),
+    (Join-Path $root 'src/core/crc32.c')
+)
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /O2 /W4 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I $inc /Fe:$senderCommit @senderCommitSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $senderCommit @senderCommitSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Sender commit test compilation failed ($LASTEXITCODE)" }
+& $senderCommit
+if ($LASTEXITCODE -ne 0) { throw "Sender commit tests failed ($LASTEXITCODE)" }

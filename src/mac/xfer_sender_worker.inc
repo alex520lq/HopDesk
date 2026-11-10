@@ -163,7 +163,7 @@ static void *send_thread(void *arg) {
             if (retry_result == HOP_XFER_SENDER_RETRY_INVALID) {
                 hop_log(HOP_LOG_ERROR, "xfer: invalid retry policy input for batch %u", j->batch);
                 status_end(HOP_XFER_DIR_SEND, j->batch, HOP_XFER_FAILED, "Invalid retry policy");
-                sender_task_finish(&j->task, HOP_XFER_TASK_FAILED);
+                sender_task_finish(&j->sender_context, &j->task, HOP_XFER_TASK_FAILED);
                 job_free(j);
                 continue;
             }
@@ -175,11 +175,11 @@ static void *send_thread(void *arg) {
                         "xfer: batch %u interrupted at entry %d, retry %d/%d in %u ms",
                         j->batch, j->next_i, j->attempt,
                         HOP_XFER_JOB_RETRY_MAX - 1, d);
-                if(!sender_task_set_state(&j->task,HOP_XFER_TASK_QUEUED)){
+                if(!sender_task_set_state(&j->sender_context, &j->task,HOP_XFER_TASK_QUEUED)){
                     hop_log(HOP_LOG_ERROR,"xfer: task=%llu could not return to queued state",
                             (unsigned long long)j->task.id);
                     status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Invalid task retry state");
-                    sender_task_finish(&j->task,HOP_XFER_TASK_FAILED);
+                    sender_task_finish(&j->sender_context, &j->task,HOP_XFER_TASK_FAILED);
                     job_free(j);continue;
                 }
                 /* 退回队首，保持 FIFO，next_i 保留 —— 重连后从断点条目继续，不重传已确认的 */
@@ -191,7 +191,7 @@ static void *send_thread(void *arg) {
                 if (!queued) {
                     hop_log(HOP_LOG_ERROR, "xfer: failed to requeue batch %u after reconnect", j->batch);
                     status_end(HOP_XFER_DIR_SEND, j->batch, HOP_XFER_FAILED, "Retry queue admission failed");
-                    sender_task_finish(&j->task, HOP_XFER_TASK_FAILED);
+                    sender_task_finish(&j->sender_context, &j->task, HOP_XFER_TASK_FAILED);
                     job_free(j);
                 }
                 continue;
@@ -217,11 +217,11 @@ static void *send_thread(void *arg) {
         hop_xfer_sender_terminal_decision terminal;
         if (hop_xfer_sender_get_terminal_decision(
                 (hop_xfer_sender_job_result)r, peer_cancelled, complete, &terminal)) {
-            sender_task_finish(&j->task, terminal.task_state);
+            sender_task_finish(&j->sender_context, &j->task, terminal.task_state);
             status_end(HOP_XFER_DIR_SEND, j->batch,
                        terminal.status_phase, terminal.detail);
         } else {
-            sender_task_finish(&j->task, HOP_XFER_TASK_FAILED);
+            sender_task_finish(&j->sender_context, &j->task, HOP_XFER_TASK_FAILED);
             status_end(HOP_XFER_DIR_SEND, j->batch,
                        HOP_XFER_FAILED, "Unknown sender result");
         }

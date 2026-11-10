@@ -33,6 +33,8 @@ static int             s_authed, s_rejected;
 static uint64_t        s_last_rx;
 static void set_connected(int on);
 static hop_decoder    *s_dec;
+static pthread_t s_control_sender_thread, s_net_thread;
+static int s_control_sender_started, s_net_thread_started;
 
 #include "net_client_protocol.inc"
 

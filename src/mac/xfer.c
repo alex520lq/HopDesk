@@ -74,8 +74,17 @@ _Static_assert(HOP_TASK_SESSION_BYTES == HOP_SESSION_BYTES, "task and protocol s
 
 /* ---------------- 条目 / 作业 ---------------- */
 
+typedef enum {
+    XFER_JOB_OWNER_SUBMITTER = 0,
+    XFER_JOB_OWNER_QUEUE,
+    XFER_JOB_OWNER_WORKER,
+    XFER_JOB_OWNER_SHUTDOWN,
+    XFER_JOB_OWNER_RELEASED
+} xfer_job_owner;
+
 typedef struct xf_job {
     struct xf_job *next;
+    xfer_job_owner owner;
     hop_session_id session;
     uint32_t  batch;
     int       is_image;
@@ -116,6 +125,8 @@ static struct {
     hop_xfer_rate_limiter rate; /* sender thread only */
     hop_mac_sender_threads sender_threads;
     int sync_initialized;
+    int shutting_down; /* protected by s_x_lifecycle_lock */
+    xf_job *shutdown_jobs; /* Jobs retained until Task disposal succeeds */
 
     /* ---- 取消 ----
      * cur_batch 由发送线程在开始一批时设置；cancel_batch 由主线程设置。
@@ -127,6 +138,10 @@ static struct {
     uint32_t         abort_batch;   /* 对端 ABORT 过的批次，0 = 无 */
     uint8_t          abort_reason;
 } s_x;
+
+/* Active submitters hold the read side through scanning and queue admission.
+ * Shutdown holds the write side until every owned resource is settled. */
+static pthread_rwlock_t s_x_lifecycle_lock = PTHREAD_RWLOCK_INITIALIZER;
 
 /* ---------------- 小工具 ---------------- */
 

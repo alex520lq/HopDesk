@@ -98,6 +98,7 @@ typedef struct xf_job {
     int       n;
     xf_entry *e;
     uint8_t  *pixels;
+    int image_payload_released;
     int       w, h, stride;
 
     /* ---- 重试状态 ----

@@ -7,6 +7,7 @@
 
 #include "app.h"
 #include "xfer.h"
+#include "xfer_sender_threads.h"
 #include "../core/hop.h"
 #include "xfer_scanner.h"
 #include "xfer_rx_fs.h"
@@ -336,8 +337,7 @@ static struct {
     HANDLE           stop;
     HANDLE           q_evt;
     HANDLE           rate_timer; /* high-resolution pacing wait; sender thread only */
-    HANDLE           th_listen;
-    HANDLE           th_send;
+    hop_win_sender_threads sender_threads;
     hop_xfer_sender_queue queue;
     uint32_t         batch_seq;
     uint32_t         chunk;     /* 实际分块字节数 */
@@ -570,9 +570,11 @@ int xfer_init(HWND hwnd, const hop_config *cfg) {
     /* 写盘线程要先起来，接收路径一进来就会往队列里塞 */
     if (!wq_start()) goto fail;
 
-    s_x.th_listen = CreateThread(NULL, 0, cfg->role==HOP_ROLE_SERVER?listen_thread:data_client_thread, NULL, 0, NULL);
-    s_x.th_send = CreateThread(NULL, 0, send_thread, NULL, 0, NULL);
-    if (!s_x.th_listen || !s_x.th_send) goto fail;
+    if (!hop_win_sender_threads_start(
+            &s_x.sender_threads,
+            cfg->role == HOP_ROLE_SERVER ? listen_thread : data_client_thread,
+            send_thread, NULL))
+        goto fail;
 
     hop_log(HOP_LOG_INFO, "xfer: listening on port %u, chunk %u KB",
             (unsigned)cfg->data_port, ck);
@@ -580,8 +582,7 @@ int xfer_init(HWND hwnd, const hop_config *cfg) {
 
 fail:
     if (s_x.stop) SetEvent(s_x.stop);
-    if (s_x.th_listen) { WaitForSingleObject(s_x.th_listen, INFINITE); CloseHandle(s_x.th_listen); s_x.th_listen = NULL; }
-    if (s_x.th_send) { WaitForSingleObject(s_x.th_send, INFINITE); CloseHandle(s_x.th_send); s_x.th_send = NULL; }
+    (void)hop_win_sender_threads_join(&s_x.sender_threads, INFINITE, NULL);
     if (s_x.listen_s != INVALID_SOCKET) closesocket(s_x.listen_s);
     wq_stop();
     hop_xfer_task_history_store_close();
@@ -620,14 +621,7 @@ void xfer_shutdown(void) {
      * 线程还在说明有阻塞调用没返回，此时宁可什么都不释放（进程马上退出），
      * 也不要把锁拆掉让它在未定义行为里跑。 */
     int joined = 1;
-    if (s_x.th_listen) {
-        if (WaitForSingleObject(s_x.th_listen, 3000) != WAIT_OBJECT_0) joined = 0;
-        CloseHandle(s_x.th_listen);
-    }
-    if (s_x.th_send) {
-        if (WaitForSingleObject(s_x.th_send, 3000) != WAIT_OBJECT_0) joined = 0;
-        CloseHandle(s_x.th_send);
-    }
+    (void)hop_win_sender_threads_join(&s_x.sender_threads, 3000, &joined);
 
     if (!joined) {
         hop_log(HOP_LOG_WARN, "xfer: threads still alive at shutdown, skip cleanup");

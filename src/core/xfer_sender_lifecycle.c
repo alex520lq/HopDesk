@@ -49,6 +49,12 @@ int hop_xfer_sender_get_terminal_decision(
             out->detail = "Reconnect attempts exhausted";
             return 1;
 
+        case HOP_XFER_SENDER_JOB_SHUTDOWN:
+            out->task_state = HOP_XFER_TASK_INTERRUPTED;
+            out->status_phase = HOP_XFER_FAILED;
+            out->detail = "Transfer interrupted during shutdown";
+            return 1;
+
         default:
             return 0;
     }

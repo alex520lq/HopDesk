@@ -47,10 +47,7 @@ static const hop_xfer_sender_queue_ops g_ops = {
 };
 
 static void queue_push(hop_xfer_sender_queue *queue, test_job *job) {
-    job->next = NULL;
-    if (queue->tail) ((test_job *)queue->tail)->next = job;
-    else queue->head = job;
-    queue->tail = job;
+    assert(hop_xfer_sender_queue_push_back(queue, &g_ops, job));
 }
 
 static void test_cancelled_middle_and_tail(void) {
@@ -63,16 +60,18 @@ static void test_cancelled_middle_and_tail(void) {
     b.cancelled = 1;
     assert(hop_xfer_sender_queue_take_cancelled(&queue, &g_ops) == &b);
     assert(queue.head == &a && queue.tail == &c);
+    assert(queue.count == 2);
     assert(a.next == &c && b.next == NULL);
 
     c.cancelled = 1;
     assert(hop_xfer_sender_queue_take_cancelled(&queue, &g_ops) == &c);
     assert(queue.head == &a && queue.tail == &a);
+    assert(queue.count == 1);
     assert(a.next == NULL && c.next == NULL);
 
     a.cancelled = 1;
     assert(hop_xfer_sender_queue_take_cancelled(&queue, &g_ops) == &a);
-    assert(queue.head == NULL && queue.tail == NULL && a.next == NULL);
+    assert(queue.head == NULL && queue.tail == NULL && queue.count == 0 && a.next == NULL);
     assert(hop_xfer_sender_queue_take_cancelled(&queue, &g_ops) == NULL);
 }
 
@@ -105,6 +104,33 @@ static void test_head_readiness_and_fifo(void) {
     assert(a.next == NULL);
 }
 
+static void test_front_insert_lookup_and_detach(void) {
+    test_job a = {.batch = 31}, b = {.batch = 32}, front = {.batch = 30};
+    hop_xfer_sender_queue queue = {0};
+    hop_xfer_sender_queue_take_result result;
+
+    queue_push(&queue, &a);
+    queue_push(&queue, &b);
+    assert(hop_xfer_sender_queue_push_front(&queue, &g_ops, &front));
+    assert(queue.head == &front && queue.tail == &b && queue.count == 3);
+    assert(front.next == &a && a.next == &b && b.next == NULL);
+    assert(hop_xfer_sender_queue_contains_batch(&queue, &g_ops, 32));
+    assert(!hop_xfer_sender_queue_contains_batch(&queue, &g_ops, 99));
+    assert(hop_xfer_sender_queue_count(&queue) == 3);
+    assert(!hop_xfer_sender_queue_empty(&queue));
+
+    assert(hop_xfer_sender_queue_take_head(
+        &queue, &g_ops, 0, 0, 1, 1, &result) == &front);
+    assert(result == HOP_XFER_SENDER_QUEUE_READY);
+    assert(queue.head == &a && queue.tail == &b && queue.count == 2);
+
+    test_job *detached = (test_job *)hop_xfer_sender_queue_detach_all(&queue);
+    assert(detached == &a && a.next == &b && b.next == NULL);
+    assert(hop_xfer_sender_queue_empty(&queue));
+    assert(hop_xfer_sender_queue_count(&queue) == 0);
+    assert(queue.head == NULL && queue.tail == NULL);
+}
+
 static void test_expiry_while_offline(void) {
     test_job cancelled = {.batch = 20};
     test_job deadline = {.batch = 21, .give_up_at = 50};
@@ -135,7 +161,8 @@ static void test_expiry_while_offline(void) {
 int main(void) {
     test_cancelled_middle_and_tail();
     test_head_readiness_and_fifo();
+    test_front_insert_lookup_and_detach();
     test_expiry_while_offline();
-    puts("PASS: shared Sender queue cancellation, FIFO, retry gate and expiry policy");
+    puts("PASS: shared Sender queue storage, FIFO, cancellation, retry gate and expiry policy");
     return 0;
 }

@@ -1464,7 +1464,7 @@ int main(void){
         assert 'j->owner == XFER_JOB_OWNER_RELEASING' in job_defer
         assert 'job_claim_for_release(j, expected_owner)' in job_free
         assert job_free.index('job_claim_for_release') < job_free.index('job_release_task_resources')
-        assert 'j->owner = XFER_JOB_OWNER_RELEASED' in job_free
+        assert job_free.index(owner_lock) < job_free.index('j->owner = XFER_JOB_OWNER_RELEASED')
         assert requeue_front.index(owner_lock) < requeue_front.index('call->job->owner')
         assert 'call->job=NULL' in dispose_job
         transport=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
@@ -1511,6 +1511,120 @@ int main(void){
             assert 'pthread_join(' not in transport
             assert 'hop_mac_sender_threads_start' in transport
             assert 'pthread_create(' in thread_adapter and 'pthread_join(' in thread_adapter
+
+    # Execute the exact production owner-claim/defer helpers on the host
+    # platform. Two concurrent claimants must produce exactly one releaser.
+    owner_platform='win' if os.name=='nt' else 'mac'
+    owner_worker=(ROOT/f'src/{owner_platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
+    owner_claim=extract(owner_worker,'job_claim_for_release')
+    owner_defer=extract(owner_worker,'job_defer_to_shutdown')
+    owner_prefix=r'''
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#define HOP_LOG_ERROR 1
+typedef enum {
+    XFER_JOB_OWNER_SUBMITTER=0, XFER_JOB_OWNER_QUEUE, XFER_JOB_OWNER_WORKER,
+    XFER_JOB_OWNER_SHUTDOWN, XFER_JOB_OWNER_RELEASING, XFER_JOB_OWNER_RELEASED
+} xfer_job_owner;
+typedef struct xfer_job {
+    xfer_job_owner owner;
+    unsigned batch;
+    struct xfer_job *next;
+} xfer_job;
+#if defined(_WIN32)
+#include <windows.h>
+typedef struct { CRITICAL_SECTION lock; xfer_job *shutdown_jobs; } owner_state;
+static owner_state s_x;
+static void owner_lock_init(void) { InitializeCriticalSection(&s_x.lock); }
+static void owner_lock_destroy(void) { DeleteCriticalSection(&s_x.lock); }
+static void owner_lock(void) { EnterCriticalSection(&s_x.lock); }
+static void owner_unlock(void) { LeaveCriticalSection(&s_x.lock); }
+typedef struct { xfer_job *job; volatile LONG ready, go, wins; } claim_race;
+static DWORD WINAPI claim_racer(LPVOID opaque) {
+    claim_race *race=(claim_race *)opaque;
+    InterlockedIncrement(&race->ready);
+    while (!InterlockedCompareExchange(&race->go,0,0)) SwitchToThread();
+    if (job_claim_for_release(race->job,XFER_JOB_OWNER_WORKER))
+        InterlockedIncrement(&race->wins);
+    return 0;
+}
+#else
+#include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
+typedef xfer_job xf_job;
+typedef struct { pthread_mutex_t qlock; xfer_job *shutdown_jobs; } owner_state;
+static owner_state s_x;
+static void owner_lock_init(void) { assert(pthread_mutex_init(&s_x.qlock,NULL)==0); }
+static void owner_lock_destroy(void) { assert(pthread_mutex_destroy(&s_x.qlock)==0); }
+static void owner_lock(void) { pthread_mutex_lock(&s_x.qlock); }
+static void owner_unlock(void) { pthread_mutex_unlock(&s_x.qlock); }
+typedef struct { xfer_job *job; atomic_int ready, go, wins; } claim_race;
+static void *claim_racer(void *opaque) {
+    claim_race *race=(claim_race *)opaque;
+    atomic_fetch_add_explicit(&race->ready,1,memory_order_release);
+    while (!atomic_load_explicit(&race->go,memory_order_acquire)) sched_yield();
+    if (job_claim_for_release(race->job,XFER_JOB_OWNER_WORKER))
+        atomic_fetch_add_explicit(&race->wins,1,memory_order_relaxed);
+    return NULL;
+}
+#endif
+static void hop_log(int level,const char *format, ...) {
+    (void)level;
+    (void)format;
+}
+'''
+    owner_main=r'''
+int main(void) {
+    owner_lock_init();
+    xfer_job job={XFER_JOB_OWNER_WORKER,42,NULL};
+    claim_race race;
+    memset(&race,0,sizeof(race));
+    race.job=&job;
+#if defined(_WIN32)
+    HANDLE first=CreateThread(NULL,0,claim_racer,&race,0,NULL);
+    HANDLE second=CreateThread(NULL,0,claim_racer,&race,0,NULL);
+    assert(first && second);
+    while (InterlockedCompareExchange(&race.ready,0,0)!=2) SwitchToThread();
+    InterlockedExchange(&race.go,1);
+    assert(WaitForSingleObject(first,INFINITE)==WAIT_OBJECT_0);
+    assert(WaitForSingleObject(second,INFINITE)==WAIT_OBJECT_0);
+    CloseHandle(first);
+    CloseHandle(second);
+    assert(InterlockedCompareExchange(&race.wins,0,0)==1);
+#else
+    atomic_init(&race.ready,0);
+    atomic_init(&race.go,0);
+    atomic_init(&race.wins,0);
+    pthread_t first,second;
+    assert(pthread_create(&first,NULL,claim_racer,&race)==0);
+    assert(pthread_create(&second,NULL,claim_racer,&race)==0);
+    while (atomic_load_explicit(&race.ready,memory_order_acquire)!=2) sched_yield();
+    atomic_store_explicit(&race.go,1,memory_order_release);
+    assert(pthread_join(first,NULL)==0);
+    assert(pthread_join(second,NULL)==0);
+    assert(atomic_load_explicit(&race.wins,memory_order_relaxed)==1);
+#endif
+    assert(job.owner==XFER_JOB_OWNER_RELEASING);
+    job_defer_to_shutdown(&job,XFER_JOB_OWNER_WORKER);
+    assert(job.owner==XFER_JOB_OWNER_SHUTDOWN && s_x.shutdown_jobs==&job);
+    assert(job_claim_for_release(&job,XFER_JOB_OWNER_SHUTDOWN));
+    job_defer_to_shutdown(&job,XFER_JOB_OWNER_SHUTDOWN);
+    assert(job.owner==XFER_JOB_OWNER_SHUTDOWN && s_x.shutdown_jobs==&job && !job.next);
+    assert(job_claim_for_release(&job,XFER_JOB_OWNER_SHUTDOWN));
+    owner_lock();
+    job.owner=XFER_JOB_OWNER_RELEASED;
+    owner_unlock();
+    assert(!job_claim_for_release(&job,XFER_JOB_OWNER_SHUTDOWN));
+    owner_lock_destroy();
+    puts("PASS: Job has one concurrent release owner and Shutdown retry retains ownership");
+    return 0;
+}
+'''
+    run('sender_job_owner',owner_prefix+owner_claim+'\n'+owner_defer+'\n'+owner_main,
+        threads=(owner_platform=='mac'))
 
     retry_core=(ROOT/'src/core/xfer_sender_retry.c').read_text(encoding='utf-8')
     retry_header=(ROOT/'src/core/xfer_sender_retry.h').read_text(encoding='utf-8')

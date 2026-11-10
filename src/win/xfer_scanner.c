@@ -33,17 +33,18 @@ static uint64_t ft_to_unix(const FILETIME *ft) {
     return (value.QuadPart - 116444736000000000ULL) / 10000000ULL;
 }
 
-static int elist_push(elist *list, xfer_entry *entry) {
+static int elist_push(elist *list, xfer_entry *entry, const hop_xfer_scan_services *services) {
     if (!entry || !entry->name || !entry->rel ||
         strlen(entry->name) > HOP_NAME_LEN_MAX ||
         strlen(entry->rel) > HOP_PATH_LEN_MAX ||
         list->n >= HOP_XFER_SCAN_MAX_ENTRIES) {
-        list->failed = 1;
+        scan_fail(list, (list->n >= HOP_XFER_SCAN_MAX_ENTRIES) ?
+                  HOP_XFER_SCAN_ENTRY_LIMIT : HOP_XFER_SCAN_PATH_TOO_LONG);
         return 0;
     }
-    if (!hop_xfer_task_reserve_entry(&list->task, entry->size)) {
+    if (!services->reserve_entry(services->context, entry->size)) {
         list->budget_rejected = 1;
-        list->failed = 1;
+        scan_fail(list, HOP_XFER_SCAN_BUDGET_REJECTED);
         return 0;
     }
     if (list->n == list->cap) {
@@ -69,34 +70,33 @@ void elist_free(elist *list) {
     list->n = list->cap = 0;
     list->failed = 0;
     list->budget_rejected = 0;
-    hop_xfer_task_dispose(&list->task);
+    list->error = HOP_XFER_SCAN_OK;
 }
 
-static BOOL guarded_find_next(HANDLE handle, WIN32_FIND_DATAW *data) {
-    int guard = hop_watchdog_begin("directory next", HOP_IO_DEADLINE_MS);
+static BOOL guarded_find_next(HANDLE handle, WIN32_FIND_DATAW *data,
+                              const hop_xfer_scan_services *services) {
+    int guard = scan_watchdog_begin(services, "directory next");
     BOOL ok = FindNextFileW(handle, data);
     DWORD error = ok ? ERROR_SUCCESS : GetLastError();
-    hop_watchdog_end(guard);
+    scan_watchdog_end(services, guard);
     if (!ok) SetLastError(error);
     return ok;
 }
 
-static void walk_into(elist *list, const wchar_t *full, const char *relative) {
+static void walk_into(elist *list, const wchar_t *full, const char *relative, const hop_xfer_scan_services *services) {
     if (!list || list->failed) return;
-    if (hop_xfer_task_cancel_requested(list->task.id)) { list->failed = 1; return; }
+    if (services->is_cancelled(services->context)) { scan_fail(list, HOP_XFER_SCAN_CANCELLED); return; }
 
     WIN32_FILE_ATTRIBUTE_DATA attributes;
-    int stat_guard = hop_watchdog_begin("file attributes", HOP_IO_DEADLINE_MS);
+    int stat_guard = scan_watchdog_begin(services, "file attributes");
     int stat_ok = GetFileAttributesExW(full, GetFileExInfoStandard, &attributes);
-    hop_watchdog_end(stat_guard);
+    scan_watchdog_end(services, stat_guard);
     if (!stat_ok) {
-        list->failed = 1;
-        hop_log(HOP_LOG_WARN, "xfer: source path disappeared or is inaccessible");
+        scan_fail(list, HOP_XFER_SCAN_SOURCE_UNAVAILABLE);
         return;
     }
     if (attributes.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
-        list->failed = 1;
-        hop_log(HOP_LOG_WARN, "xfer: reparse point rejected from file selection");
+        scan_fail(list, HOP_XFER_SCAN_LINK_REJECTED);
         return;
     }
 
@@ -117,7 +117,7 @@ static void walk_into(elist *list, const wchar_t *full, const char *relative) {
     if (!is_dir) {
         entry.size = ((uint64_t)attributes.nFileSizeHigh << 32) | attributes.nFileSizeLow;
         entry.flags = 0;
-        if (!elist_push(list, &entry)) {
+        if (!elist_push(list, &entry, services)) {
             free(entry.full); free(entry.name); free(entry.rel);
         }
         return;
@@ -132,20 +132,19 @@ static void walk_into(elist *list, const wchar_t *full, const char *relative) {
 
     size_t full_len = wcslen(full);
     wchar_t *pattern = (wchar_t *)malloc((full_len + 3) * sizeof(wchar_t));
-    if (!pattern) { list->failed = 1; return; }
+    if (!pattern) { scan_fail(list, HOP_XFER_SCAN_OUT_OF_MEMORY); return; }
     wcscpy(pattern, full);
     if (full_len && pattern[full_len - 1] != L'\\' && pattern[full_len - 1] != L'/')
         wcscat(pattern, L"\\");
     wcscat(pattern, L"*");
 
     WIN32_FIND_DATAW data;
-    int find_guard = hop_watchdog_begin("directory enumerate", HOP_IO_DEADLINE_MS);
+    int find_guard = scan_watchdog_begin(services, "directory enumerate");
     HANDLE handle = FindFirstFileW(pattern, &data);
-    hop_watchdog_end(find_guard);
+    scan_watchdog_end(services, find_guard);
     free(pattern);
     if (handle == INVALID_HANDLE_VALUE) {
-        list->failed = 1;
-        hop_log(HOP_LOG_WARN, "xfer: cannot enumerate selected directory");
+        scan_fail(list, HOP_XFER_SCAN_ENUMERATION_FAILED);
         return;
     }
 
@@ -155,7 +154,7 @@ static void walk_into(elist *list, const wchar_t *full, const char *relative) {
         int need_sep = parent_len && full[parent_len - 1] != L'\\' && full[parent_len - 1] != L'/';
         size_t child_chars = parent_len + (size_t)need_sep + wcslen(data.cFileName) + 1;
         wchar_t *child = (wchar_t *)malloc(child_chars * sizeof(wchar_t));
-        if (!child) { list->failed = 1; break; }
+        if (!child) { scan_fail(list, HOP_XFER_SCAN_OUT_OF_MEMORY); break; }
         wcscpy(child, full);
         if (need_sep) wcscat(child, L"\\");
         wcscat(child, data.cFileName);
@@ -172,28 +171,30 @@ static void walk_into(elist *list, const wchar_t *full, const char *relative) {
             }
             free(child_name);
         }
-        if (!child_rel) list->failed = 1;
-        else walk_into(list, child, child_rel);
+        if (!child_rel) scan_fail(list, HOP_XFER_SCAN_OUT_OF_MEMORY);
+        else walk_into(list, child, child_rel, services);
         free(child_rel);
         free(child);
         if (list->failed) break;
-    } while (guarded_find_next(handle, &data));
+    } while (guarded_find_next(handle, &data, services));
 
     if (!list->failed && GetLastError() != ERROR_NO_MORE_FILES) list->failed = 1;
     FindClose(handle);
 }
 
-void hop_xfer_scan_paths(elist *list, const hop_xfer_scan_path *paths, int count) {
-    if (!list || !paths || count <= 0) {
-        if (list) list->failed = 1;
+void hop_xfer_scan_paths(elist *list, const hop_xfer_scan_path *paths, int count,
+                         const hop_xfer_scan_services *services) {
+    if (!list || !paths || count <= 0 || !services || !services->reserve_entry ||
+        !services->is_cancelled || !services->watchdog_begin || !services->watchdog_end) {
+        if (list) scan_fail(list, HOP_XFER_SCAN_INVALID_INPUT);
         return;
     }
     for (int i = 0; i < count; ++i) {
-        if (!paths[i] || !paths[i][0]) { list->failed = 1; break; }
+        if (!paths[i] || !paths[i][0]) { scan_fail(list, HOP_XFER_SCAN_INVALID_INPUT); break; }
         const wchar_t *base = base_name(paths[i]);
         char *relative = w2u(base);
-        if (!relative) { list->failed = 1; break; }
-        walk_into(list, paths[i], relative);
+        if (!relative) { scan_fail(list, HOP_XFER_SCAN_OUT_OF_MEMORY); break; }
+        walk_into(list, paths[i], relative, services);
         free(relative);
         if (list->failed) break;
     }

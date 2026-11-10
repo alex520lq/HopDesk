@@ -442,7 +442,7 @@ static int rx_discard_dir(xfer_rx_context *rx) {
     if (!rx->dir[0]) { rx->staging_cleanup_pending = 0; return 1; }
     int result = hop_xfer_rx_fs_remove_tree(rx->dir, "/HopDesk/");
     if (result == 0) {
-        rx->dir[0] = '\\0';
+        rx->dir[0] = '\0';
         rx->staging_cleanup_pending = 0;
         return 1;
     }

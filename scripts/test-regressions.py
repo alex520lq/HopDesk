@@ -789,7 +789,7 @@ int main(void){
         else:
             assert 'S_ISLNK' in scanner and 'lstat(' in scanner and 'S_ISREG' in scanner and 'read_error' in scanner and 'errno = 0' in scanner
         assert 'walk_into' not in transport and 'elist_push' not in transport
-        assert 'hop_xfer_scan_paths(&l, paths, n)' in submission
+        assert 'hop_xfer_scan_paths(&l, paths, n, &scan_services)' in submission
 
     # Exact production case bodies + lifecycle helpers; only OS I/O is doubled.
     for platform in ['win','mac']:

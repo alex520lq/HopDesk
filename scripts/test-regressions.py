@@ -1414,6 +1414,7 @@ int main(void){
     active_core=(ROOT/'src/core/xfer_sender_active_job.c').read_text(encoding='utf-8')
     active_header=(ROOT/'src/core/xfer_sender_active_job.h').read_text(encoding='utf-8')
     active_tests=(ROOT/'tests/xfer_sender_active_job_tests.c').read_text(encoding='utf-8')
+    abort_fixture=(ROOT/'tests/receive_abort_fixture.c.in').read_text(encoding='utf-8')
     assert 'hop_xfer_sender_scheduler_wait_next' in scheduler_core
     assert 'hop_xfer_sender_queue_take_cancelled' in scheduler_core
     assert 'hop_xfer_sender_queue_take_head' in scheduler_core
@@ -1425,6 +1426,8 @@ int main(void){
     assert 'hop_xfer_sender_active_job_matches' in active_core
     assert 'hop_xfer_sender_active_job_clear_if_matches' in active_header
     assert 'test_abort_is_scoped_to_active_batch' in active_tests
+    assert 'hop_xfer_sender_active_job_record_peer_abort' in abort_fixture
+    assert 's_x.cur_batch' not in abort_fixture and 's_x.abort_batch' not in abort_fixture
     for platform in ['win','mac']:
         worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
         submission=(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')

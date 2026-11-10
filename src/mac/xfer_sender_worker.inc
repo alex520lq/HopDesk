@@ -29,26 +29,6 @@ static const hop_xfer_sender_queue_ops s_sender_queue_ops = {
     sender_queue_batch, sender_queue_retry_at, sender_queue_give_up_at
 };
 
-/* Caller holds s_x.qlock. Copy the platform links into the shared Core view. */
-static xf_job *queue_take_cancelled(void) {
-    hop_xfer_sender_queue queue = {s_x.q_head, s_x.q_tail};
-    xf_job *job = (xf_job *)hop_xfer_sender_queue_take_cancelled(
-        &queue, &s_sender_queue_ops);
-    s_x.q_head = (xf_job *)queue.head;
-    s_x.q_tail = (xf_job *)queue.tail;
-    return job;
-}
-static xf_job *queue_take_head(uint64_t now, int peer_ready, int allow_ready,
-                                 hop_xfer_sender_queue_take_result *result) {
-    hop_xfer_sender_queue queue = {s_x.q_head, s_x.q_tail};
-    xf_job *job = (xf_job *)hop_xfer_sender_queue_take_head(
-        &queue, &s_sender_queue_ops, now, s_x.cancel_batch,
-        peer_ready, allow_ready, result);
-    s_x.q_head = (xf_job *)queue.head;
-    s_x.q_tail = (xf_job *)queue.tail;
-    return job;
-}
-
 static void job_free(xf_job *j) {
     if (!j) return;
     for (int i = 0; i < j->n; ++i) {
@@ -91,7 +71,7 @@ static void *send_thread(void *arg) {
         for (;;) {
             if (s_x.stop) break;
             uint64_t n = now_ms();
-            xf_job *p = s_x.q_head;
+            xf_job *p = (xf_job *)s_x.queue.head;
             if (p && (p->batch == s_x.cancel_batch ||
                       (p->give_up_at && n >= p->give_up_at) ||
                       (peer_ready_snapshot && p->retry_at <= n)))
@@ -108,19 +88,19 @@ static void *send_thread(void *arg) {
 
         if (s_x.stop) {
             /* 退出时不再发新东西：队列直接释放，避免在这里空转 */
-            xf_job *p = s_x.q_head;
-            s_x.q_head = s_x.q_tail = NULL;
+            xf_job *p = (xf_job *)hop_xfer_sender_queue_detach_all(&s_x.queue);
             pthread_mutex_unlock(&s_x.qlock);
             while (p) { xf_job *nx = p->next; job_free(p); p = nx; }
             break;
         }
 
         uint64_t now = now_ms();
-        expired=queue_take_cancelled();
+        expired=(xf_job *)hop_xfer_sender_queue_take_cancelled(&s_x.queue, &s_sender_queue_ops);
         if (!expired) {
             hop_xfer_sender_queue_take_result take_result = HOP_XFER_SENDER_QUEUE_NONE;
-            xf_job *taken = queue_take_head(now, peer_ready_snapshot,
-                                            !waited_for_queue, &take_result);
+            xf_job *taken = (xf_job *)hop_xfer_sender_queue_take_head(
+                &s_x.queue, &s_sender_queue_ops, now, s_x.cancel_batch,
+                peer_ready_snapshot, !waited_for_queue, &take_result);
             if (take_result == HOP_XFER_SENDER_QUEUE_EXPIRED) expired = taken;
             else if (take_result == HOP_XFER_SENDER_QUEUE_READY) j = taken;
         }
@@ -188,12 +168,17 @@ static void *send_thread(void *arg) {
                     job_free(j);continue;
                 }
                 /* 退回队首，保持 FIFO，next_i 保留 —— 重连后从断点条目继续，不重传已确认的 */
-                j->next = NULL;
                 pthread_mutex_lock(&s_x.qlock);
-                j->next=s_x.q_head; s_x.q_head=j;
-                if(!s_x.q_tail)s_x.q_tail=j;
-                pthread_cond_signal(&s_x.qcond);
+                int queued = hop_xfer_sender_queue_push_front(
+                    &s_x.queue, &s_sender_queue_ops, j);
+                if (queued) pthread_cond_signal(&s_x.qcond);
                 pthread_mutex_unlock(&s_x.qlock);
+                if (!queued) {
+                    hop_log(HOP_LOG_ERROR, "xfer: failed to requeue batch %u after reconnect", j->batch);
+                    status_end(HOP_XFER_DIR_SEND, j->batch, HOP_XFER_FAILED, "Retry queue admission failed");
+                    sender_task_finish(&j->task, HOP_XFER_TASK_FAILED);
+                    job_free(j);
+                }
                 continue;
             }
             hop_log(HOP_LOG_ERROR,

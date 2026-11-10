@@ -964,6 +964,9 @@ int main(void){
             fs=(ROOT/'src/win/xfer_rx_fs.c').read_text(encoding='utf-8')
             assert 'GetFileAttributesW(path)' in fs
             assert 'hop_xfer_rx_fs_path_for' in fs and 'hop_xfer_rx_fs_remove_tree' in fs
+            assert 'L"\\\\HopDesk\\\\"' in receive_impl, 'Windows staging cleanup must match the single-separator production path'
+            assert 'retaining path for retry' in receive_impl
+            assert 'if (!rx->staging_cleanup_pending) rx->dir[0] = 0;' in (ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         close=end.index('rx->services.close_file(')
         cleanup=end.index('rx->services.remove_file(')
         assert close < cleanup, 'failed receive cleanup must wait for writer close'

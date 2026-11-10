@@ -2,6 +2,9 @@
 
 #include <stddef.h>
 
+/* Keep Task terminal state and transfer status publication decisions identical
+ * across platform workers; platform code only performs the returned effects. */
+
 int hop_xfer_sender_get_terminal_decision(
     hop_xfer_sender_job_result result,
     int peer_cancelled,

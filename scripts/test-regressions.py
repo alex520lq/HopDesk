@@ -1413,13 +1413,13 @@ int main(void){
         assert 'hop_xfer_sender_get_terminal_decision' not in worker
 
     win_main=(ROOT/'src/win/win_main.c').read_text(encoding='utf-8')
-    assert win_main.index('clip_shutdown(g_app.hwnd)') < win_main.index('xfer_shutdown()')
+    assert win_main.index('clip_shutdown(g_app.hwnd)') < win_main.index('net_server_stop(g_app.net)') < win_main.rindex('xfer_shutdown()')
 
     # macOS control workers can call xfer_kick during disconnect handling;
     # they must be joined before xfer_shutdown destroys transfer synchronization.
     mac_main=(ROOT/'src/mac/main.c').read_text(encoding='utf-8')
     mac_transport=(ROOT/'src/mac/net_client_transport.inc').read_text(encoding='utf-8')
-    assert mac_main.index('clipboard_shutdown()') < mac_main.index('net_loop_shutdown()') < mac_main.index('xfer_shutdown()')
+    assert mac_main.index('clipboard_shutdown()') < mac_main.index('net_loop_shutdown()') < mac_main.rindex('xfer_shutdown()')
     assert 'pthread_detach' not in mac_transport
     assert 'pthread_join(s_net_thread' in mac_transport
     assert 'pthread_join(s_control_sender_thread' in mac_transport

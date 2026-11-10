@@ -1441,7 +1441,8 @@ int main(void){
         clip_shutdown=extract(clip,'clip_shutdown' if platform=='win' else 'clipboard_shutdown')
         finish_attempt=extract(clip,'image_work_task_finish_attempt')
         retry_pending=extract(clip,'image_work_retry_pending')
-        assert 'image_work_task_owner' in clip and 's_pending_image_tasks' in clip
+        owner_type='clip_image_task_owner' if platform=='win' else 'image_work_task_owner'
+        assert owner_type in clip and 's_pending_image_tasks' in clip
         assert 'hop_xfer_task_release_image_temp' in finish_attempt
         assert 'hop_xfer_task_is_terminal' in finish_attempt and 'hop_xfer_task_finish' in finish_attempt
         assert 'hop_xfer_task_dispose' in finish_attempt

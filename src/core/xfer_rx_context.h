@@ -29,6 +29,7 @@ typedef struct xfer_rx_context {
     hop_xfer_task task;
     hop_xfer_rx_entry_reservations entry_reservations;
     hop_xfer_rx_path_char dir[HOP_XFER_RX_CONTEXT_PATH_CAPACITY];
+    int staging_cleanup_pending; /* Keep dir until a failed staging deletion is retried successfully. */
     hop_xfer_rx_path_char *cur_path;
     hop_xfer_rx_file_state file_state;
     hop_xfer_rx_image_buffer image_buffer;

@@ -6,6 +6,20 @@
 #include <string.h>
 #include <wchar.h>
 
+static void scan_fail(elist *list, hop_xfer_scan_error error) {
+    if (!list) return;
+    if (!list->failed) list->error = error;
+    list->failed = 1;
+}
+
+static int scan_watchdog_begin(const hop_xfer_scan_services *services, const char *operation) {
+    return services->watchdog_begin(services->context, operation, HOP_IO_DEADLINE_MS);
+}
+
+static void scan_watchdog_end(const hop_xfer_scan_services *services, int ticket) {
+    services->watchdog_end(services->context, ticket);
+}
+
 static char *w2u(const wchar_t *w) {
     int need = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
     if (need <= 1) return NULL;
@@ -50,7 +64,7 @@ static int elist_push(elist *list, xfer_entry *entry, const hop_xfer_scan_servic
     if (list->n == list->cap) {
         int next_cap = list->cap ? list->cap * 2 : 32;
         xfer_entry *next = (xfer_entry *)realloc(list->v, (size_t)next_cap * sizeof(*next));
-        if (!next) { list->failed = 1; return 0; }
+        if (!next) { scan_fail(list, HOP_XFER_SCAN_OUT_OF_MEMORY); return 0; }
         list->v = next;
         list->cap = next_cap;
     }

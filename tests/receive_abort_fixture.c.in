@@ -96,7 +96,7 @@ static void fixture_status_total(void *context,uint32_t total);
 static void fixture_status_reset(void *context);
 static void fixture_mark_sender_aborted(void *context,uint32_t batch,uint8_t reason){
     (void)context;
-    if(s_x.cur_batch==batch){s_x.abort_batch=batch;s_x.abort_reason=reason;}
+    (void)hop_xfer_sender_active_job_record_peer_abort(&s_x.active_job,batch,reason);
 }
 static hop_xfer_rx_lifecycle s_rx_lifecycle;
 static hop_xfer_rx_done_receipt s_done_receipt;

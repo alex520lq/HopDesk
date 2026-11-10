@@ -65,7 +65,7 @@ static uint8_t captured[512];static size_t captured_len;static int delivered,clo
 static int s_txlock;
 static unsigned long s_send_epoch;
 static uint64_t rate_now_ns(void){return 0;}
-static int rate_wait_for_chunk(uint32_t bytes){(void)bytes;return 1;}
+static int rate_wait_for_chunk(const hop_xfer_sender_context *context,uint32_t bytes){(void)context;(void)bytes;return 1;}
 typedef struct {int stopping;uint64_t waited_ns;} fixture_sender_wait;
 static int fixture_sender_is_stopping(void *user){
     return ((fixture_sender_wait *)user)->stopping;
@@ -135,7 +135,7 @@ s_rx.services.cancel_clipboard=fixture_cancel_clipboard;s_rx.services.status_res
  assert(hop_xfer_rx_batch_state_end(&s_rx.batch_state,43));assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,42));on_data_frame(NULL,HOP_MSG_FILE_END,captured+HOP_HEADER_SIZE,(uint32_t)captured_len-HOP_HEADER_SIZE);
  assert(delivered==1 && !closed);
  captured_len=0;uint8_t tx[CHUNK_HDR+2],pixels[2]={4,5};
- assert(send_chunk(7,tx,42,3,9,pixels,2,123,0,0));
+ assert(send_chunk(&s_sender_context,7,tx,42,3,9,pixels,2,123,0,0));
  assert(captured_len==CHUNK_HDR+2 && hop_get_be32(captured+1)==40+2);
  assert(hop_data_unwrap(HOP_MSG_FILE_CHUNK,captured+5,(uint32_t)captured_len-5,&s_x.session,&batch,&body,&n));
  assert(batch==42 && n==22 && hop_get_be32(body)==3 && hop_get_be64(body+4)==9 && !memcmp(body+20,pixels,2));

@@ -664,7 +664,8 @@ static int sender_engine_file_send_message(void *user, uint8_t type,
                                            const uint8_t *payload,
                                            uint32_t length, uint32_t batch) {
     sender_file_engine_call *call = (sender_file_engine_call *)user;
-    return send_small(call->socket, type, payload, length, batch);
+    return send_small_with_context(&call->job->sender_context,
+                                   call->socket, type, payload, length, batch);
 }
 
 static int sender_engine_file_send_chunk(void *user, uint32_t batch,
@@ -846,8 +847,9 @@ static int sender_engine_send_image_begin(void *user, uint32_t batch,
     hop_put_be32(payload + 8, width);
     hop_put_be32(payload + 12, height);
     hop_put_be32(payload + 16, stride);
-    return send_small(call->socket, HOP_MSG_IMAGE_BEGIN, payload,
-                      sizeof(payload), batch);
+    return send_small_with_context(&call->job->sender_context, call->socket,
+                                   HOP_MSG_IMAGE_BEGIN, payload,
+                                   sizeof(payload), batch);
 }
 
 static int sender_engine_send_image_chunk(void *user, uint32_t batch,
@@ -868,8 +870,9 @@ static int sender_engine_send_image_end(void *user, uint32_t batch,
     hop_put_be32(payload, id);
     payload[4] = status;
     hop_put_be32(payload + 5, file_crc);
-    return send_small(call->socket, HOP_MSG_FILE_END, payload,
-                      sizeof(payload), batch);
+    return send_small_with_context(&call->job->sender_context, call->socket,
+                                   HOP_MSG_FILE_END, payload,
+                                   sizeof(payload), batch);
 }
 
 static void sender_engine_yield(void *user) {

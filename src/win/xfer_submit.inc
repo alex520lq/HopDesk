@@ -39,7 +39,7 @@ static int submit(xfer_job *j) {
     j->sender_context = s_sender_context;
     int ok = 0, duplicate = 0;
     EnterCriticalSection(&s_x.lock);
-    if (s_x.cur_batch == j->batch ||
+    if (hop_xfer_sender_active_job_matches(&s_x.active_job,j->batch) ||
         hop_xfer_sender_queue_contains_batch(&s_x.queue, &s_sender_queue_ops, j->batch))
         duplicate = 1;
     if (!duplicate && !s_x.shutting_down && !sender_context_is_stopping(&s_sender_platform) &&

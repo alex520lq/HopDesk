@@ -85,7 +85,9 @@ int main(void) {
      assert(h!=INVALID_HANDLE_VALUE); CloseHandle(h);
      assert(hop_xfer_rx_fs_remove_tree(batch,L"\\HopDesk\\")==0);
      assert(GetFileAttributesW(batch)==INVALID_FILE_ATTRIBUTES);
-     /* The previous over-escaped fragment must be rejected by the guard. */
+     /* Repeating cleanup for an already absent staging tree is idempotent. */
+     assert(hop_xfer_rx_fs_remove_tree(batch,L"\\HopDesk\\")==0);
+     /* The previous over-escaped fragment must still be rejected by the guard. */
      assert(hop_xfer_rx_fs_remove_tree(batch,L"\\\\HopDesk\\\\")==-2);
      assert(RemoveDirectoryW(session));
      assert(RemoveDirectoryW(root));
@@ -995,6 +997,8 @@ int main(void){
             assert 'hop_xfer_rx_fs_ensure_dirs(copy)' in receive_impl
             fs=(ROOT/'src/win/xfer_rx_fs.c').read_text(encoding='utf-8')
             assert 'GetFileAttributesW(path)' in fs
+            assert 'operation.fAnyOperationsAborted' in fs
+            assert 'operation_result != 0 || operation.fAnyOperationsAborted' in fs
             assert 'hop_xfer_rx_fs_path_for' in fs and 'hop_xfer_rx_fs_remove_tree' in fs
             assert 'L"\\\\HopDesk\\\\"' in receive_impl, 'Windows staging cleanup must match the single-separator production path'
             assert 'retaining path for retry' in receive_impl

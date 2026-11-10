@@ -33,19 +33,43 @@ typedef xf_entry *hop_xfer_scan_entry_array;
 typedef const char *hop_xfer_scan_path;
 #endif
 
+typedef enum {
+    HOP_XFER_SCAN_OK = 0,
+    HOP_XFER_SCAN_INVALID_INPUT,
+    HOP_XFER_SCAN_CANCELLED,
+    HOP_XFER_SCAN_SOURCE_UNAVAILABLE,
+    HOP_XFER_SCAN_LINK_REJECTED,
+    HOP_XFER_SCAN_UNSUPPORTED_ENTRY,
+    HOP_XFER_SCAN_PATH_TOO_LONG,
+    HOP_XFER_SCAN_ENTRY_LIMIT,
+    HOP_XFER_SCAN_BUDGET_REJECTED,
+    HOP_XFER_SCAN_ENUMERATION_FAILED,
+    HOP_XFER_SCAN_OUT_OF_MEMORY
+} hop_xfer_scan_error;
+
+/* The result is an owned, complete snapshot. It contains no Task lifecycle. */
 typedef struct {
     hop_xfer_scan_entry_array v;
     int n, cap;
     int failed;
     int budget_rejected;
-    hop_xfer_task task;
+    hop_xfer_scan_error error;
 } elist;
 
-/* Scans all requested roots into a complete snapshot. Any unsafe, missing,
- * cancelled or budget-rejected entry marks the entire snapshot failed. */
-void hop_xfer_scan_paths(elist *list, const hop_xfer_scan_path *paths, int count);
+/* Scanner dependencies are explicit; Task ownership remains with the caller. */
+typedef struct {
+    void *context;
+    int (*reserve_entry)(void *context, uint64_t bytes);
+    int (*is_cancelled)(void *context);
+    int (*watchdog_begin)(void *context, const char *operation, unsigned timeout_ms);
+    void (*watchdog_end)(void *context, int ticket);
+} hop_xfer_scan_services;
 
-/* Releases snapshot entries and its embedded Task handle. */
+/* Scans all roots atomically: any error invalidates the whole snapshot. */
+void hop_xfer_scan_paths(elist *list, const hop_xfer_scan_path *paths, int count,
+                         const hop_xfer_scan_services *services);
+
+/* Releases only snapshot-owned memory; never disposes the caller's Task. */
 void elist_free(elist *list);
 
 #endif

@@ -1,6 +1,7 @@
 #include "../src/core/xfer_sender_engine.h"
 #include "../src/core/hop.h"
 #include "../src/core/xfer_status.h"
+#include "../src/core/xfer_tracking.h"
 
 #include <assert.h>
 #include <stdio.h>

@@ -777,3 +777,16 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 新增共享测试 `tests/xfer_ack_coordinator_tests.c`，覆盖 ACK 早于 deadline 设置、迟到 ACK、重复/过期 ACK、批次释放和窗口容量；已加入 Windows/macOS core test 脚本。
 - **最终验证：Run #1195（ID `42765170981`，tested head `83b86e8727ffe36f6ed456a67bcacf78ce216ca0`）Windows MSVC 与 macOS Apple Clang 全流程均 PASS**：应用构建、portable Core/regression（含 ACK Coordinator 并发唤醒测试）、文件传输协议、TCP loopback、Windows native control/data role + reconnect、macOS control/listener loopback、updater 检查及双平台打包。Release publication 按 PR 流程跳过。此前 CI 暴露的 Windows HA fixture 漏链平台 adapter、测试未处理 auto-reset event 的无关唤醒，均已修复并由此 run 覆盖。
 - 下一步：修正 CI 暴露的问题后再收口此切片；随后抽离 Scanner，不并行启动 Sender Core 大规模迁移。
+
+
+### 2026-11-10：Scanner 快照与显式服务边界收口（第十三切片，CI PASS）
+
+- 复核确认 Windows/macOS Scanner 在本轮之前已经是独立 \`.c\` 文件；本切片不重复宣称“新建模块”，重点是消除其隐藏的 Task/Watchdog 全局依赖。
+- \`elist\` 从 Task+entries 混合容器改为纯扫描快照，\`elist_free\` 只释放快照内存；Task 的 init/state/finish/dispose 全由提交层持有。
+- 新增 \`hop_xfer_scan_services\` 显式注入接口：Entry budget reservation、取消检查、快照数组扩容 allocator、Watchdog begin/end。Scanner \`.c\` 不再直接调用 \`hop_xfer_task_*\`、\`hop_watchdog_*\`、\`hop_log\`；公开头文件不再包含 Task header。
+- 新增扫描错误枚举：invalid input、cancel、source unavailable、link/reparse rejected、unsupported entry、path too long、entry limit、budget rejected、enumeration failed、OOM。提交层遇到任一错误都拒绝整个快照，不会入队部分目录树。
+- 修复 macOS \`readdir()\` 的 EOF/错误混淆：每次读取前重置 errno，捕获读取结果后的 errno，非正常 EOF 将整次扫描标记失败。Windows 保留 \`FindNextFileW\` 错误码并检查非 \`ERROR_NO_MORE_FILES\` 终止。
+- 双平台 production-linked scanner tests 覆盖完整目录树、缺失路径、取消、预算拒绝、数组扩容分配失败；macOS 额外覆盖 symlink 拒绝。源码回归断言检查显式依赖、无隐式全局调用及 all-or-nothing 入队。
+- **最终验证：GitHub Actions Run #1236（ID \`42771934666\`，tested head \`8dafd1dbf4adc970b4dbadc3580d5e11962fb5bf\`）Windows MSVC 与 macOS Apple Clang 全流程 PASS**：应用编译、portable Core/regression（含 Scanner 与 ACK Coordinator）、传输协议、TCP loopback、Windows native role/reconnect、macOS control/listener loopback、updater 检查与双平台打包均通过。PR 流程按预期跳过 Release 发布。
+- 尚未直接做确定性 mid-stream readdir 故障注入和 Windows reparse-point 运行时 fixture；代码路径与源码契约断言已覆盖。文件系统 TOCTOU 竞争仍属于后续安全加固，不在本切片宣称已解决。
+- 下一步：先建立显式 Sender dependency context，将 socket/session、clock/wait、cancel/peer-abort、status/logging、Task callbacks 注入现有 Sender 实现；确认无行为变化后，再将协议执行迁移为独立编译单元。

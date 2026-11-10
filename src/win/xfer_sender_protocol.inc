@@ -54,16 +54,44 @@ static void rate_sleep_ns(uint64_t ns) {
              (uint64_t)frequency.QuadPart < ns);
 }
 
+static hop_xfer_sender_context s_sender_context;
+
+static uint64_t sender_context_now_ns(void *user) {
+    (void)user;
+    return rate_now_ns();
+}
+
+static int sender_context_is_stopping(void *user) {
+    (void)user;
+    return !s_x.stop || WaitForSingleObject(s_x.stop, 0) == WAIT_OBJECT_0;
+}
+
+static int sender_context_wait_ns(void *user, uint64_t duration_ns) {
+    (void)user;
+    if (sender_context_is_stopping(NULL)) return 0;
+    rate_sleep_ns(duration_ns);
+    return !sender_context_is_stopping(NULL);
+}
+
+static void sender_context_init(void) {
+    memset(&s_sender_context, 0, sizeof(s_sender_context));
+    s_sender_context.now_ns = sender_context_now_ns;
+    s_sender_context.wait_ns = sender_context_wait_ns;
+    s_sender_context.is_stopping = sender_context_is_stopping;
+}
+
 static int rate_wait_for_chunk(uint32_t bytes) {
+    if (!hop_xfer_sender_context_clock_valid(&s_sender_context)) return 0;
     for (;;) {
-        uint64_t delay = hop_xfer_rate_wait_ns(&s_x.rate, bytes, rate_now_ns());
+        uint64_t delay = hop_xfer_rate_wait_ns(
+            &s_x.rate, bytes, s_sender_context.now_ns(s_sender_context.user));
         if (delay == UINT64_MAX) {
             hop_log(HOP_LOG_ERROR, "xfer: chunk exceeds token-bucket burst");
             return 0;
         }
-        if (!delay) return 1;
-        if (WaitForSingleObject(s_x.stop, 0) == WAIT_OBJECT_0) return 0;
-        rate_sleep_ns(delay);
+        if (!delay) return !s_sender_context.is_stopping(s_sender_context.user);
+        if (s_sender_context.is_stopping(s_sender_context.user)) return 0;
+        if (!s_sender_context.wait_ns(s_sender_context.user, delay)) return 0;
     }
 }
 

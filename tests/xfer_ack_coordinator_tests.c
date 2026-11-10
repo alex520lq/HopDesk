@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include "xfer_ack_coordinator.h"
 
 #include <assert.h>

@@ -173,10 +173,8 @@ static void rx_context_send_abort(void *context, uint32_t batch, uint8_t reason)
 static void rx_context_mark_sender_aborted(void *context, uint32_t batch, uint8_t reason) {
     (void)context;
     EnterCriticalSection(&s_x.lock);
-    if (s_x.cur_batch == batch) {
-        s_x.abort_batch = batch;
-        s_x.abort_reason = reason;
-    }
+    (void)hop_xfer_sender_active_job_record_peer_abort(
+        &s_x.active_job,batch,(uint8_t)reason);
     LeaveCriticalSection(&s_x.lock);
     sender_context_wake_ack();
 }
@@ -723,7 +721,8 @@ static DWORD WINAPI listen_thread(LPVOID arg) {
                     active = pending; pending = INVALID_SOCKET;
                     EnterCriticalSection(&s_x.lock);
                     s_x.session = session;
-                    s_x.client = active; s_x.peer_ready = 1; ++s_x.epoch; s_x.abort_batch = 0;
+                    s_x.client = active; s_x.peer_ready = 1; ++s_x.epoch;
+                    hop_xfer_sender_active_job_reset_peer_abort(&s_x.active_job);
                     LeaveCriticalSection(&s_x.lock);
                 }
             }
@@ -774,7 +773,8 @@ static DWORD WINAPI data_client_thread(LPVOID unused){
         DWORD snd=5000,rcv=200;net_set_keepalive(sock);
         setsockopt(sock,SOL_SOCKET,SO_SNDTIMEO,(char*)&snd,sizeof(snd));setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,(char*)&rcv,sizeof(rcv));
         rx_bind_session(&session);hop_decoder_reset(dec);
-        EnterCriticalSection(&s_x.lock);s_x.session=session;s_x.client=sock;s_x.peer_ready=0;++s_x.epoch;s_x.abort_batch=0;LeaveCriticalSection(&s_x.lock);
+        EnterCriticalSection(&s_x.lock);s_x.session=session;s_x.client=sock;s_x.peer_ready=0;++s_x.epoch;
+        hop_xfer_sender_active_job_reset_peer_abort(&s_x.active_job);LeaveCriticalSection(&s_x.lock);
         uint8_t hello[2+HOP_TOKEN_MAX+HOP_SESSION_BYTES],header[HOP_HEADER_SIZE];
         uint32_t len=hop_xfer_hello_encode(hello,s_x.cfg.token,&session);hop_encode_header(header,HOP_MSG_XFER_HELLO,len);
         if(!send_all(sock,(const char*)header,sizeof(header)) || !send_all(sock,(const char*)hello,(int)len))shutdown(sock,SD_BOTH);

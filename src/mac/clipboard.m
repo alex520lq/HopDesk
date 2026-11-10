@@ -92,19 +92,32 @@ static int image_work_task_finish_attempt(image_work_task_owner *owner, int succ
 static int image_work_task_finish(image_work_task_owner *owner, int success) {
     if (!owner) return 1;
     if (image_work_task_finish_attempt(owner, success)) { free(owner); return 1; }
+    /* Creation can fail on the main queue while the utility worker is also
+     * finishing. Protect the pending-owner list independently of Task Manager. */
+    pthread_mutex_lock(&s_offer_lock);
     owner->next=s_pending_image_tasks;
     s_pending_image_tasks=owner;
+    pthread_mutex_unlock(&s_offer_lock);
     return 0;
 }
 
 static int image_work_retry_pending(void) {
-    while (s_pending_image_tasks) {
+    for (;;) {
+        pthread_mutex_lock(&s_offer_lock);
         image_work_task_owner *owner=s_pending_image_tasks;
-        if (!image_work_task_finish_attempt(owner, 0)) return 0;
-        s_pending_image_tasks=owner->next;
+        if (owner) s_pending_image_tasks=owner->next;
+        pthread_mutex_unlock(&s_offer_lock);
+        if (!owner) return 1;
+        owner->next=NULL;
+        if (!image_work_task_finish_attempt(owner, 0)) {
+            pthread_mutex_lock(&s_offer_lock);
+            owner->next=s_pending_image_tasks;
+            s_pending_image_tasks=owner;
+            pthread_mutex_unlock(&s_offer_lock);
+            return 0;
+        }
         free(owner);
     }
-    return 1;
 }
 
 static image_work_task_owner *image_work_task_create(void) {

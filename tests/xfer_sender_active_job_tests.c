@@ -11,6 +11,8 @@ static void test_begin_and_cancel_target(void) {
     assert(hop_xfer_sender_active_job_cancel_target(&active, 77) == 77);
     assert(hop_xfer_sender_active_job_begin(&active, 12, 9001));
     assert(hop_xfer_sender_active_job_is_active(&active));
+    assert(hop_xfer_sender_active_job_matches(&active,12));
+    assert(!hop_xfer_sender_active_job_matches(&active,13));
     assert(active.batch == 12 && active.task_id == 9001);
     assert(hop_xfer_sender_active_job_cancel_target(&active, 77) == 12);
     assert(!active.abort_batch && !active.abort_reason);

@@ -225,6 +225,17 @@ static int sender_task_cancel_requested(
         : hop_xfer_task_cancel_requested(task->id);
 }
 
+static int sender_job_cancel_requested(
+    const hop_xfer_sender_context *context, uint32_t batch,
+    uint64_t task_id) {
+    if (!context) return 0;
+    int batch_cancelled = context->is_batch_cancelled &&
+        context->is_batch_cancelled(context->user, batch);
+    int task_cancelled = task_id && context->is_cancelled &&
+        context->is_cancelled(context->user, batch, task_id);
+    return batch_cancelled || task_cancelled;
+}
+
 static int sender_task_bind_session(const hop_xfer_sender_context *context,
                                     const hop_xfer_task *task,
                                     const hop_session_id *session) {

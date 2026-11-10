@@ -19,6 +19,7 @@ typedef struct {
     void (*release_resources)(void *context, int discard_staging);
     void (*mark_dead)(void *context, uint32_t batch, uint8_t reason);
     void (*finish_task)(void *context, int cancelled);
+    void (*clear_state)(void *context);
     void (*status_end)(void *context, uint32_t batch, int cancelled);
 } hop_xfer_rx_abort_ops;
 

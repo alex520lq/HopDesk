@@ -1275,7 +1275,8 @@ int main(void){
     assert 'HOP_XFER_SENDER_JOB_COMMIT_UNKNOWN' in lifecycle_core
     assert 'HOP_XFER_SENDER_JOB_COMMIT_REJECTED' in lifecycle_core
     assert 'hop_xfer_sender_terminal_decision' in lifecycle_header
-    assert 'test_initial_and_repeated_retry' in retry_tests
+    assert 'expect(HOP_XFER_SENDER_JOB_COMMIT_REJECTED' in lifecycle_tests
+    assert 'expect(HOP_XFER_SENDER_JOB_COMMIT_UNKNOWN' in lifecycle_tests
     assert 'HOP_XFER_TASK_INTERRUPTED' in lifecycle_tests
     assert 'Cancelled by receiver' in lifecycle_tests
     for platform in ['win','mac']:

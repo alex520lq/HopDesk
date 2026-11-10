@@ -164,7 +164,7 @@ static void *send_thread(void *arg) {
                     hop_log(HOP_LOG_ERROR,"xfer: task=%llu could not return to queued state",
                             (unsigned long long)j->task.id);
                     status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Invalid task retry state");
-                    hop_xfer_task_finish(&j->task,HOP_XFER_TASK_FAILED);
+                    sender_task_finish(&j->task,HOP_XFER_TASK_FAILED);
                     job_free(j);continue;
                 }
                 /* 退回队首，保持 FIFO，next_i 保留 —— 重连后从断点条目继续，不重传已确认的 */
@@ -205,13 +205,13 @@ static void *send_thread(void *arg) {
             sender_task_finish(&j->task,peer_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
             status_end(HOP_XFER_DIR_SEND,j->batch,peer_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED,peer_cancelled?"Cancelled by receiver":"Peer aborted transfer");
         } else if (r == JOB_COMMIT_REJECTED) {
-            hop_xfer_task_finish(&j->task,HOP_XFER_TASK_FAILED);
+            sender_task_finish(&j->task,HOP_XFER_TASK_FAILED);
             status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Receiver rejected completion");
         } else if (r == JOB_COMMIT_UNKNOWN) {
             sender_task_finish(&j->task,HOP_XFER_TASK_INTERRUPTED);
             status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Completion delivery uncertain; peer may have received it");
         } else if (r == JOB_NET_DOWN) {
-            hop_xfer_task_finish(&j->task,HOP_XFER_TASK_FAILED);
+            sender_task_finish(&j->task,HOP_XFER_TASK_FAILED);
             status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Reconnect attempts exhausted");
         }
         job_free(j);

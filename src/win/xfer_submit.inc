@@ -44,15 +44,7 @@ static int xfer_submit_paths_impl(const wchar_t *const *paths, int n, uint32_t r
     }
 
     uint64_t scan_started_ns=rate_now_ns();
-    for (int i = 0; i < n; ++i) {
-        if (!paths[i] || !paths[i][0]) { l.failed = 1; break; }
-        const wchar_t *bn = base_name(paths[i]);
-        char *root = w2u(bn);
-        if (!root) { l.failed = 1; break; }
-        walk_into(&l, paths[i], root);
-        free(root);
-        if (l.failed) break;
-    }
+    hop_xfer_scan_paths(&l, paths, n);
     uint64_t scan_elapsed_ns=rate_now_ns()-scan_started_ns;
 
     if (l.failed || l.n == 0 || hop_xfer_task_cancel_requested(l.task.id)) {

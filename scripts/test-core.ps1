@@ -229,3 +229,14 @@ if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
 if ($LASTEXITCODE -ne 0) { throw "RX image buffer test compilation failed ($LASTEXITCODE)" }
 & $rxImageBuffer
 if ($LASTEXITCODE -ne 0) { throw "RX image buffer tests failed ($LASTEXITCODE)" }
+
+$senderContext = Join-Path $build 'hopdesk-sender-context-tests.exe'
+$senderContextSources = @((Join-Path $root 'tests/xfer_sender_context_tests.c'))
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$senderContext @senderContextSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $senderContext @senderContextSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Sender context contract compilation failed ($LASTEXITCODE)" }
+& $senderContext
+if ($LASTEXITCODE -ne 0) { throw "Sender context contract tests failed ($LASTEXITCODE)" }

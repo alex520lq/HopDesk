@@ -71,7 +71,14 @@ int main(void) {
     assert(pthread_create(&thread, NULL, deliver_later, &args) == 0);
 #endif
     status = -1; expired = 0; rtt = 0;
-    assert(hop_xfer_ack_coordinator_wait_take(c, 10, 1, 1000, &status, &rtt, &expired));
+    int delivered = 0;
+    /* The auto-reset event can still contain a notification for an earlier
+     * ACK already consumed by take(); unrelated wakes must not satisfy this
+     * wait, so the caller retries just as the production Sender does. */
+    for (int attempt = 0; attempt < 4 && !delivered; ++attempt)
+        delivered = hop_xfer_ack_coordinator_wait_take(c, 10, 1, 1000,
+                                                       &status, &rtt, &expired);
+    assert(delivered);
     assert(status == 0 && rtt == 50 && expired == 0);
 #ifdef _WIN32
     assert(WaitForSingleObject(thread, 1000) == WAIT_OBJECT_0);

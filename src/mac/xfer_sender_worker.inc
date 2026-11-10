@@ -216,15 +216,13 @@ static void sender_worker_status_end(void *user,uint32_t batch,int phase,const c
     sender_worker_call *call=(sender_worker_call *)user;
     if(call&&call->job){
         xf_job *job=call->job;
-        if (hop_xfer_task_is_terminal(&job->task)) {
-            sender_status_end(&job->sender_context,batch,phase,detail);
-            job->pending_status_end=0;
-        } else {
-            job->pending_status_end=1;
-            job->pending_status_phase=phase;
-            snprintf(job->pending_status_detail,sizeof(job->pending_status_detail),"%s",
-                     detail?detail:"Transfer terminalization pending");
-        }
+        /* Publish only after job_free confirms Task disposal. A terminal Task
+         * can still retain its Reservation handle while disposal is retried. */
+        (void)batch;
+        job->pending_status_end=1;
+        job->pending_status_phase=phase;
+        snprintf(job->pending_status_detail,sizeof(job->pending_status_detail),"%s",
+                 detail?detail:"Transfer terminalization pending");
     }
 }
 static void sender_worker_dispose_job(void *user) {
@@ -288,8 +286,10 @@ static hop_xfer_sender_worker_action sender_worker_finish_job(
     if (action == HOP_XFER_SENDER_WORKER_INVALID) {
         job->pending_finish_state=HOP_XFER_TASK_FAILED;
         job->pending_finish_valid=1;
-        sender_status_end(&job->sender_context,job->batch,HOP_XFER_FAILED,
-                          "Invalid sender worker context");
+        job->pending_status_end=1;
+        job->pending_status_phase=HOP_XFER_FAILED;
+        snprintf(job->pending_status_detail,sizeof(job->pending_status_detail),"%s",
+                 "Invalid sender worker context");
         (void)job_free(job,XFER_JOB_OWNER_WORKER);
         return HOP_XFER_SENDER_WORKER_FINISHED;
     }
@@ -415,9 +415,12 @@ static void *send_thread(void *arg) {
             if (show_status) sender_status_start_job(&expired->sender_context, expired);
             expired->pending_finish_state=was_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED;
             expired->pending_finish_valid=1;
-            if (show_status) sender_status_end(&expired->sender_context, expired->batch,
-                was_cancelled ? HOP_XFER_CANCELLED : HOP_XFER_FAILED,
-                "Transfer stopped while queued");
+            if (show_status) {
+                expired->pending_status_end=1;
+                expired->pending_status_phase=was_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED;
+                snprintf(expired->pending_status_detail,sizeof(expired->pending_status_detail),"%s",
+                         "Transfer stopped while queued");
+            }
             (void)job_free(expired,XFER_JOB_OWNER_WORKER);
             continue;
         }

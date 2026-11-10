@@ -369,3 +369,13 @@ No physical two-device or weak-network acceptance is claimed by the unit/CI test
 - Added portable tests for active-job start, cancellation target, batch-scoped peer ABORT, exact Task-ID matching, non-cancel ABORT, session reset and invalid identities. Wired them into Windows/macOS Core tests and the Windows HA fixture.
 - **Validation: GitHub Actions Run #1522 (ID `42854615651`, tested commit `7c0c2f48e486b470e7d099b0120d455a310295b5`) passed Windows MSVC, macOS Apple Clang, portable Core tests and the Windows HA fixture.**
 - Next: consolidate the remaining platform worker runtime callbacks and extract the remaining sender protocol compatibility include fragments into independent compile units. Do not move socket handles, native synchronization or UI callbacks into Core.
+
+
+## 30. Shared Sender context callback adapter (2026-11-10)
+
+- Added `src/core/xfer_sender_context_adapter.[ch]` to centralize Task cancellation checks, batch/task cancellation composition, session binding, Task state/completion/finish/disposal forwarding, status telemetry forwarding and formatted logging.
+- Removed the duplicated 120-line context-wrapper implementations from both platform Sender protocol fragments. Protocol and worker code now call the same Core adapter functions; socket, session, lock and status-storage implementations remain platform callbacks.
+- Optional telemetry/log callbacks safely no-op when absent. Task lifecycle callbacks fail closed when required callbacks are absent; a Task handle is considered disposed only after the platform callback clears both `initialized` and `id`.
+- Added portable tests for callback argument forwarding, cancellation composition, exact session bytes, Task lifecycle, status telemetry and optional observability. Wired the adapter into Windows/macOS Core tests, session-transport fixtures and the Windows HA fixture.
+- **Validation: pending exact-head Windows MSVC and macOS Apple Clang Actions run.**
+- Next: split the remaining large Sender protocol adapter fragments into independently compiled platform modules, beginning with transport/ACK and DONE commit adapters. Keep all socket/session state and native synchronization behind explicit context callbacks.

@@ -149,6 +149,11 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
 "$BUILD/hopdesk-sender-active-job-tests"
 
 clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I "$ROOT/src/core" -o "$BUILD/hopdesk-sender-context-adapter-tests" \
+  "$ROOT/tests/xfer_sender_context_adapter_tests.c" "$ROOT/src/core/xfer_sender_context_adapter.c"
+"$BUILD/hopdesk-sender-context-adapter-tests"
+
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-sender-retry-tests" \
   "$ROOT/tests/xfer_sender_retry_tests.c" "$ROOT/src/core/xfer_sender_retry.c"
 "$BUILD/hopdesk-sender-retry-tests"

@@ -411,7 +411,7 @@ hop_xfer_sender_send_result hop_xfer_sender_send_file_entry(
                     local_failure = 1;
                     break;
                 }
-                if (read_result == HOP_XFER_SENDER_READ_EOF || !bytes_read ||
+                if (read_result != HOP_XFER_SENDER_READ_OK || !bytes_read ||
                     bytes_read > request) {
                     if (ops->status_stage_time)
                         ops->status_stage_time(ops->user, batch,

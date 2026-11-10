@@ -114,6 +114,7 @@ static struct {
     uint32_t         chunk;
     hop_xfer_rate_limiter rate; /* sender thread only */
     hop_mac_sender_threads sender_threads;
+    int sync_initialized;
 
     /* ---- 取消 ----
      * cur_batch 由发送线程在开始一批时设置；cancel_batch 由主线程设置。
@@ -585,13 +586,10 @@ void xfer_init(const hop_config *cfg) {
     pthread_mutex_init(&s_x.slock, NULL);
     pthread_mutex_init(&s_x.qlock, NULL);
     pthread_cond_init(&s_x.qcond, NULL);
+    s_x.sync_initialized = 1;
     s_ack = hop_xfer_ack_coordinator_create();
     if (!s_ack) {
         hop_log(HOP_LOG_ERROR, "xfer: ACK coordinator initialization failed");
-        pthread_cond_destroy(&s_x.qcond);
-        pthread_mutex_destroy(&s_x.qlock);
-        pthread_mutex_destroy(&s_x.slock);
-        hop_xfer_task_history_store_close();
         return;
     }
 
@@ -600,10 +598,6 @@ void xfer_init(const hop_config *cfg) {
         hop_log(HOP_LOG_ERROR, "xfer: writer thread start failed");
         hop_xfer_ack_coordinator_destroy(s_ack);
         s_ack = NULL;
-        hop_xfer_task_history_store_close();
-        pthread_cond_destroy(&s_x.qcond);
-        pthread_mutex_destroy(&s_x.qlock);
-        pthread_mutex_destroy(&s_x.slock);
         return;
     }
 
@@ -614,18 +608,11 @@ void xfer_init(const hop_config *cfg) {
         pthread_mutex_lock(&s_x.qlock);
         pthread_cond_broadcast(&s_x.qcond);
         pthread_mutex_unlock(&s_x.qlock);
-        hop_xfer_ack_coordinator_wake(s_ack);
+        if (s_ack) hop_xfer_ack_coordinator_wake(s_ack);
         if (!hop_mac_sender_threads_join(&s_x.sender_threads)) {
             hop_log(HOP_LOG_ERROR, "xfer: partially started threads did not join; preserve shared state");
             return;
         }
-        wq_stop();
-        hop_xfer_ack_coordinator_destroy(s_ack);
-        s_ack = NULL;
-        hop_xfer_task_history_store_close();
-        pthread_cond_destroy(&s_x.qcond);
-        pthread_mutex_destroy(&s_x.qlock);
-        pthread_mutex_destroy(&s_x.slock);
         return;
     }
 
@@ -633,6 +620,7 @@ void xfer_init(const hop_config *cfg) {
 }
 
 void xfer_shutdown(void) {
+    if (!s_x.sync_initialized) return;
     s_x.stop = 1;
 
     pthread_mutex_lock(&s_x.slock);
@@ -654,12 +642,13 @@ void xfer_shutdown(void) {
 
     rx_reset(&s_rx);      /* 先把写盘队列排空并关掉文件，再停写线程 */
     wq_stop();
-    hop_xfer_ack_coordinator_destroy(s_ack);
+    if (s_ack) hop_xfer_ack_coordinator_destroy(s_ack);
     s_ack = NULL;
     hop_xfer_task_history_store_close();
     pthread_cond_destroy(&s_x.qcond);
     pthread_mutex_destroy(&s_x.qlock);
     pthread_mutex_destroy(&s_x.slock);
+    s_x.sync_initialized = 0;
 }
 
 int xfer_connected(void) {

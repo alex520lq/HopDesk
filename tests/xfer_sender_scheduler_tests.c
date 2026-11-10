@@ -159,6 +159,20 @@ static void test_offline_wait_refreshes_peer_before_selection(void) {
     assert(!f.locked && hop_xfer_sender_queue_empty(&queue));
 }
 
+static void test_batch_cancel_expires_offline(void) {
+    hop_xfer_sender_queue queue = {0};
+    test_job a = {.batch = 10, .retry_at = 500};
+    fake_adapter f = {.peer_ready = 0, .now_ms = 1, .cancel_batch = 10};
+    hop_xfer_sender_scheduler_ops ops = make_ops(&f);
+    void *selected = NULL;
+    push(&queue, &a);
+    assert(hop_xfer_sender_scheduler_wait_next(
+        &queue, &g_queue_ops, &ops, 200, &selected) ==
+        HOP_XFER_SENDER_SCHEDULER_EXPIRED);
+    assert(selected == &a && f.claimed_expired && !f.waits && !f.locked);
+    assert(hop_xfer_sender_queue_empty(&queue));
+}
+
 static void test_deadline_expires_while_offline(void) {
     hop_xfer_sender_queue queue = {0};
     test_job a = {.batch = 5, .retry_at = 0, .give_up_at = 100};
@@ -217,6 +231,17 @@ static void test_wait_failure_releases_native_lock(void) {
     assert(queue.head == &a);
 }
 
+static void test_begin_pass_failure_does_not_leave_lock(void) {
+    hop_xfer_sender_queue queue = {0};
+    fake_adapter f = {.fail_begin = 1};
+    hop_xfer_sender_scheduler_ops ops = make_ops(&f);
+    void *selected = NULL;
+    assert(hop_xfer_sender_scheduler_wait_next(
+        &queue, &g_queue_ops, &ops, 200, &selected) ==
+        HOP_XFER_SENDER_SCHEDULER_ERROR);
+    assert(!selected && !f.locked && !f.waits);
+}
+
 static void test_invalid_contract_does_not_lock(void) {
     hop_xfer_sender_queue queue = {0};
     fake_adapter f = {0};
@@ -234,9 +259,11 @@ int main(void) {
     test_cancelled_middle_job_is_selected_offline();
     test_offline_wait_refreshes_peer_before_selection();
     test_deadline_expires_while_offline();
+    test_batch_cancel_expires_offline();
     test_fifo_head_is_not_overtaken();
     test_stop_after_wait_leaves_queue_owned_by_shutdown();
     test_wait_failure_releases_native_lock();
+    test_begin_pass_failure_does_not_leave_lock();
     test_invalid_contract_does_not_lock();
     puts("PASS: Sender scheduler wait, FIFO, cancellation, expiry and ownership");
     return 0;

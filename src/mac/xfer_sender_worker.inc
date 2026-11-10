@@ -29,7 +29,7 @@ static const hop_xfer_sender_queue_ops s_sender_queue_ops = {
     sender_queue_batch, sender_queue_retry_at, sender_queue_give_up_at
 };
 
-/* Caller holds s_x.lock. Copy the platform links into the shared Core view. */
+/* Caller holds s_x.qlock. Copy the platform links into the shared Core view. */
 static xf_job *queue_take_cancelled(void) {
     hop_xfer_sender_queue queue = {s_x.q_head, s_x.q_tail};
     xf_job *job = (xf_job *)hop_xfer_sender_queue_take_cancelled(

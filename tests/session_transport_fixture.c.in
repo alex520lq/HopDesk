@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <limits.h>
 #include "xfer_tracking.h"
 #include "xfer_task.h"
 #include "xfer_sender_context.h"

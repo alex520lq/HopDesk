@@ -770,7 +770,7 @@ int main(void){
         assert 'static void' in worker and 'send_thread' in worker
         assert 'queue_take_cancelled' in worker and 'queue_unlink' in worker
         protocol=(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
-        assert 'send_file_entry' in protocol and 'send_done_result' in protocol and 'run_job' in protocol
+        assert 'sender_engine_send_entry' in protocol and 'send_done_result' in protocol and 'run_job' in protocol
         assert 'ack_wait' in protocol and 'rate_feedback' in protocol
         assert 'xfer_submit_paths_impl' in submission and 'xfer_submit_image_impl' in submission
 
@@ -917,9 +917,10 @@ int main(void){
         receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         protocol_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
-        entry=extract(sender,'send_file_entry')
-        assert 'tx + CHUNK_HDR' in entry
-        assert 'malloc(blen)' not in entry and 'free(bp)' not in entry
+        entry=extract(sender,'sender_engine_send_entry')
+        assert 'hop_xfer_sender_send_file_entry' in entry
+        assert 'call->tx + CHUNK_HDR' in entry
+        assert 'malloc(blen)' not in entry
         job=extract(sender,'run_job')
         assert 'hop_xfer_sender_run_files' in job
         assert 'window_item' not in job
@@ -943,6 +944,10 @@ int main(void){
         assert 'sender_engine_send_image_chunk' in sender
         assert 'hop_xfer_sender_run_image' in engine
         assert 'hop_crc32(0, pixels + offset, length)' in engine
+        assert 'hop_xfer_sender_send_file_entry' in engine
+        assert 'ops->ack_register' in engine and 'ops->ack_mark_sent' in engine
+        assert 'ops->read_file' in engine and 'ops->send_chunk' in engine
+        assert 'hop_xfer_file_crc_step' in engine
 
         begin=extract(receiver,'hop_xfer_rx_handle_file_begin')
         end=extract(receiver,'hop_xfer_rx_handle_file_end')

@@ -1533,6 +1533,7 @@ typedef struct xfer_job {
     unsigned batch;
     struct xfer_job *next;
 } xfer_job;
+static int job_claim_for_release(xfer_job *j,xfer_job_owner expected_owner);
 #if defined(_WIN32)
 #include <windows.h>
 typedef struct { CRITICAL_SECTION lock; xfer_job *shutdown_jobs; } owner_state;

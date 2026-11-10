@@ -575,7 +575,7 @@ int main(void){
     (void)&clipboard_complete_remote_paste;
     xf_job j={0};j.batch=10;j.is_image=1;j.ok=1;assert(send_done(0,&j));
     assert(hop_get_be32(wire+4)==1 && hop_get_be32(wire+8)==1);
-    uint8_t pixel[4]={0};
+    uint8_t *pixel=(uint8_t*)malloc(4);assert(pixel);memset(pixel,0,4);
     assert(hop_xfer_task_init(&s_rx.task,0,0,j.batch));
     assert(hop_xfer_task_reserve_job(&s_rx.task));
     assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));

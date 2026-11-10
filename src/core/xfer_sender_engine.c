@@ -196,7 +196,7 @@ int hop_xfer_sender_run_files(const hop_xfer_sender_engine_ops *ops,
                              ops->entry_path(ops->user, item->entry) ?
                                  ops->entry_path(ops->user, item->entry) : "(unknown)",
                              item->index);
-                    sender_file_log(ops, 1, message);
+                    sender_log(ops, 1, message);
                     sender_unregister(ops, batch);
                     if (ops->request_reconnect) ops->request_reconnect(ops->user);
                     return HOP_XFER_SENDER_JOB_NET_DOWN;

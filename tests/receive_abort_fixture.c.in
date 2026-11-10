@@ -15,6 +15,7 @@
 #include "xfer_rx_image_state.h"
 #include "xfer_rx_image_buffer.h"
 #include "xfer_sender_queue.h"
+#include "xfer_sender_active_job.h"
 #include "xfer_rx_services.h"
 #include <assert.h>
 #include <stdlib.h>
@@ -43,7 +44,7 @@ uint64_t hop_wallclock_ms(void){return 1700000000000ull+fake_ms;}
 #define SetEvent(p) ((void)(p))
 typedef unsigned long DWORD;
 typedef int SOCKET;
-static struct {int lock,slock,qlock,client,sock,cancel_rx,peer_ready;uint32_t cur_batch,abort_batch;uint8_t abort_reason;hop_xfer_sender_queue queue;hop_session_id session;} s_x;
+static struct {int lock,slock,qlock,client,sock,cancel_rx,peer_ready;hop_xfer_sender_active_job active_job;hop_xfer_sender_queue queue;hop_session_id session;} s_x;
 static int s_status_lock;
 static uint64_t s_status_revision;
 static hop_xfer_tracking s_send_status,s_receive_status;
@@ -305,12 +306,12 @@ int main(void){
     /* Peer-triggered cleanup must not echo another ABORT or duplicate history. */
     before=saved;image_begin(201,1);seed_resources();int notices=notified;
     /* Both directions use batch 201: a sender-target ABORT must not touch RX. */
-    s_x.cur_batch=201; s_x.abort_batch=0;
+    assert(hop_xfer_sender_active_job_begin(&s_x.active_job,201,20101));
     peer_abort_target(201,HOP_ABORT_CANCEL,HOP_ABORT_TO_SENDER);
-    assert(s_x.abort_batch==201 && s_x.abort_reason==HOP_ABORT_CANCEL && s_rx.batch_state.active && s_rx.batch_state.batch==201 && saved==before);
-    s_x.abort_batch=0;
+    assert(s_x.active_job.abort_batch==201 && s_x.active_job.abort_reason==HOP_ABORT_CANCEL && s_rx.batch_state.active && s_rx.batch_state.batch==201 && saved==before);
+    hop_xfer_sender_active_job_reset_peer_abort(&s_x.active_job);
     peer_abort(201,HOP_ABORT_CRC);
-    assert(s_x.abort_batch==0);assert_terminal(201,HOP_ABORT_CRC,before);assert(notified==notices);
+    assert(s_x.active_job.abort_batch==0);assert_terminal(201,HOP_ABORT_CRC,before);assert(notified==notices);
     peer_abort(201,HOP_ABORT_CRC);assert(saved==before+1);
     /* An accepted per-ID cancellation wins against a concurrent DONE. */
     before=saved; image_begin(202,1); seed_resources();
@@ -377,7 +378,8 @@ int main(void){
     image_begin(205,1);assert(!s_rx.batch_state.active); /* no reuse within same session */
     hop_session_id new_session={{3}};rx_bind_session(&new_session);
     late_done(205);assert(done_acks==old_acks+2); /* old receipt never crosses session */
-    s_x.cur_batch=0; s_send_status.status.active=0;assert(!xfer_busy()); /* sender retry window is no longer active */
+    assert(hop_xfer_sender_active_job_clear_if_matches(&s_x.active_job,201,20101));
+    s_send_status.status.active=0;assert(!xfer_busy()); /* sender retry window is no longer active */
     puts("PASS: production receive ABORT lifecycle, early bounds errors, busy reset, tombstones and once-only history");
     return 0;
 }

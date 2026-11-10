@@ -30,10 +30,10 @@ static int sender_context_is_stopping(void *user) {
 static int sender_context_is_cancelled(void *user, uint32_t batch,
                                       uint64_t task_id) {
     (void)user;
-    pthread_mutex_lock(&s_x.qlock);
-    int cancelled = s_x.cancel_batch == batch;
-    pthread_mutex_unlock(&s_x.qlock);
-    return cancelled || (task_id && hop_xfer_task_cancel_requested(task_id));
+    (void)batch;
+    /* Task Manager owns cancellation state. Do not take the queue lock here:
+     * queue_take_cancelled calls this while already holding that lock. */
+    return task_id && hop_xfer_task_cancel_requested(task_id);
 }
 
 static int sender_context_peer_aborted(void *user, uint32_t batch) {
@@ -296,11 +296,12 @@ static void ack_deliver(uint32_t batch, uint32_t id, int status) {
 /* 用户取消了这个批次？每块之后查一次，锁开销可以忽略。 */
 static int cancel_requested(uint32_t batch) {
     pthread_mutex_lock(&s_x.qlock);
+    int cancelled = s_x.cancel_batch == batch;
     hop_xfer_task_id id = s_x.cur_batch == batch ? s_x.cur_task_id : 0;
     pthread_mutex_unlock(&s_x.qlock);
-    return s_sender_context.is_cancelled
+    return cancelled || (s_sender_context.is_cancelled
         ? s_sender_context.is_cancelled(s_sender_context.user, batch, id)
-        : (id && hop_xfer_task_cancel_requested(id));
+        : (id && hop_xfer_task_cancel_requested(id)));
 }
 
 /* 对端中止过这个批次？统一经 Sender Context 查询。 */

@@ -302,7 +302,9 @@ $senderWorkerFlowSources = @(
     (Join-Path $root 'tests/xfer_sender_worker_flow_tests.c'),
     (Join-Path $root 'src/core/xfer_sender_worker_flow.c'),
     (Join-Path $root 'src/core/xfer_sender_retry.c'),
-    (Join-Path $root 'src/core/xfer_sender_lifecycle.c')
+    (Join-Path $root 'src/core/xfer_sender_lifecycle.c'),
+    (Join-Path $root 'src/core/xfer_task.c'),
+    (Join-Path $root 'src/core/xfer_budget.c')
 )
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
     & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$senderWorkerFlow @senderWorkerFlowSources

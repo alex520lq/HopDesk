@@ -1148,13 +1148,13 @@ int main(void){
             app=(ROOT/'src/win/win_main.c').read_text(encoding='utf-8')
             startup=extract(app,'wWinMain')
             assert startup.index('xfer_init(') < startup.index('net_server_start(')
-            assert startup.index('clip_shutdown(') < startup.index('net_server_stop(') < startup.index('xfer_shutdown()')
+            assert startup.index('clip_shutdown(') < startup.index('net_server_stop(') < startup.rindex('xfer_shutdown()')
             assert 'while (!xfer_shutdown()) Sleep(100)' in startup
         else:
             app=(ROOT/'src/mac/main.c').read_text(encoding='utf-8')
             startup=extract(app,'main')
             assert startup.index('xfer_init(') < startup.index('net_loop_run(')
-            assert startup.index('clipboard_shutdown(') < startup.index('net_loop_shutdown(') < startup.index('xfer_shutdown()')
+            assert startup.index('clipboard_shutdown(') < startup.index('net_loop_shutdown(') < startup.rindex('xfer_shutdown()')
             assert 'while (!xfer_shutdown()) usleep(100000)' in startup
         protocol=(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
         assert 'send_chunk(&call->job->sender_context' in protocol

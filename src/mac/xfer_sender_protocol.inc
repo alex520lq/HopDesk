@@ -341,124 +341,6 @@ static int ack_wait(uint32_t batch, uint32_t id, uint64_t deadline_ns, uint64_t 
     }
 }
 
-/* 发送一个条目。成功写出 FILE_END 后返回 XFER_ACK_PENDING；
- * run_job 在最多 4 个已发送文件组成的窗口中统一收取 ACK。 */
-static int send_file_entry(int fd, uint8_t *tx, uint32_t batch,
-                           uint32_t id, const xf_entry *e, uint64_t *ack_deadline_ns) {
-    if (!ack_deadline_ns || !tx) return XFER_LOCAL_IO;
-    *ack_deadline_ns = 0;
-    uint32_t nlen = (uint32_t)strlen(e->name);
-    uint32_t plen = (uint32_t)strlen(e->rel);
-    uint32_t blen = 4 + 4 + 8 + 8 + 1 + 2 + nlen + 2 + plen;
-
-    /* FILE_BEGIN is small and send_small is synchronous. Reuse the sender's
-     * fixed TX buffer instead of malloc/free once per file (notably 10k-file
-     * batches); send_chunk overwrites this region only after FILE_BEGIN ends. */
-    if (blen > s_x.chunk) return XFER_LOCAL_IO;
-    if (!ack_register(batch,id)) return XFER_LOCAL_IO;
-    uint8_t *bp = tx + CHUNK_HDR;
-    uint32_t o = 0;
-    hop_put_be32(bp + o, batch); o += 4;
-    hop_put_be32(bp + o, id);    o += 4;
-    hop_put_be64(bp + o, e->size); o += 8;
-    hop_put_be64(bp + o, e->mtime); o += 8;
-    bp[o++] = (uint8_t)e->flags;
-    hop_put_be16(bp + o, (uint16_t)nlen); o += 2;
-    memcpy(bp + o, e->name, nlen); o += nlen;
-    hop_put_be16(bp + o, (uint16_t)plen); o += 2;
-    memcpy(bp + o, e->rel, plen); o += plen;
-
-    int ok = send_small(fd, HOP_MSG_FILE_BEGIN, bp, blen, batch);
-    /* TX buffer remains owned by the sender thread. */
-    if (!ok) { ack_unregister(batch,id); return XFER_SEND_DEAD; }
-
-    uint32_t fcrc = 0;
-    uint8_t end_status = HOP_FILE_OK;
-    int local_fail = 0;
-    if (!(e->flags & HOP_FILE_FLAG_DIR)) {
-        int open_guard = hop_watchdog_begin("file open", HOP_IO_DEADLINE_MS);
-        int f = open(e->full, O_RDONLY);
-        hop_watchdog_end(open_guard);
-        if (f < 0) {
-            hop_log(HOP_LOG_WARN, "xfer: open failed, %s (%s)", e->rel, strerror(errno));
-            end_status = HOP_FILE_IO_ERROR;
-            local_fail = 1;
-        } else {
-            uint64_t off = 0;
-            while (off < e->size) {
-                uint64_t remaining = e->size - off;
-                size_t request = (size_t)(remaining < s_x.chunk ? remaining : s_x.chunk);
-                ssize_t got;
-                uint64_t read_started_ns=rate_now_ns();
-                do {
-                    int read_guard = hop_watchdog_begin("file chunk read", HOP_IO_DEADLINE_MS);
-                    got = read(f, tx + CHUNK_HDR, request);
-                    hop_watchdog_end(read_guard);
-                } while (got < 0 && errno == EINTR);
-                uint64_t read_elapsed_ns=rate_now_ns()-read_started_ns;
-                if (got < 0) {
-                    status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_READ,read_elapsed_ns);
-                    hop_log(HOP_LOG_WARN, "xfer: read failed, %s (%s)", e->rel, strerror(errno));
-                    end_status = HOP_FILE_IO_ERROR; local_fail = 1; break;
-                }
-                if (got == 0) {
-                    status_stage_time(HOP_XFER_DIR_SEND,batch,HOP_XFER_TIME_READ,read_elapsed_ns);
-                    hop_log(HOP_LOG_WARN, "xfer: unexpected EOF, %s (%llu/%llu bytes)",
-                            e->rel, (unsigned long long)off, (unsigned long long)e->size);
-                    end_status = HOP_FILE_IO_ERROR; local_fail = 1; break;
-                }
-                uint64_t crc_started_ns=rate_now_ns();
-                uint32_t ccrc = hop_crc32(0, tx + CHUNK_HDR, (size_t)got);
-                uint64_t crc_elapsed_ns=rate_now_ns()-crc_started_ns;
-                if (!send_chunk(fd,tx,batch,id,off,tx+CHUNK_HDR,(uint32_t)got,ccrc,
-                                read_elapsed_ns,crc_elapsed_ns)) {
-                    close(f); ack_unregister(batch,id); return XFER_SEND_DEAD;
-                }
-                fcrc = hop_xfer_file_crc_step(fcrc, off, ccrc);
-                off += (uint64_t)got;
-                yield_cpu();
-                if (cancel_requested(batch)) {
-                    close(f); ack_unregister(batch,id); return XFER_CANCELLED;
-                }
-            }
-            if (!local_fail && off == e->size) {
-                uint8_t extra = 0;
-                ssize_t probe;
-                do {
-                    int read_guard = hop_watchdog_begin("file size probe", HOP_IO_DEADLINE_MS);
-                    probe = read(f, &extra, 1);
-                    hop_watchdog_end(read_guard);
-                } while (probe < 0 && errno == EINTR);
-                if (probe != 0) {
-                    hop_log(HOP_LOG_WARN, "xfer: source changed while queued, %s", e->rel);
-                    end_status = HOP_FILE_IO_ERROR; local_fail = 1;
-                }
-            }
-            close(f);
-        }
-    }
-
-    uint8_t endp[9];
-    hop_put_be32(endp, id);
-    endp[4] = end_status;
-    hop_put_be32(endp + 5, fcrc);
-    /* Mark before FILE_END so an immediate peer ACK cannot race registration. */
-    if (!ack_mark_sent(batch,id)) { ack_unregister(batch,id); return XFER_LOCAL_IO; }
-    if (!send_small(fd, HOP_MSG_FILE_END, endp, 9, batch)) {
-        ack_unregister(batch,id); return XFER_SEND_DEAD;
-    }
-    (void)local_fail;
-    /* The ACK slot was armed before FILE_END to avoid a fast-ACK race. Set its
-     * independent deadline now that the complete frame has been written. */
-    uint64_t deadline_ns = rate_now_ns() +
-        (uint64_t)HOP_XFER_ACK_TIMEOUT_MS * 1000000ull;
-    *ack_deadline_ns = deadline_ns;
-    if (!ack_set_deadline(batch,id,deadline_ns)) {
-        ack_unregister(batch,id); return XFER_LOCAL_IO;
-    }
-    return XFER_ACK_PENDING;
-}
-
 /* run_job 的结局 */
 #define JOB_DONE        0   /* 全部条目都有结论了（可能部分失败），该送 DONE */
 #define JOB_NET_DOWN    1   /* 链路断了，整批退回队列等重连 */
@@ -557,6 +439,93 @@ typedef struct {
     xf_job *job;
 } sender_file_engine_call;
 
+static void sender_engine_log(void *user, int level, const char *message);
+
+static int sender_engine_file_open(void *user, const void *platform_entry,
+                                   intptr_t *file_handle, uint32_t *system_error) {
+    (void)user;
+    const xf_entry *entry = (const xf_entry *)platform_entry;
+    int guard = hop_watchdog_begin("file open", HOP_IO_DEADLINE_MS);
+    int fd = open(entry->full, O_RDONLY);
+    uint32_t error = fd < 0 ? (uint32_t)errno : 0;
+    hop_watchdog_end(guard);
+    if (system_error) *system_error = error;
+    if (fd < 0) return 0;
+    *file_handle = (intptr_t)fd;
+    return 1;
+}
+
+static hop_xfer_sender_read_result sender_engine_file_read(
+    void *user, intptr_t file_handle, uint8_t *buffer, uint32_t request,
+    uint32_t *bytes_read, uint32_t *system_error) {
+    (void)user;
+    ssize_t got;
+    uint32_t error = 0;
+    do {
+        int guard = hop_watchdog_begin("file chunk read", HOP_IO_DEADLINE_MS);
+        got = read((int)file_handle, buffer, request);
+        error = got < 0 ? (uint32_t)errno : 0;
+        hop_watchdog_end(guard);
+    } while (got < 0 && error == EINTR);
+    if (system_error) *system_error = error;
+    if (got < 0) return HOP_XFER_SENDER_READ_ERROR;
+    if (bytes_read) *bytes_read = (uint32_t)got;
+    return got == 0 ? HOP_XFER_SENDER_READ_EOF : HOP_XFER_SENDER_READ_OK;
+}
+
+static void sender_engine_file_close(void *user, intptr_t file_handle) {
+    (void)user;
+    close((int)file_handle);
+}
+
+static int sender_engine_file_send_message(void *user, uint8_t type,
+                                           const uint8_t *payload,
+                                           uint32_t length, uint32_t batch) {
+    sender_file_engine_call *call = (sender_file_engine_call *)user;
+    return send_small(call->fd, type, payload, length, batch);
+}
+
+static int sender_engine_file_send_chunk(void *user, uint32_t batch,
+                                         uint32_t id, uint64_t offset,
+                                         const uint8_t *data, uint32_t length,
+                                         uint32_t crc, uint64_t read_ns,
+                                         uint64_t crc_ns) {
+    sender_file_engine_call *call = (sender_file_engine_call *)user;
+    return send_chunk(call->fd, call->tx, batch, id, offset, data, length,
+                      crc, read_ns, crc_ns);
+}
+
+static int sender_engine_file_ack_register(void *user, uint32_t batch, uint32_t id) {
+    (void)user;
+    return ack_register(batch, id);
+}
+static int sender_engine_file_ack_mark_sent(void *user, uint32_t batch, uint32_t id) {
+    (void)user;
+    return ack_mark_sent(batch, id);
+}
+static int sender_engine_file_ack_set_deadline(void *user, uint32_t batch,
+                                                uint32_t id, uint64_t deadline_ns) {
+    (void)user;
+    return ack_set_deadline(batch, id, deadline_ns);
+}
+static void sender_engine_file_ack_unregister(void *user, uint32_t batch, uint32_t id) {
+    (void)user;
+    ack_unregister(batch, id);
+}
+static uint64_t sender_engine_file_now_ns(void *user) {
+    (void)user;
+    return rate_now_ns();
+}
+static void sender_engine_file_status_stage_time(void *user, uint32_t batch,
+                                                  int stage, uint64_t elapsed_ns) {
+    (void)user;
+    status_stage_time(HOP_XFER_DIR_SEND, batch, stage, elapsed_ns);
+}
+static void sender_engine_file_yield(void *user) {
+    (void)user;
+    yield_cpu();
+}
+
 static const void *sender_engine_entry_at(void *user, int index) {
     sender_file_engine_call *call = (sender_file_engine_call *)user;
     return index >= 0 && index < call->job->n ? &call->job->e[index] : NULL;
@@ -581,13 +550,34 @@ static hop_xfer_sender_send_result sender_engine_send_entry(
     void *user, uint32_t batch, uint32_t id, const void *entry,
     uint64_t *ack_deadline_ns) {
     sender_file_engine_call *call = (sender_file_engine_call *)user;
-    int result = send_file_entry(call->fd, call->tx, batch, id,
-                                 (const xf_entry *)entry, ack_deadline_ns);
-    if (result == XFER_ACK_PENDING) return HOP_XFER_SENDER_SEND_PENDING;
-    if (result == XFER_SEND_DEAD) return HOP_XFER_SENDER_SEND_DEAD;
-    if (result == XFER_PEER_ABORT) return HOP_XFER_SENDER_SEND_PEER_ABORT;
-    if (result == XFER_CANCELLED) return HOP_XFER_SENDER_SEND_CANCELLED;
-    return HOP_XFER_SENDER_SEND_RETRYABLE;
+    const xf_entry *native = (const xf_entry *)entry;
+    hop_xfer_sender_file_entry view = {
+        entry, native->name, native->rel, native->size,
+        native->mtime, (uint32_t)native->flags
+    };
+    hop_xfer_sender_file_ops ops;
+    memset(&ops, 0, sizeof(ops));
+    ops.user = call;
+    ops.cancel_requested = sender_engine_cancel_requested;
+    ops.peer_aborted = sender_engine_peer_aborted;
+    ops.open_file = sender_engine_file_open;
+    ops.read_file = sender_engine_file_read;
+    ops.close_file = sender_engine_file_close;
+    ops.send_message = sender_engine_file_send_message;
+    ops.send_chunk = sender_engine_file_send_chunk;
+    ops.ack_register = sender_engine_file_ack_register;
+    ops.ack_mark_sent = sender_engine_file_ack_mark_sent;
+    ops.ack_set_deadline = sender_engine_file_ack_set_deadline;
+    ops.ack_unregister = sender_engine_file_ack_unregister;
+    ops.now_ns = sender_engine_file_now_ns;
+    ops.status_stage_time = sender_engine_file_status_stage_time;
+    ops.yield_cpu = sender_engine_file_yield;
+    ops.log_message = sender_engine_log;
+    return hop_xfer_sender_send_file_entry(
+        &ops, batch, id, &view, call->tx + CHUNK_HDR, call->tx + CHUNK_HDR,
+        s_x.chunk, (uint64_t)HOP_XFER_ACK_TIMEOUT_MS * 1000000ull,
+        HOP_FILE_FLAG_DIR, HOP_FILE_OK, HOP_FILE_IO_ERROR,
+        HOP_MSG_FILE_BEGIN, HOP_MSG_FILE_END, ack_deadline_ns);
 }
 
 static hop_xfer_sender_ack_result sender_engine_wait_ack(

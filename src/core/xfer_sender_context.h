@@ -83,7 +83,7 @@ static inline int hop_xfer_sender_context_clock_valid(const hop_xfer_sender_cont
 static inline int hop_xfer_sender_context_valid(const hop_xfer_sender_context *ctx) {
     return ctx && ctx->now_ns && ctx->wait_ns && ctx->is_stopping &&
            ctx->session_current && ctx->write_frame && ctx->is_cancelled &&
-           ctx->peer_aborted && ctx->task_bind_session &&
+           ctx->is_batch_cancelled && ctx->peer_aborted && ctx->task_bind_session &&
            ctx->task_set_state && ctx->task_begin_completion &&
            ctx->task_finish && ctx->task_dispose;
 }

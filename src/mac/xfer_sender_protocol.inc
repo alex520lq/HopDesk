@@ -127,6 +127,45 @@ static void sender_context_init(void) {
     s_sender_context.log_message = sender_context_log_message;
 }
 
+static int sender_task_cancel_requested(uint32_t batch,
+                                         const hop_xfer_task *task) {
+    if (!task || !task->id) return 0;
+    return s_sender_context.is_cancelled
+        ? s_sender_context.is_cancelled(s_sender_context.user, batch, task->id)
+        : hop_xfer_task_cancel_requested(task->id);
+}
+
+static int sender_task_bind_session(const hop_xfer_task *task,
+                                    const hop_session_id *session) {
+    return task && session && s_sender_context.task_bind_session
+        ? s_sender_context.task_bind_session(s_sender_context.user, task,
+                                              session->bytes) : 0;
+}
+
+static int sender_task_set_state(hop_xfer_task *task, hop_xfer_task_state state) {
+    return s_sender_context.task_set_state
+        ? s_sender_context.task_set_state(s_sender_context.user, task, state) : 0;
+}
+
+static int sender_task_begin_completion(const hop_xfer_task *task) {
+    return s_sender_context.task_begin_completion
+        ? s_sender_context.task_begin_completion(s_sender_context.user, task) : 0;
+}
+
+static void sender_task_finish(hop_xfer_task *task, hop_xfer_task_state state) {
+    if (s_sender_context.task_finish)
+        s_sender_context.task_finish(s_sender_context.user, task, state);
+    else
+        (void)hop_xfer_task_finish(task, state);
+}
+
+static void sender_task_dispose(hop_xfer_task *task) {
+    if (s_sender_context.task_dispose)
+        s_sender_context.task_dispose(s_sender_context.user, task);
+    else
+        hop_xfer_task_dispose(task);
+}
+
 static int rate_wait_for_chunk(uint32_t bytes) {
     if (!hop_xfer_sender_context_valid(&s_sender_context)) return 0;
     for (;;) {

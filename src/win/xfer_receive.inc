@@ -210,10 +210,13 @@ static void rx_close_file(xfer_rx_context *rx) {
 }
 
 static void rx_reset(xfer_rx_context *rx) {
-    if(rx->batch_state.active && rx->services.status_end) rx->services.status_end(rx->services.context,rx->batch_state.batch,HOP_XFER_FAILED,"Receive interrupted");
-    /* 先把队列排空并关掉文件，再清状态 —— 否则写线程可能还在用旧路径 */
-    rx_close_file(rx);
-    hop_xfer_rx_reset_batch_state(rx);
+    if (!rx) return;
+    if (rx->batch_state.active)
+        hop_xfer_rx_terminate_batch(rx, rx->batch_state.batch, HOP_ABORT_DISK, 0);
+    else {
+        rx_close_file(rx);
+        hop_xfer_rx_reset_batch_state(rx);
+    }
 }
 
 /* Receiver-owned lifecycle boundary. Only a data reconnect in the SAME control

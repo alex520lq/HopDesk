@@ -41,8 +41,8 @@ static int job_free(xf_job *j, xfer_job_owner expected_owner) {
      * here as a final safety net; Task Manager arbitrates the terminal edge and
      * returns the Reservation exactly once. Keep the Job alive if dispose cannot
      * prove that the manager released its handle. */
-    if (j->task.initialized) {
-        if (!hop_xfer_task_is_terminal(&j->task)) {
+    if (j->task.initialized || j->task.id) {
+        if (j->task.initialized && !hop_xfer_task_is_terminal(&j->task)) {
             sender_task_finish(&j->sender_context, &j->task, HOP_XFER_TASK_INTERRUPTED);
             if (hop_xfer_task_is_terminal(&j->task))
                 sender_status_end(&j->sender_context,j->batch,HOP_XFER_FAILED,

@@ -260,16 +260,40 @@ static void *net_thread(void *arg) {
 }
 
 void net_loop_run(void) {
+    s_stop = 0;
     s_dec = hop_decoder_new(NULL, on_message);
     if (!s_dec) { hop_log(HOP_LOG_ERROR, "net: decoder allocation failed"); return; }
-    pthread_t sender;
-    if(pthread_create(&sender,NULL,control_sender,NULL)){hop_log(HOP_LOG_ERROR,"control sender creation failed");return;}
-    pthread_detach(sender);
-    pthread_t t;
-    if (pthread_create(&t, NULL, net_thread, NULL)) {
+    if (pthread_create(&s_control_sender_thread, NULL, control_sender, NULL)) {
+        hop_log(HOP_LOG_ERROR, "control sender creation failed");
         hop_decoder_free(s_dec); s_dec = NULL;
-        hop_log(HOP_LOG_ERROR, "net: thread creation failed");
         return;
     }
-    pthread_detach(t);
+    s_control_sender_started = 1;
+    if (pthread_create(&s_net_thread, NULL, net_thread, NULL)) {
+        hop_log(HOP_LOG_ERROR, "net: thread creation failed");
+        net_request_stop();
+        pthread_join(s_control_sender_thread, NULL);
+        s_control_sender_started = 0;
+        hop_decoder_free(s_dec); s_dec = NULL;
+        return;
+    }
+    s_net_thread_started = 1;
+}
+
+/* The control reader can call xfer_kick while handling disconnect/reconnect.
+ * Join both control workers before xfer_shutdown destroys the transfer locks. */
+void net_loop_shutdown(void) {
+    net_request_stop();
+    if (s_net_thread_started) {
+        pthread_join(s_net_thread, NULL);
+        s_net_thread_started = 0;
+    }
+    if (s_control_sender_started) {
+        pthread_join(s_control_sender_thread, NULL);
+        s_control_sender_started = 0;
+    }
+    if (s_dec) {
+        hop_decoder_free(s_dec);
+        s_dec = NULL;
+    }
 }

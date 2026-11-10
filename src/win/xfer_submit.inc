@@ -1,3 +1,19 @@
+static int scanner_reserve_entry(void *context, uint64_t bytes) {
+    return hop_xfer_task_reserve_entry((hop_xfer_task *)context, bytes);
+}
+static int scanner_is_cancelled(void *context) {
+    hop_xfer_task *task = (hop_xfer_task *)context;
+    return task && hop_xfer_task_cancel_requested(task->id);
+}
+static int scanner_watchdog_begin(void *context, const char *operation, unsigned timeout_ms) {
+    (void)context;
+    return hop_watchdog_begin(operation, timeout_ms);
+}
+static void scanner_watchdog_end(void *context, int ticket) {
+    (void)context;
+    hop_watchdog_end(ticket);
+}
+
 static int submit(xfer_job *j) {
     int ok = 0, duplicate = 0;
     EnterCriticalSection(&s_x.lock);
@@ -27,42 +43,52 @@ static int xfer_submit_paths_impl(const wchar_t *const *paths, int n, uint32_t r
     if (!batch) { do { batch = InterlockedIncrement((LONG *)&s_x.batch_seq); } while (!batch); }
 
     elist l;
+    hop_xfer_task task;
     memset(&l, 0, sizeof(l));
-    if (!hop_xfer_task_init_classified(&l.task,offer_id,requested_batch,batch,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES)) return 0;
-    if (!hop_xfer_task_reserve_job(&l.task)) {
-        uint64_t task_id=l.task.id;
-        hop_xfer_task_finish(&l.task, HOP_XFER_TASK_FAILED);
+    memset(&task, 0, sizeof(task));
+    if (!hop_xfer_task_init_classified(&task,offer_id,requested_batch,batch,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES)) return 0;
+    if (!hop_xfer_task_reserve_job(&task)) {
+        uint64_t task_id=task.id;
+        hop_xfer_task_finish(&task, HOP_XFER_TASK_FAILED);
         elist_free(&l);
+        hop_xfer_task_dispose(&task);
         hop_log(HOP_LOG_WARN, "xfer: global job budget exhausted (task=%llu)",
                 (unsigned long long)task_id);
         return 0;
     }
-    if (!hop_xfer_task_set_state(&l.task, HOP_XFER_TASK_SCANNING)) {
-        hop_xfer_task_finish(&l.task, HOP_XFER_TASK_FAILED);
+    if (!hop_xfer_task_set_state(&task, HOP_XFER_TASK_SCANNING)) {
+        hop_xfer_task_finish(&task, HOP_XFER_TASK_FAILED);
         elist_free(&l);
+        hop_xfer_task_dispose(&task);
         return 0;
     }
 
+    hop_xfer_scan_services scan_services = {
+        &task, scanner_reserve_entry, scanner_is_cancelled,
+        scanner_watchdog_begin, scanner_watchdog_end
+    };
     uint64_t scan_started_ns=rate_now_ns();
-    hop_xfer_scan_paths(&l, paths, n);
+    hop_xfer_scan_paths(&l, paths, n, &scan_services);
     uint64_t scan_elapsed_ns=rate_now_ns()-scan_started_ns;
 
-    if (l.failed || l.n == 0 || hop_xfer_task_cancel_requested(l.task.id)) {
+    if (l.failed || l.n == 0 || hop_xfer_task_cancel_requested(task.id)) {
         if (l.budget_rejected)
             hop_log(HOP_LOG_WARN, "xfer: global entries/pending-bytes budget exceeded; batch rejected (task=%llu)",
-                    (unsigned long long)l.task.id);
+                    (unsigned long long)task.id);
         else
             hop_log(HOP_LOG_WARN, "xfer: source tree rejected; no partial transfer queued (task=%llu)",
-                    (unsigned long long)l.task.id);
-        hop_xfer_task_finish(&l.task, hop_xfer_task_cancel_requested(l.task.id) ? HOP_XFER_TASK_CANCELLED : HOP_XFER_TASK_FAILED);
+                    (unsigned long long)task.id);
+        hop_xfer_task_finish(&task, hop_xfer_task_cancel_requested(task.id) ? HOP_XFER_TASK_CANCELLED : HOP_XFER_TASK_FAILED);
         elist_free(&l);
+        hop_xfer_task_dispose(&task);
         return 0;
     }
 
     xfer_job *job = (xfer_job *)calloc(1, sizeof(*job));
     if (!job) {
-        hop_xfer_task_finish(&l.task, HOP_XFER_TASK_FAILED);
+        hop_xfer_task_finish(&task, HOP_XFER_TASK_FAILED);
         elist_free(&l);
+        hop_xfer_task_dispose(&task);
         return 0;
     }
 
@@ -70,11 +96,12 @@ static int xfer_submit_paths_impl(const wchar_t *const *paths, int n, uint32_t r
     job->scan_ns = scan_elapsed_ns;
     job->n = l.n;
     job->e = l.v;
-    if (!hop_xfer_task_set_state(&l.task, HOP_XFER_TASK_QUEUED) ||
-        !hop_xfer_task_move(&job->task, &l.task)) {
+    if (!hop_xfer_task_set_state(&task, HOP_XFER_TASK_QUEUED) ||
+        !hop_xfer_task_move(&job->task, &task)) {
         free(job);
-        hop_xfer_task_finish(&l.task, HOP_XFER_TASK_FAILED);
+        hop_xfer_task_finish(&task, HOP_XFER_TASK_FAILED);
         elist_free(&l);
+        hop_xfer_task_dispose(&task);
         return 0;
     }
     l.v = NULL; l.n = l.cap = 0;

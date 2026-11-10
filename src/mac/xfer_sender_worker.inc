@@ -49,6 +49,9 @@ static int job_release_task_resources(xf_job *j) {
         free(j->pixels);
         j->pixels = NULL;
         j->image_payload_released = 1;
+    } else if (j->is_image && !j->image_payload_released) {
+        hop_log(HOP_LOG_ERROR, "xfer: image Job lost its pixel owner before Reservation release (batch=%u)", j->batch);
+        return 0;
     }
     if (j->task.initialized) {
         uint64_t bytes = hop_xfer_task_image_temp_bytes(&j->task);

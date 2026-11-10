@@ -333,7 +333,7 @@ static struct {
     HANDLE           rate_timer; /* high-resolution pacing wait; sender thread only */
     HANDLE           th_listen;
     HANDLE           th_send;
-    xfer_job        *q_head, *q_tail;
+    hop_xfer_sender_queue queue;
     uint32_t         batch_seq;
     uint32_t         chunk;     /* 实际分块字节数 */
     hop_xfer_rate_limiter rate; /* sender thread only */
@@ -353,7 +353,7 @@ void xfer_get_status_pair(hop_xfer_status_pair *out) {
     if (!out) return;
     uint32_t queued=0;
     EnterCriticalSection(&s_x.lock);
-    for (xfer_job *j=s_x.q_head; j; j=j->next) queued++;
+    queued = hop_xfer_sender_queue_count(&s_x.queue);
     LeaveCriticalSection(&s_x.lock);
     AcquireSRWLockShared(&s_status_lock);
     hop_xfer_tracking_snapshot_pair(&s_send_status,&s_receive_status,queued,out);
@@ -575,13 +575,13 @@ void xfer_shutdown(void) {
         shutdown(s_x.client, SD_BOTH);
 
     }
-    xfer_job *j = s_x.q_head;
+    xfer_job *j = (xfer_job *)hop_xfer_sender_queue_detach_all(&s_x.queue);
     while (j) {
         xfer_job *nx = j->next;
+        j->next = NULL;
         job_free(j);
         j = nx;
     }
-    s_x.q_head = s_x.q_tail = NULL;
     LeaveCriticalSection(&s_x.lock);
 
     /* 线程没退出就不能拆临界区 / 队列 —— 那是释放后使用。
@@ -626,7 +626,7 @@ int xfer_connected(void) {
 int xfer_busy(void) {
     int b;
     EnterCriticalSection(&s_x.lock);
-    b = (s_x.cur_batch != 0 || s_x.q_head != NULL);
+    b = (s_x.cur_batch != 0 || !hop_xfer_sender_queue_empty(&s_x.queue));
     LeaveCriticalSection(&s_x.lock);
     AcquireSRWLockExclusive(&s_status_lock);
     /* Include a sender between dequeue/completion and retry requeue. */
@@ -644,8 +644,8 @@ void xfer_cancel(void) {
     EnterCriticalSection(&s_x.lock);
     if (s_x.cur_batch) {
         s_x.cancel_batch = s_x.cur_batch;
-    } else if (s_x.q_head) {
-        s_x.cancel_batch = s_x.q_head->batch;
+    } else if (!hop_xfer_sender_queue_empty(&s_x.queue)) {
+        s_x.cancel_batch = ((xfer_job *)s_x.queue.head)->batch;
     }
     s_x.cancel_rx = 1;
     LeaveCriticalSection(&s_x.lock);

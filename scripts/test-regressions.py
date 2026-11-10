@@ -1400,7 +1400,7 @@ int main(void){
         assert 'hop_xfer_sender_get_terminal_decision' not in worker
 
     win_main=(ROOT/'src/win/win_main.c').read_text(encoding='utf-8')
-    assert win_main.index('clip_shutdown()') < win_main.index('xfer_shutdown()')
+    assert win_main.index('clip_shutdown(g_app.hwnd)') < win_main.index('xfer_shutdown()')
 
     # macOS control workers can call xfer_kick during disconnect handling;
     # they must be joined before xfer_shutdown destroys transfer synchronization.

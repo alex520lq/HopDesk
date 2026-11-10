@@ -42,8 +42,12 @@ static int job_free(xfer_job *j, xfer_job_owner expected_owner) {
      * returns the Reservation exactly once. Do not free Job memory if dispose
      * cannot prove that the manager released its handle. */
     if (j->task.initialized) {
-        if (!hop_xfer_task_is_terminal(&j->task))
+        if (!hop_xfer_task_is_terminal(&j->task)) {
             sender_task_finish(&j->sender_context, &j->task, HOP_XFER_TASK_INTERRUPTED);
+            if (hop_xfer_task_is_terminal(&j->task))
+                sender_status_end(&j->sender_context,j->batch,HOP_XFER_FAILED,
+                                  "Transfer interrupted during shutdown");
+        }
         if (!sender_task_dispose(&j->sender_context, &j->task) ||
             j->task.initialized || j->task.id) {
             if (expected_owner != XFER_JOB_OWNER_SHUTDOWN) {
@@ -225,9 +229,16 @@ static int sender_shutdown_drain_jobs(void) {
     while (s_x.shutdown_jobs) {
         xfer_job *job=s_x.shutdown_jobs;
         xfer_job *next=job->next;
-        sender_task_finish(&job->sender_context,&job->task,HOP_XFER_TASK_INTERRUPTED);
-        sender_status_end(&job->sender_context,job->batch,HOP_XFER_FAILED,
-                          "Transfer interrupted during shutdown");
+        if (!hop_xfer_task_is_terminal(&job->task)) {
+            int was_cancelled=sender_job_cancel_requested(&job->sender_context,
+                                                          job->batch,job->task.id);
+            sender_task_finish(&job->sender_context,&job->task,
+                was_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_INTERRUPTED);
+            if (hop_xfer_task_is_terminal(&job->task))
+                sender_status_end(&job->sender_context,job->batch,
+                    was_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED,
+                    was_cancelled?"Cancelled":"Transfer interrupted during shutdown");
+        }
         int released=job_free(job,XFER_JOB_OWNER_SHUTDOWN);
         if (released!=1) return 0; /* retain the list head and its Reservation */
         s_x.shutdown_jobs=next;

@@ -766,3 +766,14 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 确认共享 `xfer_ack_window.[ch]` 只负责纯状态；锁、事件/条件变量、ACK delivery、cancel/shutdown wake-up 和初始化/销毁仍耦合在平台 `s_ack` 全局对象及 Receiver 调用点。
 - 新增 `docs/SENDER_REFACTOR_CONTRACT.md`，记录真实依赖、平台差异、目标模块职责、ACK race/生命周期不变量和验证门槛。
 - **本提交只建立审计与接口边界，不声称 Sender 已拆分，也没有改变传输行为。** 下一代码切片应把 ACK coordinator 的存储同步、通知与生命周期作为整体迁移；必须同时修改 sender、receiver ACK delivery、cancel、shutdown 和 init/failure cleanup 路径。
+
+
+### 2026-11-10：Sender ACK Coordinator 双平台抽取（第十二切片，CI 待验）
+
+- 新增 Windows/macOS opaque `hop_xfer_ack_coordinator` 平台模块，内部持有平台锁、Event/Condition Variable 和共享 Core ACK Window；调用方只持有 opaque handle。
+- Sender 的 ACK register、mark-sent、deadline、deliver、take、unregister、batch cleanup 全部改走模块 API。
+- Receiver 的 ACK delivery、ABORT 通知，以及 cancel/shutdown 唤醒路径改走 coordinator API；生产代码不再直接访问 `s_ack.lock`、`s_ack.ev/cond` 或 `s_ack.window`。
+- `wait_take` 保留 no-lost-wakeup 语义：Windows 使用 auto-reset Event，macOS 在同一 mutex 临界区内完成检查与 condition wait。deadline 仍以 ACK 实际接收时间判定，未改变协议字段、窗口容量或重试 checkpoint 规则。
+- 新增共享测试 `tests/xfer_ack_coordinator_tests.c`，覆盖 ACK 早于 deadline 设置、迟到 ACK、重复/过期 ACK、批次释放和窗口容量；已加入 Windows/macOS core test 脚本。
+- **CI：Run #1189（ID `42764329083`）在提交时为 pending；此切片尚不能标记构建/测试通过。** 需要审查最新文档提交触发的后续 run，并逐项确认 Windows/macOS job。
+- 下一步：修正 CI 暴露的问题后再收口此切片；随后抽离 Scanner，不并行启动 Sender Core 大规模迁移。

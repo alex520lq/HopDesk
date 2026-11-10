@@ -607,7 +607,7 @@ int main(void){
     /* Both platform callbacks are linked in each host compiler's fixture. */
     (void)&clip_complete_remote_paste;
     (void)&clipboard_complete_remote_paste;
-    xf_job j={0};j.batch=10;j.is_image=1;j.ok=1;assert(send_done(0,&j));
+    assert(send_done(0,10,1,1));
     assert(hop_get_be32(wire+4)==1 && hop_get_be32(wire+8)==1);
     uint8_t *pixel=(uint8_t*)malloc(4);assert(pixel);memset(pixel,0,4);
     assert(hop_xfer_task_init(&s_rx.task,0,0,j.batch));
@@ -1046,14 +1046,18 @@ int main(void){
             queue=extract(sender,'send_thread')
             assert 'c != INVALID_SOCKET && cur->retry_at <= now' in queue
 
-    # Exercise the exact completion-ACK loop from both platform senders with
-    # deterministic clocks, dropped ACK, reconnect, session replacement, and abort.
+    # DONE/DONE_ACK retry policy is now shared Core; platform files only adapt
+    # current connection/session, wire send, ACK coordinator and wait callbacks.
+    commit_core=(ROOT/'src/core/xfer_sender_engine.c').read_text(encoding='utf-8')
+    assert 'hop_xfer_sender_run_commit' in commit_core
+    assert 'HOP_XFER_SENDER_COMMIT_ACK_TIMEOUT' in commit_core
+    assert 'HOP_XFER_SENDER_COMMIT_ACK_SEND_DEAD' in commit_core
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
-        source=(ROOT/'tests/done_ack_wait_fixture.c.in').read_text(encoding='utf-8')
-        source=source.replace('@FUNCTION@',extract(sender,'send_done_result'))
-        if platform=='win':source='#define FIXTURE_WINDOWS 1\n'+source
-        run('done_ack_'+platform,source,['src/core/protocol.c','src/core/xfer_tracking.c'])
+        commit=extract(sender,'send_done_result')
+        assert 'hop_xfer_sender_run_commit' in commit
+        assert 'sender_commit_current_connection' in sender
+        assert 'sender_commit_wait_ack' in sender
         thread=extract(sender,'send_thread')
         assert 'send_done_result(' in thread and 'HOP_XFER_TASK_INTERRUPTED' in thread
         assert 'Completion delivery uncertain' in thread and 'completion_path' in thread

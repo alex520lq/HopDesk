@@ -14,6 +14,7 @@
 #include "xfer_rx_file_state.h"
 #include "xfer_rx_image_state.h"
 #include "xfer_rx_image_buffer.h"
+#include "xfer_sender_queue.h"
 #include "xfer_rx_services.h"
 #include <assert.h>
 #include <stdlib.h>
@@ -42,7 +43,7 @@ uint64_t hop_wallclock_ms(void){return 1700000000000ull+fake_ms;}
 #define SetEvent(p) ((void)(p))
 typedef unsigned long DWORD;
 typedef int SOCKET;
-static struct {int lock,slock,qlock,client,sock,cancel_rx,peer_ready;uint32_t cur_batch,abort_batch;uint8_t abort_reason;void*q_head;hop_session_id session;} s_x;
+static struct {int lock,slock,qlock,client,sock,cancel_rx,peer_ready;uint32_t cur_batch,abort_batch;uint8_t abort_reason;hop_xfer_sender_queue queue;hop_session_id session;} s_x;
 static int s_status_lock;
 static uint64_t s_status_revision;
 static hop_xfer_tracking s_send_status,s_receive_status;

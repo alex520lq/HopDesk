@@ -1339,9 +1339,12 @@ int main(void){
     assert 'test_initial_and_repeated_retry' in retry_tests
     assert 'test_attempt_and_deadline_exhaustion' in retry_tests
     assert 'test_saturating_deadlines_and_invalid_input' in retry_tests
+    worker_flow_core=(ROOT/'src/core/xfer_sender_worker_flow.c').read_text(encoding='utf-8')
+    assert 'hop_xfer_sender_plan_retry' in worker_flow_core
     for platform in ['win','mac']:
         worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
-        assert 'hop_xfer_sender_plan_retry' in worker
+        assert 'hop_xfer_sender_worker_finish_job' in worker
+        assert 'hop_xfer_sender_plan_retry' not in worker
 
     lifecycle_core=(ROOT/'src/core/xfer_sender_lifecycle.c').read_text(encoding='utf-8')
     lifecycle_header=(ROOT/'src/core/xfer_sender_lifecycle.h').read_text(encoding='utf-8')
@@ -1354,9 +1357,11 @@ int main(void){
     assert 'expect(HOP_XFER_SENDER_JOB_COMMIT_UNKNOWN' in lifecycle_tests
     assert 'HOP_XFER_TASK_INTERRUPTED' in lifecycle_tests
     assert 'Cancelled by receiver' in lifecycle_tests
+    assert 'hop_xfer_sender_get_terminal_decision' in worker_flow_core
     for platform in ['win','mac']:
         worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
-        assert 'hop_xfer_sender_get_terminal_decision' in worker
+        assert 'hop_xfer_sender_worker_finish_job' in worker
+        assert 'hop_xfer_sender_get_terminal_decision' not in worker
 
     # hop_xfer_tracking embeds 8192 file records with 1024-byte paths
     # (~8 MiB). Keep these fixtures off Windows' default 1 MiB thread stack.

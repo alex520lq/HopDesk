@@ -237,3 +237,12 @@ No physical two-device or weak-network acceptance is claimed by the unit/CI test
 - Validation status: standalone retry-policy C tests passed locally; lifecycle tests and the combined queue/retry/lifecycle app integration still require the current dual-platform Actions run. No full CI pass is claimed.
 - Remaining Worker Context work: move completion-gate ownership, terminal finish/dispose and status publication behind explicit per-operation callbacks; then split native thread start/stop/join adapters from worker orchestration.
 
+## 17. Sender platform runtime context adoption (2026-11-10)
+
+- Windows and macOS now bind the Sender Context user pointer to an explicit platform runtime adapter containing references to the native session/socket state, state/queue lock, frame-write lock, stop signal, rate timer where applicable, and peer-abort batch.
+- Session validation, session snapshot, complete-frame serialization, stop observation, peer-ABORT observation and interruptible pacing waits now read platform state through that supplied context rather than capturing s_x/s_txlock directly inside those callbacks.
+- The context is initialized after the transfer state is zeroed and before worker startup; it stores stable addresses of the platform-owned fields, and callbacks are only invoked after the native locks/events are initialized.
+- Updated the production session-transport fixture to inject a fake platform context. Regression checks assert that these context callbacks do not directly reference s_x and that sender_context_init binds the user pointer.
+- This is an incremental dependency-inversion slice, not the end of Sender Context migration: Task Manager, status and logging adapters still route through platform singleton functions, while some higher-level protocol orchestration still reads s_x directly. The next slice must pass the context explicitly through worker/job operations and move Task finish/dispose/status effects behind per-operation callbacks.
+- Validation status: full Windows/macOS CI for the combined queue, retry, terminal lifecycle and runtime-context changes remains pending. No physical two-device or long-duration test is claimed.
+

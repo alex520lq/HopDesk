@@ -1069,7 +1069,7 @@ int main(void){
         assert 'sender_commit_current_connection' in sender
         assert 'sender_commit_wait_ack' in sender
         thread=extract(sender,'send_thread')
-        assert 'send_done_result(' in thread and 'HOP_XFER_TASK_INTERRUPTED' in thread
+        assert 'send_done_result(' in thread and 'hop_xfer_sender_get_terminal_decision' in thread
         assert 'Completion delivery uncertain' in thread and 'completion_path' in thread
 
     # Test exact Windows task-list selection and action logic with UI doubles.

@@ -124,7 +124,7 @@ static void walk_into(elist *list, const wchar_t *full, const char *relative, co
     entry.mtime = ft_to_unix(&attributes.ftLastWriteTime);
     if (!entry.full || !entry.name || !entry.rel) {
         free(entry.full); free(entry.name); free(entry.rel);
-        list->failed = 1;
+        scan_fail(list, HOP_XFER_SCAN_OUT_OF_MEMORY);
         return;
     }
 
@@ -139,7 +139,7 @@ static void walk_into(elist *list, const wchar_t *full, const char *relative, co
 
     entry.size = 0;
     entry.flags = HOP_FILE_FLAG_DIR;
-    if (!elist_push(list, &entry)) {
+    if (!elist_push(list, &entry, services)) {
         free(entry.full); free(entry.name); free(entry.rel);
         return;
     }
@@ -192,7 +192,8 @@ static void walk_into(elist *list, const wchar_t *full, const char *relative, co
         if (list->failed) break;
     } while (guarded_find_next(handle, &data, services));
 
-    if (!list->failed && GetLastError() != ERROR_NO_MORE_FILES) list->failed = 1;
+    if (!list->failed && GetLastError() != ERROR_NO_MORE_FILES)
+        scan_fail(list, HOP_XFER_SCAN_ENUMERATION_FAILED);
     FindClose(handle);
 }
 

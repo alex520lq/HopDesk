@@ -43,6 +43,8 @@ typedef struct {
     uint64_t (*now_ms)(void *user);
     unsigned (*retry_delay_ms)(void *user, uint32_t next_attempt);
     int (*is_cancelled)(void *user, uint32_t batch, uint64_t task_id);
+    /* True once platform shutdown has closed admission and interrupted IO. */
+    int (*is_stopping)(void *user);
     int (*begin_completion)(void *user, uint64_t task_id);
     int (*set_queued)(void *user, uint64_t task_id);
     void (*store_retry_state)(void *user,

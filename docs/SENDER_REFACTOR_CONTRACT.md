@@ -115,5 +115,6 @@ Implemented on both platforms:
 Validation status:
 
 - Source-level migration is complete on Windows/macOS; this is not yet a claim of successful compilation or runtime validation.
-- GitHub Actions Run #1189 (ID `42764329083`) was pending when recorded. Update this section only after inspecting both platform jobs and the complete required workflow result.
+- **GitHub Actions Run #1195 (ID `42765170981`, tested head `83b86e8727ffe36f6ed456a67bcacf78ce216ca0`) passed on both platforms.** Windows MSVC: app build, portable Core/regression (including ACK coordinator), transfer protocol, TCP loopback, native control/data role + reconnect, updater syntax and packaging all passed. macOS Apple Clang: app build, portable Core/regression (including ACK coordinator), transfer protocol, TCP loopback, control/listener loopback and packaging all passed. Release publication was skipped as expected for a PR.
+- CI caught two test integration issues before the passing run: the Windows HA fixture needed to link the new platform adapter; the cross-thread test needed to tolerate an unrelated/stale auto-reset event notification, matching the production Sender retry loop. Both were corrected and covered by Run #1195.
 - Physical two-device tests remain outside CI and are not claimed.

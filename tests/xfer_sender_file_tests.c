@@ -186,7 +186,7 @@ static hop_xfer_sender_send_result run(fake_file *f, uint32_t flags,
         f, "a.txt", "dir/a.txt", size, 1234, flags
     };
     return hop_xfer_sender_send_file_entry(
-        &ops, 77, 3, &entry, begin, (uint32_t)sizeof(begin),
+        &ops, 77, 3, &entry, begin, 256u,
         chunk, 8, 5000000ull,
         HOP_FILE_FLAG_DIR, HOP_FILE_OK, HOP_FILE_IO_ERROR,
         HOP_MSG_FILE_BEGIN, HOP_MSG_FILE_END, deadline);

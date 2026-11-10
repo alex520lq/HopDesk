@@ -80,6 +80,15 @@ int hop_xfer_rx_fs_remove_file(const wchar_t *path, unsigned long *error_code) {
 int hop_xfer_rx_fs_remove_tree(const wchar_t *path, const wchar_t *required_path_fragment) {
     if (!path || !*path || !required_path_fragment ||
         !wcsstr(path, required_path_fragment)) return -2;
+
+    /* An already absent staging directory is a successful cleanup. */
+    DWORD attributes = GetFileAttributesW(path);
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        DWORD error = GetLastError();
+        return (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) ? 0 : -1;
+    }
+    if (!(attributes & FILE_ATTRIBUTE_DIRECTORY)) return -1;
+
     wchar_t buffer[MAX_PATH + 2];
     size_t length = wcslen(path);
     if (length + 2 > MAX_PATH + 2) return -1;
@@ -90,5 +99,14 @@ int hop_xfer_rx_fs_remove_tree(const wchar_t *path, const wchar_t *required_path
     operation.wFunc = FO_DELETE;
     operation.pFrom = buffer;
     operation.fFlags = FOF_SILENT | FOF_NOCONFIRMATION | FOF_NOERRORUI;
-    return SHFileOperationW(&operation) == 0 ? 0 : -1;
+
+    int operation_result = SHFileOperationW(&operation);
+    /* SHFileOperationW may return zero even when a silent operation aborted. */
+    if (operation_result != 0 || operation.fAnyOperationsAborted) return -1;
+
+    /* Do not report success until the staging root is actually gone. */
+    attributes = GetFileAttributesW(path);
+    if (attributes != INVALID_FILE_ATTRIBUTES) return -1;
+    DWORD error = GetLastError();
+    return (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) ? 0 : -1;
 }

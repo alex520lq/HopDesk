@@ -892,7 +892,7 @@ int main(void){
         fixture=(ROOT/'tests/session_transport_fixture.c.in').read_text(encoding='utf-8')
         context_protocol=(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
         assert 's_sender_context.user = &s_sender_platform' in context_protocol
-        for callback in ['sender_context_is_stopping','sender_context_peer_aborted','sender_context_wait_ns']:
+        for callback in ['sender_context_is_stopping','sender_context_is_batch_cancelled','sender_context_peer_aborted','sender_context_wait_ns']:
             assert 's_x.' not in extract(context_protocol,callback)
         for callback in ['sender_context_session_current','sender_context_write_frame','sender_context_snapshot_session']:
             assert 's_x.' not in extract(sender,callback)

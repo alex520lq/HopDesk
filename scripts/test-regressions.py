@@ -1144,6 +1144,13 @@ int main(void){
         receive=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
         assert 'static int wq_stop(void)' in receive and 'return 0;' in extract(receive,'wq_stop')
         assert 'int xfer_shutdown(void)' in lifecycle
+        clipboard=(ROOT/('src/win/clipboard.c' if platform=='win' else 'src/mac/clipboard.m')).read_text(encoding='utf-8')
+        clip_shutdown=extract(clipboard,'clip_shutdown' if platform=='win' else 'clipboard_shutdown')
+        assert ('int clip_shutdown(' if platform=='win' else 'int clipboard_shutdown(') in clipboard
+        assert 'image_work_retry_pending()' in clip_shutdown
+        assert 'image_work_task_finish_attempt' in clipboard
+        assert ('clip_image_task_owner' if platform=='win' else 'image_work_task_owner') in clipboard
+        assert 'if (!task->initialized && !task->id) return 1;' in clipboard
         if platform=='win':
             app=(ROOT/'src/win/win_main.c').read_text(encoding='utf-8')
             startup=extract(app,'wWinMain')

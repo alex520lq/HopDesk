@@ -64,6 +64,8 @@ typedef struct xfer_job {
     int         is_image;
     hop_xfer_task task;
     hop_xfer_sender_context sender_context;
+    intptr_t    commit_socket;
+    uint64_t    commit_epoch;
     int         n;              /* JOB_FILES 的条目数 */
     xfer_entry *e;
     uint8_t    *pixels;         /* JOB_IMAGE */
@@ -396,6 +398,7 @@ typedef struct {
     HANDLE *stop;
     HANDLE *rate_timer;
     uint32_t *abort_batch;
+    uint32_t *cancel_batch;
 } sender_platform_context;
 
 static sender_platform_context s_sender_platform;

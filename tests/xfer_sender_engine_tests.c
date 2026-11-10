@@ -14,6 +14,7 @@ typedef struct {
     int send_dead_index;
     int send_dead_once;
     int ack_result[ENTRY_COUNT];
+    int ack_first_result[ENTRY_COUNT];
     int cancel;
     int abort;
     int wait_ok;
@@ -66,6 +67,8 @@ static hop_xfer_sender_ack_result wait_ack(void *user, uint32_t batch,
     assert(deadline == 1000000ull + id);
     ++f->ack_calls[id - 1];
     if (rtt) *rtt = 250;
+    if (f->ack_calls[id - 1] == 1 && f->ack_first_result[id - 1] >= 0)
+        return (hop_xfer_sender_ack_result)f->ack_first_result[id - 1];
     return (hop_xfer_sender_ack_result)f->ack_result[id - 1];
 }
 static void unregister_batch(void *user, uint32_t batch) {
@@ -113,6 +116,7 @@ static void setup(fake_sender *f) {
         };
         f->entries[i].path = paths[i];
         f->ack_result[i] = HOP_XFER_SENDER_ACK_OK;
+        f->ack_first_result[i] = -1;
     }
 }
 static hop_xfer_sender_engine_ops make_ops(fake_sender *f) {
@@ -188,14 +192,15 @@ static void test_timeout_reconnects_without_checkpoint_advance(void) {
 
 static void test_ack_retry_and_cancel_abort(void) {
     fake_sender f; setup(&f);
-    f.ack_result[0] = HOP_XFER_SENDER_ACK_OTHER_REMOTE;
+    f.ack_first_result[0] = HOP_XFER_SENDER_ACK_OTHER_REMOTE;
     hop_xfer_sender_engine_ops ops = make_ops(&f);
     int next = 0, ok = 0;
     /* The first remote failure is retried; the second attempt is ACK_OK. */
-    f.ack_result[0] = HOP_XFER_SENDER_ACK_OK;
     assert(hop_xfer_sender_run_files(&ops, 11, 1, &next, &ok, 3) ==
            HOP_XFER_SENDER_JOB_DONE);
     assert(next == 1 && ok == 1);
+    assert(f.send_calls[0] == 2 && f.ack_calls[0] == 2);
+    assert(f.wait_count == 1 && f.waits[0] == 10);
 
     setup(&f); f.cancel = 1; ops = make_ops(&f); next = 0; ok = 0;
     assert(hop_xfer_sender_run_files(&ops, 12, 1, &next, &ok, 3) ==

@@ -103,7 +103,7 @@ static struct {
     pthread_mutex_t  qlock;          /* 保护作业队列 */
     pthread_cond_t   qcond;
     _Atomic int      stop;
-    xf_job          *q_head, *q_tail;
+    hop_xfer_sender_queue queue;
     uint32_t         batch_seq;
     uint32_t         chunk;
     hop_xfer_rate_limiter rate; /* sender thread only */
@@ -372,7 +372,7 @@ void xfer_get_status_pair(hop_xfer_status_pair *out) {
     if (!out) return;
     uint32_t queued=0;
     pthread_mutex_lock(&s_x.qlock);
-    for (xf_job *j=s_x.q_head; j; j=j->next) queued++;
+    queued = hop_xfer_sender_queue_count(&s_x.queue);
     pthread_mutex_unlock(&s_x.qlock);
     pthread_mutex_lock(&s_status_lock);
     hop_xfer_tracking_snapshot_pair(&s_send_status,&s_receive_status,queued,out);
@@ -610,7 +610,7 @@ int xfer_connected(void) {
 int xfer_busy(void) {
     int b;
     pthread_mutex_lock(&s_x.qlock);
-    b = (s_x.cur_batch != 0 || s_x.q_head != NULL);
+    b = (s_x.cur_batch != 0 || !hop_xfer_sender_queue_empty(&s_x.queue));
     pthread_mutex_unlock(&s_x.qlock);
     pthread_mutex_lock(&s_status_lock);
     /* Include a sender between dequeue/completion and retry requeue. */
@@ -627,8 +627,8 @@ void xfer_cancel(void) {
     pthread_mutex_lock(&s_x.qlock);
     if (s_x.cur_batch) {
         s_x.cancel_batch = s_x.cur_batch;
-    } else if (s_x.q_head) {
-        s_x.cancel_batch = s_x.q_head->batch;
+    } else if (!hop_xfer_sender_queue_empty(&s_x.queue)) {
+        s_x.cancel_batch = ((xf_job *)s_x.queue.head)->batch;
     }
     __sync_lock_test_and_set(&s_x.cancel_rx, 1);
     pthread_cond_signal(&s_x.qcond);      /* 唤醒发送线程，别让它等满 200 ms */

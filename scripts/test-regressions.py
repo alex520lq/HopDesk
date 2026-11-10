@@ -1123,6 +1123,7 @@ int main(void){
         assert 'XFER_JOB_OWNER_SHUTDOWN' in defer_job and 'XFER_JOB_OWNER_RELEASED' in job_free
         assert 'hop_xfer_task_is_terminal' in job_free and 'sender_task_dispose' in job_free
         assert release_job_resources.index('free(j->pixels)') < release_job_resources.index('hop_xfer_task_release_image_temp')
+        assert 'image_payload_released' in release_job_resources and 'lost its pixel owner' in release_job_resources
         assert job_free.index('job_release_task_resources(j)') < job_free.index('sender_task_finish')
         assert finish_callback.index('job_release_task_resources(job)') < finish_callback.index('sender_task_finish')
         assert 'pending_finish_state' in job_free and 'pending_status_end' in worker

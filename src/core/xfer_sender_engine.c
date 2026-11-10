@@ -585,3 +585,98 @@ int hop_xfer_sender_run_image(const hop_xfer_sender_image_ops *ops,
     ops->status_file_phase(ops->user, batch, 0, HOP_XFER_FILE_COMPLETED, 1);
     return HOP_XFER_SENDER_JOB_DONE;
 }
+
+
+hop_xfer_sender_commit_result hop_xfer_sender_run_commit(
+    const hop_xfer_sender_commit_ops *ops, const uint8_t *session,
+    uint32_t batch, int is_image, int entry_count, int ok_count,
+    uint32_t done_ack_slot, uint32_t ack_timeout_ms,
+    uint32_t reconnect_budget_ms, uint32_t retry_delay_ms) {
+    if (!ops || !session || !batch || entry_count < 0 || ok_count < 0 ||
+        !ops->now_ms || !ops->now_ns || !ops->is_stopping ||
+        !ops->session_matches || !ops->current_connection || !ops->send_done ||
+        !ops->ack_register || !ops->ack_mark_sent || !ops->ack_set_deadline ||
+        !ops->ack_unregister || !ops->wait_ack || !ops->wait_ms ||
+        !ack_timeout_ms || !reconnect_budget_ms || !retry_delay_ms) {
+        return HOP_XFER_SENDER_COMMIT_UNKNOWN;
+    }
+
+    const uint32_t total = hop_xfer_job_total(is_image, entry_count);
+    if ((uint32_t)ok_count > total) return HOP_XFER_SENDER_COMMIT_UNKNOWN;
+
+    uint64_t started_ms = ops->now_ms(ops->user);
+    uint64_t until_ms = reconnect_budget_ms > UINT64_MAX - started_ms
+        ? UINT64_MAX : started_ms + reconnect_budget_ms;
+    uint8_t current_session[HOP_SESSION_BYTES];
+
+    while (ops->now_ms(ops->user) < until_ms) {
+        if (!ops->session_matches(ops->user, session) ||
+            ops->is_stopping(ops->user)) {
+            return HOP_XFER_SENDER_COMMIT_UNKNOWN;
+        }
+
+        intptr_t socket_handle = (intptr_t)-1;
+        uint64_t epoch = 0;
+        memset(current_session, 0, sizeof(current_session));
+        if (!ops->current_connection(ops->user, &socket_handle, &epoch,
+                                     current_session, sizeof(current_session))) {
+            if (!ops->wait_ms(ops->user, retry_delay_ms))
+                return HOP_XFER_SENDER_COMMIT_UNKNOWN;
+            continue;
+        }
+        if (socket_handle == (intptr_t)-1 ||
+            memcmp(current_session, session, HOP_SESSION_BYTES) != 0) {
+            return HOP_XFER_SENDER_COMMIT_UNKNOWN;
+        }
+
+        if (!ops->ack_register(ops->user, batch, done_ack_slot))
+            return HOP_XFER_SENDER_COMMIT_UNKNOWN;
+        if (!ops->ack_mark_sent(ops->user, batch, done_ack_slot)) {
+            ops->ack_unregister(ops->user, batch, done_ack_slot);
+            return HOP_XFER_SENDER_COMMIT_UNKNOWN;
+        }
+        if (!ops->send_done(ops->user, socket_handle, epoch,
+                            batch, (uint32_t)ok_count, total)) {
+            ops->ack_unregister(ops->user, batch, done_ack_slot);
+            if (!ops->wait_ms(ops->user, retry_delay_ms))
+                return HOP_XFER_SENDER_COMMIT_UNKNOWN;
+            continue;
+        }
+
+        uint64_t now_ms = ops->now_ms(ops->user);
+        if (now_ms >= until_ms) {
+            ops->ack_unregister(ops->user, batch, done_ack_slot);
+            return HOP_XFER_SENDER_COMMIT_UNKNOWN;
+        }
+        uint64_t wait_ms = until_ms - now_ms;
+        if (wait_ms > ack_timeout_ms) wait_ms = ack_timeout_ms;
+        uint64_t now_ns = ops->now_ns(ops->user);
+        uint64_t wait_ns = wait_ms * 1000000ull;
+        uint64_t deadline_ns = wait_ns > UINT64_MAX - now_ns
+            ? UINT64_MAX : now_ns + wait_ns;
+        if (!ops->ack_set_deadline(ops->user, batch, done_ack_slot,
+                                   deadline_ns)) {
+            ops->ack_unregister(ops->user, batch, done_ack_slot);
+            return HOP_XFER_SENDER_COMMIT_UNKNOWN;
+        }
+
+        hop_xfer_sender_commit_ack_result ack = ops->wait_ack(
+            ops->user, batch, done_ack_slot, deadline_ns);
+        if (ack == HOP_XFER_SENDER_COMMIT_ACK_FAILED)
+            return HOP_XFER_SENDER_COMMIT_REJECTED;
+        hop_xfer_sender_commit_ack_result expected =
+            (uint32_t)ok_count == total
+                ? HOP_XFER_SENDER_COMMIT_ACK_COMPLETE
+                : HOP_XFER_SENDER_COMMIT_ACK_PARTIAL;
+        if (ack == expected) return HOP_XFER_SENDER_COMMIT_DONE;
+        if (ack == HOP_XFER_SENDER_COMMIT_ACK_PEER_ABORT)
+            return HOP_XFER_SENDER_COMMIT_PEER_ABORT;
+        if (ack != HOP_XFER_SENDER_COMMIT_ACK_TIMEOUT &&
+            ack != HOP_XFER_SENDER_COMMIT_ACK_SEND_DEAD) {
+            return HOP_XFER_SENDER_COMMIT_UNKNOWN;
+        }
+        if (!ops->wait_ms(ops->user, retry_delay_ms))
+            return HOP_XFER_SENDER_COMMIT_UNKNOWN;
+    }
+    return HOP_XFER_SENDER_COMMIT_UNKNOWN;
+}

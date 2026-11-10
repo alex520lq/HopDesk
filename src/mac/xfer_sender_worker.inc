@@ -29,6 +29,39 @@ static const hop_xfer_sender_queue_ops s_sender_queue_ops = {
     sender_queue_batch, sender_queue_retry_at, sender_queue_give_up_at
 };
 
+static void job_defer_to_shutdown(xf_job *j, xfer_job_owner expected_owner) {
+    if (!j || expected_owner == XFER_JOB_OWNER_SHUTDOWN) return;
+    pthread_mutex_lock(&s_x.qlock);
+    if (j->owner == expected_owner) {
+        j->owner = XFER_JOB_OWNER_SHUTDOWN;
+        j->next = s_x.shutdown_jobs;
+        s_x.shutdown_jobs = j;
+    }
+    pthread_mutex_unlock(&s_x.qlock);
+}
+
+static int job_release_task_resources(xf_job *j) {
+    if (!j) return 0;
+    /* The Job owns the pixel allocation and the Task owns its image-temp
+     * reservation. Drop the allocation first, then return the exact ledger
+     * bytes before Task terminalization (which rejects live temp bytes). */
+    if (j->pixels) {
+        free(j->pixels);
+        j->pixels = NULL;
+    }
+    if (j->task.initialized) {
+        uint64_t bytes = hop_xfer_task_image_temp_bytes(&j->task);
+        if (bytes && !hop_xfer_task_release_image_temp(&j->task, bytes)) {
+            hop_log(HOP_LOG_ERROR, "xfer: Job image-temp Reservation release deferred (batch=%u task=%llu bytes=%llu)",
+                    j->batch, (unsigned long long)j->task.id, (unsigned long long)bytes);
+            return 0;
+        }
+    } else if (j->task.id) {
+        return 0;
+    }
+    return 1;
+}
+
 static int job_free(xf_job *j, xfer_job_owner expected_owner) {
     if (!j) return 1;
     if (j->owner != expected_owner) {
@@ -37,32 +70,40 @@ static int job_free(xf_job *j, xfer_job_owner expected_owner) {
         return -1;
     }
 
-    /* The Job is the sole Task-handle owner. A nonterminal Task is interrupted
-     * here as a final safety net; Task Manager arbitrates the terminal edge and
-     * returns the Reservation exactly once. Keep the Job alive if dispose cannot
-     * prove that the manager released its handle. */
+    if (!job_release_task_resources(j)) {
+        job_defer_to_shutdown(j, expected_owner);
+        hop_log(HOP_LOG_ERROR, "xfer: Job resource release deferred (batch=%u task=%llu)",
+                j->batch, (unsigned long long)j->task.id);
+        return 0;
+    }
+
     if (j->task.initialized || j->task.id) {
-        if (j->task.initialized && !hop_xfer_task_is_terminal(&j->task)) {
-            int was_cancelled=sender_job_cancel_requested(&j->sender_context,j->batch,j->task.id);
-            sender_task_finish(&j->sender_context,&j->task,
-                was_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_INTERRUPTED);
-            if (hop_xfer_task_is_terminal(&j->task))
-                sender_status_end(&j->sender_context,j->batch,
-                    was_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED,
-                    was_cancelled?"Cancelled":"Transfer interrupted during shutdown");
+        if (!j->task.initialized) {
+            job_defer_to_shutdown(j, expected_owner);
+            hop_log(HOP_LOG_ERROR, "xfer: refusing to release Job with uninitialized live Task handle (batch=%u task=%llu)",
+                    j->batch, (unsigned long long)j->task.id);
+            return 0;
+        }
+        if (!hop_xfer_task_is_terminal(&j->task)) {
+            hop_xfer_task_state state = j->pending_finish_valid
+                ? j->pending_finish_state
+                : (expected_owner == XFER_JOB_OWNER_SUBMITTER
+                    ? HOP_XFER_TASK_FAILED : HOP_XFER_TASK_INTERRUPTED);
+            if (!j->pending_finish_valid &&
+                sender_job_cancel_requested(&j->sender_context,j->batch,j->task.id))
+                state = HOP_XFER_TASK_CANCELLED;
+            sender_task_finish(&j->sender_context,&j->task,state);
+            if (!hop_xfer_task_is_terminal(&j->task)) {
+                job_defer_to_shutdown(j, expected_owner);
+                hop_log(HOP_LOG_ERROR, "xfer: Job Task terminalization deferred (batch=%u task=%llu)",
+                        j->batch, (unsigned long long)j->task.id);
+                return 0;
+            }
         }
         if (!sender_task_dispose(&j->sender_context, &j->task) ||
             j->task.initialized || j->task.id) {
-            if (expected_owner != XFER_JOB_OWNER_SHUTDOWN) {
-                pthread_mutex_lock(&s_x.qlock);
-                if (j->owner == expected_owner) {
-                    j->owner = XFER_JOB_OWNER_SHUTDOWN;
-                    j->next = s_x.shutdown_jobs;
-                    s_x.shutdown_jobs = j;
-                }
-                pthread_mutex_unlock(&s_x.qlock);
-            }
-            hop_log(HOP_LOG_ERROR, "xfer: Job Task/Reservation disposal deferred (batch=%u task=%llu)",
+            job_defer_to_shutdown(j, expected_owner);
+            hop_log(HOP_LOG_ERROR, "xfer: Job Task disposal deferred (batch=%u task=%llu)",
                     j->batch, (unsigned long long)j->task.id);
             return 0;
         }
@@ -75,7 +116,6 @@ static int job_free(xf_job *j, xfer_job_owner expected_owner) {
         free(j->e[i].rel);
     }
     free(j->e);
-    free(j->pixels);
     free(j);
     return 1;
 }
@@ -142,11 +182,20 @@ static hop_xfer_sender_job_result sender_worker_send_done(void *user) {
 }
 static void sender_worker_task_finish(void *user,hop_xfer_task_state state) {
     sender_worker_call *call=(sender_worker_call *)user;
-    if(call&&call->job)sender_task_finish(&call->job->sender_context,&call->job->task,state);
+    if(!call||!call->job)return;
+    xf_job *job=call->job;
+    job->pending_finish_state=state;
+    job->pending_finish_valid=1;
+    job->pending_status_end=1;
+    if(job_release_task_resources(job))
+        sender_task_finish(&job->sender_context,&job->task,state);
 }
 static void sender_worker_status_end(void *user,uint32_t batch,int phase,const char *detail) {
     sender_worker_call *call=(sender_worker_call *)user;
-    if(call&&call->job)sender_status_end(&call->job->sender_context,batch,phase,detail);
+    if(call&&call->job){
+        sender_status_end(&call->job->sender_context,batch,phase,detail);
+        call->job->pending_status_end=0;
+    }
 }
 static void sender_worker_dispose_job(void *user) {
     sender_worker_call *call=(sender_worker_call *)user;
@@ -207,7 +256,8 @@ static hop_xfer_sender_worker_action sender_worker_finish_job(
     hop_xfer_sender_worker_action action =
         hop_xfer_sender_worker_finish_job(&ops,&state);
     if (action == HOP_XFER_SENDER_WORKER_INVALID) {
-        sender_task_finish(&job->sender_context,&job->task,HOP_XFER_TASK_FAILED);
+        job->pending_finish_state=HOP_XFER_TASK_FAILED;
+        job->pending_finish_valid=1;
         sender_status_end(&job->sender_context,job->batch,HOP_XFER_FAILED,
                           "Invalid sender worker context");
         (void)job_free(job,XFER_JOB_OWNER_WORKER);
@@ -232,18 +282,24 @@ static int sender_shutdown_drain_jobs(void) {
     while (s_x.shutdown_jobs) {
         xf_job *job=s_x.shutdown_jobs;
         xf_job *next=job->next;
-        if (!hop_xfer_task_is_terminal(&job->task)) {
-            int was_cancelled=sender_job_cancel_requested(&job->sender_context,
-                                                          job->batch,job->task.id);
-            sender_task_finish(&job->sender_context,&job->task,
-                was_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_INTERRUPTED);
-            if (hop_xfer_task_is_terminal(&job->task))
-                sender_status_end(&job->sender_context,job->batch,
-                    was_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED,
-                    was_cancelled?"Cancelled":"Transfer interrupted during shutdown");
+        int terminal_was_pending=!hop_xfer_task_is_terminal(&job->task);
+        int was_cancelled=sender_job_cancel_requested(&job->sender_context,
+                                                       job->batch,job->task.id);
+        if (terminal_was_pending) {
+            job->pending_finish_state=was_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_INTERRUPTED;
+            job->pending_finish_valid=1;
+            job->pending_status_end=1;
         }
+        hop_xfer_sender_context status_context=job->sender_context;
+        uint32_t status_batch=job->batch;
+        int emit_status=job->pending_status_end;
+        hop_xfer_task_state finish_state=job->pending_finish_state;
         int released=job_free(job,XFER_JOB_OWNER_SHUTDOWN);
         if (released!=1) return 0; /* retain the list head and its Reservation */
+        if (emit_status)
+            sender_status_end(&status_context,status_batch,
+                finish_state==HOP_XFER_TASK_CANCELLED?HOP_XFER_CANCELLED:HOP_XFER_FAILED,
+                finish_state==HOP_XFER_TASK_CANCELLED?"Cancelled":"Transfer interrupted during shutdown");
         s_x.shutdown_jobs=next;
     }
     return 1;
@@ -330,7 +386,8 @@ static void *send_thread(void *arg) {
             int show_status=!s_send_status.status.active || s_send_status.status.batch==expired->batch;
             pthread_mutex_unlock(&s_status_lock);
             if (show_status) sender_status_start_job(&expired->sender_context, expired);
-            sender_task_finish(&expired->sender_context, &expired->task,was_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
+            expired->pending_finish_state=was_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED;
+            expired->pending_finish_valid=1;
             if (show_status) sender_status_end(&expired->sender_context, expired->batch,
                 was_cancelled ? HOP_XFER_CANCELLED : HOP_XFER_FAILED,
                 "Transfer stopped while queued");
@@ -350,7 +407,7 @@ static void *send_thread(void *arg) {
         job_bind_session(j, &transport_session);
         if (hop_session_id_valid(&j->session)) (void)sender_task_bind_session(&j->sender_context, &j->task,&j->session);
         if(!sender_task_set_state(&j->sender_context, &j->task,HOP_XFER_TASK_ACTIVE)){
-            sender_task_finish(&j->sender_context, &j->task,HOP_XFER_TASK_FAILED);(void)job_free(j,XFER_JOB_OWNER_WORKER);continue;
+            j->pending_finish_state=HOP_XFER_TASK_FAILED;j->pending_finish_valid=1;(void)job_free(j,XFER_JOB_OWNER_WORKER);continue;
         }
         sender_status_start_job(&j->sender_context, j);
 

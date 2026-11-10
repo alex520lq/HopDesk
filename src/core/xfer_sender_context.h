@@ -47,7 +47,13 @@ typedef struct hop_xfer_sender_context {
     int (*is_cancelled)(void *user, uint32_t batch, uint64_t task_id);
     int (*peer_aborted)(void *user, uint32_t batch);
 
-    /* Application side effects are callbacks; Sender owns their ordering. */
+    /* Application side effects are callbacks; Sender owns their ordering.
+     * job is a borrowed opaque platform job and must not be retained. */
+    void (*status_start_job)(void *user, const void *job);
+    void (*status_end)(void *user, uint32_t batch, int phase,
+                       const char *detail);
+    void (*status_file_phase)(void *user, uint32_t batch, int index,
+                              int phase, uint32_t attempts);
     void (*status_stage_time)(void *user, uint32_t batch, int stage,
                               uint64_t elapsed_ns);
     void (*log_message)(void *user, int level, const char *message);

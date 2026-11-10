@@ -1145,6 +1145,20 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     CHECK(hop_xfer_task_reconcile(&audit) && (audit.mismatches&HOP_TASK_AUDIT_USAGE));
     hop_xfer_budget_release(&rogue);
     CHECK(hop_xfer_task_reconcile(&audit) && !audit.mismatches);
+    /* A corrupted active handle must remain owned when its counters cannot
+     * be subtracted from the global ledger. Never zero it and lose the claim. */
+    hop_xfer_reservation_handle inconsistent;
+    memset(&inconsistent,0,sizeof(inconsistent));
+    CHECK(hop_xfer_budget_reservation_init(&inconsistent,1004));
+    inconsistent.active=1;
+    inconsistent.jobs=1; /* No matching global Job reservation exists. */
+    hop_xfer_budget_get_snapshot(&snap);
+    uint64_t errors_before=snap.accounting_errors;
+    CHECK(!hop_xfer_budget_release(&inconsistent));
+    CHECK(inconsistent.active && inconsistent.jobs==1);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.accounting_errors==errors_before+1);
+
     hop_xfer_budget_limits defaults={16u,32768u,8ull*1024ull*1024ull*1024ull,256ull*1024ull*1024ull,256ull*1024ull*1024ull,8u,8ull*1024ull*1024ull,512ull*1024ull*1024ull};
     CHECK(hop_xfer_budget_set_limits_for_test(&defaults));
 }

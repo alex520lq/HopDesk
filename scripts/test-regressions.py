@@ -1437,6 +1437,16 @@ int main(void){
     assert 'hop_xfer_sender_context_logf' in context_adapter
     assert 'hop_xfer_sender_context_task_bind_session' in context_adapter_header
     assert 'test_task_lifecycle_forwarding' in context_adapter_tests
+    task_core=(ROOT/'src/core/xfer_task.c').read_text(encoding='utf-8')
+    budget_core=(ROOT/'src/core/xfer_budget.c').read_text(encoding='utf-8')
+    task_finish=extract(task_core,'finish')
+    task_dispose=extract(task_core,'hop_xfer_task_dispose')
+    budget_release=extract(budget_core,'hop_xfer_budget_release')
+    assert task_finish.index('hop_xfer_budget_release(&r->reservation)') < task_finish.index('r->state=state')
+    assert 'if (!hop_xfer_budget_release(&r->reservation)) return 0;' in task_finish
+    assert 'r->reservation.active ||' in task_dispose
+    assert 'r->jobs > s_used.jobs' in budget_release
+    assert 'return 0;' in budget_release
     for platform in ['win','mac']:
         worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
         submission=(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')

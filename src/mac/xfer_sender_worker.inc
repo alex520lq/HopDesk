@@ -151,13 +151,14 @@ static void *send_thread(void *arg) {
         if (r == JOB_DONE && !sender_task_begin_completion(&j->task)) r=JOB_CANCELLED;
         if (r == JOB_NET_DOWN) {
             uint64_t retry_now = now_ms();
-            uint32_t next_attempt = j->attempt == UINT32_MAX
-                ? UINT32_MAX : j->attempt + 1u;
+            uint32_t current_attempt = j->attempt > 0
+                ? (uint32_t)j->attempt : 0u;
+            uint32_t next_attempt = current_attempt + 1u;
             unsigned d = next_attempt < HOP_XFER_JOB_RETRY_MAX
                 ? hop_xfer_job_retry_delay_ms((int)next_attempt) : 0u;
             hop_xfer_sender_retry_plan retry_plan;
             hop_xfer_sender_retry_result retry_result = hop_xfer_sender_plan_retry(
-                retry_now, j->give_up_at, j->attempt, HOP_XFER_JOB_RETRY_MAX,
+                retry_now, j->give_up_at, current_attempt, HOP_XFER_JOB_RETRY_MAX,
                 HOP_XFER_RECONNECT_BUDGET_MS, d, &retry_plan);
             if (retry_result == HOP_XFER_SENDER_RETRY_INVALID) {
                 hop_log(HOP_LOG_ERROR, "xfer: invalid retry policy input for batch %u", j->batch);
@@ -166,7 +167,7 @@ static void *send_thread(void *arg) {
                 job_free(j);
                 continue;
             }
-            j->attempt = retry_plan.attempt;
+            j->attempt = (int)retry_plan.attempt;
             j->give_up_at = retry_plan.give_up_at_ms;
             if (retry_result == HOP_XFER_SENDER_RETRY_SCHEDULED) {
                 j->retry_at = retry_plan.retry_at_ms;

@@ -129,6 +129,17 @@ static struct {
  * 帧字节搅在一起 —— 锁的粒度必须是"整帧"，不是"单次 write"。 */
 static pthread_mutex_t s_txlock = PTHREAD_MUTEX_INITIALIZER;
 static _Thread_local unsigned long s_send_epoch;
+typedef struct {
+    pthread_mutex_t *session_lock;
+    pthread_mutex_t *queue_lock;
+    pthread_mutex_t *tx_lock;
+    int *sock;
+    hop_session_id *session;
+    unsigned long *epoch;
+    _Atomic int *stop;
+    uint32_t *abort_batch;
+} sender_platform_context;
+static sender_platform_context s_sender_platform;
 static hop_xfer_sender_context s_sender_context;
 
 static pthread_mutex_t s_status_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -412,12 +423,14 @@ static int send_all(int fd, const void *buf, size_t len) {
 
 static int sender_context_session_current(void *user, intptr_t socket_handle,
                                           uint64_t epoch) {
-    (void)user;
+    sender_platform_context *ctx = (sender_platform_context *)user;
+    if (!ctx || !ctx->session_lock || !ctx->sock || !ctx->epoch || !ctx->session)
+        return 0;
     int fd = (int)socket_handle;
-    pthread_mutex_lock(&s_x.slock);
-    int current = s_x.sock == fd && (!epoch || s_x.epoch == epoch) &&
-                  hop_session_matches(&s_x.session);
-    pthread_mutex_unlock(&s_x.slock);
+    pthread_mutex_lock(ctx->session_lock);
+    int current = *ctx->sock == fd && (!epoch || *ctx->epoch == epoch) &&
+                  hop_session_matches(ctx->session);
+    pthread_mutex_unlock(ctx->session_lock);
     return current;
 }
 
@@ -425,11 +438,11 @@ static int sender_context_write_frame(void *user, intptr_t socket_handle,
                                       uint64_t epoch,
                                       const hop_xfer_sender_frame_part *parts,
                                       size_t part_count) {
-    (void)user;
-    if (!parts || !part_count) return 0;
+    sender_platform_context *ctx = (sender_platform_context *)user;
+    if (!ctx || !ctx->tx_lock || !parts || !part_count) return 0;
     int fd = (int)socket_handle;
-    pthread_mutex_lock(&s_txlock);
-    int ok = sender_context_session_current(NULL, socket_handle, epoch);
+    pthread_mutex_lock(ctx->tx_lock);
+    int ok = sender_context_session_current(user, socket_handle, epoch);
     for (size_t i = 0; ok && i < part_count; ++i) {
         if ((!parts[i].data && parts[i].size) || parts[i].size > (size_t)INT_MAX) {
             ok = 0;
@@ -438,22 +451,25 @@ static int sender_context_write_frame(void *user, intptr_t socket_handle,
         if (parts[i].size)
             ok = send_all(fd, parts[i].data, parts[i].size);
     }
-    pthread_mutex_unlock(&s_txlock);
+    pthread_mutex_unlock(ctx->tx_lock);
     return ok;
 }
 
-static int sender_context_snapshot_session(int fd, hop_session_id *session,
+static int sender_context_snapshot_session(void *user, int fd,
+                                           hop_session_id *session,
                                            uint64_t *epoch) {
-    if (!session || !epoch) return 0;
-    pthread_mutex_lock(&s_x.slock);
-    int current = s_x.sock == fd &&
-                  (!s_send_epoch || s_x.epoch == s_send_epoch) &&
-                  hop_session_matches(&s_x.session);
+    sender_platform_context *ctx = (sender_platform_context *)user;
+    if (!ctx || !ctx->session_lock || !ctx->sock || !ctx->epoch ||
+        !ctx->session || !session || !epoch) return 0;
+    pthread_mutex_lock(ctx->session_lock);
+    int current = *ctx->sock == fd &&
+                  (!s_send_epoch || *ctx->epoch == s_send_epoch) &&
+                  hop_session_matches(ctx->session);
     if (current) {
-        *session = s_x.session;
-        *epoch = s_x.epoch;
+        *session = *ctx->session;
+        *epoch = *ctx->epoch;
     }
-    pthread_mutex_unlock(&s_x.slock);
+    pthread_mutex_unlock(ctx->session_lock);
     return current;
 }
 
@@ -463,7 +479,7 @@ static int send_small(int fd, uint8_t type, const uint8_t *p, uint32_t len, uint
     hop_session_id session;
     uint64_t epoch = 0;
     int ok = s_sender_context.write_frame != NULL &&
-             sender_context_snapshot_session(fd, &session, &epoch);
+             sender_context_snapshot_session(s_sender_context.user, fd, &session, &epoch);
     hop_xfer_sender_frame_part parts[3];
     size_t part_count = 0;
     if (ok && type != HOP_MSG_XFER_HELLO) {

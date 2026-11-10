@@ -1422,6 +1422,7 @@ int main(void){
     assert 'test_stop_after_wait_leaves_queue_owned_by_shutdown' in scheduler_tests
     assert 'hop_xfer_sender_active_job_take_cancelled_and_clear' in active_core
     assert 'hop_xfer_sender_active_job_record_peer_abort' in active_core
+    assert 'hop_xfer_sender_active_job_matches' in active_core
     assert 'hop_xfer_sender_active_job_clear_if_matches' in active_header
     assert 'test_abort_is_scoped_to_active_batch' in active_tests
     for platform in ['win','mac']:
@@ -1433,6 +1434,7 @@ int main(void){
         assert 'hop_xfer_sender_active_job active_job' in transport
         assert 'hop_xfer_sender_active_job_cancel_target' in transport
         assert 'hop_xfer_sender_active_job_is_active' in transport
+        assert 'hop_xfer_sender_active_job_matches' in submission
         assert 'hop_xfer_sender_active_job_begin' in worker
         assert 'hop_xfer_sender_active_job_take_cancelled_and_clear' in worker
         assert 'hop_xfer_sender_active_job_clear_if_matches' in clear_active
@@ -1445,6 +1447,7 @@ int main(void){
         assert 's_x.cur_task_id' not in transport+worker+receive
         assert 's_x.abort_batch' not in transport+worker+receive
         assert 's_x.abort_reason' not in transport+worker+receive
+        assert 's_x.cur_batch' not in submission
         assert 'hop_xfer_sender_scheduler_wait_next' in worker
         assert 'hop_xfer_sender_queue_take_head' not in worker
         assert 'queue_unlink' not in worker

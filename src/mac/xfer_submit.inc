@@ -19,6 +19,20 @@ static void scanner_watchdog_end(void *context, int ticket) {
     hop_watchdog_end(ticket);
 }
 
+/* Keep the read lock through source scanning and queue admission. Shutdown's
+ * write lock waits for all accepted submitters and rejects every later one. */
+static int sender_submit_enter(void) {
+    pthread_rwlock_rdlock(&s_x_lifecycle_lock);
+    if (!s_x.sync_initialized || s_x.shutting_down) {
+        pthread_rwlock_unlock(&s_x_lifecycle_lock);
+        return 0;
+    }
+    return 1;
+}
+static void sender_submit_leave(void) {
+    pthread_rwlock_unlock(&s_x_lifecycle_lock);
+}
+
 static int submit(xf_job *j) {
     if (!j) return 0;
     j->sender_context = s_sender_context;
@@ -27,8 +41,10 @@ static int submit(xf_job *j) {
     if (s_x.cur_batch == j->batch ||
         hop_xfer_sender_queue_contains_batch(&s_x.queue, &s_sender_queue_ops, j->batch))
         duplicate = 1;
-    int queued = !duplicate &&
+    int queued = !duplicate && !s_x.shutting_down &&
+        !sender_context_is_stopping(&s_sender_platform) &&
         hop_xfer_sender_queue_push_back(&s_x.queue, &s_sender_queue_ops, j);
+    if (queued) j->owner=XFER_JOB_OWNER_QUEUE;
     if (queued) pthread_cond_signal(&s_x.qcond);
     pthread_mutex_unlock(&s_x.qlock);
     return queued;
@@ -117,7 +133,7 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
 
     if (!submit(job)) {
         hop_xfer_task_finish(&job->task, HOP_XFER_TASK_FAILED);
-        job_free(job);
+        (void)job_free(job,XFER_JOB_OWNER_SUBMITTER);
         return 0;
     }
     return 1;
@@ -230,31 +246,39 @@ void xfer_kick(void) {
 }
 
 int xfer_submit_paths(const char *const *paths, int n) {
-    if (!hop_update_work_enter()) return 0;
+    if (!sender_submit_enter()) return 0;
+    if (!hop_update_work_enter()) { sender_submit_leave(); return 0; }
     int result = xfer_submit_paths_impl(paths, n, 0, 0);
     hop_update_work_leave();
+    sender_submit_leave();
     return result;
 }
 
 int xfer_submit_paths_for_paste(const char *const *paths, int n, uint32_t request_id, uint64_t offer_id) {
-    if (!(request_id & HOP_XFER_PASTE_BATCH_FLAG) || !hop_update_work_enter()) return 0;
+    if (!(request_id & HOP_XFER_PASTE_BATCH_FLAG) || !sender_submit_enter()) return 0;
+    if (!hop_update_work_enter()) { sender_submit_leave(); return 0; }
     int result = xfer_submit_paths_impl(paths, n, request_id, offer_id);
     hop_update_work_leave();
+    sender_submit_leave();
     return result;
 }
 
 int xfer_submit_image(const uint8_t *bgra, int w, int h, int stride) {
-    if (!hop_update_work_enter()) return 0;
+    if (!sender_submit_enter()) return 0;
+    if (!hop_update_work_enter()) { sender_submit_leave(); return 0; }
     int result = xfer_submit_image_impl(bgra, NULL, w, h, stride, NULL, 0);
     hop_update_work_leave();
+    sender_submit_leave();
     return result;
 }
 
 int xfer_submit_image_owned(uint8_t *bgra, int w, int h, int stride) {
     if (!bgra) return 0;
-    if (!hop_update_work_enter()) { free(bgra); return 0; }
+    if (!sender_submit_enter()) { free(bgra); return 0; }
+    if (!hop_update_work_enter()) { sender_submit_leave(); free(bgra); return 0; }
     int result = xfer_submit_image_impl(bgra, bgra, w, h, stride, NULL, 0);
     hop_update_work_leave();
+    sender_submit_leave();
     return result;
 }
 
@@ -264,12 +288,19 @@ int xfer_submit_image_owned_from_task(uint8_t *bgra, int w, int h, int stride,
         release_image_source_reservation(source_task, reserved_bytes);
         return 0;
     }
+    if (!sender_submit_enter()) {
+        free(bgra);
+        release_image_source_reservation(source_task, reserved_bytes);
+        return 0;
+    }
     if (!hop_update_work_enter()) {
+        sender_submit_leave();
         free(bgra);
         release_image_source_reservation(source_task, reserved_bytes);
         return 0;
     }
     int result = xfer_submit_image_impl(bgra, bgra, w, h, stride, source_task, reserved_bytes);
     hop_update_work_leave();
+    sender_submit_leave();
     return result;
 }

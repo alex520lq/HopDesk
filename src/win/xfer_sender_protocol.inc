@@ -24,14 +24,14 @@ static uint64_t rate_now_ns(void) {
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
 
-static void rate_sleep_ns(uint64_t ns) {
-    if (s_x.rate_timer) {
+static void rate_sleep_ns(uint64_t ns, HANDLE stop, HANDLE rate_timer) {
+    if (rate_timer) {
         LARGE_INTEGER due;
         uint64_t units = (ns + 99ull) / 100ull; /* negative 100 ns relative due time */
         if (!units) units = 1;
         due.QuadPart = -(LONGLONG)units;
-        if (SetWaitableTimer(s_x.rate_timer, &due, 0, NULL, NULL, FALSE)) {
-            HANDLE waits[2] = {s_x.stop, s_x.rate_timer};
+        if (SetWaitableTimer(rate_timer, &due, 0, NULL, NULL, FALSE)) {
+            HANDLE waits[2] = {stop, rate_timer};
             (void)WaitForMultipleObjects(2, waits, FALSE, INFINITE);
             return;
         }
@@ -60,8 +60,9 @@ static uint64_t sender_context_now_ns(void *user) {
 }
 
 static int sender_context_is_stopping(void *user) {
-    (void)user;
-    return !s_x.stop || WaitForSingleObject(s_x.stop, 0) == WAIT_OBJECT_0;
+    sender_platform_context *ctx = (sender_platform_context *)user;
+    return !ctx || !ctx->stop || !*ctx->stop ||
+           WaitForSingleObject(*ctx->stop, 0) == WAIT_OBJECT_0;
 }
 
 static int sender_context_is_cancelled(void *user, uint32_t batch,
@@ -74,28 +75,30 @@ static int sender_context_is_cancelled(void *user, uint32_t batch,
 }
 
 static int sender_context_peer_aborted(void *user, uint32_t batch) {
-    (void)user;
-    EnterCriticalSection(&s_x.lock);
-    int aborted = s_x.abort_batch == batch;
-    LeaveCriticalSection(&s_x.lock);
+    sender_platform_context *ctx = (sender_platform_context *)user;
+    if (!ctx || !ctx->state_lock || !ctx->abort_batch) return 0;
+    EnterCriticalSection(ctx->state_lock);
+    int aborted = *ctx->abort_batch == batch;
+    LeaveCriticalSection(ctx->state_lock);
     return aborted;
 }
 
 /* wait_ns waits for the full requested interval, but polls shutdown in short
  * slices even when the platform timer falls back to coarse Sleep/QPC pacing. */
 static int sender_context_wait_ns(void *user, uint64_t duration_ns) {
-    (void)user;
-    if (sender_context_is_stopping(NULL)) return 0;
+    sender_platform_context *ctx = (sender_platform_context *)user;
+    if (!ctx || !ctx->stop || !ctx->rate_timer ||
+        sender_context_is_stopping(user)) return 0;
     uint64_t start = rate_now_ns();
     uint64_t deadline = duration_ns > UINT64_MAX - start
         ? UINT64_MAX : start + duration_ns;
     for (;;) {
-        if (sender_context_is_stopping(NULL)) return 0;
+        if (sender_context_is_stopping(user)) return 0;
         uint64_t now = rate_now_ns();
         if (now >= deadline) return 1;
         uint64_t remaining = deadline - now;
         if (remaining > 10000000ull) remaining = 10000000ull;
-        rate_sleep_ns(remaining);
+        rate_sleep_ns(remaining, *ctx->stop, *ctx->rate_timer);
     }
 }
 
@@ -142,7 +145,17 @@ static void sender_context_log_message(void *user, int level,
 }
 
 static void sender_context_init(void) {
+    memset(&s_sender_platform, 0, sizeof(s_sender_platform));
+    s_sender_platform.state_lock = &s_x.lock;
+    s_sender_platform.tx_lock = &s_txlock;
+    s_sender_platform.client = &s_x.client;
+    s_sender_platform.session = &s_x.session;
+    s_sender_platform.epoch = &s_x.epoch;
+    s_sender_platform.stop = &s_x.stop;
+    s_sender_platform.rate_timer = &s_x.rate_timer;
+    s_sender_platform.abort_batch = &s_x.abort_batch;
     memset(&s_sender_context, 0, sizeof(s_sender_context));
+    s_sender_context.user = &s_sender_platform;
     s_sender_context.now_ns = sender_context_now_ns;
     s_sender_context.wait_ns = sender_context_wait_ns;
     s_sender_context.is_stopping = sender_context_is_stopping;
@@ -244,7 +257,7 @@ static int send_chunk(SOCKET c, uint8_t *tx, uint32_t batch, uint32_t id, uint64
     int send_guard = hop_watchdog_begin("data frame send", 10000);
     hop_session_id session;
     uint64_t epoch = 0;
-    int current = sender_context_snapshot_session(c, &session, &epoch);
+    int current = sender_context_snapshot_session(s_sender_context.user, c, &session, &epoch);
     hop_encode_header(tx, HOP_MSG_FILE_CHUNK, 20 + HOP_DATA_PREFIX + len);
     hop_put_be32(tx + HOP_DATA_PREFIX + 5, id);
     hop_put_be64(tx + HOP_DATA_PREFIX + 9, off);

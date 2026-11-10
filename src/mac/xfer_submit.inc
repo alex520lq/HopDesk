@@ -20,6 +20,8 @@ static void scanner_watchdog_end(void *context, int ticket) {
 }
 
 static int submit(xf_job *j) {
+    if (!j) return 0;
+    j->sender_context = s_sender_context;
     int duplicate = 0;
     pthread_mutex_lock(&s_x.qlock);
     if (s_x.cur_batch == j->batch ||

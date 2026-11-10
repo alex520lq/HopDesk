@@ -479,8 +479,6 @@ static uint64_t now_ms(void) { return (uint64_t)GetTickCount64(); }
 #define XFER_PEER_ABORT   (-5)
 #define XFER_ACK_PENDING  (-6)
 
-static uint64_t now_ms(void) { return (uint64_t)GetTickCount64(); }
-
 static int sender_context_ack_create(void) {
     if (s_sender_platform.ack_adapter) return 0;
     hop_xfer_sender_ack_adapter *adapter =

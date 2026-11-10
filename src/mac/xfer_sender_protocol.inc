@@ -446,8 +446,6 @@ static uint64_t now_ms(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC
 #define XFER_PEER_ABORT   (-5)
 #define XFER_ACK_PENDING  (-6)
 
-static uint64_t now_ms(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000L); }
-
 static int sender_context_ack_create(void) {
     if (s_sender_platform.ack_adapter) return 0;
     hop_xfer_sender_ack_adapter *adapter =

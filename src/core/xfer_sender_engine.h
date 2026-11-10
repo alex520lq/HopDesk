@@ -79,6 +79,34 @@ int hop_xfer_sender_run_files(const hop_xfer_sender_engine_ops *ops,
                               int *next_index, int *ok_count,
                               unsigned max_attempts);
 
+/* Shared image sequencing. The platform adapter still owns frame/socket IO
+ * and rate pacing; Core owns chunk order, CRC calculation and cancellation. */
+typedef struct {
+    void *user;
+    int (*cancel_requested)(void *user, uint32_t batch);
+    int (*peer_aborted)(void *user, uint32_t batch);
+    uint64_t (*now_ns)(void *user);
+    int (*send_image_begin)(void *user, uint32_t batch, uint32_t width,
+                            uint32_t height, uint32_t stride);
+    int (*send_image_chunk)(void *user, uint32_t batch, uint32_t id,
+                            uint64_t offset, const uint8_t *data,
+                            uint32_t length, uint32_t crc,
+                            uint64_t crc_elapsed_ns);
+    int (*send_image_end)(void *user, uint32_t batch, uint32_t id,
+                          uint8_t status, uint32_t file_crc);
+    void (*yield_cpu)(void *user);
+    void (*rate_feedback)(void *user, uint64_t rtt_us);
+    void (*status_file_phase)(void *user, uint32_t batch, int index,
+                              int phase, uint32_t attempts);
+} hop_xfer_sender_image_ops;
+
+int hop_xfer_sender_run_image(const hop_xfer_sender_image_ops *ops,
+                              uint32_t batch, const uint8_t *pixels,
+                              uint32_t width, uint32_t height,
+                              uint32_t stride, uint32_t chunk_size,
+                              uint8_t file_ok_status, int entry_count,
+                              int *next_index, int *ok_count);
+
 #ifdef __cplusplus
 }
 #endif

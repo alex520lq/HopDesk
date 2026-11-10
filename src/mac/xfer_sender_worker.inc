@@ -332,126 +332,174 @@ static int sender_shutdown_drain_jobs(void) {
     return 1;
 }
 
+typedef struct {
+    int peer_ready_snapshot;
+} sender_scheduler_state;
+
+static int sender_scheduler_begin_pass(void *user, int *peer_ready,
+                                       uint64_t *now, uint32_t *cancel_batch) {
+    sender_scheduler_state *state=(sender_scheduler_state *)user;
+    if (!state || !peer_ready || !now || !cancel_batch) return 0;
+    /* Preserve the lock order: snapshot connection state before taking qlock. */
+    pthread_mutex_lock(&s_x.slock);
+    state->peer_ready_snapshot=s_x.peer_ready;
+    pthread_mutex_unlock(&s_x.slock);
+
+    pthread_mutex_lock(&s_x.qlock);
+    *peer_ready=state->peer_ready_snapshot;
+    *now=now_ms();
+    *cancel_batch=s_x.cancel_batch;
+    return 1; /* qlock remains held until end_pass */
+}
+static int sender_scheduler_is_stopping(void *user) {
+    (void)user;
+    return sender_context_is_stopping(&s_sender_platform);
+}
+static int sender_scheduler_wait_locked(void *user, uint32_t timeout_ms) {
+    (void)user;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME,&ts);
+    ts.tv_sec += (time_t)(timeout_ms/1000u);
+    ts.tv_nsec += (long)(timeout_ms%1000u)*1000000L;
+    if (ts.tv_nsec>=1000000000L) {
+        ts.tv_sec++;
+        ts.tv_nsec-=1000000000L;
+    }
+    int rc=pthread_cond_timedwait(&s_x.qcond,&s_x.qlock,&ts);
+    if (rc!=0 && rc!=ETIMEDOUT) {
+        hop_log(HOP_LOG_WARN,"xfer: sender queue condition wait failed; falling back to bounded poll");
+        pthread_mutex_unlock(&s_x.qlock);
+        struct timespec pause={(time_t)(timeout_ms/1000u),
+                               (long)(timeout_ms%1000u)*1000000L};
+        nanosleep(&pause,NULL);
+        pthread_mutex_lock(&s_x.qlock);
+    }
+    return 1;
+}
+static void sender_scheduler_claim_locked(void *user, void *node, int expired) {
+    (void)user;
+    xf_job *job=(xf_job *)node;
+    job->owner=XFER_JOB_OWNER_WORKER;
+    if (!expired) {
+        s_x.cur_batch=job->batch;
+        s_x.cur_task_id=job->task.id;
+        s_x.abort_batch=0;
+        s_x.abort_reason=0;
+    }
+}
+static void sender_scheduler_end_pass(void *user) {
+    (void)user;
+    pthread_mutex_unlock(&s_x.qlock);
+}
+
 static void *send_thread(void *arg) {
     (void)arg;
 
-    /* 主动降到 UTILITY。控制通道承载的是键鼠，主队列是 USER_INTERACTIVE
-     * 级别 —— 降级之后输入路径永远能直接抢占传输线程，
-     * 不会出现"传文件时鼠标发涩"。 */
-    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+    /* Keep file transfer at utility QoS so foreground control input wins. */
+    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY,0);
 
-    uint8_t *tx = (uint8_t *)malloc(CHUNK_HDR + s_x.chunk);
-    if (!tx) { hop_log(HOP_LOG_ERROR, "xfer: tx alloc failed"); return NULL; }
+    uint8_t *tx=(uint8_t *)malloc(CHUNK_HDR+s_x.chunk);
+    if (!tx) { hop_log(HOP_LOG_ERROR,"xfer: tx alloc failed"); return NULL; }
+
+    sender_scheduler_state state;
+    memset(&state,0,sizeof(state));
+    hop_xfer_sender_scheduler_ops scheduler={
+        &state,
+        sender_scheduler_begin_pass,
+        sender_scheduler_is_stopping,
+        sender_scheduler_wait_locked,
+        sender_scheduler_claim_locked,
+        sender_scheduler_end_pass
+    };
 
     for (;;) {
-        xf_job *j = NULL, *expired = NULL;
-        int fd;
-
-        /* Do not consume job retry attempts while the data channel is down.
-         * Snapshot outside qlock to keep the slock/qlock order non-nested. */
-        pthread_mutex_lock(&s_x.slock);
-        int peer_ready_snapshot = s_x.peer_ready;
-        pthread_mutex_unlock(&s_x.slock);
-
-        pthread_mutex_lock(&s_x.qlock);
-        int waited_for_queue = 0;
-        /* Wait for an expired/cancelled job even offline, but only dequeue a
-         * retry when the data channel was ready at the start of this pass.
-         * A 200 ms poll refreshes the snapshot after reconnect. */
-        for (;;) {
-            if (s_x.stop) break;
-            uint64_t n = now_ms();
-            xf_job *p = (xf_job *)s_x.queue.head;
-            if (p && (p->batch == s_x.cancel_batch ||
-                      (p->give_up_at && n >= p->give_up_at) ||
-                      (peer_ready_snapshot && p->retry_at <= n)))
-                break;
-
-            struct timespec ts;
-            clock_gettime(CLOCK_REALTIME, &ts);
-            ts.tv_nsec += 200 * 1000000L;
-            if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
-            pthread_cond_timedwait(&s_x.qcond, &s_x.qlock, &ts);
-            waited_for_queue = 1;
-            break; /* refresh connection state outside qlock after every poll */
-        }
-
-        if (s_x.stop) {
-            /* Queue ownership is transferred to Shutdown after both workers join. */
-            pthread_mutex_unlock(&s_x.qlock);
+        void *node=NULL;
+        hop_xfer_sender_scheduler_result selected =
+            hop_xfer_sender_scheduler_wait_next(
+                &s_x.queue,&s_sender_queue_ops,&scheduler,200,&node);
+        if (selected==HOP_XFER_SENDER_SCHEDULER_STOPPED) break;
+        if (selected==HOP_XFER_SENDER_SCHEDULER_ERROR) {
+            hop_log(HOP_LOG_ERROR,"xfer: sender scheduler adapter failed");
             break;
         }
 
-        uint64_t now = now_ms();
-        expired=(xf_job *)hop_xfer_sender_queue_take_cancelled(&s_x.queue, &s_sender_queue_ops);
-        if (!expired) {
-            hop_xfer_sender_queue_take_result take_result = HOP_XFER_SENDER_QUEUE_NONE;
-            xf_job *taken = (xf_job *)hop_xfer_sender_queue_take_head(
-                &s_x.queue, &s_sender_queue_ops, now, s_x.cancel_batch,
-                peer_ready_snapshot, !waited_for_queue, &take_result);
-            if (take_result == HOP_XFER_SENDER_QUEUE_EXPIRED) expired = taken;
-            else if (take_result == HOP_XFER_SENDER_QUEUE_READY) j = taken;
-        }
-        if (expired) expired->owner=XFER_JOB_OWNER_WORKER;
-        if (j) { j->owner=XFER_JOB_OWNER_WORKER; s_x.cur_batch = j->batch; s_x.cur_task_id = j->task.id; s_x.abort_batch=0; s_x.abort_reason=0; }
-        pthread_mutex_unlock(&s_x.qlock);
+        xf_job *expired=selected==HOP_XFER_SENDER_SCHEDULER_EXPIRED
+            ? (xf_job *)node : NULL;
+        xf_job *j=selected==HOP_XFER_SENDER_SCHEDULER_READY
+            ? (xf_job *)node : NULL;
 
         if (expired) {
-            sender_logf(&expired->sender_context, HOP_LOG_ERROR,
+            sender_logf(&expired->sender_context,HOP_LOG_ERROR,
                         "xfer: batch %u abandoned, peer never came back (%d/%d delivered)",
-                        expired->batch, expired->ok, expired->n);
-            int was_cancelled = sender_job_cancel_requested(
-                &expired->sender_context, expired->batch, expired->task.id);
+                        expired->batch,expired->ok,expired->n);
+            int was_cancelled=sender_job_cancel_requested(
+                &expired->sender_context,expired->batch,expired->task.id);
             pthread_mutex_lock(&s_x.slock);
-            int abort_fd=s_x.peer_ready && hop_session_id_equal(&expired->session,&s_x.session) ? s_x.sock : -1;
+            int abort_fd=s_x.peer_ready &&
+                hop_session_id_equal(&expired->session,&s_x.session)
+                ? s_x.sock : -1;
             s_send_epoch=s_x.epoch;
             pthread_mutex_unlock(&s_x.slock);
             if (was_cancelled && abort_fd>=0)
-                send_abort_msg_with_context(&expired->sender_context, abort_fd,
-                                            expired->batch, HOP_ABORT_CANCEL);
+                send_abort_msg_with_context(&expired->sender_context,abort_fd,
+                                            expired->batch,HOP_ABORT_CANCEL);
             pthread_mutex_lock(&s_status_lock);
-            int show_status=!s_send_status.status.active || s_send_status.status.batch==expired->batch;
+            int show_status=!s_send_status.status.active ||
+                            s_send_status.status.batch==expired->batch;
             pthread_mutex_unlock(&s_status_lock);
-            if (show_status) sender_status_start_job(&expired->sender_context, expired);
-            expired->pending_finish_state=was_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED;
+            if (show_status) sender_status_start_job(&expired->sender_context,expired);
+            expired->pending_finish_state=was_cancelled
+                ? HOP_XFER_TASK_CANCELLED : HOP_XFER_TASK_FAILED;
             expired->pending_finish_valid=1;
             if (show_status) {
                 expired->pending_status_end=1;
-                expired->pending_status_phase=was_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED;
-                snprintf(expired->pending_status_detail,sizeof(expired->pending_status_detail),"%s",
+                expired->pending_status_phase=was_cancelled
+                    ? HOP_XFER_CANCELLED : HOP_XFER_FAILED;
+                snprintf(expired->pending_status_detail,
+                         sizeof(expired->pending_status_detail),"%s",
                          "Transfer stopped while queued");
             }
             (void)job_free(expired,XFER_JOB_OWNER_WORKER);
             continue;
         }
+
         if (!j) continue;
         if (sender_context_is_stopping(&s_sender_platform)) {
             (void)job_free(j,XFER_JOB_OWNER_WORKER);
             continue;
         }
-        pthread_mutex_lock(&s_x.slock);
-        fd = s_x.peer_ready ? s_x.sock : -1;
-        s_send_epoch = s_x.epoch;
-        hop_session_id transport_session = s_x.session;
-        pthread_mutex_unlock(&s_x.slock);
-        job_bind_session(j, &transport_session);
-        if (hop_session_id_valid(&j->session)) (void)sender_task_bind_session(&j->sender_context, &j->task,&j->session);
-        if(!sender_task_set_state(&j->sender_context, &j->task,HOP_XFER_TASK_ACTIVE)){
-            j->pending_finish_state=HOP_XFER_TASK_FAILED;j->pending_finish_valid=1;(void)job_free(j,XFER_JOB_OWNER_WORKER);continue;
-        }
-        sender_status_start_job(&j->sender_context, j);
 
-        int r = (fd >= 0) ? run_job(fd, tx, j) : JOB_NET_DOWN;
+        pthread_mutex_lock(&s_x.slock);
+        int fd=s_x.peer_ready?s_x.sock:-1;
+        s_send_epoch=s_x.epoch;
+        hop_session_id transport_session=s_x.session;
+        pthread_mutex_unlock(&s_x.slock);
+        job_bind_session(j,&transport_session);
+        if (hop_session_id_valid(&j->session))
+            (void)sender_task_bind_session(&j->sender_context,&j->task,&j->session);
+        if (!sender_task_set_state(&j->sender_context,&j->task,HOP_XFER_TASK_ACTIVE)) {
+            j->pending_finish_state=HOP_XFER_TASK_FAILED;
+            j->pending_finish_valid=1;
+            (void)job_free(j,XFER_JOB_OWNER_WORKER);
+            continue;
+        }
+        sender_status_start_job(&j->sender_context,j);
+
+        int result=(fd>=0)?run_job(fd,tx,j):JOB_NET_DOWN;
 
         pthread_mutex_lock(&s_x.qlock);
-        int peer_cancelled=(s_x.abort_batch==j->batch && s_x.abort_reason==HOP_ABORT_CANCEL);
-        int completion_path=(r==JOB_DONE);
-        if (!completion_path) { s_x.cur_batch = 0; s_x.cur_task_id = 0; }
+        int peer_cancelled=(s_x.abort_batch==j->batch &&
+                            s_x.abort_reason==HOP_ABORT_CANCEL);
+        int completion_path=(result==JOB_DONE);
+        if (!completion_path) {
+            s_x.cur_batch=0;
+            s_x.cur_task_id=0;
+        }
         pthread_mutex_unlock(&s_x.qlock);
 
-        hop_xfer_sender_worker_action action = sender_worker_finish_job(
-            j, fd, r, completion_path, peer_cancelled);
-        if (action == HOP_XFER_SENDER_WORKER_REQUEUED) continue;
+        hop_xfer_sender_worker_action action=sender_worker_finish_job(
+            j,fd,result,completion_path,peer_cancelled);
+        if (action==HOP_XFER_SENDER_WORKER_REQUEUED) continue;
     }
 
     free(tx);

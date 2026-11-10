@@ -23,12 +23,17 @@ static void scan_watchdog_end(const hop_xfer_scan_services *services, int ticket
 }
 
 static int elist_push(elist *list, xf_entry *entry, const hop_xfer_scan_services *services) {
-    if (!entry || !entry->name || !entry->rel ||
-        strlen(entry->name) > HOP_NAME_LEN_MAX ||
-        strlen(entry->rel) > HOP_PATH_LEN_MAX ||
-        list->n >= HOP_XFER_SCAN_MAX_ENTRIES) {
-        scan_fail(list, (list->n >= HOP_XFER_SCAN_MAX_ENTRIES) ?
-                  HOP_XFER_SCAN_ENTRY_LIMIT : HOP_XFER_SCAN_PATH_TOO_LONG);
+    if (!entry || !entry->name || !entry->rel) {
+        scan_fail(list, HOP_XFER_SCAN_OUT_OF_MEMORY);
+        return 0;
+    }
+    if (strlen(entry->name) > HOP_NAME_LEN_MAX ||
+        strlen(entry->rel) > HOP_PATH_LEN_MAX) {
+        scan_fail(list, HOP_XFER_SCAN_PATH_TOO_LONG);
+        return 0;
+    }
+    if (list->n >= HOP_XFER_SCAN_MAX_ENTRIES) {
+        scan_fail(list, HOP_XFER_SCAN_ENTRY_LIMIT);
         return 0;
     }
     if (!services->reserve_entry(services->context, entry->size)) {

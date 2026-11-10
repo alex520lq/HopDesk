@@ -14,10 +14,16 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "xfer_task.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+typedef struct {
+    const uint8_t *data;
+    size_t size;
+} hop_xfer_sender_frame_part;
 
 typedef struct hop_xfer_sender_context {
     void *user;
@@ -34,7 +40,8 @@ typedef struct hop_xfer_sender_context {
      */
     int (*session_current)(void *user, intptr_t socket_handle, uint64_t epoch);
     int (*write_frame)(void *user, intptr_t socket_handle, uint64_t epoch,
-                       const uint8_t *frame, size_t frame_size);
+                       const hop_xfer_sender_frame_part *parts,
+                       size_t part_count);
 
     /* Batch/task cancellation and receiver-originated ABORT. */
     int (*is_cancelled)(void *user, uint32_t batch, uint64_t task_id);
@@ -46,9 +53,9 @@ typedef struct hop_xfer_sender_context {
     void (*log_message)(void *user, int level, const char *message);
 
     /* Task state remains owned by the existing Task service. */
-    int (*task_set_state)(void *user, uint64_t task_id, int state);
-    int (*task_begin_completion)(void *user, uint64_t task_id);
-    void (*task_finish)(void *user, uint64_t task_id, int outcome);
+    int (*task_set_state)(void *user, hop_xfer_task *task, int state);
+    int (*task_begin_completion)(void *user, const hop_xfer_task *task);
+    void (*task_finish)(void *user, hop_xfer_task *task, int outcome);
 } hop_xfer_sender_context;
 
 /* The clock subset can be adopted independently while the remaining Sender

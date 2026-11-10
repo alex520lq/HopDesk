@@ -777,12 +777,17 @@ int main(void){
         scanner=(ROOT/f'src/{platform}/xfer_scanner.c').read_text(encoding='utf-8')
         scanner_header=(ROOT/f'src/{platform}/xfer_scanner.h').read_text(encoding='utf-8')
         assert 'hop_xfer_scan_paths' in scanner and 'walk_into' in scanner and 'elist_push' in scanner
-        assert 'hop_xfer_task_reserve_entry' in scanner and 'hop_xfer_task_cancel_requested' in scanner
+        assert 'services->reserve_entry' in scanner and 'services->is_cancelled' in scanner
+        assert 'services->watchdog_begin' in scanner and 'services->watchdog_end' in scanner
+        assert 'hop_xfer_task_' not in scanner and 'hop_watchdog_' not in scanner and 'hop_log(' not in scanner
+        assert 'hop_xfer_scan_error' in scanner_header and 'HOP_XFER_SCAN_OUT_OF_MEMORY' in scanner_header
+        assert 'hop_xfer_scan_paths(&l, paths, n, &scan_services)' in submission
+        assert 'hop_xfer_task task;' in submission and 'hop_xfer_task_dispose(&task)' in submission
         assert 'HOP_XFER_SCAN_MAX_ENTRIES' in scanner_header
         if platform=='win':
             assert 'FILE_ATTRIBUTE_REPARSE_POINT' in scanner and 'FindFirstFileW' in scanner
         else:
-            assert 'S_ISLNK' in scanner and 'lstat(' in scanner and 'S_ISREG' in scanner
+            assert 'S_ISLNK' in scanner and 'lstat(' in scanner and 'S_ISREG' in scanner and 'read_error' in scanner and 'errno = 0' in scanner
         assert 'walk_into' not in transport and 'elist_push' not in transport
         assert 'hop_xfer_scan_paths(&l, paths, n)' in submission
 

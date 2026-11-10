@@ -134,3 +134,20 @@ The scanner already existed as platform-specific \`.c\` files before this slice.
 - Remaining scanner hardening: deterministic injection of mid-stream directory enumeration failure and Windows reparse-point runtime fixture are not yet directly exercised; implementation checks and source-contract assertions are present. Real-world filesystem race/TOCTOU behavior remains a separate security-hardening item.
 
 Next slice: define and wire the explicit Sender dependency context (socket write/session validation, clock/wait, cancellation/peer-abort, status/logging and Task callbacks) without changing protocol sequencing. Only after that should the sender protocol include be moved into independent compilation units.
+
+
+## 9. Sender dependency context contract (scaffolding)
+
+Added `src/core/xfer_sender_context.h` as the platform-neutral callback contract for the next extraction slice.
+
+The context covers:
+
+- monotonic time, interruptible waits and shutdown observation;
+- socket/session epoch validation and serialized complete-frame writes;
+- batch/task cancellation and peer ABORT;
+- status timing and logging callbacks;
+- Task state, completion gate and terminal outcome callbacks.
+
+The API uses opaque `intptr_t` socket handles and integer Task IDs; it does not expose Winsock, Win32, POSIX or Objective-C types to Core. The context is borrowed for one operation and must remain alive until all sender/ACK waits return. Optional status/log callbacks may be absent; execution and lifecycle callbacks are mandatory.
+
+**This is scaffolding only, not a completed dependency inversion.** The existing Windows/macOS sender implementation still reads platform globals and invokes platform services directly. The next code step is to construct the context in each platform adapter, route cancellation/session/time/status/Task access through it, and add production-linked context tests before moving protocol/job execution out of the `.inc` files. Do not remove the old globals or includes until both platforms use the context and CI passes.

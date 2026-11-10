@@ -151,3 +151,19 @@ The context covers:
 The API uses opaque `intptr_t` socket handles and integer Task IDs; it does not expose Winsock, Win32, POSIX or Objective-C types to Core. The context is borrowed for one operation and must remain alive until all sender/ACK waits return. Optional status/log callbacks may be absent; execution and lifecycle callbacks are mandatory.
 
 **This is scaffolding only, not a completed dependency inversion.** The existing Windows/macOS sender implementation still reads platform globals and invokes platform services directly. The next code step is to construct the context in each platform adapter, route cancellation/session/time/status/Task access through it, and add production-linked context tests before moving protocol/job execution out of the `.inc` files. Do not remove the old globals or includes until both platforms use the context and CI passes.
+
+
+## 10. Sender context contract test coverage
+
+Added `tests/xfer_sender_context_tests.c` and wired it into both `scripts/test-core.sh` and `scripts/test-core.ps1`.
+
+The test verifies:
+
+- mandatory execution/lifecycle callbacks are rejected when absent;
+- status/logging callbacks are optional;
+- monotonic time and interruptible wait callbacks are callable through the opaque user context;
+- session validation and complete-frame write callbacks receive the socket handle and epoch;
+- cancellation and peer-abort callbacks receive the exact batch/task identity;
+- Task state/completion/finish callbacks are reachable through the same contract.
+
+This is a contract/ABI test, not a production sender integration test. It does not prove that the production sender uses the context. That remains the next migration gate.

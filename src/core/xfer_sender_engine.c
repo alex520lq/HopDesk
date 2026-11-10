@@ -2,6 +2,7 @@
 
 #include "xfer_ack_window.h"
 #include "xfer_status.h"
+#include "xfer_tracking.h"
 #include "hop.h"
 
 #include <stdio.h>
@@ -20,6 +21,9 @@ static void sender_log(const hop_xfer_sender_engine_ops *ops, int level,
                        const char *message) {
     if (ops->log_message) ops->log_message(ops->user, level, message);
 }
+
+static void sender_file_log(const hop_xfer_sender_file_ops *ops, int level,
+                            const char *message);
 
 static int sender_cancelled(const hop_xfer_sender_engine_ops *ops,
                             uint32_t batch) {

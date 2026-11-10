@@ -158,6 +158,11 @@ int main(void) {
     assert(list.failed && list.budget_rejected && list.error == HOP_XFER_SCAN_BUDGET_REJECTED);
     elist_free(&list);
 
+    reset_scan(&list); allocation_fail = 1;
+    hop_xfer_scan_paths(&list, paths, 1, &scan_services);
+    assert(list.failed && list.error == HOP_XFER_SCAN_OUT_OF_MEMORY);
+    elist_free(&list);
+
     reset_scan(&list); cancel_requested = 1;
     hop_xfer_scan_paths(&list, paths, 1, &scan_services);
     assert(list.failed && list.error == HOP_XFER_SCAN_CANCELLED);

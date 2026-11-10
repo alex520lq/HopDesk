@@ -53,9 +53,12 @@ typedef struct hop_xfer_sender_context {
     void (*log_message)(void *user, int level, const char *message);
 
     /* Task state remains owned by the existing Task service. */
+    int (*task_bind_session)(void *user, const hop_xfer_task *task,
+                             const uint8_t session[HOP_TASK_SESSION_BYTES]);
     int (*task_set_state)(void *user, hop_xfer_task *task, int state);
     int (*task_begin_completion)(void *user, const hop_xfer_task *task);
     void (*task_finish)(void *user, hop_xfer_task *task, int outcome);
+    void (*task_dispose)(void *user, hop_xfer_task *task);
 } hop_xfer_sender_context;
 
 /* The clock subset can be adopted independently while the remaining Sender
@@ -69,8 +72,9 @@ static inline int hop_xfer_sender_context_clock_valid(const hop_xfer_sender_cont
 static inline int hop_xfer_sender_context_valid(const hop_xfer_sender_context *ctx) {
     return ctx && ctx->now_ns && ctx->wait_ns && ctx->is_stopping &&
            ctx->session_current && ctx->write_frame && ctx->is_cancelled &&
-           ctx->peer_aborted && ctx->task_set_state &&
-           ctx->task_begin_completion && ctx->task_finish;
+           ctx->peer_aborted && ctx->task_bind_session &&
+           ctx->task_set_state && ctx->task_begin_completion &&
+           ctx->task_finish && ctx->task_dispose;
 }
 
 #ifdef __cplusplus

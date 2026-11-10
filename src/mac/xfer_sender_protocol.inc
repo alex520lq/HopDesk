@@ -38,6 +38,15 @@ static int sender_context_is_cancelled(void *user, uint32_t batch,
     return task_id && hop_xfer_task_cancel_requested(task_id);
 }
 
+static int sender_context_is_batch_cancelled(void *user, uint32_t batch) {
+    sender_platform_context *ctx = (sender_platform_context *)user;
+    if (!ctx || !ctx->queue_lock || !ctx->cancel_batch) return 0;
+    pthread_mutex_lock(ctx->queue_lock);
+    int cancelled = *ctx->cancel_batch == batch;
+    pthread_mutex_unlock(ctx->queue_lock);
+    return cancelled;
+}
+
 static int sender_context_peer_aborted(void *user, uint32_t batch) {
     sender_platform_context *ctx = (sender_platform_context *)user;
     if (!ctx || !ctx->queue_lock || !ctx->abort_batch) return 0;
@@ -150,12 +159,14 @@ static void sender_context_init(void) {
     s_sender_platform.epoch = &s_x.epoch;
     s_sender_platform.stop = &s_x.stop;
     s_sender_platform.abort_batch = &s_x.abort_batch;
+    s_sender_platform.cancel_batch = &s_x.cancel_batch;
     memset(&s_sender_context, 0, sizeof(s_sender_context));
     s_sender_context.user = &s_sender_platform;
     s_sender_context.now_ns = sender_context_now_ns;
     s_sender_context.wait_ns = sender_context_wait_ns;
     s_sender_context.is_stopping = sender_context_is_stopping;
     s_sender_context.is_cancelled = sender_context_is_cancelled;
+    s_sender_context.is_batch_cancelled = sender_context_is_batch_cancelled;
     s_sender_context.peer_aborted = sender_context_peer_aborted;
     s_sender_context.session_current = sender_context_session_current;
     s_sender_context.write_frame = sender_context_write_frame;

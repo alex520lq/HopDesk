@@ -186,10 +186,10 @@ static int sender_worker_requeue_front(void *user) {
     return queued;
 }
 static int sender_worker_peer_cancelled_and_clear_current(void *user,uint32_t batch,uint64_t task_id) {
-    (void)user;(void)task_id;
+    (void)user;
     EnterCriticalSection(&s_x.lock);
-    int cancelled=s_x.abort_batch==batch&&s_x.abort_reason==HOP_ABORT_CANCEL;
-    s_x.cur_batch=0;s_x.cur_task_id=0;
+    int cancelled=hop_xfer_sender_active_job_take_cancelled_and_clear(
+        &s_x.active_job,batch,task_id,HOP_ABORT_CANCEL);
     LeaveCriticalSection(&s_x.lock);
     return cancelled;
 }
@@ -371,12 +371,10 @@ static void sender_scheduler_claim_locked(void *user, void *node, int expired) {
     (void)user;
     xfer_job *job=(xfer_job *)node;
     job->owner=XFER_JOB_OWNER_WORKER;
-    if (!expired) {
-        s_x.cur_batch=job->batch;
-        s_x.cur_task_id=job->task.id;
-        s_x.abort_batch=0;
-        s_x.abort_reason=0;
-    }
+    if (!expired && !hop_xfer_sender_active_job_begin(
+            &s_x.active_job,job->batch,job->task.id))
+        hop_log(HOP_LOG_ERROR,"xfer: failed to publish active Sender Job (batch=%u task=%llu)",
+                job->batch,(unsigned long long)job->task.id);
 }
 static void sender_scheduler_end_pass(void *user) {
     (void)user;
@@ -470,15 +468,14 @@ static DWORD WINAPI send_thread(LPVOID arg) {
 
         int result=run_job(c,tx,j);
 
-        EnterCriticalSection(&s_x.lock);
-        int peer_cancelled=(s_x.abort_batch==j->batch &&
-                            s_x.abort_reason==HOP_ABORT_CANCEL);
         int completion_path=(result==JOB_DONE);
+        int peer_cancelled=0;
         if (!completion_path) {
-            s_x.cur_batch=0;
-            s_x.cur_task_id=0;
+            EnterCriticalSection(&s_x.lock);
+            peer_cancelled=hop_xfer_sender_active_job_take_cancelled_and_clear(
+                &s_x.active_job,j->batch,j->task.id,HOP_ABORT_CANCEL);
+            LeaveCriticalSection(&s_x.lock);
         }
-        LeaveCriticalSection(&s_x.lock);
 
         hop_xfer_sender_worker_action action=sender_worker_finish_job(
             j,c,result,completion_path,peer_cancelled);

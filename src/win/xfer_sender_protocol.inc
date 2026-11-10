@@ -206,7 +206,7 @@ static void sender_context_init(void) {
     s_sender_platform.epoch = &s_x.epoch;
     s_sender_platform.stop = &s_x.stop;
     s_sender_platform.rate_timer = &s_x.rate_timer;
-    s_sender_platform.abort_batch = &s_x.abort_batch;
+    s_sender_platform.abort_batch = &s_x.active_job.abort_batch;
     s_sender_platform.cancel_batch = &s_x.cancel_batch;
     memset(&s_sender_context, 0, sizeof(s_sender_context));
     s_sender_context.user = &s_sender_platform;

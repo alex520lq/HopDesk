@@ -1254,6 +1254,20 @@ int main(void){
         assert 'hop_xfer_sender_queue_take_head' in worker
         assert 'queue_unlink' not in worker
 
+    retry_core=(ROOT/'src/core/xfer_sender_retry.c').read_text(encoding='utf-8')
+    retry_header=(ROOT/'src/core/xfer_sender_retry.h').read_text(encoding='utf-8')
+    retry_tests=(ROOT/'tests/xfer_sender_retry_tests.c').read_text(encoding='utf-8')
+    assert 'hop_xfer_sender_plan_retry' in retry_core
+    assert 'retry_add_saturating' in retry_core
+    assert 'HOP_XFER_SENDER_RETRY_SCHEDULED' in retry_header
+    assert 'HOP_XFER_SENDER_RETRY_EXHAUSTED' in retry_header
+    assert 'test_initial_and_repeated_retry' in retry_tests
+    assert 'test_attempt_and_deadline_exhaustion' in retry_tests
+    assert 'test_saturating_deadlines_and_invalid_input' in retry_tests
+    for platform in ['win','mac']:
+        worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_plan_retry' in worker
+
     # hop_xfer_tracking embeds 8192 file records with 1024-byte paths
     # (~8 MiB). Keep these fixtures off Windows' default 1 MiB thread stack.
     core_tests=(ROOT/'tests/core_tests.c').read_text(encoding='utf-8')

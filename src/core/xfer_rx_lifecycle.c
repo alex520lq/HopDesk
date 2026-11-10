@@ -54,6 +54,7 @@ hop_xfer_rx_abort_result hop_xfer_rx_abort_execute(
     if (ops->mark_dead) ops->mark_dead(ops->context, batch, reason);
     if (ops->finish_task)
         ops->finish_task(ops->context, reason == HOP_ABORT_CANCEL);
+    if (ops->clear_state) ops->clear_state(ops->context);
     if (ops->status_end)
         ops->status_end(ops->context, batch, reason == HOP_ABORT_CANCEL);
     return HOP_RX_ABORT_TERMINATED;

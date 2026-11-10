@@ -358,3 +358,14 @@ No physical two-device or weak-network acceptance is claimed by the unit/CI test
 - Source-contract regressions ensure platform worker loops no longer perform queue take policy themselves and that native wait callbacks preserve lock semantics.
 - **Validation: pending exact-head Windows MSVC and macOS Apple Clang Actions run.**
 - Next: extract active-job/peer-ABORT arbitration and the platform worker runtime context into an explicit adapter, then remove remaining duplicated sender worker orchestration from the platform include fragments. Keep all native socket/session and thread handles in platform-owned code.
+
+
+## 29. Shared active-job and peer-ABORT arbitration (2026-11-10)
+
+- Added `src/core/xfer_sender_active_job.[ch]` to own the shared rules for active batch/task identity, cancel-target selection, peer ABORT recording, peer-cancel classification, and exact active-marker clearing.
+- Windows and macOS no longer maintain separate `cur_batch`, `cur_task_id`, `abort_batch` and `abort_reason` fields in their transfer state. Both platform adapters call the same Core policy while holding their native queue/state lock.
+- Receiver ABORT handling, new-session reset, UI cancellation targeting, scheduler Job claim and worker completion now use the shared active-job API. The sender platform context points to the shared ABORT batch field for existing engine cancellation checks.
+- Worker disposal and early-stop/task-state-failure paths explicitly clear the matching active marker. A stale callback cannot clear a different Job because the Core helper requires both batch and Task ID to match.
+- Added portable tests for active-job start, cancellation target, batch-scoped peer ABORT, exact Task-ID matching, non-cancel ABORT, session reset and invalid identities. Wired them into Windows/macOS Core tests and the Windows HA fixture.
+- **Validation: pending exact-head Windows MSVC, macOS Apple Clang and HA fixture Actions run.**
+- Next: consolidate the remaining platform worker runtime callbacks and extract the remaining sender protocol compatibility include fragments into independent compile units. Do not move socket handles, native synchronization or UI callbacks into Core.

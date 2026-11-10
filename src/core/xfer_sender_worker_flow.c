@@ -5,7 +5,7 @@
 static int worker_ops_valid(const hop_xfer_sender_worker_ops *ops) {
     return ops && ops->max_attempts && ops->reconnect_budget_ms &&
            ops->now_ms && ops->retry_delay_ms && ops->is_cancelled &&
-           ops->begin_completion && ops->set_queued &&
+           ops->is_stopping && ops->begin_completion && ops->set_queued &&
            ops->store_retry_state && ops->requeue_front &&
            ops->peer_cancelled_and_clear_current && ops->send_abort &&
            ops->send_done && ops->task_finish && ops->status_end &&
@@ -45,46 +45,62 @@ hop_xfer_sender_worker_action hop_xfer_sender_worker_finish_job(
         result = HOP_XFER_SENDER_JOB_CANCELLED;
 
     if (result == HOP_XFER_SENDER_JOB_NET_DOWN) {
-        uint32_t next_attempt = job->attempt == UINT32_MAX
-            ? UINT32_MAX : job->attempt + 1u;
-        unsigned delay = next_attempt < ops->max_attempts
-            ? ops->retry_delay_ms(ops->user, next_attempt) : 0u;
-        hop_xfer_sender_retry_plan plan;
-        hop_xfer_sender_retry_result retry = hop_xfer_sender_plan_retry(
-            ops->now_ms(ops->user), job->give_up_at_ms, job->attempt,
-            ops->max_attempts, ops->reconnect_budget_ms, delay, &plan);
+        /* Shutdown owns the queue after admission is closed. Do not publish a
+         * retry once stop has been requested; the current worker still owns
+         * this Job and must drive its single terminal/dispose path. */
+        if (ops->is_stopping(ops->user)) {
+            result = HOP_XFER_SENDER_JOB_SHUTDOWN;
+        } else {
+            uint32_t next_attempt = job->attempt == UINT32_MAX
+                ? UINT32_MAX : job->attempt + 1u;
+            unsigned delay = next_attempt < ops->max_attempts
+                ? ops->retry_delay_ms(ops->user, next_attempt) : 0u;
+            hop_xfer_sender_retry_plan plan;
+            hop_xfer_sender_retry_result retry = hop_xfer_sender_plan_retry(
+                ops->now_ms(ops->user), job->give_up_at_ms, job->attempt,
+                ops->max_attempts, ops->reconnect_budget_ms, delay, &plan);
 
-        if (retry == HOP_XFER_SENDER_RETRY_INVALID) {
-            worker_log(ops, HOP_XFER_SENDER_WORKER_LOG_RETRY_INVALID, job, 0);
-            worker_finish_failed(ops, job, "Invalid retry policy");
-            return HOP_XFER_SENDER_WORKER_FINISHED;
-        }
-
-        job->attempt = plan.attempt;
-        job->give_up_at_ms = plan.give_up_at_ms;
-        if (retry == HOP_XFER_SENDER_RETRY_SCHEDULED) {
-            job->retry_at_ms = plan.retry_at_ms;
-            ops->store_retry_state(ops->user, job);
-            worker_log(ops, HOP_XFER_SENDER_WORKER_LOG_RETRY_SCHEDULED,
-                       job, delay);
-            if (!ops->set_queued(ops->user, job->task_id)) {
-                worker_log(ops, HOP_XFER_SENDER_WORKER_LOG_RETRY_STATE_FAILED,
-                           job, delay);
-                worker_finish_failed(ops, job, "Invalid task retry state");
+            if (retry == HOP_XFER_SENDER_RETRY_INVALID) {
+                worker_log(ops, HOP_XFER_SENDER_WORKER_LOG_RETRY_INVALID, job, 0);
+                worker_finish_failed(ops, job, "Invalid retry policy");
                 return HOP_XFER_SENDER_WORKER_FINISHED;
             }
-            if (!ops->requeue_front(ops->user)) {
-                worker_log(ops, HOP_XFER_SENDER_WORKER_LOG_REQUEUE_FAILED,
-                           job, delay);
-                worker_finish_failed(ops, job, "Retry queue admission failed");
-                return HOP_XFER_SENDER_WORKER_FINISHED;
-            }
-            return HOP_XFER_SENDER_WORKER_REQUEUED;
-        }
 
-        /* Retain the final attempt/deadline values even when retry is exhausted. */
-        ops->store_retry_state(ops->user, job);
-        worker_log(ops, HOP_XFER_SENDER_WORKER_LOG_RETRY_EXHAUSTED, job, 0);
+            job->attempt = plan.attempt;
+            job->give_up_at_ms = plan.give_up_at_ms;
+            if (retry == HOP_XFER_SENDER_RETRY_SCHEDULED) {
+                job->retry_at_ms = plan.retry_at_ms;
+                ops->store_retry_state(ops->user, job);
+                worker_log(ops, HOP_XFER_SENDER_WORKER_LOG_RETRY_SCHEDULED,
+                           job, delay);
+                if (!ops->set_queued(ops->user, job->task_id)) {
+                    worker_log(ops, HOP_XFER_SENDER_WORKER_LOG_RETRY_STATE_FAILED,
+                               job, delay);
+                    worker_finish_failed(ops, job, "Invalid task retry state");
+                    return HOP_XFER_SENDER_WORKER_FINISHED;
+                }
+                if (!ops->requeue_front(ops->user)) {
+                    worker_log(ops, HOP_XFER_SENDER_WORKER_LOG_REQUEUE_FAILED,
+                               job, delay);
+                    /* Stop may win after the initial check but before the
+                     * platform adapter takes the queue lock. The adapter
+                     * rejects admission under that same lock; re-check here
+                     * so this race terminates as Interrupted, not Failed. */
+                    if (ops->is_stopping(ops->user)) {
+                        result = HOP_XFER_SENDER_JOB_SHUTDOWN;
+                    } else {
+                        worker_finish_failed(ops, job, "Retry queue admission failed");
+                        return HOP_XFER_SENDER_WORKER_FINISHED;
+                    }
+                } else {
+                    return HOP_XFER_SENDER_WORKER_REQUEUED;
+                }
+            } else {
+                /* Retain the final attempt/deadline values even when retry is exhausted. */
+                ops->store_retry_state(ops->user, job);
+                worker_log(ops, HOP_XFER_SENDER_WORKER_LOG_RETRY_EXHAUSTED, job, 0);
+            }
+        }
     } else if (result == HOP_XFER_SENDER_JOB_CANCELLED) {
         ops->send_abort(ops->user, job->batch);
     } else if (result == HOP_XFER_SENDER_JOB_DONE) {

@@ -768,7 +768,8 @@ int main(void){
         assert '#include "xfer_sender_protocol.inc"' in transport
         assert '#include "xfer_submit.inc"' in transport
         assert 'static void' in worker and 'send_thread' in worker
-        assert 'queue_take_cancelled' in worker and 'queue_unlink' in worker
+        assert 'hop_xfer_sender_queue_take_cancelled' in worker and 'hop_xfer_sender_queue_take_head' in worker
+        assert 'queue_unlink' not in worker
         protocol=(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
         assert 'sender_engine_send_entry' in protocol and 'send_done_result' in protocol and 'run_job' in protocol
         assert 'ack_wait' in protocol and 'rate_feedback' in protocol
@@ -1041,10 +1042,11 @@ int main(void){
         if platform=='mac':
             queue=extract(sender,'send_thread')
             assert 'peer_ready_snapshot' in queue and 'waited_for_queue' in queue
-            assert '!waited_for_queue && peer_ready_snapshot' in queue
+            assert 'queue_take_head(now, peer_ready_snapshot' in queue
+            assert '!waited_for_queue' in queue
         else:
             queue=extract(sender,'send_thread')
-            assert 'c != INVALID_SOCKET && cur->retry_at <= now' in queue
+            assert 'queue_take_head(now, c != INVALID_SOCKET, 1' in queue
 
     # DONE/DONE_ACK retry policy is now shared Core; platform files only adapt
     # current connection/session, wire send, ACK coordinator and wait callbacks.
@@ -1226,43 +1228,24 @@ int main(void){
         if platform=='win':fixture='#define FIXTURE_WINDOWS 1\n'+fixture
         run('retry_guard_'+platform,fixture,[])
 
-    # Exercise the production queue removal helper with manager-owned IDs.
+    # The shared Core queue policy is production-linked by both platform workers.
+    queue_core=(ROOT/'src/core/xfer_sender_queue.c').read_text(encoding='utf-8')
+    queue_header=(ROOT/'src/core/xfer_sender_queue.h').read_text(encoding='utf-8')
+    queue_tests=(ROOT/'tests/xfer_sender_queue_tests.c').read_text(encoding='utf-8')
+    assert 'hop_xfer_sender_queue_take_cancelled' in queue_core
+    assert 'hop_xfer_sender_queue_take_head' in queue_core
+    assert 'now_ms >= give_up_at' in queue_core
+    assert 'retry_at_ms(ops->user, node) <= now_ms' in queue_core
+    assert 'HOP_XFER_SENDER_QUEUE_READY' in queue_header
+    assert 'HOP_XFER_SENDER_QUEUE_EXPIRED' in queue_header
+    assert 'test_cancelled_middle_and_tail' in queue_tests
+    assert 'test_head_readiness_and_fifo' in queue_tests
+    assert 'test_expiry_while_offline' in queue_tests
     for platform in ['win','mac']:
-        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
-        common=r"""
-#include "xfer_task.h"
-#include <assert.h>
-#include <stdio.h>
-typedef struct job { struct job *next; hop_xfer_task task; } job;
-typedef job xfer_job; typedef job xf_job;
-static struct { job *q_head,*q_tail; } s_x;
-uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
-"""
-        main=r"""
-int main(void){
-    job a={0}, b={0}, c={0};
-    assert(hop_xfer_task_init_classified(&a.task,0,0,1,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
-    assert(hop_xfer_task_init_classified(&b.task,0,0,2,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
-    assert(hop_xfer_task_init_classified(&c.task,0,0,3,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
-    assert(hop_xfer_task_reserve_job(&a.task)); assert(hop_xfer_task_reserve_job(&b.task)); assert(hop_xfer_task_reserve_job(&c.task));
-    a.next=&b; b.next=&c; s_x.q_head=&a; s_x.q_tail=&c;
-    assert(hop_xfer_task_request_cancel(b.task.id));
-    assert(queue_take_cancelled()==&b && !b.next);
-    assert(s_x.q_head==&a && a.next==&c && s_x.q_tail==&c);
-    assert(!hop_xfer_task_cancel_requested(a.task.id) && !hop_xfer_task_cancel_requested(c.task.id));
-    assert(hop_xfer_task_finish(&b.task,HOP_XFER_TASK_CANCELLED)); hop_xfer_task_dispose(&b.task);
-    assert(hop_xfer_task_request_cancel(c.task.id));
-    assert(queue_take_cancelled()==&c && s_x.q_tail==&a && !a.next);
-    assert(hop_xfer_task_finish(&c.task,HOP_XFER_TASK_CANCELLED)); hop_xfer_task_dispose(&c.task);
-    assert(hop_xfer_task_request_cancel(a.task.id));
-    assert(queue_take_cancelled()==&a && !s_x.q_head && !s_x.q_tail);
-    assert(hop_xfer_task_finish(&a.task,HOP_XFER_TASK_CANCELLED)); hop_xfer_task_dispose(&a.task);
-    hop_xfer_budget_snapshot budget;hop_xfer_budget_get_snapshot(&budget);assert(!budget.jobs);
-    puts("PASS: production queue cancels only selected task, preserving links and reservations");return 0;
-}
-"""
-        code=common+extract(sender,'queue_unlink')+'\n'+extract(sender,'queue_take_cancelled')+main
-        run('task_cancel_queue_'+platform,code,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+        worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_queue_take_cancelled' in worker
+        assert 'hop_xfer_sender_queue_take_head' in worker
+        assert 'queue_unlink' not in worker
 
     # hop_xfer_tracking embeds 8192 file records with 1024-byte paths
     # (~8 MiB). Keep these fixtures off Windows' default 1 MiB thread stack.

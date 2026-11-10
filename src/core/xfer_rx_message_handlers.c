@@ -283,20 +283,19 @@ int hop_xfer_rx_finish_batch(void *context, uint32_t batch, uint32_t ok, uint32_
     hop_xfer_task_finish(&rx->task, complete ? HOP_XFER_TASK_COMPLETED :
         (image_failed ? HOP_XFER_TASK_FAILED : HOP_XFER_TASK_PARTIAL));
 
+    int result = complete ? HOP_DONE_ACK_COMPLETE :
+        (image_failed ? HOP_DONE_ACK_FAILED : HOP_DONE_ACK_PARTIAL);
+
+    /* The writer was drained/closed above. Release Receiver-owned state before
+     * publishing terminal history, so observers never see a terminal task with
+     * live paths, image memory or batch identity. */
+    hop_xfer_rx_reset_batch_state(rx);
     if (rx->services.status_end)
         rx->services.status_end(rx->services.context, batch,
             complete ? HOP_XFER_COMPLETED :
                 (image_failed ? HOP_XFER_FAILED : HOP_XFER_PARTIAL),
             complete ? "Receive completed" :
                 "Receive incomplete; clipboard not updated");
-
-    int result = complete ? HOP_DONE_ACK_COMPLETE :
-        (image_failed ? HOP_DONE_ACK_FAILED : HOP_DONE_ACK_PARTIAL);
-
-    /* The writer was drained/closed above. Clear the batch state directly:
-     * rx_reset would close it a second time and publish an "interrupted" status
-     * after the terminal result. */
-    hop_xfer_rx_reset_batch_state(rx);
     return result;
 }
 

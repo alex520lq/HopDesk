@@ -3,6 +3,7 @@
 #include "xfer_rate.h"
 #include <assert.h>
 #include <string.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include "xfer_tracking.h"
 #include "xfer_task.h"

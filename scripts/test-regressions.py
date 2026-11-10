@@ -1095,9 +1095,17 @@ int main(void){
         assert 'job->sender_context.wait_ns' in commit_wait
         assert 'sender_context_is_stopping(NULL)' not in commit_stop
         thread=extract(sender,'send_thread')
-        assert 'send_done_result(' in thread and 'hop_xfer_sender_get_terminal_decision' in thread
+        worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
+        flow_core=(ROOT/'src/core/xfer_sender_worker_flow.c').read_text(encoding='utf-8')
+        assert 'sender_worker_finish_job(' in thread
+        assert 'hop_xfer_sender_worker_finish_job' in worker
+        assert 'hop_xfer_sender_plan_retry(' not in worker
+        assert 'hop_xfer_sender_get_terminal_decision(' not in worker
+        assert 'hop_xfer_sender_plan_retry(' in flow_core
+        assert 'hop_xfer_sender_get_terminal_decision(' in flow_core
         assert 'sender_status_start_job(&j->sender_context' in thread
-        assert 'sender_status_end(&j->sender_context' in thread
+        assert 'sender_status_end(&j->sender_context' not in thread
+        assert 'sender_status_end(' in worker
         assert ' status_start_job(' not in thread and ' status_end(' not in thread
         protocol=(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
         assert 'send_chunk(&call->job->sender_context' in protocol

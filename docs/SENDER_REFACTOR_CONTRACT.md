@@ -303,3 +303,23 @@ No physical two-device or weak-network acceptance is claimed by the unit/CI test
 - Extended the production-linked Sender Context test to exercise all ACK operations and to reject contexts missing any ACK callback. Regression checks prohibit `s_ack` in Sender/Receiver source paths and verify the ACK wait/deliver calls cross the context boundary.
 - **Validation: GitHub Actions Run #1433 (ID `42814619801`, tested commit `f8034bf162710058ed528e75c9cd441a31fc604b`) passed on Windows MSVC and macOS Apple Clang.** Both app builds, portable Core/regression suites, transfer protocol tests, TCP loopback tests, native role/reconnect integration tests, and packaging passed. Release publication was skipped for the PR.
 - Next: extract the thin platform ACK adapter functions from `xfer_sender_protocol.inc` into independently compiled platform adapter units, then finish Sender worker scheduling, queue ownership, retry and terminal lifecycle boundaries. Keep the coordinator opaque to shared Core.
+
+
+## 24. Independently compiled Sender ACK adapter (2026-11-10)
+
+- Added the shared opaque API in src/core/xfer_sender_ack_adapter.h/.c. The adapter owns the platform ACK coordinator and receives the same injected monotonic clock used by Sender deadlines.
+- Split hop_xfer_sender_context.ack_user from the general platform user pointer. ACK register/mark/deadline/wait/unregister/deliver/wake callbacks use the dedicated adapter owner; socket/session, cancellation, status and Task callbacks continue using the general context.
+- The platform coordinator remains opaque behind xfer_ack_coordinator.h; shared Sender protocol code no longer includes or calls coordinator implementation details.
+- Transfer service init creates the adapter after native synchronization setup. Failure/shutdown destroys it only after sender/connection threads have joined. Receiver delivery and shutdown/ABORT wake continue through explicit context callbacks.
+- Added production-linked tests for injected ACK timestamps, ACK-before-deadline-installation, receive-time deadline expiry, duplicate/stale identity, batch cleanup and adapter lifecycle. Updated both Core test scripts and the Windows HA fixture link.
+- Validation: GitHub Actions Run #1437 (ID 42816625819, commit ef0df8aefad3a67a2d07b8ea4d560faebe8bf145) passed on Windows MSVC and macOS Apple Clang. App builds, Core/regression suites, transfer protocol tests, TCP loopback, native role/reconnect tests and packaging passed. Release publication was skipped for the PR.
+
+## 25. Shared Sender post-run lifecycle and retry flow (2026-11-10)
+
+- Added src/core/xfer_sender_worker_flow.[ch] to own the common post-run policy for both platforms: cancellation arbitration, retry planning, Task requeue transition, FIFO-front retry admission, ABORT/DONE dispatch, terminal Task/status mapping and final job disposal.
+- Windows/macOS worker adapters now provide native effects only: active-job/peer-cancel snapshots under the existing lock, socket ABORT/DONE operations, queue lock/requeue/signal, retry-state write-back, Task/status callbacks and job memory release.
+- Preserved ordering: non-DONE paths snapshot peer cancellation and clear the active marker atomically before cancellation checks; DONE paths retain the marker through completion gate and DONE_ACK, then atomically re-read peer cancellation and clear it. Retry state is written before Task returns to QUEUED; queue admission follows that transition.
+- Preserved reconnect policy inputs, retry delays, retry budget, next_i checkpoint, FIFO-front requeue and platform-specific ABORT behavior. Terminal Task finish still precedes status end, followed by job disposal; retry success does not dispose the job.
+- Added production-linked Core tests for scheduled/exhausted retry, cancellation override, completion-gate cancellation, DONE uncertainty, receiver ABORT mapping, requeue failure and invalid contracts. Wired them into Windows/macOS Core tests and the Windows HA link target.
+- Validation: pending the next exact-head Windows MSVC and macOS Apple Clang Actions run. Physical two-device reconnect, concurrent cancel/ABORT and long-duration soak remain unverified.
+- Next: move queue ownership/wait scheduling behind an explicit Sender Worker adapter. Do not remove platform worker fragments until queue lock ordering, offline expiry, shutdown drain, stuck-thread timeout and concurrent submit/cancel/retry are covered by production-linked tests.

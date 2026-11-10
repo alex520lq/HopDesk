@@ -297,6 +297,22 @@ if ($LASTEXITCODE -ne 0) { throw "Sender lifecycle policy test compilation faile
 & $senderLifecycle
 if ($LASTEXITCODE -ne 0) { throw "Sender lifecycle policy tests failed ($LASTEXITCODE)" }
 
+$senderWorkerFlow = Join-Path $build 'hopdesk-sender-worker-flow-tests.exe'
+$senderWorkerFlowSources = @(
+    (Join-Path $root 'tests/xfer_sender_worker_flow_tests.c'),
+    (Join-Path $root 'src/core/xfer_sender_worker_flow.c'),
+    (Join-Path $root 'src/core/xfer_sender_retry.c'),
+    (Join-Path $root 'src/core/xfer_sender_lifecycle.c')
+)
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$senderWorkerFlow @senderWorkerFlowSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $senderWorkerFlow @senderWorkerFlowSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Sender worker flow test compilation failed ($LASTEXITCODE)" }
+& $senderWorkerFlow
+if ($LASTEXITCODE -ne 0) { throw "Sender worker flow tests failed ($LASTEXITCODE)" }
+
 $senderEngine = Join-Path $build 'hopdesk-sender-engine-tests.exe'
 $senderEngineSources = @(
     (Join-Path $root 'tests/xfer_sender_engine_tests.c'),

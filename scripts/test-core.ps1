@@ -131,6 +131,17 @@ if ($LASTEXITCODE -ne 0) { throw "ACK coordinator compilation failed ($LASTEXITC
 & $ackCoordinator
 if ($LASTEXITCODE -ne 0) { throw "ACK coordinator tests failed ($LASTEXITCODE)" }
 
+$scannerTests = Join-Path $build 'hopdesk-scanner-tests.exe'
+$scannerSources = @((Join-Path $root 'tests/xfer_scanner_tests.c'), (Join-Path $root 'src/win/xfer_scanner.c'))
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /I (Join-Path $root 'src/win') /Fe:$scannerTests @scannerSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -I (Join-Path $root 'src/win') -o $scannerTests @scannerSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Scanner adapter compilation failed ($LASTEXITCODE)" }
+& $scannerTests
+if ($LASTEXITCODE -ne 0) { throw "Scanner adapter tests failed ($LASTEXITCODE)" }
+
 $rxAckHandler = Join-Path $build 'hopdesk-rx-ack-handler-tests.exe'
 $rxAckHandlerSources = @((Join-Path $root 'tests/xfer_rx_ack_handler_tests.c'), (Join-Path $root 'src/core/xfer_rx_ack_handler.c'), (Join-Path $root 'src/core/xfer_validate.c'), (Join-Path $root 'src/core/protocol.c'), (Join-Path $root 'src/core/crc32.c'))
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {

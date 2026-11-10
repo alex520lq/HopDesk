@@ -11,6 +11,7 @@
  * ===================================================================== */
 #include "mac_app.h"
 #include "xfer.h"
+#include "xfer_sender_threads.h"
 #include "../core/hop.h"
 #include "xfer_scanner.h"
 #include "xfer_rx_fs.h"
@@ -112,7 +113,7 @@ static struct {
     uint32_t         batch_seq;
     uint32_t         chunk;
     hop_xfer_rate_limiter rate; /* sender thread only */
-    pthread_t        th_conn, th_send;
+    hop_mac_sender_threads sender_threads;
 
     /* ---- 取消 ----
      * cur_batch 由发送线程在开始一批时设置；cancel_batch 由主线程设置。
@@ -587,6 +588,10 @@ void xfer_init(const hop_config *cfg) {
     s_ack = hop_xfer_ack_coordinator_create();
     if (!s_ack) {
         hop_log(HOP_LOG_ERROR, "xfer: ACK coordinator initialization failed");
+        pthread_cond_destroy(&s_x.qcond);
+        pthread_mutex_destroy(&s_x.qlock);
+        pthread_mutex_destroy(&s_x.slock);
+        hop_xfer_task_history_store_close();
         return;
     }
 
@@ -595,11 +600,34 @@ void xfer_init(const hop_config *cfg) {
         hop_log(HOP_LOG_ERROR, "xfer: writer thread start failed");
         hop_xfer_ack_coordinator_destroy(s_ack);
         s_ack = NULL;
+        hop_xfer_task_history_store_close();
+        pthread_cond_destroy(&s_x.qcond);
+        pthread_mutex_destroy(&s_x.qlock);
+        pthread_mutex_destroy(&s_x.slock);
         return;
     }
 
-    pthread_create(&s_x.th_send, NULL, send_thread, NULL);
-    pthread_create(&s_x.th_conn, NULL, conn_thread, NULL);
+    if (!hop_mac_sender_threads_start(
+            &s_x.sender_threads, send_thread, conn_thread, NULL)) {
+        hop_log(HOP_LOG_ERROR, "xfer: sender/connection thread start failed");
+        s_x.stop = 1;
+        pthread_mutex_lock(&s_x.qlock);
+        pthread_cond_broadcast(&s_x.qcond);
+        pthread_mutex_unlock(&s_x.qlock);
+        hop_xfer_ack_coordinator_wake(s_ack);
+        if (!hop_mac_sender_threads_join(&s_x.sender_threads)) {
+            hop_log(HOP_LOG_ERROR, "xfer: partially started threads did not join; preserve shared state");
+            return;
+        }
+        wq_stop();
+        hop_xfer_ack_coordinator_destroy(s_ack);
+        s_ack = NULL;
+        hop_xfer_task_history_store_close();
+        pthread_cond_destroy(&s_x.qcond);
+        pthread_mutex_destroy(&s_x.qlock);
+        pthread_mutex_destroy(&s_x.slock);
+        return;
+    }
 
     hop_log(HOP_LOG_INFO, "xfer: chunk %u KB", ck);
 }
@@ -619,14 +647,19 @@ void xfer_shutdown(void) {
 
     /* 必须 join：两个线程都会碰写盘队列，销毁队列时它们还活着就是释放后使用。
      * read/write 都是阻塞的，靠上面 shutdown(sock) 和 SO_SNDTIMEO 让它们返回。 */
-    pthread_join(s_x.th_conn, NULL);
-    pthread_join(s_x.th_send, NULL);
+    if (!hop_mac_sender_threads_join(&s_x.sender_threads)) {
+        hop_log(HOP_LOG_ERROR, "xfer: sender threads failed to join; skip shared-state cleanup");
+        return;
+    }
 
     rx_reset(&s_rx);      /* 先把写盘队列排空并关掉文件，再停写线程 */
     wq_stop();
     hop_xfer_ack_coordinator_destroy(s_ack);
     s_ack = NULL;
     hop_xfer_task_history_store_close();
+    pthread_cond_destroy(&s_x.qcond);
+    pthread_mutex_destroy(&s_x.qlock);
+    pthread_mutex_destroy(&s_x.slock);
 }
 
 int xfer_connected(void) {

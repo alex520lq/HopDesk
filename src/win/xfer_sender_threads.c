@@ -27,16 +27,22 @@ int hop_win_sender_threads_join(
 
     int joined = 1;
     if (threads->listener_thread) {
-        if (WaitForSingleObject(threads->listener_thread, timeout_ms) != WAIT_OBJECT_0)
+        if (WaitForSingleObject(threads->listener_thread, timeout_ms) == WAIT_OBJECT_0) {
+            CloseHandle(threads->listener_thread);
+            threads->listener_thread = NULL;
+        } else {
+            /* A timeout is not a join. Keep the handle so Shutdown can retry
+             * after the worker observes stop and leaves its current Job. */
             joined = 0;
-        CloseHandle(threads->listener_thread);
-        threads->listener_thread = NULL;
+        }
     }
     if (threads->sender_thread) {
-        if (WaitForSingleObject(threads->sender_thread, timeout_ms) != WAIT_OBJECT_0)
+        if (WaitForSingleObject(threads->sender_thread, timeout_ms) == WAIT_OBJECT_0) {
+            CloseHandle(threads->sender_thread);
+            threads->sender_thread = NULL;
+        } else {
             joined = 0;
-        CloseHandle(threads->sender_thread);
-        threads->sender_thread = NULL;
+        }
     }
 
     if (all_joined) *all_joined = joined;

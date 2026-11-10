@@ -615,7 +615,7 @@ static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
 }
 
 /* 发一个批量级 ABORT（取消时通知对端丢弃本批） */
-(SOCKET c, uint32_t batch, uint8_t reason, uint8_t target) {
+static void send_abort_msg(SOCKET c, uint32_t batch, uint8_t reason, uint8_t target) {
     uint8_t ab[6];
     hop_put_be32(ab, batch);
     ab[4] = reason; ab[5] = target;

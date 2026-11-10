@@ -29,26 +29,6 @@ static const hop_xfer_sender_queue_ops s_sender_queue_ops = {
     sender_queue_batch, sender_queue_retry_at, sender_queue_give_up_at
 };
 
-/* Caller holds s_x.lock. Copy the platform links into the shared Core view. */
-static xfer_job *queue_take_cancelled(void) {
-    hop_xfer_sender_queue queue = {s_x.q_head, s_x.q_tail};
-    xfer_job *job = (xfer_job *)hop_xfer_sender_queue_take_cancelled(
-        &queue, &s_sender_queue_ops);
-    s_x.q_head = (xfer_job *)queue.head;
-    s_x.q_tail = (xfer_job *)queue.tail;
-    return job;
-}
-static xfer_job *queue_take_head(uint64_t now, int peer_ready, int allow_ready,
-                                 hop_xfer_sender_queue_take_result *result) {
-    hop_xfer_sender_queue queue = {s_x.q_head, s_x.q_tail};
-    xfer_job *job = (xfer_job *)hop_xfer_sender_queue_take_head(
-        &queue, &s_sender_queue_ops, now, s_x.cancel_batch,
-        peer_ready, allow_ready, result);
-    s_x.q_head = (xfer_job *)queue.head;
-    s_x.q_tail = (xfer_job *)queue.tail;
-    return job;
-}
-
 static void job_free(xfer_job *j) {
     if (!j) return;
     for (int i = 0; i < j->n; ++i) {
@@ -90,10 +70,10 @@ static DWORD WINAPI send_thread(LPVOID arg) {
 
             /* 一次只摘一个，摘到就跳出、在锁外处理 —— 队列操作留在锁里，
              * 释放和日志留在锁外，锁的持有时间永远是最短的。 */
-            expired=queue_take_cancelled();
+            expired=(xfer_job *)hop_xfer_sender_queue_take_cancelled(&s_x.queue, &s_sender_queue_ops);
             if (!expired) {
                 hop_xfer_sender_queue_take_result take_result = HOP_XFER_SENDER_QUEUE_NONE;
-                xfer_job *taken = queue_take_head(now, c != INVALID_SOCKET, 1, &take_result);
+                xfer_job *taken = (xfer_job *)hop_xfer_sender_queue_take_head(&s_x.queue, &s_sender_queue_ops, now, s_x.cancel_batch, c != INVALID_SOCKET, 1, &take_result);
                 if (take_result == HOP_XFER_SENDER_QUEUE_EXPIRED) expired = taken;
                 else if (take_result == HOP_XFER_SENDER_QUEUE_READY) j = taken;
             }
@@ -154,11 +134,16 @@ static DWORD WINAPI send_thread(LPVOID arg) {
                         job_free(j);continue;
                     }
                     /* 退回队首，保持 FIFO，next_i 保留 —— 重连后从断点条目继续，不重传已确认的 */
-                    j->next = NULL;
                     EnterCriticalSection(&s_x.lock);
-                    j->next=s_x.q_head; s_x.q_head=j;
-                    if(!s_x.q_tail)s_x.q_tail=j;
+                    int queued = hop_xfer_sender_queue_push_front(
+                        &s_x.queue, &s_sender_queue_ops, j);
                     LeaveCriticalSection(&s_x.lock);
+                    if (!queued) {
+                        hop_log(HOP_LOG_ERROR, "xfer: failed to requeue batch %u after reconnect", j->batch);
+                        status_end(HOP_XFER_DIR_SEND, j->batch, HOP_XFER_FAILED, "Retry queue admission failed");
+                        sender_task_finish(&j->task, HOP_XFER_TASK_FAILED);
+                        job_free(j);
+                    }
                     continue;
                 }
                 hop_log(HOP_LOG_ERROR,

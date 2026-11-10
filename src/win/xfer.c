@@ -7,6 +7,7 @@
 
 #include "app.h"
 #include "xfer.h"
+#include "../core/hop.h"
 #include "xfer_scanner.h"
 #include "xfer_rx_fs.h"
 #include "../core/xfer_rx_receipt.h"

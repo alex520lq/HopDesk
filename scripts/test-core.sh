@@ -64,6 +64,12 @@ clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-
   "$ROOT/src/core/xfer_budget.c"
 "$BUILD/hopdesk-writer-queue-tests"
 
+clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I "$ROOT/src/core" -I "$ROOT/src/mac" -o "$BUILD/hopdesk-ack-coordinator-tests" \
+  "$ROOT/tests/xfer_ack_coordinator_tests.c" "$ROOT/src/mac/xfer_ack_coordinator.c" \
+  "$ROOT/src/core/xfer_ack_window.c"
+"$BUILD/hopdesk-ack-coordinator-tests"
+
 clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-rx-receipt-tests" \
   "$ROOT/tests/xfer_rx_receipt_tests.c" "$ROOT/src/core/xfer_rx_receipt.c" \

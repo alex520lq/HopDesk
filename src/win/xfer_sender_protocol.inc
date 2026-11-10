@@ -392,39 +392,6 @@ static int send_file_entry(SOCKET c, uint8_t *tx, uint32_t batch,
 }
 
 /* Image payloads share the same rate limiter and owned-buffer path as files. */
-static int send_image_job(SOCKET c, uint8_t *tx, xfer_job *j) {
-    uint8_t bp[20];
-    hop_put_be32(bp, j->batch);
-    hop_put_be32(bp + 4, 1);
-    hop_put_be32(bp + 8, (uint32_t)j->w);
-    hop_put_be32(bp + 12, (uint32_t)j->h);
-    hop_put_be32(bp + 16, (uint32_t)j->stride);
-    if (!send_small(c, HOP_MSG_IMAGE_BEGIN, bp, 20, j->batch)) return 0;
-
-    uint64_t total = (uint64_t)j->stride * (uint64_t)j->h;
-    uint64_t off = 0;
-    while (off < total) {
-        uint32_t n = (uint32_t)((total - off) < s_x.chunk ? (total - off) : s_x.chunk);
-        uint64_t crc_started_ns=rate_now_ns();
-        uint32_t crc = hop_crc32(0, j->pixels + off, n);
-        uint64_t crc_elapsed_ns=rate_now_ns()-crc_started_ns;
-        if (!send_chunk(c,tx,j->batch,1,off,j->pixels+off,n,crc,0,crc_elapsed_ns)) return 0;
-        off += n;
-        yield_cpu();
-        if (cancel_requested(j->batch)) return -1;
-        if (peer_aborted(j->batch)) return -2;
-    }
-
-    uint8_t endp[9];
-    hop_put_be32(endp, 1);
-    endp[4] = HOP_FILE_OK;
-    hop_put_be32(endp + 5, 0);
-    if (!send_small(c, HOP_MSG_FILE_END, endp, 9, j->batch)) return 0;
-    rate_feedback(0);
-    return 1;
-}
-
-/* 收尾：报告本批实际送达数，保留部分成功语义。 */
 static int send_done(SOCKET c, const xfer_job *j) {
     uint8_t dp[20];
     hop_put_be32(dp, j->batch);
@@ -577,23 +544,75 @@ static void sender_engine_log(void *user, int level, const char *message) {
     hop_log((hop_log_level)level, "%s", message ? message : "");
 }
 
+static uint64_t sender_engine_now_ns(void *user) {
+    (void)user;
+    return rate_now_ns();
+}
+
+static int sender_engine_send_image_begin(void *user, uint32_t batch,
+                                          uint32_t width, uint32_t height,
+                                          uint32_t stride) {
+    sender_file_engine_call *call = (sender_file_engine_call *)user;
+    uint8_t payload[20];
+    hop_put_be32(payload, batch);
+    hop_put_be32(payload + 4, 1);
+    hop_put_be32(payload + 8, width);
+    hop_put_be32(payload + 12, height);
+    hop_put_be32(payload + 16, stride);
+    return send_small(call->socket, HOP_MSG_IMAGE_BEGIN, payload,
+                      sizeof(payload), batch);
+}
+
+static int sender_engine_send_image_chunk(void *user, uint32_t batch,
+                                          uint32_t id, uint64_t offset,
+                                          const uint8_t *data, uint32_t length,
+                                          uint32_t crc, uint64_t crc_ns) {
+    sender_file_engine_call *call = (sender_file_engine_call *)user;
+    return send_chunk(call->socket, call->tx, batch, id, offset, data,
+                      length, crc, 0, crc_ns);
+}
+
+static int sender_engine_send_image_end(void *user, uint32_t batch,
+                                        uint32_t id, uint8_t status,
+                                        uint32_t file_crc) {
+    sender_file_engine_call *call = (sender_file_engine_call *)user;
+    uint8_t payload[9];
+    hop_put_be32(payload, id);
+    payload[4] = status;
+    hop_put_be32(payload + 5, file_crc);
+    return send_small(call->socket, HOP_MSG_FILE_END, payload,
+                      sizeof(payload), batch);
+}
+
+static void sender_engine_yield(void *user) {
+    (void)user;
+    yield_cpu();
+}
+
 static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
     ack_unregister_batch(j->batch);
     if (cancel_requested(j->batch)) return JOB_CANCELLED;
     if (peer_aborted(j->batch)) return JOB_PEER_ABORT;
-    if (j->is_image) {
-        int image_result = send_image_job(c, tx, j);
-        if (image_result == -1) return JOB_CANCELLED;
-        if (image_result == -2) return JOB_PEER_ABORT;
-        if (!image_result) return JOB_NET_DOWN;
-        j->ok = 1;
-        j->next_i = j->n;
-        status_file_phase(HOP_XFER_DIR_SEND, j->batch, 0,
-                          HOP_XFER_FILE_COMPLETED, 1);
-        return JOB_DONE;
-    }
-
     sender_file_engine_call call = {c, tx, j};
+    if (j->is_image) {
+        hop_xfer_sender_image_ops image_ops;
+        memset(&image_ops, 0, sizeof(image_ops));
+        image_ops.user = &call;
+        image_ops.cancel_requested = sender_engine_cancel_requested;
+        image_ops.peer_aborted = sender_engine_peer_aborted;
+        image_ops.now_ns = sender_engine_now_ns;
+        image_ops.send_image_begin = sender_engine_send_image_begin;
+        image_ops.send_image_chunk = sender_engine_send_image_chunk;
+        image_ops.send_image_end = sender_engine_send_image_end;
+        image_ops.yield_cpu = sender_engine_yield;
+        image_ops.rate_feedback = sender_engine_rate_feedback;
+        image_ops.status_file_phase = sender_engine_status_file_phase;
+        return hop_xfer_sender_run_image(&image_ops, j->batch, j->pixels,
+                                         (uint32_t)j->w, (uint32_t)j->h,
+                                         (uint32_t)j->stride, s_x.chunk,
+                                         HOP_FILE_OK, j->n, &j->next_i,
+                                         &j->ok);
+    }
     hop_xfer_sender_engine_ops ops;
     memset(&ops, 0, sizeof(ops));
     ops.user = &call;

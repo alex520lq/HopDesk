@@ -105,6 +105,33 @@ static void sender_context_status_stage_time(void *user, uint32_t batch,
     status_stage_time(HOP_XFER_DIR_SEND, batch, stage, elapsed_ns);
 }
 
+static void sender_context_status_start_job(void *user, const void *job) {
+    (void)user;
+    if (job) status_start_job((const xf_job *)job);
+}
+
+static void sender_context_status_end(void *user, uint32_t batch,
+                                      int phase, const char *detail) {
+    (void)user;
+    status_end(HOP_XFER_DIR_SEND, batch, phase, detail);
+}
+
+static void sender_context_status_file_phase(void *user, uint32_t batch,
+                                             int index, int phase,
+                                             uint32_t attempts) {
+    (void)user;
+    status_file_phase(HOP_XFER_DIR_SEND, batch, index, phase, attempts);
+}
+
+static void sender_context_status_chunk_timed(
+    void *user, uint32_t batch, uint32_t id, uint64_t offset,
+    uint32_t length, uint64_t read_ns, uint64_t crc_ns,
+    uint64_t send_ns, uint64_t receive_ns) {
+    (void)user;
+    status_chunk_timed(HOP_XFER_DIR_SEND, batch, id, offset, length,
+                       read_ns, crc_ns, send_ns, receive_ns);
+}
+
 static void sender_context_log_message(void *user, int level,
                                        const char *message) {
     (void)user;
@@ -135,7 +162,11 @@ static void sender_context_init(void) {
     s_sender_context.task_begin_completion = sender_context_task_begin_completion;
     s_sender_context.task_finish = sender_context_task_finish;
     s_sender_context.task_dispose = sender_context_task_dispose;
+    s_sender_context.status_start_job = sender_context_status_start_job;
+    s_sender_context.status_end = sender_context_status_end;
+    s_sender_context.status_file_phase = sender_context_status_file_phase;
     s_sender_context.status_stage_time = sender_context_status_stage_time;
+    s_sender_context.status_chunk_timed = sender_context_status_chunk_timed;
     s_sender_context.log_message = sender_context_log_message;
 }
 

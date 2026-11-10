@@ -574,6 +574,7 @@ int xfer_init(HWND hwnd, const hop_config *cfg) {
 
     InitializeCriticalSection(&s_x.lock);
     InitializeCriticalSection(&s_txlock);
+    s_x.sync_initialized = 1;
     if (!sender_context_ack_create()) goto fail;
     s_x.stop = CreateEventW(NULL, TRUE, FALSE, NULL);
     s_x.q_evt = CreateEventW(NULL, FALSE, FALSE, NULL);
@@ -598,61 +599,87 @@ int xfer_init(HWND hwnd, const hop_config *cfg) {
     return 1;
 
 fail:
-    if (s_x.stop) SetEvent(s_x.stop);
-    (void)hop_win_sender_threads_join(&s_x.sender_threads, INFINITE, NULL);
-    if (s_x.listen_s != INVALID_SOCKET) closesocket(s_x.listen_s);
-    wq_stop();
-    hop_xfer_task_history_store_close();
-    if (s_x.stop) CloseHandle(s_x.stop);
-    if (s_x.q_evt) CloseHandle(s_x.q_evt);
-    if (s_x.rate_timer) { CloseHandle(s_x.rate_timer); s_x.rate_timer = NULL; }
-    sender_context_ack_destroy();
-    DeleteCriticalSection(&s_x.lock);
-    DeleteCriticalSection(&s_txlock);
+    xfer_shutdown();
     return 0;
 }
 
+static int xfer_shutdown_task_audit(void) {
+    hop_xfer_task_audit audit;
+    if (!hop_xfer_task_reconcile(&audit)) {
+        hop_log(HOP_LOG_ERROR, "xfer: Task/Reservation shutdown audit unavailable");
+        return 0;
+    }
+    if (audit.mismatches || audit.task_count || audit.jobs || audit.entries ||
+        audit.pending_bytes || audit.image_bytes || audit.rx_queue_slots ||
+        audit.rx_queue_bytes || audit.image_temp_bytes) {
+        hop_log(HOP_LOG_ERROR,
+                "xfer: shutdown audit retained shared state (tasks=%u mismatches=%u jobs=%llu entries=%llu pending=%llu image=%llu rx_slots=%llu rx_bytes=%llu image_temp=%llu)",
+                audit.task_count, audit.mismatches,
+                (unsigned long long)audit.jobs, (unsigned long long)audit.entries,
+                (unsigned long long)audit.pending_bytes, (unsigned long long)audit.image_bytes,
+                (unsigned long long)audit.rx_queue_slots, (unsigned long long)audit.rx_queue_bytes,
+                (unsigned long long)audit.image_temp_bytes);
+        return 0;
+    }
+    return 1;
+}
+
 void xfer_shutdown(void) {
-    SetEvent(s_x.stop);
-    sender_context_wake_ack(); /* 踢醒可能正卡在等 ACK 的发送线程 */
+    /* Exclusive admission lock waits for all in-flight scans/submitters and
+     * prevents new ones from entering while native state is being destroyed. */
+    AcquireSRWLockExclusive(&s_x_lifecycle_lock);
+    if (!s_x.sync_initialized) {
+        ReleaseSRWLockExclusive(&s_x_lifecycle_lock);
+        return;
+    }
+    s_x.shutting_down = 1;
+    if (s_x.stop) SetEvent(s_x.stop);
+    sender_context_wake_ack(); /* wake a sender waiting for a file/DONE ACK */
+
     /* listener/connection thread owns closesocket; shutdown only wakes I/O. */
-
     EnterCriticalSection(&s_x.lock);
-    if (s_x.client != INVALID_SOCKET) {
-        /* shutdown 让对端 recv 立刻返回，send 也会立刻失败 ——
-         * 这样两个线程都能迅速退出，不会卡在阻塞调用里 */
+    if (s_x.client != INVALID_SOCKET)
         shutdown(s_x.client, SD_BOTH);
-
-    }
-    xfer_job *j = (xfer_job *)hop_xfer_sender_queue_detach_all(&s_x.queue);
-    while (j) {
-        xfer_job *nx = j->next;
-        j->next = NULL;
-        job_free(j);
-        j = nx;
-    }
     LeaveCriticalSection(&s_x.lock);
 
-    /* 线程没退出就不能拆临界区 / 队列 —— 那是释放后使用。
-     * 线程还在说明有阻塞调用没返回，此时宁可什么都不释放（进程马上退出），
-     * 也不要把锁拆掉让它在未定义行为里跑。 */
+    /* The worker retains ownership of its current Job until it exits. A timed
+     * out Join keeps its native handle; a later Shutdown call can retry. */
     int joined = 1;
     (void)hop_win_sender_threads_join(&s_x.sender_threads, 3000, &joined);
-
     if (!joined) {
-        hop_log(HOP_LOG_WARN, "xfer: threads still alive at shutdown, skip cleanup");
+        hop_log(HOP_LOG_WARN, "xfer: sender/connection threads still alive; preserve Jobs, Tasks and shared state for retry");
+        ReleaseSRWLockExclusive(&s_x_lifecycle_lock);
         return;
     }
 
-    rx_reset(&s_rx);      /* 先把写盘队列排空并关掉文件，再停写线程 */
-    wq_stop();
+    /* No worker or submitter can mutate the queue now. Shutdown becomes the
+     * sole owner of queued Jobs and any deferred Job/Task disposal. */
+    if (!sender_shutdown_drain_jobs()) {
+        hop_log(HOP_LOG_ERROR, "xfer: sender Job disposal deferred; preserve Task/Reservation state for retry");
+        ReleaseSRWLockExclusive(&s_x_lifecycle_lock);
+        return;
+    }
+
+    rx_reset(&s_rx);
+    if (!wq_stop()) {
+        hop_log(HOP_LOG_WARN, "xfer: writer worker still owns receive resources; preserve shared state for retry");
+        ReleaseSRWLockExclusive(&s_x_lifecycle_lock);
+        return;
+    }
+    if (!xfer_shutdown_task_audit()) {
+        ReleaseSRWLockExclusive(&s_x_lifecycle_lock);
+        return;
+    }
+
     hop_xfer_task_history_store_close();
-    CloseHandle(s_x.stop);
-    CloseHandle(s_x.q_evt);
+    if (s_x.stop) { CloseHandle(s_x.stop); s_x.stop = NULL; }
+    if (s_x.q_evt) { CloseHandle(s_x.q_evt); s_x.q_evt = NULL; }
     if (s_x.rate_timer) { CloseHandle(s_x.rate_timer); s_x.rate_timer = NULL; }
     sender_context_ack_destroy();
+    s_x.sync_initialized = 0;
     DeleteCriticalSection(&s_x.lock);
     DeleteCriticalSection(&s_txlock);
+    ReleaseSRWLockExclusive(&s_x_lifecycle_lock);
 }
 
 int xfer_connected(void) {

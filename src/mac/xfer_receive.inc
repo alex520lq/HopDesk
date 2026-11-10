@@ -156,9 +156,7 @@ static void rx_context_mark_sender_aborted(void *context, uint32_t batch, uint8_
         s_x.abort_reason = reason;
     }
     pthread_mutex_unlock(&s_x.qlock);
-    pthread_mutex_lock(&s_ack.lock);
-    pthread_cond_broadcast(&s_ack.cond);
-    pthread_mutex_unlock(&s_ack.lock);
+    hop_xfer_ack_coordinator_wake(s_ack);
 }
 
 static void rx_context_send_file_ack(void *context, uint32_t batch, uint32_t id, int status) {

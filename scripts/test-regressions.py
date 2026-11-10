@@ -1460,7 +1460,8 @@ int main(void){
         assert 'hop_xfer_sender_active_job_reset_peer_abort' in receive
         assert 'active_job.abort_batch' in protocol
         assert '#include "../core/xfer_sender_context_adapter.h"' in protocol
-        assert 'hop_xfer_sender_context_task_cancel_requested(' in protocol
+        assert 'hop_xfer_sender_context_job_cancel_requested(' in protocol
+        assert 'hop_xfer_sender_context_task_cancel_requested(' in worker
         assert 'hop_xfer_sender_context_task_dispose(' in worker
         assert 'hop_xfer_sender_context_status_end(' in worker
         assert 'sender_task_cancel_requested(' not in protocol+worker

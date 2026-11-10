@@ -78,8 +78,6 @@ static int fixture_sender_wait_ns(void *user,uint64_t duration_ns){
 }
 static void rate_feedback(uint64_t ack_rtt_us){(void)ack_rtt_us;}
 static int send_all(int fd,const void *p,size_t n){assert(fd==7);assert(captured_len+n<=sizeof(captured));memcpy(captured+captured_len,p,n);captured_len+=n;return 1;}
-static void status_stage_time(int d,uint32_t batch,int stage,uint64_t ns){(void)d;(void)batch;(void)stage;(void)ns;}
-static void status_chunk_timed(int d,uint32_t batch,uint32_t id,uint64_t off,uint32_t len,uint64_t rd,uint64_t crc,uint64_t send,uint64_t rx){(void)d;(void)batch;(void)id;(void)off;(void)len;(void)rd;(void)crc;(void)send;(void)rx;}
 static int shutdown(int fd,int how){(void)fd;(void)how;closed++;return 0;}
 static void xfer_kick(void){closed++;}
 static void on_data_msg(void *user,uint8_t type,const uint8_t *p,uint32_t len){(void)user;(void)type;(void)p;(void)len;delivered++;}

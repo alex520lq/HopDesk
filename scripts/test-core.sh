@@ -121,3 +121,8 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
   "$ROOT/tests/xfer_rx_ack_handler_tests.c" "$ROOT/src/core/xfer_rx_ack_handler.c" \
   "$ROOT/src/core/xfer_validate.c" "$ROOT/src/core/protocol.c" "$ROOT/src/core/crc32.c"
 "$BUILD/hopdesk-rx-ack-handler-tests"
+
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I "$ROOT/src/core" -o "$BUILD/hopdesk-sender-context-tests" \
+  "$ROOT/tests/xfer_sender_context_tests.c"
+"$BUILD/hopdesk-sender-context-tests"

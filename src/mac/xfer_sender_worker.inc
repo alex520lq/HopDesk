@@ -90,7 +90,7 @@ static void *send_thread(void *arg) {
             /* 退出时不再发新东西：队列直接释放，避免在这里空转 */
             xf_job *p = (xf_job *)hop_xfer_sender_queue_detach_all(&s_x.queue);
             pthread_mutex_unlock(&s_x.qlock);
-            while (p) { xf_job *nx = p->next; job_free(p); p = nx; }
+            while (p) { xf_job *nx = p->next; p->next = NULL; job_free(p); p = nx; }
             break;
         }
 

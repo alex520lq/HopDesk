@@ -11,6 +11,7 @@
  * ===================================================================== */
 #include "mac_app.h"
 #include "xfer.h"
+#include "xfer_scanner.h"
 #include "xfer_rx_fs.h"
 #include "../core/xfer_rx_receipt.h"
 #include "../core/xfer_rx_lifecycle.h"
@@ -62,18 +63,8 @@ _Static_assert(HOP_TASK_SESSION_BYTES == HOP_SESSION_BYTES, "task and protocol s
 #include <time.h>
 #include <stdatomic.h>
 
-#define XFER_MAX_ENTRIES 8192
 
 /* ---------------- 条目 / 作业 ---------------- */
-
-typedef struct {
-    char    *full;
-    char    *name;
-    char    *rel;
-    uint64_t size;
-    uint64_t mtime;
-    uint32_t flags;
-} xf_entry;
 
 typedef struct xf_job {
     struct xf_job *next;
@@ -96,14 +87,6 @@ typedef struct xf_job {
     uint64_t  give_up_at;     /* 断线重连预算的截止时刻，0 = 未开始计时 */
     uint64_t  scan_ns;        /* source enumeration duration, recorded on first visible attempt */
 } xf_job;
-
-typedef struct {
-    xf_entry *v;
-    int n, cap;
-    int failed; /* incomplete/unsafe snapshots are never queued */
-    int budget_rejected;
-    hop_xfer_task task;
-} elist;
 
 /* ---------------- 状态 ---------------- */
 
@@ -472,132 +455,7 @@ static const char *temp_root(void) {
 
 /* Relative path validation is shared in src/core/xfer_validate.c. */
 
-/* ---------------- 条目列表 ---------------- */
-
-static int elist_push(elist *l, xf_entry *e) {
-    if (!e || !e->name || !e->rel ||
-        strlen(e->name) > HOP_NAME_LEN_MAX ||
-        strlen(e->rel) > HOP_PATH_LEN_MAX ||
-        l->n >= XFER_MAX_ENTRIES) {
-        l->failed = 1;
-        return 0;
-    }
-    if (!hop_xfer_task_reserve_entry(&l->task, e->size)) {
-        l->budget_rejected = 1;
-        l->failed = 1;
-        return 0;
-    }
-    if (l->n == l->cap) {
-        int nc = l->cap ? l->cap * 2 : 32;
-        xf_entry *nv = (xf_entry *)realloc(l->v, (size_t)nc * sizeof(*nv));
-        if (!nv) { l->failed = 1; return 0; }
-        l->v = nv;
-        l->cap = nc;
-    }
-    l->v[l->n++] = *e;
-    return 1;
-}
-
-static void elist_free(elist *l) {
-    for (int i = 0; i < l->n; ++i) {
-        free(l->v[i].full);
-        free(l->v[i].name);
-        free(l->v[i].rel);
-    }
-    free(l->v);
-    l->v = NULL;
-    l->n = l->cap = 0;
-    l->failed = 0;
-    hop_xfer_task_dispose(&l->task);
-}
-
-/* 递归收集。lstat 而不是 stat：符号链接跳过，避免环和越界。 */
-static struct dirent *guarded_readdir(DIR *directory) {
-    int guard = hop_watchdog_begin("directory next", HOP_IO_DEADLINE_MS);
-    struct dirent *entry = readdir(directory); hop_watchdog_end(guard); return entry;
-}
-static void walk_into(elist *l, const char *full, const char *rel) {
-    if (!l || l->failed) return;
-    if (hop_xfer_task_cancel_requested(l->task.id)) { l->failed=1; return; }
-    struct stat st;
-    int stat_guard = hop_watchdog_begin("file attributes", HOP_IO_DEADLINE_MS);
-    int stat_ok = lstat(full, &st); hop_watchdog_end(stat_guard);
-    if (stat_ok != 0) {
-        l->failed = 1;
-        hop_log(HOP_LOG_WARN, "xfer: source path disappeared or is inaccessible");
-        return;
-    }
-    if (S_ISLNK(st.st_mode)) {
-        l->failed = 1;
-        hop_log(HOP_LOG_WARN, "xfer: symbolic link rejected from file selection");
-        return;
-    }
-
-    const char *bn = strrchr(full, '/');
-    bn = bn ? bn + 1 : full;
-
-    xf_entry e;
-    memset(&e, 0, sizeof(e));
-    e.full  = strdup(full);
-    e.name  = strdup(bn);
-    e.rel   = rel ? strdup(rel) : NULL;
-    e.mtime = (uint64_t)st.st_mtime;
-
-    if (!e.full || !e.name || !e.rel) {
-        free(e.full); free(e.name); free(e.rel);
-        l->failed = 1;
-        return;
-    }
-
-    if (!S_ISDIR(st.st_mode)) {
-        if (!S_ISREG(st.st_mode)) {
-            free(e.full); free(e.name); free(e.rel);
-            l->failed = 1;
-            hop_log(HOP_LOG_WARN, "xfer: non-regular source entry rejected");
-            return;
-        }
-        e.size  = (uint64_t)st.st_size;
-        e.flags = 0;
-        if (!elist_push(l, &e)) { free(e.full); free(e.name); free(e.rel); }
-        return;
-    }
-
-    e.size  = 0;
-    e.flags = HOP_FILE_FLAG_DIR;
-    if (!elist_push(l, &e)) { free(e.full); free(e.name); free(e.rel); return; }
-
-    int open_guard = hop_watchdog_begin("directory open", HOP_IO_DEADLINE_MS);
-    DIR *d = opendir(full); hop_watchdog_end(open_guard);
-    if (!d) {
-        l->failed = 1;
-        hop_log(HOP_LOG_WARN, "xfer: cannot enumerate selected directory");
-        return;
-    }
-
-    struct dirent *de;
-    while ((de = guarded_readdir(d)) != NULL) {
-        if (l->failed) break;
-        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
-
-        size_t fl = strlen(full), nl = strlen(de->d_name), rl = strlen(rel);
-        char *child = (char *)malloc(fl + nl + 2);
-        char *crel  = (char *)malloc(rl + nl + 2);
-        if (!child || !crel) {
-            free(child); free(crel);
-            l->failed = 1;
-            break;
-        }
-
-        snprintf(child, fl + nl + 2, "%s/%s", full, de->d_name);
-        snprintf(crel,  rl + nl + 2, "%s/%s", rel, de->d_name);
-
-        walk_into(l, child, crel);
-        free(child);
-        free(crel);
-        if (l->failed) break;
-    }
-    closedir(d);
-}
+/* Source scanning is implemented by xfer_scanner.c. */
 
 /* ---------------- 发送 ---------------- */
 

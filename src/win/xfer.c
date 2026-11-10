@@ -46,6 +46,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <limits.h>
 #include <io.h>
 #include <time.h>
 

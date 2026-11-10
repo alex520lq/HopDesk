@@ -33,6 +33,9 @@ int main(void) {
            "Completion delivery uncertain; peer may have received it");
     expect(HOP_XFER_SENDER_JOB_NET_DOWN, 0, 0,
            HOP_XFER_TASK_FAILED, HOP_XFER_FAILED, "Reconnect attempts exhausted");
+    expect(HOP_XFER_SENDER_JOB_SHUTDOWN, 0, 0,
+           HOP_XFER_TASK_INTERRUPTED, HOP_XFER_FAILED,
+           "Transfer interrupted during shutdown");
 
     hop_xfer_sender_terminal_decision invalid;
     assert(!hop_xfer_sender_get_terminal_decision(

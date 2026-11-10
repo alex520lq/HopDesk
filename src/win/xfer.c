@@ -37,6 +37,7 @@
 #include "../core/xfer_sender_context.h"
 #include "../core/xfer_sender_engine.h"
 #include "../core/xfer_sender_queue.h"
+#include "../core/xfer_sender_scheduler.h"
 #include "../core/xfer_sender_retry.h"
 #include "../core/xfer_sender_lifecycle.h"
 #include "../core/xfer_sender_worker_flow.h"

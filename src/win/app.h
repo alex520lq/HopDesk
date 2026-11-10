@@ -62,7 +62,7 @@ void win_inject_reset(void);
 
 /* clipboard.c */
 void clip_init(HWND hwnd);
-int  clip_shutdown(HWND hwnd);
+int clip_shutdown(HWND hwnd);
 void clip_on_worker_message(UINT format, HGLOBAL h);
 void clip_on_update(void);                              /* WM_CLIPBOARDUPDATE */
 void clip_retry_pending(void);                          /* WM_TIMER(IDT_CLIP_RETRY) */

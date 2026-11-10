@@ -298,6 +298,231 @@ int hop_xfer_sender_run_files(const hop_xfer_sender_engine_ops *ops,
     return HOP_XFER_SENDER_JOB_DONE;
 }
  
+
+static void sender_file_log(const hop_xfer_sender_file_ops *ops, int level,
+                            const char *format, const char *path,
+                            uint64_t a, uint64_t b, uint32_t error) {
+    if (!ops->log_message) return;
+    char message[512];
+    if (b) {
+        snprintf(message, sizeof(message), format, path ? path : "(unknown)",
+                 (unsigned long long)a, (unsigned long long)b);
+    } else if (error) {
+        snprintf(message, sizeof(message), format, path ? path : "(unknown)",
+                 (unsigned long)error);
+    } else {
+        snprintf(message, sizeof(message), format, path ? path : "(unknown)");
+    }
+    ops->log_message(ops->user, level, message);
+}
+
+static void sender_file_unregister(const hop_xfer_sender_file_ops *ops,
+                                   uint32_t batch, uint32_t id) {
+    ops->ack_unregister(ops->user, batch, id);
+}
+
+hop_xfer_sender_send_result hop_xfer_sender_send_file_entry(
+    const hop_xfer_sender_file_ops *ops, uint32_t batch, uint32_t id,
+    const hop_xfer_sender_file_entry *entry, uint8_t *begin_buffer,
+    uint8_t *chunk_buffer, uint32_t chunk_size, uint64_t ack_timeout_ns,
+    uint32_t directory_flag, uint8_t file_ok_status,
+    uint8_t file_io_error_status, uint8_t file_begin_message,
+    uint8_t file_end_message, uint64_t *ack_deadline_ns) {
+    if (!ops || !entry || !entry->platform_entry || !entry->name ||
+        !entry->relative_path || !begin_buffer || !chunk_buffer ||
+        !chunk_size || !ack_timeout_ns || !ack_deadline_ns ||
+        !ops->cancel_requested || !ops->peer_aborted || !ops->open_file ||
+        !ops->read_file || !ops->close_file || !ops->send_message ||
+        !ops->send_chunk || !ops->ack_register || !ops->ack_mark_sent ||
+        !ops->ack_set_deadline || !ops->ack_unregister || !ops->now_ns) {
+        return HOP_XFER_SENDER_SEND_RETRYABLE;
+    }
+    *ack_deadline_ns = 0;
+
+    size_t name_length = strlen(entry->name);
+    size_t path_length = strlen(entry->relative_path);
+    if (name_length > UINT16_MAX || path_length > UINT16_MAX)
+        return HOP_XFER_SENDER_SEND_RETRYABLE;
+    size_t begin_length = 4u + 4u + 8u + 8u + 1u + 2u +
+                          name_length + 2u + path_length;
+    if (begin_length > chunk_size || begin_length > UINT32_MAX)
+        return HOP_XFER_SENDER_SEND_RETRYABLE;
+
+    if (!ops->ack_register(ops->user, batch, id))
+        return HOP_XFER_SENDER_SEND_RETRYABLE;
+
+    uint32_t offset = 0;
+    hop_put_be32(begin_buffer + offset, batch); offset += 4;
+    hop_put_be32(begin_buffer + offset, id); offset += 4;
+    hop_put_be64(begin_buffer + offset, entry->size); offset += 8;
+    hop_put_be64(begin_buffer + offset, entry->mtime); offset += 8;
+    begin_buffer[offset++] = (uint8_t)entry->flags;
+    hop_put_be16(begin_buffer + offset, (uint16_t)name_length); offset += 2;
+    memcpy(begin_buffer + offset, entry->name, name_length); offset += (uint32_t)name_length;
+    hop_put_be16(begin_buffer + offset, (uint16_t)path_length); offset += 2;
+    memcpy(begin_buffer + offset, entry->relative_path, path_length);
+
+    if (!ops->send_message(ops->user, file_begin_message, begin_buffer,
+                           (uint32_t)begin_length, batch)) {
+        sender_file_unregister(ops, batch, id);
+        return HOP_XFER_SENDER_SEND_DEAD;
+    }
+
+    uint32_t file_crc = 0;
+    uint8_t end_status = file_ok_status;
+    int local_failure = 0;
+    if (!(entry->flags & directory_flag)) {
+        intptr_t file_handle = (intptr_t)-1;
+        uint32_t system_error = 0;
+        if (!ops->open_file(ops->user, entry->platform_entry,
+                            &file_handle, &system_error)) {
+            sender_file_log(ops, 1, "xfer: open failed, %s (system error %lu)",
+                            entry->relative_path, 0, 0, system_error);
+            end_status = file_io_error_status;
+            local_failure = 1;
+        } else {
+            uint64_t file_offset = 0;
+            while (file_offset < entry->size) {
+                if (ops->cancel_requested(ops->user, batch)) {
+                    ops->close_file(ops->user, file_handle);
+                    sender_file_unregister(ops, batch, id);
+                    return HOP_XFER_SENDER_SEND_CANCELLED;
+                }
+                if (ops->peer_aborted(ops->user, batch)) {
+                    ops->close_file(ops->user, file_handle);
+                    sender_file_unregister(ops, batch, id);
+                    return HOP_XFER_SENDER_SEND_PEER_ABORT;
+                }
+
+                uint64_t remaining = entry->size - file_offset;
+                uint32_t request = (uint32_t)(remaining < chunk_size ?
+                                              remaining : chunk_size);
+                uint32_t bytes_read = 0;
+                system_error = 0;
+                uint64_t read_started_ns = ops->now_ns(ops->user);
+                hop_xfer_sender_read_result read_result = ops->read_file(
+                    ops->user, file_handle, chunk_buffer, request,
+                    &bytes_read, &system_error);
+                uint64_t read_finished_ns = ops->now_ns(ops->user);
+                uint64_t read_elapsed_ns = read_finished_ns >= read_started_ns
+                    ? read_finished_ns - read_started_ns : 0;
+
+                if (read_result == HOP_XFER_SENDER_READ_ERROR) {
+                    if (ops->status_stage_time)
+                        ops->status_stage_time(ops->user, batch,
+                                               HOP_XFER_TIME_READ, read_elapsed_ns);
+                    sender_file_log(ops, 1, "xfer: read failed, %s (system error %lu)",
+                                    entry->relative_path, 0, 0, system_error);
+                    end_status = file_io_error_status;
+                    local_failure = 1;
+                    break;
+                }
+                if (read_result == HOP_XFER_SENDER_READ_EOF || !bytes_read ||
+                    bytes_read > request) {
+                    if (ops->status_stage_time)
+                        ops->status_stage_time(ops->user, batch,
+                                               HOP_XFER_TIME_READ, read_elapsed_ns);
+                    if (bytes_read > request) {
+                        sender_file_log(ops, 1,
+                            "xfer: invalid read length for %s (system error %lu)",
+                            entry->relative_path, 0, 0, 0);
+                    } else {
+                        char message[512];
+                        snprintf(message, sizeof(message),
+                                 "xfer: unexpected EOF, %s (%llu/%llu bytes)",
+                                 entry->relative_path,
+                                 (unsigned long long)file_offset,
+                                 (unsigned long long)entry->size);
+                        sender_log(ops, 1, message);
+                    }
+                    end_status = file_io_error_status;
+                    local_failure = 1;
+                    break;
+                }
+
+                uint64_t crc_started_ns = ops->now_ns(ops->user);
+                uint32_t chunk_crc = hop_crc32(0, chunk_buffer, bytes_read);
+                uint64_t crc_finished_ns = ops->now_ns(ops->user);
+                uint64_t crc_elapsed_ns = crc_finished_ns >= crc_started_ns
+                    ? crc_finished_ns - crc_started_ns : 0;
+                if (!ops->send_chunk(ops->user, batch, id, file_offset,
+                                     chunk_buffer, bytes_read, chunk_crc,
+                                     read_elapsed_ns, crc_elapsed_ns)) {
+                    ops->close_file(ops->user, file_handle);
+                    sender_file_unregister(ops, batch, id);
+                    if (ops->cancel_requested(ops->user, batch))
+                        return HOP_XFER_SENDER_SEND_CANCELLED;
+                    if (ops->peer_aborted(ops->user, batch))
+                        return HOP_XFER_SENDER_SEND_PEER_ABORT;
+                    return HOP_XFER_SENDER_SEND_DEAD;
+                }
+                file_crc = hop_xfer_file_crc_step(file_crc, file_offset, chunk_crc);
+                file_offset += bytes_read;
+                if (ops->yield_cpu) ops->yield_cpu(ops->user);
+                if (ops->cancel_requested(ops->user, batch)) {
+                    ops->close_file(ops->user, file_handle);
+                    sender_file_unregister(ops, batch, id);
+                    return HOP_XFER_SENDER_SEND_CANCELLED;
+                }
+                if (ops->peer_aborted(ops->user, batch)) {
+                    ops->close_file(ops->user, file_handle);
+                    sender_file_unregister(ops, batch, id);
+                    return HOP_XFER_SENDER_SEND_PEER_ABORT;
+                }
+            }
+
+            if (!local_failure && file_offset == entry->size) {
+                uint8_t extra = 0;
+                uint32_t extra_read = 0;
+                system_error = 0;
+                hop_xfer_sender_read_result probe = ops->read_file(
+                    ops->user, file_handle, &extra, 1, &extra_read, &system_error);
+                if (probe != HOP_XFER_SENDER_READ_EOF || extra_read != 0) {
+                    char message[512];
+                    if (probe == HOP_XFER_SENDER_READ_ERROR) {
+                        snprintf(message, sizeof(message),
+                                 "xfer: source probe failed, %s (system error %lu)",
+                                 entry->relative_path, (unsigned long)system_error);
+                    } else {
+                        snprintf(message, sizeof(message),
+                                 "xfer: source changed while queued, %s",
+                                 entry->relative_path);
+                    }
+                    sender_log(ops, 1, message);
+                    end_status = file_io_error_status;
+                    local_failure = 1;
+                }
+            }
+            ops->close_file(ops->user, file_handle);
+        }
+    }
+
+    uint8_t end_payload[9];
+    hop_put_be32(end_payload, id);
+    end_payload[4] = end_status;
+    hop_put_be32(end_payload + 5, file_crc);
+    if (!ops->ack_mark_sent(ops->user, batch, id)) {
+        sender_file_unregister(ops, batch, id);
+        return HOP_XFER_SENDER_SEND_RETRYABLE;
+    }
+    if (!ops->send_message(ops->user, file_end_message, end_payload,
+                           sizeof(end_payload), batch)) {
+        sender_file_unregister(ops, batch, id);
+        return HOP_XFER_SENDER_SEND_DEAD;
+    }
+
+    uint64_t now = ops->now_ns(ops->user);
+    uint64_t deadline = ack_timeout_ns > UINT64_MAX - now
+        ? UINT64_MAX : now + ack_timeout_ns;
+    *ack_deadline_ns = deadline;
+    if (!ops->ack_set_deadline(ops->user, batch, id, deadline)) {
+        sender_file_unregister(ops, batch, id);
+        return HOP_XFER_SENDER_SEND_RETRYABLE;
+    }
+    (void)local_failure;
+    return HOP_XFER_SENDER_SEND_PENDING;
+}
+
 int hop_xfer_sender_run_image(const hop_xfer_sender_image_ops *ops,
                               uint32_t batch, const uint8_t *pixels,
                               uint32_t width, uint32_t height,

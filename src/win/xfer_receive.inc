@@ -177,7 +177,7 @@ static void rx_context_mark_sender_aborted(void *context, uint32_t batch, uint8_
         s_x.abort_reason = reason;
     }
     LeaveCriticalSection(&s_x.lock);
-    hop_xfer_ack_coordinator_wake(s_ack);
+    sender_context_wake_ack();
 }
 
 static void rx_context_send_file_ack(void *context, uint32_t batch, uint32_t id, int status) {

@@ -86,7 +86,9 @@ static DWORD WINAPI send_thread(LPVOID arg) {
                             expired->batch, expired->ok, expired->n);
                 int was_cancelled=cancel_requested(expired->batch) || sender_task_cancel_requested(&expired->sender_context, expired->batch, &expired->task);
                 if (was_cancelled && c != INVALID_SOCKET && hop_session_id_equal(&expired->session,&transport_session))
-                    send_abort_msg(c,expired->batch,HOP_ABORT_CANCEL,HOP_ABORT_TO_RECEIVER);
+                    send_abort_msg_with_context(&expired->sender_context, c,
+                                                expired->batch, HOP_ABORT_CANCEL,
+                                                HOP_ABORT_TO_RECEIVER);
                 AcquireSRWLockShared(&s_status_lock);
                 int show_status=!s_send_status.status.active || s_send_status.status.batch==expired->batch;
                 ReleaseSRWLockShared(&s_status_lock);
@@ -173,7 +175,8 @@ static DWORD WINAPI send_thread(LPVOID arg) {
                             "xfer: batch %u abandoned after %d attempt(s), %d/%d delivered",
                             j->batch, j->attempt, j->ok, j->n);
             } else if (r == JOB_CANCELLED) {
-                send_abort_msg(c, j->batch, HOP_ABORT_CANCEL, HOP_ABORT_TO_RECEIVER);
+                send_abort_msg_with_context(&j->sender_context, c, j->batch,
+                                            HOP_ABORT_CANCEL, HOP_ABORT_TO_RECEIVER);
             } else if (r == JOB_DONE) {
                 if (j->ok < j->n)
                     sender_logf(&j->sender_context, HOP_LOG_WARN,

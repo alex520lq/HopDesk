@@ -583,7 +583,7 @@ static const char *temp_root(void) {
 
 /* ---------------- 对外接口 ---------------- */
 
-void xfer_init(const hop_config *cfg) {
+int xfer_init(const hop_config *cfg) {
     pthread_rwlock_wrlock(&s_x_lifecycle_lock);
     history_load();
     task_history_store_open();
@@ -609,8 +609,7 @@ void xfer_init(const hop_config *cfg) {
     if (!sender_context_ack_create()) {
         hop_log(HOP_LOG_ERROR, "xfer: ACK coordinator initialization failed");
         pthread_rwlock_unlock(&s_x_lifecycle_lock);
-        xfer_shutdown();
-        return;
+        return 0;
     }
 
     /* 写盘线程要先起来，接收路径一进来就会往队列里塞 */
@@ -631,6 +630,7 @@ void xfer_init(const hop_config *cfg) {
 
     hop_log(HOP_LOG_INFO, "xfer: chunk %u KB", ck);
     pthread_rwlock_unlock(&s_x_lifecycle_lock);
+    return 1;
 }
 
 static int xfer_shutdown_task_audit(void) {
@@ -654,13 +654,13 @@ static int xfer_shutdown_task_audit(void) {
     return 1;
 }
 
-void xfer_shutdown(void) {
+int xfer_shutdown(void) {
     /* Writer admission lock waits for all in-flight scans/submitters. Keep it
      * held until shared locks, queue, Task history and ACK state are destroyed. */
     pthread_rwlock_wrlock(&s_x_lifecycle_lock);
     if (!s_x.sync_initialized) {
         pthread_rwlock_unlock(&s_x_lifecycle_lock);
-        return;
+        return 1;
     }
     s_x.shutting_down = 1;
     atomic_store_explicit(&s_x.stop, 1, memory_order_release);
@@ -680,24 +680,24 @@ void xfer_shutdown(void) {
     if (!hop_mac_sender_threads_join(&s_x.sender_threads)) {
         hop_log(HOP_LOG_ERROR, "xfer: sender threads failed to join; preserve shared state for retry");
         pthread_rwlock_unlock(&s_x_lifecycle_lock);
-        return;
+        return 0;
     }
 
     if (!sender_shutdown_drain_jobs()) {
         hop_log(HOP_LOG_ERROR, "xfer: sender Job disposal deferred; preserve Task/Reservation state for retry");
         pthread_rwlock_unlock(&s_x_lifecycle_lock);
-        return;
+        return 0;
     }
 
     rx_reset(&s_rx);
     if (!wq_stop()) {
         hop_log(HOP_LOG_WARN, "xfer: writer worker still owns receive resources; preserve shared state for retry");
         pthread_rwlock_unlock(&s_x_lifecycle_lock);
-        return;
+        return 0;
     }
     if (!xfer_shutdown_task_audit()) {
         pthread_rwlock_unlock(&s_x_lifecycle_lock);
-        return;
+        return 0;
     }
 
     sender_context_ack_destroy();
@@ -707,6 +707,7 @@ void xfer_shutdown(void) {
     pthread_mutex_destroy(&s_x.slock);
     s_x.sync_initialized = 0;
     pthread_rwlock_unlock(&s_x_lifecycle_lock);
+    return 1;
 }
 
 int xfer_connected(void) {

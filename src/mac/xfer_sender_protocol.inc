@@ -636,11 +636,18 @@ static int send_done_result(int fd, const xf_job *job) {
 }
 
 /* 发一个批量级 ABORT（取消时通知对端丢弃本批） */
-static void send_abort_msg(int fd, uint32_t batch, uint8_t reason) {
+static void send_abort_msg_with_context(
+    const hop_xfer_sender_context *context, int fd,
+    uint32_t batch, uint8_t reason) {
     uint8_t ab[6];
     hop_put_be32(ab, batch);
     ab[4] = reason; ab[5] = HOP_ABORT_TO_RECEIVER;
-    send_small(fd, HOP_MSG_XFER_ABORT, ab, sizeof(ab), batch);
+    send_small_with_context(context, fd, HOP_MSG_XFER_ABORT,
+                            ab, sizeof(ab), batch);
+}
+
+static void send_abort_msg(int fd, uint32_t batch, uint8_t reason) {
+    send_abort_msg_with_context(&s_sender_context, fd, batch, reason);
 }
 
 /* 取当前连接再发 ABORT。sock 由 slock 保护，不能裸读。

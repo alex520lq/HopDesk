@@ -105,6 +105,11 @@ int main(void) {
     assert(ctx.now_ns(ctx.user) == 0);
     assert(ctx.wait_ns(ctx.user, 250) == 1);
     assert(ctx.now_ns(ctx.user) == 250);
+    state.stopping = 1;
+    assert(ctx.is_stopping(ctx.user));
+    assert(!ctx.wait_ns(ctx.user, 10));
+    state.stopping = 0;
+    assert(!ctx.is_stopping(ctx.user));
     assert(ctx.session_current(ctx.user, 7, 3));
     assert(!ctx.session_current(ctx.user, (intptr_t)-1, 3));
     const uint8_t frame[] = {1, 2, 3};

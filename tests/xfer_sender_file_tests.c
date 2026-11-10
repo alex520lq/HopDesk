@@ -192,6 +192,21 @@ static hop_xfer_sender_send_result run(fake_file *f, uint32_t flags,
         HOP_MSG_FILE_BEGIN, HOP_MSG_FILE_END, deadline);
 }
 
+static void test_begin_buffer_capacity_is_independent_of_chunk_size(void) {
+    fake_file f; setup(&f);
+    uint8_t begin[256], chunk[8]; uint64_t deadline = 0;
+    hop_xfer_sender_file_ops ops = make_ops(&f);
+    hop_xfer_sender_file_entry entry = {
+        &f, "a.txt", "dir/a.txt", 10, 1234, 0
+    };
+    assert(hop_xfer_sender_send_file_entry(
+        &ops, 77, 3, &entry, begin, 8, chunk, 8, 5000000ull,
+        HOP_FILE_FLAG_DIR, HOP_FILE_OK, HOP_FILE_IO_ERROR,
+        HOP_MSG_FILE_BEGIN, HOP_MSG_FILE_END, &deadline) ==
+        HOP_XFER_SENDER_SEND_RETRYABLE);
+    assert(f.ack_registers == 0 && f.messages == 0);
+}
+
 static void test_success_and_crc(void) {
     fake_file f; setup(&f);
     uint8_t begin[256], chunk[8]; uint64_t deadline = 0;
@@ -284,6 +299,7 @@ static void test_ack_reservation_failures(void) {
     assert(f.ack_unregisters == 1 && f.ack_deadlines == 1);
 }
 int main(void) {
+    test_begin_buffer_capacity_is_independent_of_chunk_size();
     test_success_and_crc();
     test_directory_and_open_failure();
     test_read_failures_and_source_change();

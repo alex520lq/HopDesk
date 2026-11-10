@@ -774,6 +774,18 @@ int main(void){
         assert 'ack_wait' in protocol and 'rate_feedback' in protocol
         assert 'xfer_submit_paths_impl' in submission and 'xfer_submit_image_impl' in submission
 
+        scanner=(ROOT/f'src/{platform}/xfer_scanner.c').read_text(encoding='utf-8')
+        scanner_header=(ROOT/f'src/{platform}/xfer_scanner.h').read_text(encoding='utf-8')
+        assert 'hop_xfer_scan_paths' in scanner and 'walk_into' in scanner and 'elist_push' in scanner
+        assert 'hop_xfer_task_reserve_entry' in scanner and 'hop_xfer_task_cancel_requested' in scanner
+        assert 'HOP_XFER_SCAN_MAX_ENTRIES' in scanner_header
+        if platform=='win':
+            assert 'FILE_ATTRIBUTE_REPARSE_POINT' in scanner and 'FindFirstFileW' in scanner
+        else:
+            assert 'S_ISLNK' in scanner and 'lstat(' in scanner and 'S_ISREG' in scanner
+        assert 'walk_into' not in transport and 'elist_push' not in transport
+        assert 'hop_xfer_scan_paths(&l, paths, n)' in submission
+
     # Exact production case bodies + lifecycle helpers; only OS I/O is doubled.
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')

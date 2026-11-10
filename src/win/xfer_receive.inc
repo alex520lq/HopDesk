@@ -88,10 +88,10 @@ static int wq_push_data(hop_xfer_task *owner, uint64_t offset,
 }
 
 static void wq_drain(void) {
-    hop_writer_queue_drain(s_wq);
+    if (s_wq) hop_writer_queue_drain(s_wq);
 }
 static int wq_error_get(void) {
-    return hop_writer_queue_error(s_wq);
+    return s_wq ? hop_writer_queue_error(s_wq) : 0;
 }
 
 static void wq_stop(void) {

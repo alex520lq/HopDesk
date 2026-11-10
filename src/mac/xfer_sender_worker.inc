@@ -10,7 +10,7 @@ static void sender_queue_set_next(void *user, void *node, void *next) {
 static int sender_queue_is_cancelled(void *user, const void *node) {
     (void)user;
     const xf_job *job = (const xf_job *)node;
-    return sender_task_cancel_requested(&job->sender_context, job->batch, &job->task);
+    return hop_xfer_sender_context_task_cancel_requested(&job->sender_context, job->batch, &job->task);
 }
 static uint32_t sender_queue_batch(void *user, const void *node) {
     (void)user;
@@ -107,9 +107,9 @@ static int job_free(xf_job *j, xfer_job_owner expected_owner) {
                 : (expected_owner == XFER_JOB_OWNER_SUBMITTER
                     ? HOP_XFER_TASK_FAILED : HOP_XFER_TASK_INTERRUPTED);
             if (!j->pending_finish_valid &&
-                sender_job_cancel_requested(&j->sender_context,j->batch,j->task.id))
+                hop_xfer_sender_context_job_cancel_requested(&j->sender_context,j->batch,j->task.id))
                 state = HOP_XFER_TASK_CANCELLED;
-            sender_task_finish(&j->sender_context,&j->task,state);
+            hop_xfer_sender_context_task_finish(&j->sender_context,&j->task,state);
             if (!hop_xfer_task_is_terminal(&j->task)) {
                 job_defer_to_shutdown(j, expected_owner);
                 hop_log(HOP_LOG_ERROR, "xfer: Job Task terminalization deferred (batch=%u task=%llu)",
@@ -117,7 +117,7 @@ static int job_free(xf_job *j, xfer_job_owner expected_owner) {
                 return 0;
             }
         }
-        if (!sender_task_dispose(&j->sender_context, &j->task) ||
+        if (!hop_xfer_sender_context_task_dispose(&j->sender_context, &j->task) ||
             j->task.initialized || j->task.id) {
             job_defer_to_shutdown(j, expected_owner);
             hop_log(HOP_LOG_ERROR, "xfer: Job Task disposal deferred (batch=%u task=%llu)",
@@ -127,7 +127,7 @@ static int job_free(xf_job *j, xfer_job_owner expected_owner) {
     }
 
     if (j->pending_status_end) {
-        sender_status_end(&j->sender_context,j->batch,j->pending_status_phase,
+        hop_xfer_sender_context_status_end(&j->sender_context,j->batch,j->pending_status_phase,
                           j->pending_status_detail[0] ? j->pending_status_detail : "Transfer ended");
         j->pending_status_end=0;
     }
@@ -149,7 +149,7 @@ static unsigned sender_worker_retry_delay_ms(void *user, uint32_t attempt) {
 }
 static int sender_worker_is_cancelled(void *user, uint32_t batch, uint64_t task_id) {
     sender_worker_call *call=(sender_worker_call *)user;
-    return call&&call->job&&sender_job_cancel_requested(&call->job->sender_context,batch,task_id);
+    return call&&call->job&&hop_xfer_sender_context_job_cancel_requested(&call->job->sender_context,batch,task_id);
 }
 static int sender_worker_is_stopping(void *user) {
     sender_worker_call *call=(sender_worker_call *)user;
@@ -159,12 +159,12 @@ static int sender_worker_is_stopping(void *user) {
 static int sender_worker_begin_completion(void *user, uint64_t task_id) {
     sender_worker_call *call=(sender_worker_call *)user;
     return call&&call->job&&call->job->task.id==task_id&&
-        sender_task_begin_completion(&call->job->sender_context,&call->job->task);
+        hop_xfer_sender_context_task_begin_completion(&call->job->sender_context,&call->job->task);
 }
 static int sender_worker_set_queued(void *user, uint64_t task_id) {
     sender_worker_call *call=(sender_worker_call *)user;
     return call&&call->job&&call->job->task.id==task_id&&
-        sender_task_set_state(&call->job->sender_context,&call->job->task,HOP_XFER_TASK_QUEUED);
+        hop_xfer_sender_context_task_set_state(&call->job->sender_context,&call->job->task,HOP_XFER_TASK_QUEUED);
 }
 static void sender_worker_store_retry_state(void *user,const hop_xfer_sender_worker_job *state) {
     sender_worker_call *call=(sender_worker_call *)user;
@@ -217,7 +217,7 @@ static void sender_worker_task_finish(void *user,hop_xfer_task_state state) {
     job->pending_finish_valid=1;
     job->pending_status_end=1;
     if(job_release_task_resources(job))
-        sender_task_finish(&job->sender_context,&job->task,state);
+        hop_xfer_sender_context_task_finish(&job->sender_context,&job->task,state);
 }
 static void sender_worker_status_end(void *user,uint32_t batch,int phase,const char *detail) {
     sender_worker_call *call=(sender_worker_call *)user;
@@ -247,20 +247,20 @@ static void sender_worker_log_event(void *user,hop_xfer_sender_worker_log_event 
     const hop_xfer_sender_context *context=&call->job->sender_context;
     switch(event) {
         case HOP_XFER_SENDER_WORKER_LOG_RETRY_INVALID:
-            sender_logf(context,HOP_LOG_ERROR,"xfer: invalid retry policy input for batch %u",state->batch);break;
+            hop_xfer_sender_context_logf(context,HOP_LOG_ERROR,"xfer: invalid retry policy input for batch %u",state->batch);break;
         case HOP_XFER_SENDER_WORKER_LOG_RETRY_SCHEDULED:
-            sender_logf(context,HOP_LOG_WARN,"xfer: batch %u interrupted at entry %d, retry %u/%u in %u ms",
+            hop_xfer_sender_context_logf(context,HOP_LOG_WARN,"xfer: batch %u interrupted at entry %d, retry %u/%u in %u ms",
                 state->batch,state->next_index,state->attempt,HOP_XFER_JOB_RETRY_MAX-1,delay_ms);break;
         case HOP_XFER_SENDER_WORKER_LOG_RETRY_STATE_FAILED:
-            sender_logf(context,HOP_LOG_ERROR,"xfer: task=%llu could not return to queued state",
+            hop_xfer_sender_context_logf(context,HOP_LOG_ERROR,"xfer: task=%llu could not return to queued state",
                 (unsigned long long)state->task_id);break;
         case HOP_XFER_SENDER_WORKER_LOG_REQUEUE_FAILED:
-            sender_logf(context,HOP_LOG_ERROR,"xfer: failed to requeue batch %u after reconnect",state->batch);break;
+            hop_xfer_sender_context_logf(context,HOP_LOG_ERROR,"xfer: failed to requeue batch %u after reconnect",state->batch);break;
         case HOP_XFER_SENDER_WORKER_LOG_RETRY_EXHAUSTED:
-            sender_logf(context,HOP_LOG_ERROR,"xfer: batch %u abandoned after %u attempt(s), %d/%d delivered",
+            hop_xfer_sender_context_logf(context,HOP_LOG_ERROR,"xfer: batch %u abandoned after %u attempt(s), %d/%d delivered",
                 state->batch,state->attempt,state->ok_count,state->entry_count);break;
         case HOP_XFER_SENDER_WORKER_LOG_PARTIAL_DONE:
-            sender_logf(context,HOP_LOG_WARN,"xfer: batch %u finished %d/%d",
+            hop_xfer_sender_context_logf(context,HOP_LOG_WARN,"xfer: batch %u finished %d/%d",
                 state->batch,state->ok_count,state->entry_count);break;
         default: break;
     }
@@ -322,7 +322,7 @@ static int sender_shutdown_drain_jobs(void) {
         xf_job *job=s_x.shutdown_jobs;
         xf_job *next=job->next;
         int terminal_was_pending=!hop_xfer_task_is_terminal(&job->task);
-        int was_cancelled=sender_job_cancel_requested(&job->sender_context,
+        int was_cancelled=hop_xfer_sender_context_job_cancel_requested(&job->sender_context,
                                                        job->batch,job->task.id);
         if (terminal_was_pending && !job->pending_finish_valid) {
             job->pending_finish_state=was_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_INTERRUPTED;
@@ -436,10 +436,10 @@ static void *send_thread(void *arg) {
             ? (xf_job *)node : NULL;
 
         if (expired) {
-            sender_logf(&expired->sender_context,HOP_LOG_ERROR,
+            hop_xfer_sender_context_logf(&expired->sender_context,HOP_LOG_ERROR,
                         "xfer: batch %u abandoned, peer never came back (%d/%d delivered)",
                         expired->batch,expired->ok,expired->n);
-            int was_cancelled=sender_job_cancel_requested(
+            int was_cancelled=hop_xfer_sender_context_job_cancel_requested(
                 &expired->sender_context,expired->batch,expired->task.id);
             pthread_mutex_lock(&s_x.slock);
             int abort_fd=s_x.peer_ready &&
@@ -454,7 +454,7 @@ static void *send_thread(void *arg) {
             int show_status=!s_send_status.status.active ||
                             s_send_status.status.batch==expired->batch;
             pthread_mutex_unlock(&s_status_lock);
-            if (show_status) sender_status_start_job(&expired->sender_context,expired);
+            if (show_status) hop_xfer_sender_context_status_start_job(&expired->sender_context,expired);
             expired->pending_finish_state=was_cancelled
                 ? HOP_XFER_TASK_CANCELLED : HOP_XFER_TASK_FAILED;
             expired->pending_finish_valid=1;
@@ -484,15 +484,15 @@ static void *send_thread(void *arg) {
         pthread_mutex_unlock(&s_x.slock);
         job_bind_session(j,&transport_session);
         if (hop_session_id_valid(&j->session))
-            (void)sender_task_bind_session(&j->sender_context,&j->task,&j->session);
-        if (!sender_task_set_state(&j->sender_context,&j->task,HOP_XFER_TASK_ACTIVE)) {
+            (void)hop_xfer_sender_context_task_bind_session(&j->sender_context,&j->task,&j->session);
+        if (!hop_xfer_sender_context_task_set_state(&j->sender_context,&j->task,HOP_XFER_TASK_ACTIVE)) {
             sender_worker_clear_active_job(j);
             j->pending_finish_state=HOP_XFER_TASK_FAILED;
             j->pending_finish_valid=1;
             (void)job_free(j,XFER_JOB_OWNER_WORKER);
             continue;
         }
-        sender_status_start_job(&j->sender_context,j);
+        hop_xfer_sender_context_status_start_job(&j->sender_context,j);
 
         int result=(fd>=0)?run_job(fd,tx,j):JOB_NET_DOWN;
 

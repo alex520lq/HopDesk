@@ -43,10 +43,13 @@ static int job_free(xfer_job *j, xfer_job_owner expected_owner) {
      * cannot prove that the manager released its handle. */
     if (j->task.initialized || j->task.id) {
         if (j->task.initialized && !hop_xfer_task_is_terminal(&j->task)) {
-            sender_task_finish(&j->sender_context, &j->task, HOP_XFER_TASK_INTERRUPTED);
+            int was_cancelled=sender_job_cancel_requested(&j->sender_context,j->batch,j->task.id);
+            sender_task_finish(&j->sender_context,&j->task,
+                was_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_INTERRUPTED);
             if (hop_xfer_task_is_terminal(&j->task))
-                sender_status_end(&j->sender_context,j->batch,HOP_XFER_FAILED,
-                                  "Transfer interrupted during shutdown");
+                sender_status_end(&j->sender_context,j->batch,
+                    was_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED,
+                    was_cancelled?"Cancelled":"Transfer interrupted during shutdown");
         }
         if (!sender_task_dispose(&j->sender_context, &j->task) ||
             j->task.initialized || j->task.id) {

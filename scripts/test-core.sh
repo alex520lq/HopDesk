@@ -147,3 +147,10 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
   "$ROOT/src/core/xfer_ack_window.c" "$ROOT/src/core/xfer_validate.c" \
   "$ROOT/src/core/protocol.c" "$ROOT/src/core/crc32.c"
 "$BUILD/hopdesk-sender-file-tests"
+
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I "$ROOT/src/core" -o "$BUILD/hopdesk-sender-commit-tests" \
+  "$ROOT/tests/xfer_sender_commit_tests.c" "$ROOT/src/core/xfer_sender_engine.c" \
+  "$ROOT/src/core/xfer_ack_window.c" "$ROOT/src/core/xfer_validate.c" \
+  "$ROOT/src/core/protocol.c" "$ROOT/src/core/crc32.c"
+"$BUILD/hopdesk-sender-commit-tests"

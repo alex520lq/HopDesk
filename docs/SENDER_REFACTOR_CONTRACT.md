@@ -180,3 +180,24 @@ This is a contract/ABI test, not a production sender integration test. It does n
 - Validation must be recorded against the resulting Actions run before this slice is considered CI-verified.
 
 Next slice: route cancellation and peer-abort observations through the context, then move Task lifecycle transitions behind the same context while preserving the existing hop_xfer_task ownership handle in the platform worker. Socket/session and complete-frame write callbacks follow after their lock-order and frame-serialization behavior are covered by production-linked tests.
+
+
+## 12. Shared Sender execution engine (2026-11-10)
+
+- Added `src/core/xfer_sender_engine.[ch]` as the shared file/image execution policy owner.
+- Both platform `run_job` adapters now delegate file ACK-window fill/drain, retry classification, FIFO ACK consumption, and contiguous reconnect checkpoint advancement to `hop_xfer_sender_run_files`.
+- The shared file-entry path now owns FILE_BEGIN payload construction, ACK registration/mark/deadline ordering, chunk reads, per-chunk CRC, whole-file CRC folding, source-size probing, FILE_END and read/open failure semantics. Windows/macOS provide native open/read/close callbacks and frame/ACK adapters.
+- The shared image path now owns IMAGE_BEGIN/chunk/CRC/FILE_END sequencing, cancellation/peer-abort checks, and completion state. The duplicate platform image loops were removed.
+- `hop_xfer_sender_context` now has a complete production dependency set: monotonic clock, full-duration interruptible wait, stop/cancel/peer-abort, session validation, serialized multi-part frame writes, Task bind/state/completion/finish/dispose, and optional status/log callbacks. `send_small` and `send_chunk` use the context's atomic frame-write boundary.
+- Sender worker Task lifecycle operations now call the context adapter rather than directly reaching into Task Manager. The Task cancellation callback intentionally does not acquire the queue lock; the queue-cancel flag is checked by the caller to avoid recursive lock acquisition in `queue_take_cancelled`.
+- Added dedicated production-linked tests for file-window checkpoint/retry/reconnect policy, image chunk order/CRC/cancel, file IO/CRC/ACK reservation/source mutation/failure, and the context contract. Both platform Core scripts and the Windows HA fixture link the production engine.
+- The first CI attempt exposed a forward declaration and timing-stage include omission in the new Core file; those were corrected. The next full Windows/macOS Actions run is the acceptance gate. Do not treat the earlier failed run as validation.
+
+Remaining Sender work:
+1. Extract DONE/DONE_ACK commit and reconnect policy into shared Core while preserving current ACK/commit ordering.
+2. Move platform Sender Protocol adapters into independent `.c` compilation units; eliminate the remaining `xfer_sender_protocol.inc` compatibility fragments.
+3. Extract worker queue scheduling, retry deadlines, terminal Task/status/history ordering behind an explicit worker context; keep OS thread/QoS and socket primitives in platform adapters.
+4. Remove remaining Sender global captures and `xfer_sender_worker.inc` / `xfer_submit.inc` include-fragment dependencies.
+5. Run dual-platform CI, then physical two-device clipboard/file transfer, reconnect, cancel/ABORT, weak-network and long-duration stress tests.
+
+No physical two-device or weak-network acceptance is claimed by the unit/CI tests.

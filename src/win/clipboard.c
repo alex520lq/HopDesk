@@ -44,6 +44,11 @@ static DWORD s_pending_sequence;
 static DWORD s_remote_sequence;
 static HANDLE s_image_thread;
 static volatile LONG s_image_busy;
+typedef struct clip_image_task_owner {
+    struct clip_image_task_owner *next;
+    hop_xfer_task task;
+} clip_image_task_owner;
+static clip_image_task_owner *s_pending_image_tasks;
 
 static DWORD s_last_sequence;
 static SRWLOCK s_offer_lock = SRWLOCK_INIT;
@@ -179,11 +184,15 @@ void clip_init(HWND hwnd) {
         hop_log(HOP_LOG_INFO, "clipboard listener installed");
 }
 
-void clip_shutdown(HWND hwnd) {
+int clip_shutdown(HWND hwnd) {
     AcquireSRWLockExclusive(&s_offer_lock);s_clip_stopping=1;ReleaseSRWLockExclusive(&s_offer_lock);
     if(s_paste_workers_done)WaitForSingleObject(s_paste_workers_done,INFINITE);
     RemoveClipboardFormatListener(hwnd);
     if (s_image_thread) { WaitForSingleObject(s_image_thread, INFINITE); CloseHandle(s_image_thread); s_image_thread = NULL; }
+    if (!image_work_retry_pending()) {
+        hop_log(HOP_LOG_ERROR, "clip: image Task/Reservation cleanup remains pending; retain Task owner for retry");
+        return 0;
+    }
     MSG pending;
     while (PeekMessageW(&pending, hwnd, WM_APP_CLIP, WM_APP_CLIP, PM_REMOVE))
         if (pending.lParam) GlobalFree((HGLOBAL)pending.lParam);
@@ -192,6 +201,7 @@ void clip_shutdown(HWND hwnd) {
     if(s_paste_workers_done){CloseHandle(s_paste_workers_done);s_paste_workers_done=NULL;}
     KillTimer(hwnd, IDT_CLIP_RETRY);
     if (s_pending_global) { GlobalFree(s_pending_global); s_pending_global = NULL; }
+    return 1;
 }
 
 /* ---- 发送 ---- */
@@ -254,27 +264,46 @@ static int image_work_task_begin(hop_xfer_task *task) {
     memset(task, 0, sizeof(*task));
     uint32_t transfer_id = (uint32_t)InterlockedIncrement(&s_image_task_seq);
     if (!transfer_id) transfer_id = (uint32_t)InterlockedIncrement(&s_image_task_seq);
-    if (!hop_xfer_task_init_classified(task, 0, 0, transfer_id, HOP_XFER_DIR_NONE, HOP_TASK_KIND_IMAGE_WORK) ||
-        !hop_xfer_task_reserve_job(task) ||
-        !hop_xfer_task_set_state(task, HOP_XFER_TASK_ACTIVE)) {
-        if (task->initialized) {
-            (void)hop_xfer_task_finish(task, HOP_XFER_TASK_FAILED);
-            hop_xfer_task_dispose(task);
-        }
-        return 0;
-    }
-    return 1;
+    return hop_xfer_task_init_classified(task, 0, 0, transfer_id,
+               HOP_XFER_DIR_NONE, HOP_TASK_KIND_IMAGE_WORK) &&
+           hop_xfer_task_reserve_job(task) &&
+           hop_xfer_task_set_state(task, HOP_XFER_TASK_ACTIVE);
 }
 
-static void image_work_task_finish(hop_xfer_task *task, int success) {
-    if (!task || !task->initialized) return;
+static int image_work_task_finish_attempt(clip_image_task_owner *owner, int success) {
+    if (!owner) return 1;
+    hop_xfer_task *task=&owner->task;
+    if (!task->initialized && !task->id) return 1;
+    if (!task->initialized) return 0; /* keep an uninitialized-but-live handle */
     uint64_t temp_bytes=hop_xfer_task_image_temp_bytes(task);
     if (temp_bytes && !hop_xfer_task_release_image_temp(task, temp_bytes)) {
         hop_log(HOP_LOG_ERROR, "clip: image temporary budget release failed (task=%llu)",
                 (unsigned long long)task->id);
+        return 0;
     }
-    (void)hop_xfer_task_finish(task, success ? HOP_XFER_TASK_COMPLETED : HOP_XFER_TASK_FAILED);
+    if (!hop_xfer_task_is_terminal(task) &&
+        !hop_xfer_task_finish(task, success ? HOP_XFER_TASK_COMPLETED : HOP_XFER_TASK_FAILED))
+        return 0;
     hop_xfer_task_dispose(task);
+    return !task->initialized && !task->id;
+}
+
+static int image_work_task_finish(clip_image_task_owner *owner, int success) {
+    if (!owner) return 1;
+    if (image_work_task_finish_attempt(owner, success)) { free(owner); return 1; }
+    owner->next=s_pending_image_tasks;
+    s_pending_image_tasks=owner;
+    return 0;
+}
+
+static int image_work_retry_pending(void) {
+    while (s_pending_image_tasks) {
+        clip_image_task_owner *owner=s_pending_image_tasks;
+        if (!image_work_task_finish_attempt(owner, 0)) return 0;
+        s_pending_image_tasks=owner->next;
+        free(owner);
+    }
+    return 1;
 }
 
 /* CF_DIB -> 自上而下 BGRA。只处理 BI_RGB 的 24/32 位，其余（压缩格式）跳过。 */
@@ -382,9 +411,7 @@ static DWORD WINAPI image_worker(LPVOID arg) {
     DWORD sequence = (DWORD)(ULONG_PTR)arg;
     UINT format = CF_DIB;
     HGLOBAL copy = NULL;
-    hop_xfer_task image_task;
-    memset(&image_task, 0, sizeof(image_task));
-    int image_task_ready = 0;
+    clip_image_task_owner *image_task_owner = NULL;
     int opened = 0, result = 0;
     for (int i = 0; i < 6 && !opened; ++i) {
         opened = OpenClipboard(NULL) != 0;
@@ -400,14 +427,12 @@ static DWORD WINAPI image_worker(LPVOID arg) {
             if (bytes >= (format == CF_DIB ? sizeof(BITMAPINFOHEADER) : sizeof(HOP_DROPFILES)) &&
                 bytes <= CLIP_IMG_MAX_BYTES) {
                 if (format == CF_DIB) {
-                    if (!image_work_task_begin(&image_task)) result = -1;
-                    else {
-                        image_task_ready = 1;
-                        if (!hop_xfer_task_reserve_image_temp(&image_task, (uint64_t)bytes)) {
-                            hop_log(HOP_LOG_WARN, "clip: DIB snapshot memory budget exhausted (task=%llu)",
-                                    (unsigned long long)image_task.id);
-                            result = -1;
-                        }
+                    image_task_owner=(clip_image_task_owner*)calloc(1,sizeof(*image_task_owner));
+                    if (!image_task_owner || !image_work_task_begin(&image_task_owner->task)) result = -1;
+                    else if (!hop_xfer_task_reserve_image_temp(&image_task_owner->task, (uint64_t)bytes)) {
+                        hop_log(HOP_LOG_WARN, "clip: DIB snapshot memory budget exhausted (task=%llu)",
+                                (unsigned long long)image_task_owner->task.id);
+                        result = -1;
                     }
                 }
                 if (result != -1) {
@@ -428,11 +453,11 @@ static DWORD WINAPI image_worker(LPVOID arg) {
         else if (format == CF_HDROP) {
             UINT count = DragQueryFileW((HDROP)copy, 0xFFFFFFFF, NULL, 0);
             result = count ? send_drop((HDROP)copy, count) : -1;
-        } else result = send_dib(copy, sequence, &image_task);
+        } else result = send_dib(copy, sequence, image_task_owner ? &image_task_owner->task : NULL);
         GlobalFree(copy);
     }
-    if (image_task_ready)
-        image_work_task_finish(&image_task, result > 0);
+    if (image_task_owner)
+        (void)image_work_task_finish(image_task_owner, result > 0);
     InterlockedExchange(&s_image_busy, 0);
     if (!result || GetClipboardSequenceNumber() != sequence)
         PostMessageW(g_app.hwnd, WM_APP_CLIP, 0, 0);

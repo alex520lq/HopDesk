@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include "xfer_tracking.h"
 #include "xfer_task.h"
+#include "xfer_sender_context.h"
 #include "xfer_rx_receipt.h"
 #include "xfer_rx_lifecycle.h"
 #include "xfer_rx_services.h"
@@ -16,7 +17,8 @@
 #define SHUT_RDWR 2
 #define INVALID_SOCKET -1
 typedef int SOCKET;
-static struct {int client,sock,lock,slock;hop_session_id session;hop_xfer_rate_limiter rate;} s_x;
+static struct {int client,sock,lock,slock;unsigned long epoch;hop_session_id session;hop_xfer_rate_limiter rate;} s_x;
+static hop_xfer_sender_context s_sender_context;
 static xfer_rx_context s_rx;
 static hop_xfer_rx_done_receipt s_done_receipt;
 static hop_xfer_rx_lifecycle s_rx_lifecycle;
@@ -44,6 +46,7 @@ static uint8_t captured[512];static size_t captured_len;static int delivered,clo
 #define pthread_mutex_lock(p) ((void)(p))
 #define pthread_mutex_unlock(p) ((void)(p))
 static int s_txlock;
+static unsigned long s_send_epoch;
 static uint64_t rate_now_ns(void){return 0;}
 static int rate_wait_for_chunk(uint32_t bytes){(void)bytes;return 1;}
 static void rate_feedback(uint64_t ack_rtt_us){(void)ack_rtt_us;}
@@ -61,7 +64,9 @@ int main(void){
  s_rx.lifecycle=&s_rx_lifecycle;s_rx.done_receipt=&s_done_receipt;s_rx.services.context=&s_rx;
  s_rx.services.close_file=fixture_close_file;s_rx.services.discard_staging_directory=fixture_discard_dir;
 s_rx.services.cancel_clipboard=fixture_cancel_clipboard;s_rx.services.status_reset=fixture_status_reset;
- s_x.session.bytes[0]=1;s_x.client=s_x.sock=7;hop_session_publish(&s_x.session);
+ s_x.session.bytes[0]=1;s_x.client=s_x.sock=7;s_x.epoch=3;hop_session_publish(&s_x.session);
+ s_sender_context.session_current=sender_context_session_current;
+ s_sender_context.write_frame=sender_context_write_frame;
  hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle,42,HOP_ABORT_CANCEL);s_receive_status.marker=9;rx_bind_session(&s_x.session);
  assert(resets==1 && !hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,42,NULL) && !s_receive_status.marker);
  assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,HOP_XFER_PASTE_BATCH_FLAG|42));hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle,42,HOP_ABORT_DISK);rx_bind_session(&s_x.session);

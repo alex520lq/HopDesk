@@ -99,6 +99,48 @@ static int sender_context_wait_ns(void *user, uint64_t duration_ns) {
     }
 }
 
+static int sender_context_task_bind_session(
+    void *user, const hop_xfer_task *task,
+    const uint8_t session[HOP_TASK_SESSION_BYTES]) {
+    (void)user;
+    return hop_xfer_task_bind_session(task, session);
+}
+
+static int sender_context_task_set_state(void *user, hop_xfer_task *task,
+                                         int state) {
+    (void)user;
+    return hop_xfer_task_set_state(task, (hop_xfer_task_state)state);
+}
+
+static int sender_context_task_begin_completion(void *user,
+                                                 const hop_xfer_task *task) {
+    (void)user;
+    return hop_xfer_task_begin_completion(task);
+}
+
+static void sender_context_task_finish(void *user, hop_xfer_task *task,
+                                       int outcome) {
+    (void)user;
+    (void)hop_xfer_task_finish(task, (hop_xfer_task_state)outcome);
+}
+
+static void sender_context_task_dispose(void *user, hop_xfer_task *task) {
+    (void)user;
+    hop_xfer_task_dispose(task);
+}
+
+static void sender_context_status_stage_time(void *user, uint32_t batch,
+                                              int stage, uint64_t elapsed_ns) {
+    (void)user;
+    status_stage_time(HOP_XFER_DIR_SEND, batch, stage, elapsed_ns);
+}
+
+static void sender_context_log_message(void *user, int level,
+                                       const char *message) {
+    (void)user;
+    hop_log((hop_log_level)level, "%s", message ? message : "");
+}
+
 static void sender_context_init(void) {
     memset(&s_sender_context, 0, sizeof(s_sender_context));
     s_sender_context.now_ns = sender_context_now_ns;
@@ -108,10 +150,17 @@ static void sender_context_init(void) {
     s_sender_context.peer_aborted = sender_context_peer_aborted;
     s_sender_context.session_current = sender_context_session_current;
     s_sender_context.write_frame = sender_context_write_frame;
+    s_sender_context.task_bind_session = sender_context_task_bind_session;
+    s_sender_context.task_set_state = sender_context_task_set_state;
+    s_sender_context.task_begin_completion = sender_context_task_begin_completion;
+    s_sender_context.task_finish = sender_context_task_finish;
+    s_sender_context.task_dispose = sender_context_task_dispose;
+    s_sender_context.status_stage_time = sender_context_status_stage_time;
+    s_sender_context.log_message = sender_context_log_message;
 }
 
 static int rate_wait_for_chunk(uint32_t bytes) {
-    if (!hop_xfer_sender_context_clock_valid(&s_sender_context)) return 0;
+    if (!hop_xfer_sender_context_valid(&s_sender_context)) return 0;
     for (;;) {
         uint64_t delay = hop_xfer_rate_wait_ns(
             &s_x.rate, bytes, s_sender_context.now_ns(s_sender_context.user));

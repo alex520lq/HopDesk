@@ -584,6 +584,7 @@ static const char *temp_root(void) {
 /* ---------------- 对外接口 ---------------- */
 
 void xfer_init(const hop_config *cfg) {
+    pthread_rwlock_wrlock(&s_x_lifecycle_lock);
     history_load();
     task_history_store_open();
     memset(&s_x, 0, sizeof(s_x));
@@ -607,37 +608,62 @@ void xfer_init(const hop_config *cfg) {
     s_x.sync_initialized = 1;
     if (!sender_context_ack_create()) {
         hop_log(HOP_LOG_ERROR, "xfer: ACK coordinator initialization failed");
+        pthread_rwlock_unlock(&s_x_lifecycle_lock);
+        xfer_shutdown();
         return;
     }
 
     /* 写盘线程要先起来，接收路径一进来就会往队列里塞 */
     if (!wq_start()) {
         hop_log(HOP_LOG_ERROR, "xfer: writer thread start failed");
-        sender_context_ack_destroy();
+        pthread_rwlock_unlock(&s_x_lifecycle_lock);
+        xfer_shutdown();
         return;
     }
 
     if (!hop_mac_sender_threads_start(
             &s_x.sender_threads, send_thread, conn_thread, NULL)) {
         hop_log(HOP_LOG_ERROR, "xfer: sender/connection thread start failed");
-        s_x.stop = 1;
-        pthread_mutex_lock(&s_x.qlock);
-        pthread_cond_broadcast(&s_x.qcond);
-        pthread_mutex_unlock(&s_x.qlock);
-        sender_context_wake_ack();
-        if (!hop_mac_sender_threads_join(&s_x.sender_threads)) {
-            hop_log(HOP_LOG_ERROR, "xfer: partially started threads did not join; preserve shared state");
-            return;
-        }
+        pthread_rwlock_unlock(&s_x_lifecycle_lock);
+        xfer_shutdown();
         return;
     }
 
     hop_log(HOP_LOG_INFO, "xfer: chunk %u KB", ck);
+    pthread_rwlock_unlock(&s_x_lifecycle_lock);
+}
+
+static int xfer_shutdown_task_audit(void) {
+    hop_xfer_task_audit audit;
+    if (!hop_xfer_task_reconcile(&audit)) {
+        hop_log(HOP_LOG_ERROR, "xfer: Task/Reservation shutdown audit unavailable");
+        return 0;
+    }
+    if (audit.mismatches || audit.task_count || audit.jobs || audit.entries ||
+        audit.pending_bytes || audit.image_bytes || audit.rx_queue_slots ||
+        audit.rx_queue_bytes || audit.image_temp_bytes) {
+        hop_log(HOP_LOG_ERROR,
+                "xfer: shutdown audit retained shared state (tasks=%u mismatches=%u jobs=%llu entries=%llu pending=%llu image=%llu rx_slots=%llu rx_bytes=%llu image_temp=%llu)",
+                audit.task_count, audit.mismatches,
+                (unsigned long long)audit.jobs, (unsigned long long)audit.entries,
+                (unsigned long long)audit.pending_bytes, (unsigned long long)audit.image_bytes,
+                (unsigned long long)audit.rx_queue_slots, (unsigned long long)audit.rx_queue_bytes,
+                (unsigned long long)audit.image_temp_bytes);
+        return 0;
+    }
+    return 1;
 }
 
 void xfer_shutdown(void) {
-    if (!s_x.sync_initialized) return;
-    s_x.stop = 1;
+    /* Writer admission lock waits for all in-flight scans/submitters. Keep it
+     * held until shared locks, queue, Task history and ACK state are destroyed. */
+    pthread_rwlock_wrlock(&s_x_lifecycle_lock);
+    if (!s_x.sync_initialized) {
+        pthread_rwlock_unlock(&s_x_lifecycle_lock);
+        return;
+    }
+    s_x.shutting_down = 1;
+    atomic_store_explicit(&s_x.stop, 1, memory_order_release);
 
     pthread_mutex_lock(&s_x.slock);
     if (s_x.sock >= 0) shutdown(s_x.sock, SHUT_RDWR);
@@ -649,21 +675,38 @@ void xfer_shutdown(void) {
 
     sender_context_wake_ack();
 
-    /* 必须 join：两个线程都会碰写盘队列，销毁队列时它们还活着就是释放后使用。
-     * read/write 都是阻塞的，靠上面 shutdown(sock) 和 SO_SNDTIMEO 让它们返回。 */
+    /* A worker owns its current Job until it exits. Failed Join preserves all
+     * locks, queue nodes, Task handles and Reservations for a later retry. */
     if (!hop_mac_sender_threads_join(&s_x.sender_threads)) {
-        hop_log(HOP_LOG_ERROR, "xfer: sender threads failed to join; skip shared-state cleanup");
+        hop_log(HOP_LOG_ERROR, "xfer: sender threads failed to join; preserve shared state for retry");
+        pthread_rwlock_unlock(&s_x_lifecycle_lock);
         return;
     }
 
-    rx_reset(&s_rx);      /* 先把写盘队列排空并关掉文件，再停写线程 */
-    wq_stop();
+    if (!sender_shutdown_drain_jobs()) {
+        hop_log(HOP_LOG_ERROR, "xfer: sender Job disposal deferred; preserve Task/Reservation state for retry");
+        pthread_rwlock_unlock(&s_x_lifecycle_lock);
+        return;
+    }
+
+    rx_reset(&s_rx);
+    if (!wq_stop()) {
+        hop_log(HOP_LOG_WARN, "xfer: writer worker still owns receive resources; preserve shared state for retry");
+        pthread_rwlock_unlock(&s_x_lifecycle_lock);
+        return;
+    }
+    if (!xfer_shutdown_task_audit()) {
+        pthread_rwlock_unlock(&s_x_lifecycle_lock);
+        return;
+    }
+
     sender_context_ack_destroy();
     hop_xfer_task_history_store_close();
     pthread_cond_destroy(&s_x.qcond);
     pthread_mutex_destroy(&s_x.qlock);
     pthread_mutex_destroy(&s_x.slock);
     s_x.sync_initialized = 0;
+    pthread_rwlock_unlock(&s_x_lifecycle_lock);
 }
 
 int xfer_connected(void) {

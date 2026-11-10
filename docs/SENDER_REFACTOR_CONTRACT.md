@@ -167,3 +167,16 @@ The test verifies:
 - Task state/completion/finish callbacks are reachable through the same contract.
 
 This is a contract/ABI test, not a production sender integration test. It does not prove that the production sender uses the context. That remains the next migration gate.
+
+
+## 11. Sender clock/wait context: first production adoption (2026-11-10)
+
+- Both Windows and macOS now construct a platform-owned hop_xfer_sender_context clock subset during xfer_init.
+- Sender rate pacing calls the injected now_ns, wait_ns, and is_stopping callbacks instead of directly implementing the pacing wait loop in rate_wait_for_chunk.
+- The macOS wait adapter uses monotonic nanosleep in bounded slices and checks shutdown between interrupted waits. The Windows adapter uses the existing high-resolution waitable-timer path, with its existing fallback, and observes the stop event.
+- Added hop_xfer_sender_context_clock_valid to validate this incremental subset without weakening hop_xfer_sender_context_valid, which still requires the complete execution/lifecycle callback set.
+- Extended the production-linked context contract test to prove that the clock subset is valid while the incomplete full context is rejected.
+- This is the first production use of the Sender context, but only for rate pacing. Socket/session writes, cancellation/peer-abort, status/logging and Task lifecycle still use their existing platform paths and are not claimed as injected.
+- Validation must be recorded against the resulting Actions run before this slice is considered CI-verified.
+
+Next slice: route cancellation and peer-abort observations through the context, then move Task lifecycle transitions behind the same context while preserving the existing hop_xfer_task ownership handle in the platform worker. Socket/session and complete-frame write callbacks follow after their lock-order and frame-serialization behavior are covered by production-linked tests.

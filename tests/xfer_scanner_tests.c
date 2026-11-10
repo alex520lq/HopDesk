@@ -141,12 +141,12 @@ int main(void) {
 
     reset_scan(&list); reject_after = 2;
     hop_xfer_scan_paths(&list, paths, 1, &scan_services);
-    assert(list.failed && list.budget_rejected);
+    assert(list.failed && list.budget_rejected && list.error == HOP_XFER_SCAN_BUDGET_REJECTED);
     elist_free(&list);
 
     reset_scan(&list); cancel_requested = 1;
     hop_xfer_scan_paths(&list, paths, 1, &scan_services);
-    assert(list.failed);
+    assert(list.failed && list.error == HOP_XFER_SCAN_CANCELLED);
     elist_free(&list);
 
     reset_scan(&list);

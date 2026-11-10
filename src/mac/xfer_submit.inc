@@ -5,6 +5,11 @@ static int scanner_is_cancelled(void *context) {
     hop_xfer_task *task = (hop_xfer_task *)context;
     return task && hop_xfer_task_cancel_requested(task->id);
 }
+static void *scanner_realloc_entries(void *context, void *memory, uint64_t bytes) {
+    (void)context;
+    if (bytes > (uint64_t)SIZE_MAX) return NULL;
+    return realloc(memory, (size_t)bytes);
+}
 static int scanner_watchdog_begin(void *context, const char *operation, unsigned timeout_ms) {
     (void)context;
     return hop_watchdog_begin(operation, timeout_ms);
@@ -63,7 +68,7 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
     }
 
     hop_xfer_scan_services scan_services = {
-        &task, scanner_reserve_entry, scanner_is_cancelled,
+        &task, scanner_reserve_entry, scanner_is_cancelled, scanner_realloc_entries,
         scanner_watchdog_begin, scanner_watchdog_end
     };
     uint64_t scan_started_ns=rate_now_ns();
@@ -75,8 +80,8 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
             hop_log(HOP_LOG_WARN, "xfer: global entries/pending-bytes budget exceeded; batch rejected (task=%llu)",
                     (unsigned long long)task.id);
         else
-            hop_log(HOP_LOG_WARN, "xfer: source tree rejected; no partial transfer queued (task=%llu)",
-                    (unsigned long long)task.id);
+            hop_log(HOP_LOG_WARN, "xfer: source tree rejected (scan_error=%d); no partial transfer queued (task=%llu)",
+                    (int)l.error, (unsigned long long)task.id);
         hop_xfer_task_finish(&task, hop_xfer_task_cancel_requested(task.id) ? HOP_XFER_TASK_CANCELLED : HOP_XFER_TASK_FAILED);
         elist_free(&l);
         hop_xfer_task_dispose(&task);

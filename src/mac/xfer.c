@@ -41,6 +41,7 @@
 #include "../core/xfer_sender_context.h"
 #include "../core/xfer_sender_engine.h"
 #include "../core/xfer_sender_queue.h"
+#include "../core/xfer_sender_active_job.h"
 #include "../core/xfer_sender_scheduler.h"
 #include "../core/xfer_sender_retry.h"
 #include "../core/xfer_sender_lifecycle.h"
@@ -135,15 +136,10 @@ static struct {
     int shutting_down; /* protected by s_x_lifecycle_lock */
     xf_job *shutdown_jobs; /* Jobs retained until Task disposal succeeds */
 
-    /* ---- 取消 ----
-     * cur_batch 由发送线程在开始一批时设置；cancel_batch 由主线程设置。
-     * 发送线程每块之后比一次，所以取消的响应延迟上限是一个分块（256 KB）。 */
-    uint32_t         cur_batch;     /* 0 = 当前没有在发的批次 */
-    hop_xfer_task_id cur_task_id;  /* same queue lock as cur_batch */
-    uint32_t         cancel_batch;  /* 0 = 没有取消请求 */
-    volatile int     cancel_rx;     /* 接收侧取消请求，由 conn 线程消费 */
-    uint32_t         abort_batch;   /* 对端 ABORT 过的批次，0 = 无 */
-    uint8_t          abort_reason;
+    /* Shared active-job/peer-ABORT policy; protected by s_x.qlock. */
+    hop_xfer_sender_active_job active_job;
+    uint32_t         cancel_batch;
+    volatile int    cancel_rx;
 } s_x;
 
 /* Active submitters hold the read side through scanning and queue admission.
@@ -737,7 +733,8 @@ int xfer_connected(void) {
 int xfer_busy(void) {
     int b;
     pthread_mutex_lock(&s_x.qlock);
-    b = (s_x.cur_batch != 0 || !hop_xfer_sender_queue_empty(&s_x.queue));
+    b = (hop_xfer_sender_active_job_is_active(&s_x.active_job) ||
+         !hop_xfer_sender_queue_empty(&s_x.queue));
     pthread_mutex_unlock(&s_x.qlock);
     pthread_mutex_lock(&s_status_lock);
     /* Include a sender between dequeue/completion and retry requeue. */
@@ -752,11 +749,10 @@ int xfer_busy(void) {
  * 已经排队但还没开始发的批次也一并取消。 */
 void xfer_cancel(void) {
     pthread_mutex_lock(&s_x.qlock);
-    if (s_x.cur_batch) {
-        s_x.cancel_batch = s_x.cur_batch;
-    } else if (!hop_xfer_sender_queue_empty(&s_x.queue)) {
-        s_x.cancel_batch = ((xf_job *)s_x.queue.head)->batch;
-    }
+    uint32_t queued_batch = !hop_xfer_sender_queue_empty(&s_x.queue)
+        ? ((xf_job *)s_x.queue.head)->batch : 0;
+    s_x.cancel_batch = hop_xfer_sender_active_job_cancel_target(
+        &s_x.active_job, queued_batch);
     __sync_lock_test_and_set(&s_x.cancel_rx, 1);
     pthread_cond_signal(&s_x.qcond);      /* 唤醒发送线程，别让它等满 200 ms */
     pthread_mutex_unlock(&s_x.qlock);

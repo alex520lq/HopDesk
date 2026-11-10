@@ -1133,7 +1133,9 @@ int main(void){
         assert 'HOP_XFER_TASK_INTERRUPTED' in shutdown_drain
         assert 'hop_xfer_sender_queue_detach_all' in shutdown_drain
         assert 'while (s_x.shutdown_jobs)' in shutdown_drain
-        assert 'hop_xfer_task_reconcile' in extract(lifecycle,'xfer_shutdown_task_audit')
+        shutdown_audit=extract(lifecycle,'xfer_shutdown_task_audit')
+        assert 'hop_xfer_task_reconcile' in shutdown_audit
+        assert 'audit.ledger.accounting_errors' in shutdown_audit
         assert 'HOP_XFER_SENDER_JOB_SHUTDOWN' in flow_core
         assert 'ops->is_stopping' in flow_core
         if platform=='mac':

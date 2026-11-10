@@ -130,7 +130,7 @@ int main(int argc, char **argv) {
     app_run();
     /* clipboard workers may still own image-temp Reservations; the control
      * reader may still call xfer_kick. Join both before tearing down xfer. */
-    clipboard_shutdown();
+    while (!clipboard_shutdown()) usleep(100000); /* retain unresolved image Task owners */
     net_loop_shutdown();
     /* No control or clipboard worker may call into xfer after this point. */
     while (!xfer_shutdown()) usleep(100000);

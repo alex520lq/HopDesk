@@ -14,6 +14,7 @@ typedef struct {
     int ready_after_wait;
     int stopping;
     int fail_send_done;
+    int clear_send_after_wait;
     int fail_register;
     int fail_mark;
     int fail_deadline;
@@ -99,6 +100,7 @@ static int wait_ms(void *user, uint32_t duration) {
     ++f->wait_calls;
     f->ms += duration;
     if (f->ready_after_wait) f->ready = 1;
+    if (f->clear_send_after_wait) f->fail_send_done = 0;
     return !f->stopping;
 }
 static hop_xfer_sender_commit_ops make_ops(fake_commit *f) {
@@ -177,11 +179,10 @@ static void test_connection_recovery_and_send_retry(void) {
     assert(run(&f, 0, 1, 1) == HOP_XFER_SENDER_COMMIT_DONE);
     assert(f.connection_calls >= 2 && f.wait_calls == 1);
 
-    setup(&f); f.fail_send_done = 1;
+    setup(&f); f.fail_send_done = 1; f.clear_send_after_wait = 1;
     f.ack_results[0] = HOP_XFER_SENDER_COMMIT_ACK_COMPLETE; f.ack_count = 1;
-    /* A failed send is retried; clear the injected failure after the first wait. */
-    f.ready_after_wait = 1;
-    assert(run(&f, 0, 1, 1) == HOP_XFER_SENDER_COMMIT_DONE || f.send_calls == 1);
+    assert(run(&f, 0, 1, 1) == HOP_XFER_SENDER_COMMIT_DONE);
+    assert(f.send_calls == 2 && f.unregister_calls == 1 && f.wait_calls == 1);
 }
 static void test_invalid_session_and_stopping(void) {
     fake_commit f; setup(&f); f.session_valid = 0;

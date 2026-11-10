@@ -240,3 +240,18 @@ if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
 if ($LASTEXITCODE -ne 0) { throw "Sender context contract compilation failed ($LASTEXITCODE)" }
 & $senderContext
 if ($LASTEXITCODE -ne 0) { throw "Sender context contract tests failed ($LASTEXITCODE)" }
+
+$senderEngine = Join-Path $build 'hopdesk-sender-engine-tests.exe'
+$senderEngineSources = @(
+    (Join-Path $root 'tests/xfer_sender_engine_tests.c'),
+    (Join-Path $root 'src/core/xfer_sender_engine.c'),
+    (Join-Path $root 'src/core/xfer_ack_window.c')
+)
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /O2 /W4 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I $inc /Fe:$senderEngine @senderEngineSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $senderEngine @senderEngineSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Sender engine test compilation failed ($LASTEXITCODE)" }
+& $senderEngine
+if ($LASTEXITCODE -ne 0) { throw "Sender engine tests failed ($LASTEXITCODE)" }

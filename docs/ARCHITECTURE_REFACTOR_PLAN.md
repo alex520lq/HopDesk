@@ -225,6 +225,8 @@ tests/
 
 ### 阶段 3：发送端与传输协调器模块化（P0）
 
+实施细化契约：[`docs/SENDER_REFACTOR_CONTRACT.md`](SENDER_REFACTOR_CONTRACT.md)。该文档以当前生产代码为基准，先处理 ACK coordinator 的完整生命周期边界，再抽离扫描、Sender context 与编译单元；不得只搬移静态函数或保留新的隐式全局依赖。
+
 **目标**：从平台 xfer 文件中分离扫描、sender、ACK、rate、task orchestration 和 status。
 
 顺序：
@@ -755,3 +757,12 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
   - ABORT Fixture 模拟删除失败，验证路径和 pending 标记跨 Receiver state reset 保留，后续重试成功才清空。
 - **最终验证：Run #1174（ID \`42737657158\`）Windows MSVC 与 macOS 全流程均成功。Windows 日志明确包含 \`PASS: Windows staging tree is deleted with the exact production path guard\` 及 \`PASS: production receive ABORT lifecycle...\`。**
 - 此问题证明此前第一阶段 CI 对真实 Windows staging 清理的覆盖不足；已补足对应回归，不再把先前 CI 全绿视为该路径已验证。
+
+
+### 2026-11-10：Sender 重构基线审计与 ACK 边界设计
+
+- 对照 Windows/macOS 当前生产代码检查 `xfer.c`、`xfer_sender_protocol.inc`、`xfer_sender_worker.inc`、`xfer_receive.inc` 与共享 ACK Window。
+- 确认 Sender 并非从零开始：提交/扫描封装位于 `xfer_submit.inc`，发送 Worker 位于 `xfer_sender_worker.inc`，但两者仍通过 include 编入平台 `xfer.c`；协议发送、ACK 等待、限速仍集中在约 650–670 行的 `xfer_sender_protocol.inc`。
+- 确认共享 `xfer_ack_window.[ch]` 只负责纯状态；锁、事件/条件变量、ACK delivery、cancel/shutdown wake-up 和初始化/销毁仍耦合在平台 `s_ack` 全局对象及 Receiver 调用点。
+- 新增 `docs/SENDER_REFACTOR_CONTRACT.md`，记录真实依赖、平台差异、目标模块职责、ACK race/生命周期不变量和验证门槛。
+- **本提交只建立审计与接口边界，不声称 Sender 已拆分，也没有改变传输行为。** 下一代码切片应把 ACK coordinator 的存储同步、通知与生命周期作为整体迁移；必须同时修改 sender、receiver ACK delivery、cancel、shutdown 和 init/failure cleanup 路径。

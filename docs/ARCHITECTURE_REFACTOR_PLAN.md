@@ -775,5 +775,5 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - Receiver 的 ACK delivery、ABORT 通知，以及 cancel/shutdown 唤醒路径改走 coordinator API；生产代码不再直接访问 `s_ack.lock`、`s_ack.ev/cond` 或 `s_ack.window`。
 - `wait_take` 保留 no-lost-wakeup 语义：Windows 使用 auto-reset Event，macOS 在同一 mutex 临界区内完成检查与 condition wait。deadline 仍以 ACK 实际接收时间判定，未改变协议字段、窗口容量或重试 checkpoint 规则。
 - 新增共享测试 `tests/xfer_ack_coordinator_tests.c`，覆盖 ACK 早于 deadline 设置、迟到 ACK、重复/过期 ACK、批次释放和窗口容量；已加入 Windows/macOS core test 脚本。
-- **CI：Run #1189（ID `42764329083`）在提交时为 pending；此切片尚不能标记构建/测试通过。** 需要审查最新文档提交触发的后续 run，并逐项确认 Windows/macOS job。
+- **最终验证：Run #1195（ID `42765170981`，tested head `83b86e8727ffe36f6ed456a67bcacf78ce216ca0`）Windows MSVC 与 macOS Apple Clang 全流程均 PASS**：应用构建、portable Core/regression（含 ACK Coordinator 并发唤醒测试）、文件传输协议、TCP loopback、Windows native control/data role + reconnect、macOS control/listener loopback、updater 检查及双平台打包。Release publication 按 PR 流程跳过。此前 CI 暴露的 Windows HA fixture 漏链平台 adapter、测试未处理 auto-reset event 的无关唤醒，均已修复并由此 run 覆盖。
 - 下一步：修正 CI 暴露的问题后再收口此切片；随后抽离 Scanner，不并行启动 Sender Core 大规模迁移。

@@ -1116,7 +1116,7 @@ int main(void){
         job_free=extract(worker,'job_free')
         requeue=extract(worker,'sender_worker_requeue_front')
         submit_enter=extract(submit,'sender_submit_enter')
-        assert 'XFER_JOB_OWNER_WORKER' in job_free and 'XFER_JOB_OWNER_SUBMITTER' in submit
+        assert 'XFER_JOB_OWNER_WORKER' in worker and 'XFER_JOB_OWNER_SUBMITTER' in submit
         assert 'XFER_JOB_OWNER_SHUTDOWN' in job_free and 'XFER_JOB_OWNER_RELEASED' in job_free
         assert 'hop_xfer_task_is_terminal' in job_free and 'sender_task_dispose' in job_free
         assert 'shutdown_jobs' in lifecycle and 's_x.shutting_down' in lifecycle

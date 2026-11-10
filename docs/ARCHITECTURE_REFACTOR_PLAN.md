@@ -742,3 +742,16 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - **最终验证：GitHub Actions Run #1154（ID `42729812348`，head `a820228c830f088ccbb140df9246ac8eba94e69c`）Windows MSVC 与 macOS 全流程均 PASS**：应用构建、portable Core/regression、文件传输协议、TCP loopback、Windows native role/reconnect、macOS control/listener、updater/bundle 检查与打包。Release publication 按 PR 流程跳过。
 - 第一阶段验收项 1–6 已完成。此结论是自动化构建/回归验收，不代表真实双机网络、物理键鼠、剪贴板端到端及长时间弱网压力验证。
 - 下一步不再继续改 Receiver 第一阶段范围；后续进入独立阶段的传输故障注入与性能/资源压测，以及其他模块重构。
+
+
+### P0 追加修复：Windows staging 清理（2026-11-10）
+
+- 修复 \`src/win/xfer_receive.inc\` 的安全路径片段：实际生成路径为 \`\\HopDesk\\\`，清理保护参数改为 C 字面量 \`L"\\\\HopDesk\\\\"\`（运行时单反斜杠分隔）。
+- \`discard_staging_directory\` 改为返回成功状态。只有文件系统确认删除成功时平台 Adapter 才清空 \`rx->dir\`；失败时保留原路径并设置 \`staging_cleanup_pending\`。
+- Core 的 \`hop_xfer_rx_reset_batch_state\` 在清理待重试时不清空路径；新 staging 创建前先重试，失败则拒绝覆盖旧路径。正常关闭时额外重试。
+- Windows/macOS 创建 staging 目录失败时也尝试清理已部分创建的目录，清理失败则保留待重试路径。
+- 回归补充：
+  - Windows CI 使用真实 \`src/win/xfer_rx_fs.c\` 与 \`SHFileOperationW\`，构造 \`%TEMP%\\HopDesk\\session\\batch\`，验证 \`L"\\HopDesk\\\"\` 可以删除，并验证旧的双重分隔符保护片段会返回 \`-2\`。
+  - ABORT Fixture 模拟删除失败，验证路径和 pending 标记跨 Receiver state reset 保留，后续重试成功才清空。
+- **最终验证：Run #1174（ID \`42737657158\`）Windows MSVC 与 macOS 全流程均成功。Windows 日志明确包含 \`PASS: Windows staging tree is deleted with the exact production path guard\` 及 \`PASS: production receive ABORT lifecycle...\`。**
+- 此问题证明此前第一阶段 CI 对真实 Windows staging 清理的覆盖不足；已补足对应回归，不再把先前 CI 全绿视为该路径已验证。

@@ -14,7 +14,9 @@ typedef enum {
     HOP_XFER_SENDER_JOB_CANCELLED = 2,
     HOP_XFER_SENDER_JOB_PEER_ABORT = 3,
     HOP_XFER_SENDER_JOB_COMMIT_UNKNOWN = 4,
-    HOP_XFER_SENDER_JOB_COMMIT_REJECTED = 5
+    HOP_XFER_SENDER_JOB_COMMIT_REJECTED = 5,
+    /* Local shutdown stopped the worker before the job could be retried. */
+    HOP_XFER_SENDER_JOB_SHUTDOWN = 6
 } hop_xfer_sender_job_result;
 
 typedef enum {

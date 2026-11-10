@@ -651,14 +651,14 @@ static void test_xfer_global_budget(void) {
     CHECK(snap.jobs==2&&snap.entries==3&&snap.pending_bytes==701);
     CHECK(snap.jobs_high_water==2&&snap.entries_high_water==3);
     uint64_t released_before=snap.released_reservations;
-    hop_xfer_budget_release(&a);
+    CHECK(hop_xfer_budget_release(&a));
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.released_reservations==released_before+1);
-    hop_xfer_budget_release(&a); /* A repeated return must not release twice. */
+    CHECK(hop_xfer_budget_release(&a)); /* A repeated return is an empty no-op. */
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.released_reservations==released_before+1);
     CHECK(snap.jobs==1&&snap.entries==1&&snap.pending_bytes==1);
-    hop_xfer_budget_release(&b);
+    CHECK(hop_xfer_budget_release(&b));
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0);
     CHECK(snap.released_reservations==released_before+2);

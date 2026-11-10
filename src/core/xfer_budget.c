@@ -286,21 +286,35 @@ int hop_xfer_budget_transfer_image_temp(hop_xfer_reservation_handle *from,
     return 1;
 }
 
-void hop_xfer_budget_release(hop_xfer_reservation_handle *r) {
-    if (!r || !r->task_id || !r->handle_id || !r->active) return;
+int hop_xfer_budget_release(hop_xfer_reservation_handle *r) {
+    if (!r || !r->task_id || !r->handle_id) return 0;
     LOCK();
     if (r->rx_queue_slots || r->rx_queue_bytes || r->image_temp_bytes) {
         /* Keep the reservation alive until the writer releases every buffer. */
         s_used.accounting_errors++;
         UNLOCK();
-        return;
+        return 0;
     }
-    int had_resources = r->jobs || r->entries || r->pending_bytes || r->image_bytes || r->image_temp_bytes;
+    if (!r->active) {
+        int empty = !r->jobs && !r->entries && !r->pending_bytes && !r->image_bytes;
+        if (!empty) s_used.accounting_errors++;
+        UNLOCK();
+        return empty;
+    }
+    /* Never clear a handle if its counters cannot be subtracted exactly.
+     * The Task owner must remain live so Shutdown can retry or report it. */
+    if (r->jobs != 1 || r->jobs > s_used.jobs ||
+        r->entries > s_used.entries || r->pending_bytes > s_used.pending_bytes ||
+        r->image_bytes > s_used.image_bytes) {
+        s_used.accounting_errors++;
+        UNLOCK();
+        return 0;
+    }
     subtract_u32(&s_used.jobs, r->jobs);
     subtract_u32(&s_used.entries, r->entries);
     subtract_u64(&s_used.pending_bytes, r->pending_bytes);
     subtract_u64(&s_used.image_bytes, r->image_bytes);
-    if (had_resources) s_used.released_reservations++;
+    s_used.released_reservations++;
     r->jobs = 0;
     r->entries = 0;
     r->pending_bytes = 0;
@@ -308,6 +322,7 @@ void hop_xfer_budget_release(hop_xfer_reservation_handle *r) {
     r->image_temp_bytes = 0;
     r->active = 0;
     UNLOCK();
+    return 1;
 }
 
 void hop_xfer_budget_get_snapshot(hop_xfer_budget_snapshot *out) {

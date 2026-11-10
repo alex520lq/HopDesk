@@ -58,7 +58,9 @@ int hop_xfer_budget_release_image_temp(hop_xfer_reservation_handle*, uint64_t by
 int hop_xfer_budget_transfer_image_temp(hop_xfer_reservation_handle *from,
                                         hop_xfer_reservation_handle *to,
                                         uint64_t bytes);
-void hop_xfer_budget_release(hop_xfer_reservation_handle*);
+/* Returns 1 when the reservation is fully returned (or already empty). A
+ * failed return leaves the handle live so its owner can retry disposal. */
+int hop_xfer_budget_release(hop_xfer_reservation_handle*);
 void hop_xfer_budget_get_snapshot(hop_xfer_budget_snapshot*);
 int hop_xfer_budget_set_limits_for_test(const hop_xfer_budget_limits*);
 

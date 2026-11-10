@@ -1068,15 +1068,10 @@ int main(void){
         cleanup=end.index('rx->services.remove_file(')
         assert close < cleanup, 'failed receive cleanup must wait for writer close'
 
-        if platform=='mac':
-            queue=extract(sender,'send_thread')
-            assert 'peer_ready_snapshot' in queue and 'waited_for_queue' in queue
-            assert 'hop_xfer_sender_queue_take_head(' in queue
-            assert 'peer_ready_snapshot, !waited_for_queue' in queue
-        else:
-            queue=extract(sender,'send_thread')
-            assert 'hop_xfer_sender_queue_take_head(' in queue
-            assert 'c != INVALID_SOCKET, 1' in queue
+        queue=extract(sender,'send_thread')
+        assert 'hop_xfer_sender_scheduler_wait_next' in queue
+        assert 'hop_xfer_sender_queue_take_head(' not in queue
+        assert 'waited_for_queue' not in queue
 
     # DONE/DONE_ACK retry policy is now shared Core; platform files only adapt
     # current connection/session, wire send, ACK coordinator and wait callbacks.
@@ -1411,10 +1406,19 @@ int main(void){
     assert 'test_head_readiness_and_fifo' in queue_tests
     assert 'test_front_insert_lookup_and_detach' in queue_tests
     assert 'test_expiry_while_offline' in queue_tests
+    scheduler_core=(ROOT/'src/core/xfer_sender_scheduler.c').read_text(encoding='utf-8')
+    scheduler_header=(ROOT/'src/core/xfer_sender_scheduler.h').read_text(encoding='utf-8')
+    scheduler_tests=(ROOT/'tests/xfer_sender_scheduler_tests.c').read_text(encoding='utf-8')
+    assert 'hop_xfer_sender_scheduler_wait_next' in scheduler_core
+    assert 'hop_xfer_sender_queue_take_cancelled' in scheduler_core
+    assert 'hop_xfer_sender_queue_take_head' in scheduler_core
+    assert 'wait_for_work_locked' in scheduler_header
+    assert 'test_offline_wait_refreshes_peer_before_selection' in scheduler_tests
+    assert 'test_stop_after_wait_leaves_queue_owned_by_shutdown' in scheduler_tests
     for platform in ['win','mac']:
         worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
-        assert 'hop_xfer_sender_queue_take_cancelled' in worker
-        assert 'hop_xfer_sender_queue_take_head' in worker
+        assert 'hop_xfer_sender_scheduler_wait_next' in worker
+        assert 'hop_xfer_sender_queue_take_head' not in worker
         assert 'queue_unlink' not in worker
         transport=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
         thread_adapter=(ROOT/f'src/{platform}/xfer_sender_threads.c').read_text(encoding='utf-8')

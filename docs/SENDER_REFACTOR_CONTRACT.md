@@ -337,3 +337,13 @@ No physical two-device or weak-network acceptance is claimed by the unit/CI test
 - macOS application exit now waits for clipboard image workers, stops and joins the detached control reader/sender workers, and only then calls xfer_shutdown. This prevents late reconnect kicks from touching destroyed transfer locks.
 - Production-linked tests cover shutdown before retry, stop winning the requeue race, real Task terminal/dispose and Reservation return, plus retryable Windows Join timeout. Source-contract tests enforce owner transitions and teardown ordering.
 - Validation: pending the exact-head dual-platform Actions run. No further module extraction or PR merge until Windows/macOS CI passes and the Task/Reservation shutdown audit remains clean.
+
+
+## 27. Sender terminal status publication after disposal (2026-11-10)
+
+- Windows and macOS now retain terminal status details on the Job instead of publishing them from the worker-flow callback as soon as Task reaches a terminal state.
+- The single Job disposer publishes the pending status only after Task disposal succeeds and the Task handle is cleared. A failed disposal therefore keeps both the Job owner and its not-yet-published terminal status on the Shutdown retry list.
+- Queued-expiry and invalid-worker-context paths now use the same deferred status path; no special path can announce completion before the Task/Reservation owner has been released.
+- Regression checks require status publication to occur after `sender_task_dispose` and prohibit direct publication from the worker status callback.
+- **Validation: GitHub Actions Run #1510 (ID `42848693214`, tested commit `a043fe8dd1c56f8141fcb61042aa5d7246ee2991`) passed on Windows MSVC and macOS Apple Clang.**
+- Next: extract the common Sender worker scheduling loop (wait, queue selection, cancellation/deadline expiry and Job ownership claim) behind an explicit Core scheduler contract. Keep native event/condition waits and platform locks as adapters; preserve the 200 ms reconnect/cancel polling and the Windows/macOS lock-order constraints.

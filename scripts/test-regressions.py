@@ -1107,6 +1107,42 @@ int main(void){
         assert 'sender_status_end(&j->sender_context' not in thread
         assert 'sender_status_end(' in worker
         assert ' status_start_job(' not in thread and ' status_end(' not in thread
+
+        # Shutdown is an ownership transfer, not a best-effort queue cleanup.
+        lifecycle=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        submit=(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
+        shutdown=extract(lifecycle,'xfer_shutdown')
+        shutdown_drain=extract(worker,'sender_shutdown_drain_jobs')
+        job_free=extract(worker,'job_free')
+        requeue=extract(worker,'sender_worker_requeue_front')
+        submit_enter=extract(submit,'sender_submit_enter')
+        assert 'XFER_JOB_OWNER_SUBMITTER' in job_free and 'XFER_JOB_OWNER_WORKER' in job_free
+        assert 'XFER_JOB_OWNER_SHUTDOWN' in job_free and 'XFER_JOB_OWNER_RELEASED' in job_free
+        assert 'hop_xfer_task_is_terminal' in job_free and 'sender_task_dispose' in job_free
+        assert 'sender_shutdown_jobs' in lifecycle and 's_x.shutting_down' in lifecycle
+        assert 'XFER_JOB_OWNER_QUEUE' in submit and 'XFER_JOB_OWNER_QUEUE' in requeue
+        assert 'XFER_JOB_OWNER_WORKER' in requeue and 'sender_worker_is_stopping' in requeue
+        assert 'sender_submit_enter' in submit and 'sender_submit_leave' in submit
+        assert ('AcquireSRWLockShared' in submit_enter if platform=='win' else 'pthread_rwlock_rdlock' in submit_enter)
+        assert ('AcquireSRWLockExclusive' in shutdown if platform=='win' else 'pthread_rwlock_wrlock' in shutdown)
+        assert shutdown.index('sender_threads_join') < shutdown.index('sender_shutdown_drain_jobs')
+        assert shutdown.index('sender_shutdown_drain_jobs') < shutdown.index('rx_reset')
+        assert shutdown.index('rx_reset') < shutdown.index('wq_stop') < shutdown.index('xfer_shutdown_task_audit')
+        assert shutdown.index('xfer_shutdown_task_audit') < shutdown.index('hop_xfer_task_history_store_close')
+        assert 'Transfer interrupted during shutdown' in shutdown_drain
+        assert 'HOP_XFER_TASK_INTERRUPTED' in shutdown_drain
+        assert 'hop_xfer_sender_queue_detach_all' in shutdown_drain
+        assert 'while (s_x.shutdown_jobs)' in shutdown_drain
+        assert 'hop_xfer_task_reconcile' in extract(lifecycle,'xfer_shutdown_task_audit')
+        assert 'HOP_XFER_SENDER_JOB_SHUTDOWN' in flow_core
+        assert 'ops->is_stopping' in flow_core
+        if platform=='mac':
+            assert 'hop_xfer_sender_queue_detach_all' not in thread
+        else:
+            assert 'sender_context_is_stopping(&s_sender_platform)' in thread
+
+        receive=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        assert 'static int wq_stop(void)' in receive and 'return 0;' in extract(receive,'wq_stop')
         protocol=(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
         assert 'send_chunk(&call->job->sender_context' in protocol
         assert 'send_small_with_context(&call->job->sender_context' in protocol

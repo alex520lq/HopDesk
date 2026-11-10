@@ -17,6 +17,65 @@ static void queue_remove(hop_xfer_sender_queue *queue,
     ops->set_next(ops->user, node, NULL);
 }
 
+void hop_xfer_sender_queue_init(hop_xfer_sender_queue *queue) {
+    if (queue) {
+        queue->head = NULL;
+        queue->tail = NULL;
+        queue->count = 0;
+    }
+}
+
+int hop_xfer_sender_queue_push_back(hop_xfer_sender_queue *queue,
+                                    const hop_xfer_sender_queue_ops *ops,
+                                    void *node) {
+    if (!queue || !node || !queue_ops_valid(ops) || queue->count == UINT32_MAX)
+        return 0;
+    ops->set_next(ops->user, node, NULL);
+    if (queue->tail) ops->set_next(ops->user, queue->tail, node);
+    else queue->head = node;
+    queue->tail = node;
+    queue->count++;
+    return 1;
+}
+
+int hop_xfer_sender_queue_push_front(hop_xfer_sender_queue *queue,
+                                     const hop_xfer_sender_queue_ops *ops,
+                                     void *node) {
+    if (!queue || !node || !queue_ops_valid(ops) || queue->count == UINT32_MAX)
+        return 0;
+    ops->set_next(ops->user, node, queue->head);
+    queue->head = node;
+    if (!queue->tail) queue->tail = node;
+    queue->count++;
+    return 1;
+}
+
+int hop_xfer_sender_queue_contains_batch(const hop_xfer_sender_queue *queue,
+                                         const hop_xfer_sender_queue_ops *ops,
+                                         uint32_t batch) {
+    if (!queue || !batch || !queue_ops_valid(ops)) return 0;
+    for (void *node = queue->head; node; node = ops->next(ops->user, node))
+        if (ops->batch(ops->user, node) == batch) return 1;
+    return 0;
+}
+
+uint32_t hop_xfer_sender_queue_count(const hop_xfer_sender_queue *queue) {
+    return queue ? queue->count : 0;
+}
+
+int hop_xfer_sender_queue_empty(const hop_xfer_sender_queue *queue) {
+    return !queue || queue->head == NULL;
+}
+
+void *hop_xfer_sender_queue_detach_all(hop_xfer_sender_queue *queue) {
+    if (!queue) return NULL;
+    void *head = queue->head;
+    queue->head = NULL;
+    queue->tail = NULL;
+    queue->count = 0;
+    return head;
+}
+
 void *hop_xfer_sender_queue_take_cancelled(
     hop_xfer_sender_queue *queue,
     const hop_xfer_sender_queue_ops *ops) {
@@ -28,6 +87,7 @@ void *hop_xfer_sender_queue_take_cancelled(
         void *next = ops->next(ops->user, node);
         if (ops->is_cancelled(ops->user, node)) {
             queue_remove(queue, ops, previous, node, next);
+            if (queue->count) queue->count--;
             return node;
         }
         previous = node;
@@ -57,6 +117,7 @@ void *hop_xfer_sender_queue_take_head(
     if (expired) {
         void *next = ops->next(ops->user, node);
         queue_remove(queue, ops, NULL, node, next);
+        if (queue->count) queue->count--;
         *result = HOP_XFER_SENDER_QUEUE_EXPIRED;
         return node;
     }
@@ -65,6 +126,7 @@ void *hop_xfer_sender_queue_take_head(
         ops->retry_at_ms(ops->user, node) <= now_ms) {
         void *next = ops->next(ops->user, node);
         queue_remove(queue, ops, NULL, node, next);
+        if (queue->count) queue->count--;
         *result = HOP_XFER_SENDER_QUEUE_READY;
         return node;
     }

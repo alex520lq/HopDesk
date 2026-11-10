@@ -250,8 +250,7 @@ int hop_xfer_rx_finish_batch(void *context, uint32_t batch, uint32_t ok, uint32_
     }
     if (action == HOP_RX_BATCH_FINISH_STALE) return -1;
 
-    if (rx->services.close_file)
-        rx->services.close_file(rx->services.context);
+    rx_release_terminal_resources(rx, 1, 0);
 
     int image_valid = rx->image_buffer.data &&
         rx->image_state.received == rx->image_state.expected;

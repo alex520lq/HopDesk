@@ -99,3 +99,21 @@ For each slice record the exact tested commit and Actions run. Required checks:
 - explicit note that physical two-device and long-duration tests remain unverified unless actually performed.
 
 A slice is not complete merely because the new files exist or the CI source-contract assertions pass. The old include/global dependency must be removed from both production paths, and the new module must be linked by both native builds.
+
+
+## 7. ACK Coordinator extraction status (2026-11-10)
+
+Implemented on both platforms:
+
+- Added opaque `hop_xfer_ack_coordinator` adapters in `src/win` and `src/mac`. The platform modules own the synchronization primitive and the shared Core ACK Window instance.
+- Sender registration, sent timestamp, deadline, delivery, take, unregister and batch cleanup now go through the coordinator API.
+- Receiver ACK delivery and ABORT/cancel/shutdown wake-up paths now use the coordinator API; no production call site reaches into `s_ack.lock`, `s_ack.event/cond`, or `s_ack.window`.
+- `wait_take` preserves the platform-specific no-lost-wakeup contract: Windows uses an auto-reset event; macOS checks and waits under the same mutex/condition-variable lock.
+- ACK timestamp/deadline semantics and the existing Core slot state machine are unchanged. Sender cancellation/peer-abort/socket-loss checks remain in Sender orchestration.
+- Added `tests/xfer_ack_coordinator_tests.c` and wired it into both platform core test scripts. Cases cover ACK-before-deadline-installation, exact receive-time deadline evaluation, duplicate/stale ACK rejection, batch cleanup and bounded slots.
+
+Validation status:
+
+- Source-level migration is complete on Windows/macOS; this is not yet a claim of successful compilation or runtime validation.
+- GitHub Actions Run #1189 (ID `42764329083`) was pending when recorded. Update this section only after inspecting both platform jobs and the complete required workflow result.
+- Physical two-device tests remain outside CI and are not claimed.

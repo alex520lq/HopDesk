@@ -94,14 +94,15 @@ static int wq_error_get(void) {
     return s_wq ? hop_writer_queue_error(s_wq) : 0;
 }
 
-static void wq_stop(void) {
-    if (!s_wq) return;
+static int wq_stop(void) {
+    if (!s_wq) return 1;
     if (!hop_writer_queue_stop(s_wq)) {
         hop_log(HOP_LOG_WARN, "xfer: writer worker join failed; retain queue state");
-        return;
+        return 0;
     }
     hop_writer_queue_destroy(s_wq);
     s_wq = NULL;
+    return 1;
 }
 
 /* ---------------- 接收 ---------------- */

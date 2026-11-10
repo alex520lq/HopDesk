@@ -520,8 +520,14 @@ static int send_done_with_context(const hop_xfer_sender_context *context,
                                    dp, sizeof(dp), batch);
 }
 
-static int send_done(int fd, uint32_t batch, uint32_t ok, uint32_t total) {
-    return send_done_with_context(&s_sender_context, fd, batch, ok, total);
+static int send_done(int fd, uint32_t batch, uint32_t ok,
+                      uint32_t total) {
+    uint8_t dp[20];
+    hop_put_be32(dp, batch);
+    hop_put_be32(dp + 4, ok);
+    hop_put_be32(dp + 8, total);
+    hop_put_be64(dp + 12, 0);
+    return send_small(fd, HOP_MSG_XFER_DONE, dp, sizeof(dp), batch);
 }
 
 /* Re-send only DONE, never file contents, while the same control session

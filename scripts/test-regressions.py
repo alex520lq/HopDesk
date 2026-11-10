@@ -1140,6 +1140,8 @@ int main(void){
         send_thread=extract(worker,'send_thread')
         begin_pass=extract(worker,'sender_scheduler_begin_pass')
         wait_adapter=extract(worker,'sender_scheduler_wait_locked')
+        clear_active=extract(worker,'sender_worker_clear_active_job')
+        dispose_job=extract(worker,'sender_worker_dispose_job')
         claim_adapter=extract(worker,'sender_scheduler_claim_locked')
         assert 'hop_xfer_sender_scheduler_wait_next' in send_thread
         assert 'hop_xfer_sender_queue_take_head' not in send_thread
@@ -1420,6 +1422,7 @@ int main(void){
     assert 'test_stop_after_wait_leaves_queue_owned_by_shutdown' in scheduler_tests
     assert 'hop_xfer_sender_active_job_take_cancelled_and_clear' in active_core
     assert 'hop_xfer_sender_active_job_record_peer_abort' in active_core
+    assert 'hop_xfer_sender_active_job_clear_if_matches' in active_header
     assert 'test_abort_is_scoped_to_active_batch' in active_tests
     for platform in ['win','mac']:
         worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
@@ -1432,6 +1435,9 @@ int main(void){
         assert 'hop_xfer_sender_active_job_is_active' in transport
         assert 'hop_xfer_sender_active_job_begin' in worker
         assert 'hop_xfer_sender_active_job_take_cancelled_and_clear' in worker
+        assert 'hop_xfer_sender_active_job_clear_if_matches' in clear_active
+        assert dispose_job.index('sender_worker_clear_active_job') < dispose_job.index('job_free')
+        assert 'sender_worker_clear_active_job(j)' in send_thread
         assert 'hop_xfer_sender_active_job_record_peer_abort' in receive
         assert 'hop_xfer_sender_active_job_reset_peer_abort' in receive
         assert 'active_job.abort_batch' in protocol

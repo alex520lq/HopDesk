@@ -11,6 +11,27 @@ static int reserve_calls;
 static int reject_after = -1;
 static int cancel_requested;
 
+static int scan_reserve(void *context, uint64_t bytes) {
+    (void)context; (void)bytes;
+    if (reject_after >= 0 && reserve_calls >= reject_after) return 0;
+    ++reserve_calls;
+    return 1;
+}
+static int scan_cancel(void *context) {
+    (void)context;
+    return cancel_requested;
+}
+static int scan_watchdog_begin(void *context, const char *operation, unsigned timeout_ms) {
+    (void)context; (void)operation; (void)timeout_ms;
+    return 1;
+}
+static void scan_watchdog_end(void *context, int ticket) {
+    (void)context; (void)ticket;
+}
+static const hop_xfer_scan_services scan_services = {
+    NULL, scan_reserve, scan_cancel, scan_watchdog_begin, scan_watchdog_end
+};
+
 int hop_xfer_task_reserve_entry(hop_xfer_task *task, uint64_t bytes) {
     (void)task; (void)bytes;
     if (reject_after >= 0 && reserve_calls >= reject_after) return 0;
@@ -34,7 +55,6 @@ void hop_log(hop_log_level level, const char *fmt, ...) {
 
 static void reset_scan(elist *list) {
     memset(list, 0, sizeof(*list));
-    list->task.id = 1;
     reserve_calls = 0;
     reject_after = -1;
     cancel_requested = 0;
@@ -70,7 +90,7 @@ int main(void) {
     elist list;
     reset_scan(&list);
     const wchar_t *paths[] = {root};
-    hop_xfer_scan_paths(&list, paths, 1);
+    hop_xfer_scan_paths(&list, paths, 1, &scan_services);
     assert(!list.failed && list.n == 4);
     int dirs = 0, files = 0;
     for (int i = 0; i < list.n; ++i) {
@@ -82,18 +102,18 @@ int main(void) {
     elist_free(&list);
 
     reset_scan(&list); reject_after = 2;
-    hop_xfer_scan_paths(&list, paths, 1);
+    hop_xfer_scan_paths(&list, paths, 1, &scan_services);
     assert(list.failed && list.budget_rejected);
     elist_free(&list);
 
     reset_scan(&list); cancel_requested = 1;
-    hop_xfer_scan_paths(&list, paths, 1);
+    hop_xfer_scan_paths(&list, paths, 1, &scan_services);
     assert(list.failed);
     elist_free(&list);
 
     reset_scan(&list);
     const wchar_t *missing_paths[] = {missing};
-    hop_xfer_scan_paths(&list, missing_paths, 1);
+    hop_xfer_scan_paths(&list, missing_paths, 1, &scan_services);
     assert(list.failed);
     elist_free(&list);
 
@@ -130,7 +150,7 @@ int main(void) {
     elist list;
     reset_scan(&list);
     const char *paths[] = {root};
-    hop_xfer_scan_paths(&list, paths, 1);
+    hop_xfer_scan_paths(&list, paths, 1, &scan_services);
     assert(!list.failed && list.n == 4);
     int dirs = 0, files = 0;
     for (int i = 0; i < list.n; ++i) {
@@ -142,24 +162,24 @@ int main(void) {
     elist_free(&list);
 
     reset_scan(&list); reject_after = 2;
-    hop_xfer_scan_paths(&list, paths, 1);
+    hop_xfer_scan_paths(&list, paths, 1, &scan_services);
     assert(list.failed && list.budget_rejected);
     elist_free(&list);
 
     reset_scan(&list); cancel_requested = 1;
-    hop_xfer_scan_paths(&list, paths, 1);
+    hop_xfer_scan_paths(&list, paths, 1, &scan_services);
     assert(list.failed);
     elist_free(&list);
 
     reset_scan(&list);
     const char *missing_paths[] = {missing};
-    hop_xfer_scan_paths(&list, missing_paths, 1);
+    hop_xfer_scan_paths(&list, missing_paths, 1, &scan_services);
     assert(list.failed);
     elist_free(&list);
 
     assert(symlink(a, link_path) == 0);
     reset_scan(&list);
-    hop_xfer_scan_paths(&list, paths, 1);
+    hop_xfer_scan_paths(&list, paths, 1, &scan_services);
     assert(list.failed);
     elist_free(&list);
 

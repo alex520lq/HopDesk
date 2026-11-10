@@ -1415,6 +1415,9 @@ int main(void){
     active_header=(ROOT/'src/core/xfer_sender_active_job.h').read_text(encoding='utf-8')
     active_tests=(ROOT/'tests/xfer_sender_active_job_tests.c').read_text(encoding='utf-8')
     abort_fixture=(ROOT/'tests/receive_abort_fixture.c.in').read_text(encoding='utf-8')
+    context_adapter=(ROOT/'src/core/xfer_sender_context_adapter.c').read_text(encoding='utf-8')
+    context_adapter_header=(ROOT/'src/core/xfer_sender_context_adapter.h').read_text(encoding='utf-8')
+    context_adapter_tests=(ROOT/'tests/xfer_sender_context_adapter_tests.c').read_text(encoding='utf-8')
     assert 'hop_xfer_sender_scheduler_wait_next' in scheduler_core
     assert 'hop_xfer_sender_queue_take_cancelled' in scheduler_core
     assert 'hop_xfer_sender_queue_take_head' in scheduler_core
@@ -1428,6 +1431,12 @@ int main(void){
     assert 'test_abort_is_scoped_to_active_batch' in active_tests
     assert 'hop_xfer_sender_active_job_record_peer_abort' in abort_fixture
     assert 's_x.cur_batch' not in abort_fixture and 's_x.abort_batch' not in abort_fixture
+    assert 'hop_xfer_sender_context_task_cancel_requested' in context_adapter
+    assert 'hop_xfer_sender_context_task_dispose' in context_adapter
+    assert 'hop_xfer_sender_context_status_chunk_timed' in context_adapter
+    assert 'hop_xfer_sender_context_logf' in context_adapter
+    assert 'hop_xfer_sender_context_task_bind_session' in context_adapter_header
+    assert 'test_task_lifecycle_forwarding' in context_adapter_tests
     for platform in ['win','mac']:
         worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
         submission=(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
@@ -1450,6 +1459,12 @@ int main(void){
         assert 'hop_xfer_sender_active_job_record_peer_abort' in receive
         assert 'hop_xfer_sender_active_job_reset_peer_abort' in receive
         assert 'active_job.abort_batch' in protocol
+        assert '#include "../core/xfer_sender_context_adapter.h"' in protocol
+        assert 'hop_xfer_sender_context_task_cancel_requested(' in protocol
+        assert 'hop_xfer_sender_context_task_dispose(' in worker
+        assert 'hop_xfer_sender_context_status_end(' in worker
+        assert 'sender_task_cancel_requested(' not in protocol+worker
+        assert 'sender_status_end(' not in protocol+worker
         assert 's_x.cur_batch' not in transport+worker+receive
         assert 's_x.cur_task_id' not in transport+worker+receive
         assert 's_x.abort_batch' not in transport+worker+receive

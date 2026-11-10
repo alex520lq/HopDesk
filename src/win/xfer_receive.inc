@@ -469,7 +469,7 @@ static int rx_discard_dir(xfer_rx_context *rx) {
     /* Staging paths are created as <temp>\\HopDesk\\<session>\\<batch>. */
     int result = hop_xfer_rx_fs_remove_tree(rx->dir, L"\\HopDesk\\");
     if (result == 0) {
-        rx->dir[0] = L'\\0';
+        rx->dir[0] = L'\0';
         rx->staging_cleanup_pending = 0;
         return 1;
     }

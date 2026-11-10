@@ -17,7 +17,7 @@ typedef struct {
 
 static hop_writer_queue *s_wq;
 static xfer_rx_context s_rx;
-static void rx_discard_dir(xfer_rx_context *rx);
+static int rx_discard_dir(xfer_rx_context *rx);
 
 static int wq_reserve_task_rx(void *context, void *owner, uint32_t bytes) {
     (void)context;
@@ -115,8 +115,8 @@ static void rx_context_shutdown_data(void *context) {
     if (active >= 0) shutdown(active, SHUT_RDWR);
 }
 
-static void rx_context_discard_staging_directory(void *context) {
-    rx_discard_dir((xfer_rx_context *)context);
+static int rx_context_discard_staging_directory(void *context) {
+    return rx_discard_dir((xfer_rx_context *)context);
 }
 
 static void rx_context_clear_cancel_request(void *context) {
@@ -127,6 +127,8 @@ static void rx_context_clear_cancel_request(void *context) {
 static int rx_context_create_staging_directory(void *context, const char *session_hex, uint32_t batch) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx || !session_hex) return 0;
+    /* Never overwrite the only record of a staging tree that failed cleanup. */
+    if (rx->dir[0] && !rx_discard_dir(rx)) return 0;
     int length = snprintf(rx->dir, sizeof(rx->dir), "%s/HopDesk/%s/%u",
                           temp_root(), session_hex, batch);
     if (length <= 0 || (size_t)length >= sizeof(rx->dir)) {
@@ -431,14 +433,21 @@ static void rx_expire_stale_session(void) {
 /* 递归删掉本批临时目录。
  * 只在接收批次被 ABORT 时调用；普通部分完成仍保留已送达的文件，
  * 成功批次的文件就是产物本身，都不能删。 */
-static void rx_discard_dir(xfer_rx_context *rx) {
-    if (!rx || !rx->dir[0]) return;
+static int rx_discard_dir(xfer_rx_context *rx) {
+    if (!rx) return 0;
+    if (!rx->dir[0]) { rx->staging_cleanup_pending = 0; return 1; }
     int result = hop_xfer_rx_fs_remove_tree(rx->dir, "/HopDesk/");
+    if (result == 0) {
+        rx->dir[0] = '\\0';
+        rx->staging_cleanup_pending = 0;
+        return 1;
+    }
     if (result == -2)
         hop_log(HOP_LOG_ERROR, "xfer: refuse to delete receiver staging directory");
-    else if (result != 0)
-        hop_log(HOP_LOG_WARN, "xfer: failed to remove receiver staging directory");
-    rx->dir[0] = 0;
+    else
+        hop_log(HOP_LOG_WARN, "xfer: failed to remove receiver staging directory (result %d); retaining path for retry", result);
+    rx->staging_cleanup_pending = 1;
+    return 0;
 }
 
 static int rx_add_top(xfer_rx_context *rx, const char *p) {

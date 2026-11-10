@@ -15,7 +15,7 @@ static void queue_unlink(xf_job *prev, xf_job *cur) {
  * change FIFO order or lose the tail of the remaining queue. */
 static xf_job *queue_take_cancelled(void) {
     xf_job *prev=NULL, *cur=s_x.q_head;
-    while (cur && !hop_xfer_task_cancel_requested(cur->task.id)) { prev=cur; cur=cur->next; }
+    while (cur && !sender_task_cancel_requested(cur->batch, &cur->task)) { prev=cur; cur=cur->next; }
     if (cur) { queue_unlink(prev,cur); cur->next=NULL; }
     return cur;
 }
@@ -29,7 +29,7 @@ static void job_free(xf_job *j) {
     }
     free(j->e);
     free(j->pixels);
-    hop_xfer_task_dispose(&j->task);
+    sender_task_dispose(&j->task);
     free(j);
 }
 
@@ -111,7 +111,7 @@ static void *send_thread(void *arg) {
             hop_log(HOP_LOG_ERROR,
                     "xfer: batch %u abandoned, peer never came back (%d/%d delivered)",
                     expired->batch, expired->ok, expired->n);
-            int was_cancelled=cancel_requested(expired->batch) || hop_xfer_task_cancel_requested(expired->task.id);
+            int was_cancelled=cancel_requested(expired->batch) || sender_task_cancel_requested(expired->batch, &expired->task);
             pthread_mutex_lock(&s_x.slock);
             int abort_fd=s_x.peer_ready && hop_session_id_equal(&expired->session,&s_x.session) ? s_x.sock : -1;
             s_send_epoch=s_x.epoch;
@@ -121,7 +121,7 @@ static void *send_thread(void *arg) {
             int show_status=!s_send_status.status.active || s_send_status.status.batch==expired->batch;
             pthread_mutex_unlock(&s_status_lock);
             if (show_status) status_start_job(expired);
-            hop_xfer_task_finish(&expired->task,was_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
+            sender_task_finish(&expired->task,was_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
             if (show_status) status_end(HOP_XFER_DIR_SEND,expired->batch,was_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED,"Transfer stopped while queued");
             job_free(expired);
             continue;
@@ -133,9 +133,9 @@ static void *send_thread(void *arg) {
         hop_session_id transport_session = s_x.session;
         pthread_mutex_unlock(&s_x.slock);
         job_bind_session(j, &transport_session);
-        if (hop_session_id_valid(&j->session)) (void)hop_xfer_task_bind_session(&j->task,j->session.bytes);
-        if(!hop_xfer_task_set_state(&j->task,HOP_XFER_TASK_ACTIVE)){
-            hop_xfer_task_finish(&j->task,HOP_XFER_TASK_FAILED);job_free(j);continue;
+        if (hop_session_id_valid(&j->session)) (void)sender_task_bind_session(&j->task,&j->session);
+        if(!sender_task_set_state(&j->task,HOP_XFER_TASK_ACTIVE)){
+            sender_task_finish(&j->task,HOP_XFER_TASK_FAILED);job_free(j);continue;
         }
         status_start_job(j);
 
@@ -147,8 +147,8 @@ static void *send_thread(void *arg) {
         if (!completion_path) { s_x.cur_batch = 0; s_x.cur_task_id = 0; }
         pthread_mutex_unlock(&s_x.qlock);
 
-        if (r != JOB_DONE && hop_xfer_task_cancel_requested(j->task.id)) r=JOB_CANCELLED;
-        if (r == JOB_DONE && !hop_xfer_task_begin_completion(&j->task)) r=JOB_CANCELLED;
+        if (r != JOB_DONE && sender_task_cancel_requested(j->batch, &j->task)) r=JOB_CANCELLED;
+        if (r == JOB_DONE && !sender_task_begin_completion(&j->task)) r=JOB_CANCELLED;
         if (r == JOB_NET_DOWN) {
             if (j->give_up_at == 0)
                 j->give_up_at = now_ms() + HOP_XFER_RECONNECT_BUDGET_MS;
@@ -160,7 +160,7 @@ static void *send_thread(void *arg) {
                         "xfer: batch %u interrupted at entry %d, retry %d/%d in %u ms",
                         j->batch, j->next_i, j->attempt,
                         HOP_XFER_JOB_RETRY_MAX - 1, d);
-                if(!hop_xfer_task_set_state(&j->task,HOP_XFER_TASK_QUEUED)){
+                if(!sender_task_set_state(&j->task,HOP_XFER_TASK_QUEUED)){
                     hop_log(HOP_LOG_ERROR,"xfer: task=%llu could not return to queued state",
                             (unsigned long long)j->task.id);
                     status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Invalid task retry state");
@@ -195,20 +195,20 @@ static void *send_thread(void *arg) {
         }
         if (r == JOB_DONE) {
             int complete=j->ok==(int)hop_xfer_job_total(j->is_image,j->n);
-            hop_xfer_task_finish(&j->task,complete?HOP_XFER_TASK_COMPLETED:HOP_XFER_TASK_PARTIAL);
+            sender_task_finish(&j->task,complete?HOP_XFER_TASK_COMPLETED:HOP_XFER_TASK_PARTIAL);
             status_end(HOP_XFER_DIR_SEND,j->batch,complete?HOP_XFER_COMPLETED:HOP_XFER_PARTIAL,
                        complete?"Transfer completed":"Some files failed");
         } else if (r == JOB_CANCELLED) {
-            hop_xfer_task_finish(&j->task,HOP_XFER_TASK_CANCELLED);
+            sender_task_finish(&j->task,HOP_XFER_TASK_CANCELLED);
             status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_CANCELLED,"Cancelled");
         } else if (r == JOB_PEER_ABORT) {
-            hop_xfer_task_finish(&j->task,peer_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
+            sender_task_finish(&j->task,peer_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
             status_end(HOP_XFER_DIR_SEND,j->batch,peer_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED,peer_cancelled?"Cancelled by receiver":"Peer aborted transfer");
         } else if (r == JOB_COMMIT_REJECTED) {
             hop_xfer_task_finish(&j->task,HOP_XFER_TASK_FAILED);
             status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Receiver rejected completion");
         } else if (r == JOB_COMMIT_UNKNOWN) {
-            hop_xfer_task_finish(&j->task,HOP_XFER_TASK_INTERRUPTED);
+            sender_task_finish(&j->task,HOP_XFER_TASK_INTERRUPTED);
             status_end(HOP_XFER_DIR_SEND,j->batch,HOP_XFER_FAILED,"Completion delivery uncertain; peer may have received it");
         } else if (r == JOB_NET_DOWN) {
             hop_xfer_task_finish(&j->task,HOP_XFER_TASK_FAILED);

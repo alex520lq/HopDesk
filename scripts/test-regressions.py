@@ -63,10 +63,10 @@ int main(void) {
 }
 ''',['src/core/xfer_rx_protocol_adapter.c','src/core/xfer_rx_dispatch.c'])
 
-     # Exercise the real Windows filesystem adapter with the exact staging
-     # path shape produced by xfer_receive.inc, not a generic "HopDesk" prefix.
-     if os.name == 'nt':
-         run('win_rx_fs_staging_cleanup',r"""
+    # Exercise the real Windows filesystem adapter with the exact staging
+    # path shape produced by xfer_receive.inc, not a generic "HopDesk" prefix.
+    if os.name == 'nt':
+        run('win_rx_fs_staging_cleanup',r"""
  #include "xfer_rx_fs.h"
  #include <assert.h>
  #include <stdio.h>
@@ -92,7 +92,7 @@ int main(void) {
      puts("PASS: Windows staging tree is deleted with the exact production path guard");
      return 0;
  }
- """,['src/win/xfer_rx_fs.c'],libraries=['shell32.lib'])
+        """,['src/win/xfer_rx_fs.c'],libraries=['shell32.lib'])
 
     assert not list(work.glob('*.tmp.*')), 'failed migration leaked temporary files'
     run('ack_window_checkpoint',r'''

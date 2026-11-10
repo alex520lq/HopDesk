@@ -1,3 +1,5 @@
+#include <stdarg.h>
+
 static void rate_init_from_config(hop_xfer_rate_limiter *rate, int configured_max_mib,
                                   uint64_t burst_bytes, uint64_t now_ns) {
     uint64_t max_mib = configured_max_mib < 16 ? 16u :
@@ -247,6 +249,66 @@ static void sender_task_dispose(const hop_xfer_sender_context *context,
         context->task_dispose(context->user, task);
     else
         hop_xfer_task_dispose(task);
+}
+
+static void sender_status_start_job(const hop_xfer_sender_context *context,
+                                     const void *job) {
+    if (context && context->status_start_job)
+        context->status_start_job(context->user, job);
+    else if (job)
+        status_start_job((const xfer_job *)job);
+}
+
+static void sender_status_end(const hop_xfer_sender_context *context,
+                              uint32_t batch, int phase, const char *detail) {
+    if (context && context->status_end)
+        context->status_end(context->user, batch, phase, detail);
+    else
+        status_end(HOP_XFER_DIR_SEND, batch, phase, detail);
+}
+
+static void sender_status_file_phase(const hop_xfer_sender_context *context,
+                                     uint32_t batch, int index, int phase,
+                                     uint32_t attempts) {
+    if (context && context->status_file_phase)
+        context->status_file_phase(context->user, batch, index, phase, attempts);
+    else
+        status_file_phase(HOP_XFER_DIR_SEND, batch, index, phase, attempts);
+}
+
+static void sender_status_stage_time(const hop_xfer_sender_context *context,
+                                     uint32_t batch, int stage,
+                                     uint64_t elapsed_ns) {
+    if (context && context->status_stage_time)
+        context->status_stage_time(context->user, batch, stage, elapsed_ns);
+    else
+        status_stage_time(HOP_XFER_DIR_SEND, batch, stage, elapsed_ns);
+}
+
+static void sender_status_chunk_timed(const hop_xfer_sender_context *context,
+                                      uint32_t batch, uint32_t id,
+                                      uint64_t offset, uint32_t length,
+                                      uint64_t read_ns, uint64_t crc_ns,
+                                      uint64_t send_ns, uint64_t receive_ns) {
+    if (context && context->status_chunk_timed)
+        context->status_chunk_timed(context->user, batch, id, offset, length,
+                                    read_ns, crc_ns, send_ns, receive_ns);
+    else
+        status_chunk_timed(HOP_XFER_DIR_SEND, batch, id, offset, length,
+                           read_ns, crc_ns, send_ns, receive_ns);
+}
+
+static void sender_logf(const hop_xfer_sender_context *context, int level,
+                        const char *format, ...) {
+    char message[512];
+    va_list args;
+    va_start(args, format);
+    (void)vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
+    if (context && context->log_message)
+        context->log_message(context->user, level, message);
+    else
+        hop_log((hop_log_level)level, "%s", message);
 }
 
 static int rate_wait_for_chunk(uint32_t bytes) {

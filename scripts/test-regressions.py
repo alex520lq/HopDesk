@@ -547,6 +547,7 @@ uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
 typedef int SOCKET;
 typedef struct {uint32_t batch;int is_image,ok,n;} xf_job;
 typedef xf_job xfer_job;
+static xf_job j={10,1,1,1};
 static int applied;static uint8_t wire[20];
 static hop_xfer_tracking s_receive_status;
 static xfer_rx_context s_rx;

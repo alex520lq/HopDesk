@@ -118,3 +118,19 @@ Validation status:
 - **GitHub Actions Run #1195 (ID `42765170981`, tested head `83b86e8727ffe36f6ed456a67bcacf78ce216ca0`) passed on both platforms.** Windows MSVC: app build, portable Core/regression (including ACK coordinator), transfer protocol, TCP loopback, native control/data role + reconnect, updater syntax and packaging all passed. macOS Apple Clang: app build, portable Core/regression (including ACK coordinator), transfer protocol, TCP loopback, control/listener loopback and packaging all passed. Release publication was skipped as expected for a PR.
 - CI caught two test integration issues before the passing run: the Windows HA fixture needed to link the new platform adapter; the cross-thread test needed to tolerate an unrelated/stale auto-reset event notification, matching the production Sender retry loop. Both were corrected and covered by Run #1195.
 - Physical two-device tests remain outside CI and are not claimed.
+
+
+## 8. Scanner boundary extraction status (2026-11-10)
+
+The scanner already existed as platform-specific \`.c\` files before this slice. This slice completes the ownership and dependency boundary rather than claiming the files were newly created.
+
+- \`elist\` is now only an owned scan snapshot; it no longer embeds or disposes a Task. \`elist_free\` releases snapshot entries only.
+- The submit layer owns Task init/state/finish/dispose and passes an explicit \`hop_xfer_scan_services\` context into the scanner.
+- Entry reservation, cancellation, snapshot-array reallocation and Watchdog begin/end are injected callbacks. Scanner implementation no longer calls Task, Watchdog or logging globals directly, and its public header no longer includes the Task header.
+- Scanner reports typed failure causes (invalid input, cancellation, unavailable source, link/reparse rejection, unsupported entry, path/entry limit, budget rejection, enumeration failure and OOM). Submit rejects the entire snapshot on any failure and logs the scan error; no partial tree is queued.
+- macOS \`readdir\` now clears and captures \`errno\` around each read, distinguishing normal EOF from partial enumeration failure. Windows preserves the \`FindNextFileW\` error across watchdog cleanup and rejects non-\`ERROR_NO_MORE_FILES\` termination.
+- Added production-linked tests for complete directory snapshots, cancellation, missing paths, symlink rejection (macOS), budget rejection and injected snapshot-allocation failure on both platforms. Source-contract tests verify explicit service injection, no implicit Task/Watchdog/log calls in Scanner and all-or-nothing submit behavior.
+- **Validation: GitHub Actions Run #1236 (ID \`42771934666\`, tested head \`8dafd1dbf4adc970b4dbadc3580d5e11962fb5bf\`) passed Windows MSVC and macOS Apple Clang.** Both app builds, portable Core/regressions (including scanner tests), transfer protocol, TCP loopback, platform control/reconnect tests and package steps passed. Release publication was skipped for the PR.
+- Remaining scanner hardening: deterministic injection of mid-stream directory enumeration failure and Windows reparse-point runtime fixture are not yet directly exercised; implementation checks and source-contract assertions are present. Real-world filesystem race/TOCTOU behavior remains a separate security-hardening item.
+
+Next slice: define and wire the explicit Sender dependency context (socket write/session validation, clock/wait, cancellation/peer-abort, status/logging and Task callbacks) without changing protocol sequencing. Only after that should the sender protocol include be moved into independent compilation units.

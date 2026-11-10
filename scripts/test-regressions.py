@@ -1409,14 +1409,36 @@ int main(void){
     scheduler_core=(ROOT/'src/core/xfer_sender_scheduler.c').read_text(encoding='utf-8')
     scheduler_header=(ROOT/'src/core/xfer_sender_scheduler.h').read_text(encoding='utf-8')
     scheduler_tests=(ROOT/'tests/xfer_sender_scheduler_tests.c').read_text(encoding='utf-8')
+    active_core=(ROOT/'src/core/xfer_sender_active_job.c').read_text(encoding='utf-8')
+    active_header=(ROOT/'src/core/xfer_sender_active_job.h').read_text(encoding='utf-8')
+    active_tests=(ROOT/'tests/xfer_sender_active_job_tests.c').read_text(encoding='utf-8')
     assert 'hop_xfer_sender_scheduler_wait_next' in scheduler_core
     assert 'hop_xfer_sender_queue_take_cancelled' in scheduler_core
     assert 'hop_xfer_sender_queue_take_head' in scheduler_core
     assert 'wait_for_work_locked' in scheduler_header
     assert 'test_offline_wait_refreshes_peer_before_selection' in scheduler_tests
     assert 'test_stop_after_wait_leaves_queue_owned_by_shutdown' in scheduler_tests
+    assert 'hop_xfer_sender_active_job_take_cancelled_and_clear' in active_core
+    assert 'hop_xfer_sender_active_job_record_peer_abort' in active_core
+    assert 'test_abort_is_scoped_to_active_batch' in active_tests
     for platform in ['win','mac']:
         worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
+        transport=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        receive=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        protocol=(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
+        assert '#include "../core/xfer_sender_active_job.h"' in transport
+        assert 'hop_xfer_sender_active_job active_job' in transport
+        assert 'hop_xfer_sender_active_job_cancel_target' in transport
+        assert 'hop_xfer_sender_active_job_is_active' in transport
+        assert 'hop_xfer_sender_active_job_begin' in worker
+        assert 'hop_xfer_sender_active_job_take_cancelled_and_clear' in worker
+        assert 'hop_xfer_sender_active_job_record_peer_abort' in receive
+        assert 'hop_xfer_sender_active_job_reset_peer_abort' in receive
+        assert 'active_job.abort_batch' in protocol
+        assert 's_x.cur_batch' not in transport+worker+receive
+        assert 's_x.cur_task_id' not in transport+worker+receive
+        assert 's_x.abort_batch' not in transport+worker+receive
+        assert 's_x.abort_reason' not in transport+worker+receive
         assert 'hop_xfer_sender_scheduler_wait_next' in worker
         assert 'hop_xfer_sender_queue_take_head' not in worker
         assert 'queue_unlink' not in worker

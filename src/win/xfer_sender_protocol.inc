@@ -483,10 +483,15 @@ static int peer_aborted(uint32_t batch) {
 }
 
 /* 发送线程调用。返回 status，超时返回 XFER_ACK_TIMEOUT。 */
-static int ack_wait(uint32_t batch, uint32_t id, uint64_t deadline_ns, uint64_t *rtt_us) {
+static int ack_wait(const hop_xfer_sender_context *context,
+                    intptr_t socket_handle, uint64_t epoch,
+                    uint32_t batch, uint64_t task_id,
+                    uint32_t id, uint64_t deadline_ns, uint64_t *rtt_us) {
+    if (!context) context = &s_sender_context;
     if (rtt_us) *rtt_us = 0;
     for (;;) {
-        uint64_t n = rate_now_ns();
+        uint64_t n = context->now_ns
+            ? context->now_ns(context->user) : rate_now_ns();
         if (n >= deadline_ns) { ack_unregister(batch, id); return XFER_ACK_TIMEOUT; }
         uint64_t remaining_ns = deadline_ns - n;
         uint64_t wait_ms = (remaining_ns + 999999ull) / 1000000ull;
@@ -501,16 +506,21 @@ static int ack_wait(uint32_t batch, uint32_t id, uint64_t deadline_ns, uint64_t 
             if (rtt_us) *rtt_us = rtt_ns / 1000ull;
             return status;
         }
-        if (peer_aborted(batch)) { ack_unregister(batch,id); return XFER_PEER_ABORT; }
-        if (cancel_requested(batch)) { ack_unregister(batch,id); return XFER_CANCELLED; }
-        if (WaitForSingleObject(s_x.stop, 0) == WAIT_OBJECT_0) {
-            ack_unregister(batch,id);
+        if (context->peer_aborted &&
+            context->peer_aborted(context->user, batch)) {
+            ack_unregister(batch, id);
+            return XFER_PEER_ABORT;
+        }
+        if (sender_job_cancel_requested(context, batch, task_id)) {
+            ack_unregister(batch, id);
+            return XFER_CANCELLED;
+        }
+        if (!context->is_stopping || context->is_stopping(context->user) ||
+            socket_handle == (intptr_t)-1 || !context->session_current ||
+            !context->session_current(context->user, socket_handle, epoch)) {
+            ack_unregister(batch, id);
             return XFER_SEND_DEAD;
         }
-        EnterCriticalSection(&s_x.lock);
-        int peer_ready = s_x.peer_ready;
-        LeaveCriticalSection(&s_x.lock);
-        if (!peer_ready) { ack_unregister(batch,id); return XFER_SEND_DEAD; }
     }
 }
 

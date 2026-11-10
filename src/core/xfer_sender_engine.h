@@ -130,7 +130,7 @@ hop_xfer_sender_send_result hop_xfer_sender_send_file_entry(
     uint8_t *chunk_buffer, uint32_t chunk_size, uint64_t ack_timeout_ns,
     uint32_t directory_flag, uint8_t file_ok_status,
     uint8_t file_io_error_status, uint8_t file_begin_message,
-    uint8_t file_end_message, uint8_t file_chunk_message,
+    uint8_t file_end_message,
     uint64_t *ack_deadline_ns);
 
 typedef struct {

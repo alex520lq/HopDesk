@@ -284,6 +284,20 @@ if ($LASTEXITCODE -ne 0) { throw "Sender scheduler test compilation failed ($LAS
 & $senderScheduler
 if ($LASTEXITCODE -ne 0) { throw "Sender scheduler tests failed ($LASTEXITCODE)" }
 
+$senderActiveJob = Join-Path $build 'hopdesk-sender-active-job-tests.exe'
+$senderActiveJobSources = @(
+    (Join-Path $root 'tests/xfer_sender_active_job_tests.c'),
+    (Join-Path $root 'src/core/xfer_sender_active_job.c')
+)
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$senderActiveJob @senderActiveJobSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $senderActiveJob @senderActiveJobSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Sender active-job test compilation failed ($LASTEXITCODE)" }
+& $senderActiveJob
+if ($LASTEXITCODE -ne 0) { throw "Sender active-job tests failed ($LASTEXITCODE)" }
+
 $senderRetry = Join-Path $build 'hopdesk-sender-retry-tests.exe'
 $senderRetrySources = @(
     (Join-Path $root 'tests/xfer_sender_retry_tests.c'),

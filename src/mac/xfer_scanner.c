@@ -70,8 +70,8 @@ void elist_free(elist *list) {
 static struct dirent *guarded_readdir(DIR *directory,
                                       const hop_xfer_scan_services *services,
                                       int *read_error) {
-    errno = 0;
     int guard = scan_watchdog_begin(services, "directory next");
+    errno = 0;
     struct dirent *entry = readdir(directory);
     int error = errno;
     scan_watchdog_end(services, guard);

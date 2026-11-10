@@ -192,7 +192,7 @@ int hop_xfer_sender_run_files(const hop_xfer_sender_engine_ops *ops,
                              ops->entry_path(ops->user, item->entry) ?
                                  ops->entry_path(ops->user, item->entry) : "(unknown)",
                              item->index);
-                    sender_log(ops, 1, message);
+                    sender_file_log(ops, 1, message);
                     sender_unregister(ops, batch);
                     if (ops->request_reconnect) ops->request_reconnect(ops->user);
                     return HOP_XFER_SENDER_JOB_NET_DOWN;
@@ -300,20 +300,8 @@ int hop_xfer_sender_run_files(const hop_xfer_sender_engine_ops *ops,
  
 
 static void sender_file_log(const hop_xfer_sender_file_ops *ops, int level,
-                            const char *format, const char *path,
-                            uint64_t a, uint64_t b, uint32_t error) {
-    if (!ops->log_message) return;
-    char message[512];
-    if (b) {
-        snprintf(message, sizeof(message), format, path ? path : "(unknown)",
-                 (unsigned long long)a, (unsigned long long)b);
-    } else if (error) {
-        snprintf(message, sizeof(message), format, path ? path : "(unknown)",
-                 (unsigned long)error);
-    } else {
-        snprintf(message, sizeof(message), format, path ? path : "(unknown)");
-    }
-    ops->log_message(ops->user, level, message);
+                            const char *message) {
+    if (ops->log_message) ops->log_message(ops->user, level, message);
 }
 
 static void sender_file_unregister(const hop_xfer_sender_file_ops *ops,
@@ -376,8 +364,11 @@ hop_xfer_sender_send_result hop_xfer_sender_send_file_entry(
         uint32_t system_error = 0;
         if (!ops->open_file(ops->user, entry->platform_entry,
                             &file_handle, &system_error)) {
-            sender_file_log(ops, 1, "xfer: open failed, %s (system error %lu)",
-                            entry->relative_path, 0, 0, system_error);
+            char message[512];
+            snprintf(message, sizeof(message),
+                     "xfer: open failed, %s (system error %lu)",
+                     entry->relative_path, (unsigned long)system_error);
+            sender_file_log(ops, 1, message);
             end_status = file_io_error_status;
             local_failure = 1;
         } else {
@@ -411,8 +402,11 @@ hop_xfer_sender_send_result hop_xfer_sender_send_file_entry(
                     if (ops->status_stage_time)
                         ops->status_stage_time(ops->user, batch,
                                                HOP_XFER_TIME_READ, read_elapsed_ns);
-                    sender_file_log(ops, 1, "xfer: read failed, %s (system error %lu)",
-                                    entry->relative_path, 0, 0, system_error);
+                    char message[512];
+                    snprintf(message, sizeof(message),
+                             "xfer: read failed, %s (system error %lu)",
+                             entry->relative_path, (unsigned long)system_error);
+                    sender_file_log(ops, 1, message);
                     end_status = file_io_error_status;
                     local_failure = 1;
                     break;
@@ -423,9 +417,11 @@ hop_xfer_sender_send_result hop_xfer_sender_send_file_entry(
                         ops->status_stage_time(ops->user, batch,
                                                HOP_XFER_TIME_READ, read_elapsed_ns);
                     if (bytes_read > request) {
-                        sender_file_log(ops, 1,
-                            "xfer: invalid read length for %s (system error %lu)",
-                            entry->relative_path, 0, 0, 0);
+                        char message[512];
+                        snprintf(message, sizeof(message),
+                                 "xfer: invalid read length for %s",
+                                 entry->relative_path);
+                        sender_file_log(ops, 1, message);
                     } else {
                         char message[512];
                         snprintf(message, sizeof(message),
@@ -433,7 +429,7 @@ hop_xfer_sender_send_result hop_xfer_sender_send_file_entry(
                                  entry->relative_path,
                                  (unsigned long long)file_offset,
                                  (unsigned long long)entry->size);
-                        sender_log(ops, 1, message);
+                        sender_file_log(ops, 1, message);
                     }
                     end_status = file_io_error_status;
                     local_failure = 1;

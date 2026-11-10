@@ -95,11 +95,8 @@ static int send_chunk(int fd, uint8_t *tx, uint32_t batch, uint32_t id, uint64_t
  *
  * 最多允许 4 个文件等待接收端落盘 ACK。数据帧仍然串行写入同一 TCP
  * stream；ACK 由接收端 writer 异步返回，按 batch/id 独立归位。 */
-static struct {
-    pthread_mutex_t lock;
-    pthread_cond_t  cond;
-    hop_xfer_ack_window window;
-} s_ack;
+#include "xfer_ack_coordinator.h"
+static hop_xfer_ack_coordinator *s_ack;
 
 /* 返回值：>=0 是接收端 ACK 的 status；负数是本地/链路层面的失败 */
 #define XFER_ACK_TIMEOUT  (-1)
@@ -116,44 +113,28 @@ static uint64_t now_ms(void) {
 }
 
 static int ack_register(uint32_t batch, uint32_t id) {
-    pthread_mutex_lock(&s_ack.lock);
-    int ok = hop_xfer_ack_window_register(&s_ack.window, batch, id);
-    pthread_mutex_unlock(&s_ack.lock);
-    return ok;
+    return hop_xfer_ack_coordinator_register(s_ack, batch, id);
 }
 
 static int ack_mark_sent(uint32_t batch, uint32_t id) {
-    pthread_mutex_lock(&s_ack.lock);
-    int ok = hop_xfer_ack_window_mark_sent(&s_ack.window, batch, id, rate_now_ns());
-    pthread_mutex_unlock(&s_ack.lock);
-    return ok;
+    return hop_xfer_ack_coordinator_mark_sent(s_ack, batch, id, rate_now_ns());
 }
 
 static int ack_set_deadline(uint32_t batch, uint32_t id, uint64_t deadline_ns) {
-    pthread_mutex_lock(&s_ack.lock);
-    int ok = hop_xfer_ack_window_set_deadline(&s_ack.window,batch,id,deadline_ns);
-    pthread_mutex_unlock(&s_ack.lock);
-    return ok;
+    return hop_xfer_ack_coordinator_set_deadline(s_ack, batch, id, deadline_ns);
 }
 
 static void ack_unregister(uint32_t batch, uint32_t id) {
-    pthread_mutex_lock(&s_ack.lock);
-    hop_xfer_ack_window_unregister(&s_ack.window, batch, id);
-    pthread_mutex_unlock(&s_ack.lock);
+    hop_xfer_ack_coordinator_unregister(s_ack, batch, id);
 }
 
 static void ack_unregister_batch(uint32_t batch) {
-    pthread_mutex_lock(&s_ack.lock);
-    hop_xfer_ack_window_unregister_batch(&s_ack.window, batch);
-    pthread_mutex_unlock(&s_ack.lock);
+    hop_xfer_ack_coordinator_unregister_batch(s_ack, batch);
 }
 
-/* 接收线程只填写与当前 batch/id 匹配的槽；过期 ACK 不得覆盖其他文件。 */
+/* Receiver writer thread stores ACKs only in their pre-registered batch/id slot. */
 static void ack_deliver(uint32_t batch, uint32_t id, int status) {
-    pthread_mutex_lock(&s_ack.lock);
-    int delivered = hop_xfer_ack_window_deliver(&s_ack.window, batch, id, status, rate_now_ns());
-    if (delivered) pthread_cond_broadcast(&s_ack.cond);
-    pthread_mutex_unlock(&s_ack.lock);
+    (void)hop_xfer_ack_coordinator_deliver(s_ack, batch, id, status, rate_now_ns());
 }
 
 /* 用户取消了这个批次？每块之后查一次，锁开销可以忽略。 */
@@ -182,33 +163,18 @@ static int peer_aborted(uint32_t batch) {
 static int ack_wait(uint32_t batch, uint32_t id, uint64_t deadline_ns, uint64_t *rtt_us) {
     if (rtt_us) *rtt_us = 0;
     for (;;) {
-        pthread_mutex_lock(&s_ack.lock);
+        uint64_t n = rate_now_ns();
+        if (n >= deadline_ns) { ack_unregister(batch,id); return XFER_ACK_TIMEOUT; }
+
         int status = 0, deadline_expired = 0;
         uint64_t rtt_ns = 0;
-        int hit = hop_xfer_ack_window_take_ex(&s_ack.window,batch,id,&status,&rtt_ns,
-                                              &deadline_expired);
-        if (!hit) {
-            uint64_t n = rate_now_ns();
-            if (n < deadline_ns) {
-                uint64_t slice_ns = deadline_ns - n;
-                if (slice_ns > 100000000ull) slice_ns = 100000000ull;
-                struct timespec ts;
-                clock_gettime(CLOCK_REALTIME, &ts);
-                ts.tv_nsec += (long)slice_ns;
-                while (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
-                pthread_cond_timedwait(&s_ack.cond, &s_ack.lock, &ts);
-            }
-        }
-        pthread_mutex_unlock(&s_ack.lock);
+        int hit = hop_xfer_ack_coordinator_wait_take(s_ack, batch, id, 100,
+                    &status, &rtt_ns, &deadline_expired);
         if (hit) {
-            /* ACK arrival may race with FILE_END send completion. The
-             * window stores the exact receive timestamp and the deadline is
-             * anchored immediately after FILE_END is fully written. */
             if (deadline_expired) return XFER_ACK_TIMEOUT;
             if (rtt_us) *rtt_us = rtt_ns / 1000ull;
             return status;
         }
-
         if (peer_aborted(batch)) { ack_unregister(batch,id); return XFER_PEER_ABORT; }
         if (cancel_requested(batch)) { ack_unregister(batch,id); return XFER_CANCELLED; }
         if (s_x.stop) { ack_unregister(batch,id); return XFER_SEND_DEAD; }
@@ -216,7 +182,6 @@ static int ack_wait(uint32_t batch, uint32_t id, uint64_t deadline_ns, uint64_t 
         int peer_ready = s_x.peer_ready;
         pthread_mutex_unlock(&s_x.slock);
         if (!peer_ready) { ack_unregister(batch,id); return XFER_SEND_DEAD; }
-        if (rate_now_ns() >= deadline_ns) { ack_unregister(batch,id); return XFER_ACK_TIMEOUT; }
     }
 }
 

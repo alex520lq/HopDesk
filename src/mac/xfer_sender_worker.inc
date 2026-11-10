@@ -116,7 +116,9 @@ static void *send_thread(void *arg) {
             int abort_fd=s_x.peer_ready && hop_session_id_equal(&expired->session,&s_x.session) ? s_x.sock : -1;
             s_send_epoch=s_x.epoch;
             pthread_mutex_unlock(&s_x.slock);
-            if (was_cancelled && abort_fd>=0) send_abort_msg(abort_fd,expired->batch,HOP_ABORT_CANCEL);
+            if (was_cancelled && abort_fd>=0)
+                send_abort_msg_with_context(&expired->sender_context, abort_fd,
+                                            expired->batch, HOP_ABORT_CANCEL);
             pthread_mutex_lock(&s_status_lock);
             int show_status=!s_send_status.status.active || s_send_status.status.batch==expired->batch;
             pthread_mutex_unlock(&s_status_lock);
@@ -208,7 +210,9 @@ static void *send_thread(void *arg) {
                         "xfer: batch %u abandoned after %d attempt(s), %d/%d delivered",
                         j->batch, j->attempt, j->ok, j->n);
         } else if (r == JOB_CANCELLED) {
-            if (fd >= 0) send_abort_msg(fd, j->batch, HOP_ABORT_CANCEL);
+            if (fd >= 0)
+                send_abort_msg_with_context(&j->sender_context, fd,
+                                            j->batch, HOP_ABORT_CANCEL);
         } else if (r == JOB_DONE) {
             if (j->ok < j->n)
                 sender_logf(&j->sender_context, HOP_LOG_WARN,

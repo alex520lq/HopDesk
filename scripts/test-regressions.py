@@ -1126,8 +1126,9 @@ int main(void){
         assert 'send_done_with_context(&job->sender_context' in commit_send
         abort_send=extract(protocol,'send_abort_msg_with_context')
         assert 'send_small_with_context(context' in abort_send
-        assert 'send_abort_msg_with_context(&j->sender_context' in thread
-        assert 'hop_xfer_sender_get_terminal_decision' in thread and 'completion_path' in thread
+        assert 'send_abort_msg_with_context(&call->job->sender_context' in worker
+        assert 'send_done_result(' in worker
+        assert 'hop_xfer_sender_get_terminal_decision' not in thread and 'completion_path' in thread
 
     # Test exact Windows task-list selection and action logic with UI doubles.
     # Rows may move/disappear between refreshes; only the selected Task ID may

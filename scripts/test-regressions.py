@@ -921,19 +921,24 @@ int main(void){
         assert 'tx + CHUNK_HDR' in entry
         assert 'malloc(blen)' not in entry and 'free(bp)' not in entry
         job=extract(sender,'run_job')
-        assert 'int acknowledged;' in job
-        assert 'if (st >= 0) item->acknowledged = 1;' in job
-        assert 'if (st != XFER_ACK_PENDING)' in job
-        assert 'fill_result = JOB_NET_DOWN;' in job
-        assert 'if (!item->acknowledged)' in job
-        assert 'hop_xfer_ack_window_advance_checkpoint(&j->next_i,item->index,1)' in job
-        timeout=job.index('if (st == XFER_ACK_TIMEOUT)')
-        unregister=job.index('ack_unregister_batch(j->batch)',timeout)
-        kick=job.index('xfer_kick();',timeout)
-        net_down=job.index('return JOB_NET_DOWN;',kick)
+        assert 'hop_xfer_sender_run_files' in job
+        assert 'window_item' not in job
+        assert 'send_image_job' in job or 'HOP_MSG_IMAGE_BEGIN' in job
+        engine=(ROOT/'src/core/xfer_sender_engine.c').read_text(encoding='utf-8')
+        assert 'int acknowledged;' in engine
+        assert 'HOP_XFER_SENDER_SEND_PENDING' in engine
+        assert 'if (!item->acknowledged)' in engine
+        assert 'hop_xfer_ack_window_advance_checkpoint(next_index,' in engine
+        assert 'fill_result = HOP_XFER_SENDER_JOB_NET_DOWN;' in engine
+        timeout=engine.index('if (ack == HOP_XFER_SENDER_ACK_TIMEOUT)')
+        unregister=engine.index('sender_unregister(ops, batch);',timeout)
+        kick=engine.index('ops->request_reconnect(ops->user)',timeout)
+        net_down=engine.index('return HOP_XFER_SENDER_JOB_NET_DOWN;',kick)
         assert timeout < unregister < kick < net_down
-        kick_fn=extract(sender,'xfer_kick')
-        assert 'peer_ready = 0' in kick_fn or 'peer_ready=0' in kick_fn
+        reconnect=extract(sender,'sender_engine_request_reconnect')
+        assert 'xfer_kick();' in reconnect
+        assert 'sender_engine_wait_ack' in sender
+        assert 'sender_engine_send_entry' in sender
 
         begin=extract(receiver,'hop_xfer_rx_handle_file_begin')
         end=extract(receiver,'hop_xfer_rx_handle_file_end')

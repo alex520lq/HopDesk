@@ -237,7 +237,7 @@ static int xfer_submit_image_impl(const uint8_t *bgra, uint8_t *owned, int w, in
 
     if (!submit(job)) {
         hop_xfer_task_finish(&job->task,HOP_XFER_TASK_FAILED);
-        job_free(job);
+        (void)job_free(job,XFER_JOB_OWNER_SUBMITTER);
         return 0;
     }
     return 1;

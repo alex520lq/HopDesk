@@ -140,7 +140,7 @@ typedef struct {
     pthread_mutex_t *tx_lock;
     int *sock;
     int *peer_ready;
-    void *ack_coordinator;
+    void *ack_adapter;
     hop_session_id *session;
     unsigned long *epoch;
     _Atomic int *stop;

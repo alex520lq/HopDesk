@@ -394,7 +394,7 @@ typedef struct {
     CRITICAL_SECTION *tx_lock;
     SOCKET *client;
     int *peer_ready;
-    void *ack_coordinator;
+    void *ack_adapter;
     hop_session_id *session;
     unsigned long *epoch;
     HANDLE *stop;

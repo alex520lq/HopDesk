@@ -372,3 +372,20 @@ if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
 if ($LASTEXITCODE -ne 0) { throw "Sender commit test compilation failed ($LASTEXITCODE)" }
 & $senderCommit
 if ($LASTEXITCODE -ne 0) { throw "Sender commit tests failed ($LASTEXITCODE)" }
+
+
+$senderAckAdapter = Join-Path $build 'hopdesk-sender-ack-adapter-tests.exe'
+$senderAckAdapterSources = @(
+    (Join-Path $root 'tests/xfer_sender_ack_adapter_tests.c'),
+    (Join-Path $root 'src/core/xfer_sender_ack_adapter.c'),
+    (Join-Path $root 'src/win/xfer_ack_coordinator.c'),
+    (Join-Path $root 'src/core/xfer_ack_window.c')
+)
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /O2 /W4 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I $inc /Fe:$senderAckAdapter @senderAckAdapterSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $senderAckAdapter @senderAckAdapterSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Sender ACK adapter test compilation failed ($LASTEXITCODE)" }
+& $senderAckAdapter
+if ($LASTEXITCODE -ne 0) { throw "Sender ACK adapter tests failed ($LASTEXITCODE)" }

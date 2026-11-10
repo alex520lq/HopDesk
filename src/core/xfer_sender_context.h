@@ -27,6 +27,8 @@ typedef struct {
 
 typedef struct hop_xfer_sender_context {
     void *user;
+    /* Separate opaque ACK adapter; other callbacks use user above. */
+    void *ack_user;
 
     /* Monotonic time and interruptible pacing/wait. */
     uint64_t (*now_ns)(void *user);
@@ -100,7 +102,7 @@ static inline int hop_xfer_sender_context_valid(const hop_xfer_sender_context *c
     return ctx && ctx->now_ns && ctx->wait_ns && ctx->is_stopping &&
            ctx->session_current && ctx->write_frame && ctx->is_cancelled &&
            ctx->is_batch_cancelled && ctx->peer_aborted && ctx->request_reconnect &&
-           ctx->ack_register && ctx->ack_mark_sent && ctx->ack_set_deadline &&
+           ctx->ack_user && ctx->ack_register && ctx->ack_mark_sent && ctx->ack_set_deadline &&
            ctx->ack_wait_take && ctx->ack_unregister && ctx->ack_unregister_batch &&
            ctx->ack_deliver && ctx->ack_wake && ctx->task_bind_session &&
            ctx->task_set_state && ctx->task_begin_completion &&

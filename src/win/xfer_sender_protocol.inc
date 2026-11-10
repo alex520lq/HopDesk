@@ -1,14 +1,6 @@
 #include <stdarg.h>
-#include "xfer_ack_coordinator.h"
+#include "../core/xfer_sender_ack_adapter.h"
 
-static int sender_context_ack_register(void *user, uint32_t batch, uint32_t id);
-static int sender_context_ack_mark_sent(void *user, uint32_t batch, uint32_t id);
-static int sender_context_ack_set_deadline(void *user, uint32_t batch, uint32_t id, uint64_t deadline_ns);
-static int sender_context_ack_wait_take(void *user, uint32_t batch, uint32_t id, uint32_t timeout_ms, int *status, uint64_t *rtt_ns, int *deadline_expired);
-static void sender_context_ack_unregister(void *user, uint32_t batch, uint32_t id);
-static void sender_context_ack_unregister_batch(void *user, uint32_t batch);
-static int sender_context_ack_deliver(void *user, uint32_t batch, uint32_t id, int status);
-static void sender_context_ack_wake_adapter(void *user);
 static int sender_context_ack_create(void);
 static void sender_context_ack_destroy(void);
 static void sender_context_wake_ack(void);
@@ -225,14 +217,14 @@ static void sender_context_init(void) {
     s_sender_context.is_batch_cancelled = sender_context_is_batch_cancelled;
     s_sender_context.peer_aborted = sender_context_peer_aborted;
     s_sender_context.request_reconnect = sender_context_request_reconnect;
-    s_sender_context.ack_register = sender_context_ack_register;
-    s_sender_context.ack_mark_sent = sender_context_ack_mark_sent;
-    s_sender_context.ack_set_deadline = sender_context_ack_set_deadline;
-    s_sender_context.ack_wait_take = sender_context_ack_wait_take;
-    s_sender_context.ack_unregister = sender_context_ack_unregister;
-    s_sender_context.ack_unregister_batch = sender_context_ack_unregister_batch;
-    s_sender_context.ack_deliver = sender_context_ack_deliver;
-    s_sender_context.ack_wake = sender_context_ack_wake_adapter;
+    s_sender_context.ack_register = hop_xfer_sender_ack_adapter_register;
+    s_sender_context.ack_mark_sent = hop_xfer_sender_ack_adapter_mark_sent;
+    s_sender_context.ack_set_deadline = hop_xfer_sender_ack_adapter_set_deadline;
+    s_sender_context.ack_wait_take = hop_xfer_sender_ack_adapter_wait_take;
+    s_sender_context.ack_unregister = hop_xfer_sender_ack_adapter_unregister;
+    s_sender_context.ack_unregister_batch = hop_xfer_sender_ack_adapter_unregister_batch;
+    s_sender_context.ack_deliver = hop_xfer_sender_ack_adapter_deliver;
+    s_sender_context.ack_wake = hop_xfer_sender_ack_adapter_wake;
     s_sender_context.session_current = sender_context_session_current;
     s_sender_context.write_frame = sender_context_write_frame;
     s_sender_context.task_bind_session = sender_context_task_bind_session;
@@ -474,98 +466,76 @@ static int send_chunk(const hop_xfer_sender_context *context, SOCKET c,
 
 static uint64_t now_ms(void) { return (uint64_t)GetTickCount64(); }
 
-static hop_xfer_ack_coordinator *sender_context_ack(void *user) {
-    sender_platform_context *ctx = (sender_platform_context *)user;
-    return ctx ? (hop_xfer_ack_coordinator *)ctx->ack_coordinator : NULL;
-}
-static int sender_context_ack_register(void *user, uint32_t batch, uint32_t id) {
-    hop_xfer_ack_coordinator *ack = sender_context_ack(user);
-    return ack && hop_xfer_ack_coordinator_register(ack, batch, id);
-}
-static int sender_context_ack_mark_sent(void *user, uint32_t batch, uint32_t id) {
-    hop_xfer_ack_coordinator *ack = sender_context_ack(user);
-    return ack && hop_xfer_ack_coordinator_mark_sent(ack, batch, id, rate_now_ns());
-}
-static int sender_context_ack_set_deadline(void *user, uint32_t batch,
-                                            uint32_t id, uint64_t deadline_ns) {
-    hop_xfer_ack_coordinator *ack = sender_context_ack(user);
-    return ack && hop_xfer_ack_coordinator_set_deadline(ack, batch, id, deadline_ns);
-}
-static int sender_context_ack_wait_take(void *user, uint32_t batch, uint32_t id,
-                                         uint32_t timeout_ms, int *status,
-                                         uint64_t *rtt_ns, int *deadline_expired) {
-    hop_xfer_ack_coordinator *ack = sender_context_ack(user);
-    return ack && hop_xfer_ack_coordinator_wait_take(
-        ack, batch, id, timeout_ms, status, rtt_ns, deadline_expired);
-}
-static void sender_context_ack_unregister(void *user, uint32_t batch, uint32_t id) {
-    hop_xfer_ack_coordinator *ack = sender_context_ack(user);
-    if (ack) hop_xfer_ack_coordinator_unregister(ack, batch, id);
-}
-static void sender_context_ack_unregister_batch(void *user, uint32_t batch) {
-    hop_xfer_ack_coordinator *ack = sender_context_ack(user);
-    if (ack) hop_xfer_ack_coordinator_unregister_batch(ack, batch);
-}
-static int sender_context_ack_deliver(void *user, uint32_t batch,
-                                      uint32_t id, int status) {
-    hop_xfer_ack_coordinator *ack = sender_context_ack(user);
-    return ack && hop_xfer_ack_coordinator_deliver(
-        ack, batch, id, status, rate_now_ns());
-}
-static void sender_context_ack_wake_adapter(void *user) {
-    hop_xfer_ack_coordinator *ack = sender_context_ack(user);
-    if (ack) hop_xfer_ack_coordinator_wake(ack);
-}
+/* ---------------- 有界单文件 ACK 窗口 ----------------
+ *
+ * 最多允许 4 个文件等待接收端落盘 ACK。数据帧仍然串行写入同一 TCP
+ * stream；ACK 由接收端 writer 异步返回，按 batch/id 独立归位。 */
+
+/* 返回值：>=0 是接收端 ACK 的 status；负数是本地/链路层面的失败 */
+#define XFER_ACK_TIMEOUT  (-1)
+#define XFER_SEND_DEAD    (-2)
+#define XFER_LOCAL_IO     (-3)
+#define XFER_CANCELLED    (-4)
+#define XFER_PEER_ABORT   (-5)
+#define XFER_ACK_PENDING  (-6)
+
+static uint64_t now_ms(void) { return (uint64_t)GetTickCount64(); }
+
 static int sender_context_ack_create(void) {
-    if (!s_sender_platform.ack_coordinator)
-        s_sender_platform.ack_coordinator = hop_xfer_ack_coordinator_create();
-    return s_sender_platform.ack_coordinator != NULL;
+    if (s_sender_platform.ack_adapter) return 0;
+    hop_xfer_sender_ack_adapter *adapter =
+        hop_xfer_sender_ack_adapter_create(sender_context_now_ns, NULL);
+    if (!adapter) return 0;
+    s_sender_platform.ack_adapter = adapter;
+    s_sender_context.ack_user = adapter;
+    return 1;
 }
 static void sender_context_ack_destroy(void) {
-    hop_xfer_ack_coordinator *ack = sender_context_ack(&s_sender_platform);
-    if (!ack) return;
-    hop_xfer_ack_coordinator_destroy(ack);
-    s_sender_platform.ack_coordinator = NULL;
+    hop_xfer_sender_ack_adapter_destroy(
+        (hop_xfer_sender_ack_adapter *)s_sender_platform.ack_adapter);
+    s_sender_platform.ack_adapter = NULL;
+    s_sender_context.ack_user = NULL;
 }
 static void sender_context_wake_ack(void) {
-    if (s_sender_context.ack_wake)
-        s_sender_context.ack_wake(s_sender_context.user);
+    if (s_sender_context.ack_wake && s_sender_context.ack_user)
+        s_sender_context.ack_wake(s_sender_context.ack_user);
 }
 static int ack_register(const hop_xfer_sender_context *context,
                         uint32_t batch, uint32_t id) {
-    return context && context->ack_register &&
-           context->ack_register(context->user, batch, id);
+    return context && context->ack_user && context->ack_register &&
+           context->ack_register(context->ack_user, batch, id);
 }
 static int ack_mark_sent(const hop_xfer_sender_context *context,
                          uint32_t batch, uint32_t id) {
-    return context && context->ack_mark_sent &&
-           context->ack_mark_sent(context->user, batch, id);
+    return context && context->ack_user && context->ack_mark_sent &&
+           context->ack_mark_sent(context->ack_user, batch, id);
 }
 static int ack_set_deadline(const hop_xfer_sender_context *context,
                             uint32_t batch, uint32_t id, uint64_t deadline_ns) {
-    return context && context->ack_set_deadline &&
-           context->ack_set_deadline(context->user, batch, id, deadline_ns);
+    return context && context->ack_user && context->ack_set_deadline &&
+           context->ack_set_deadline(context->ack_user, batch, id, deadline_ns);
 }
 static void ack_unregister(const hop_xfer_sender_context *context,
                            uint32_t batch, uint32_t id) {
-    if (context && context->ack_unregister)
-        context->ack_unregister(context->user, batch, id);
+    if (context && context->ack_user && context->ack_unregister)
+        context->ack_unregister(context->ack_user, batch, id);
 }
 static void ack_unregister_batch(const hop_xfer_sender_context *context,
                                  uint32_t batch) {
-    if (context && context->ack_unregister_batch)
-        context->ack_unregister_batch(context->user, batch);
+    if (context && context->ack_user && context->ack_unregister_batch)
+        context->ack_unregister_batch(context->ack_user, batch);
 }
 static void ack_deliver(uint32_t batch, uint32_t id, int status) {
-    if (s_sender_context.ack_deliver)
-        (void)s_sender_context.ack_deliver(s_sender_context.user, batch, id, status);
+    if (s_sender_context.ack_user && s_sender_context.ack_deliver)
+        (void)s_sender_context.ack_deliver(s_sender_context.ack_user,
+                                           batch, id, status);
 }
 static int ack_wait(const hop_xfer_sender_context *context,
                     intptr_t socket_handle, uint64_t epoch,
                     uint32_t batch, uint64_t task_id,
                     uint32_t id, uint64_t deadline_ns, uint64_t *rtt_us) {
     if (!context) context = &s_sender_context;
-    if (!context->ack_wait_take || !context->ack_unregister)
+    if (!context->ack_user || !context->ack_wait_take || !context->ack_unregister)
         return XFER_LOCAL_IO;
     if (rtt_us) *rtt_us = 0;
     for (;;) {
@@ -584,7 +554,7 @@ static int ack_wait(const hop_xfer_sender_context *context,
 #endif
         int status = 0, deadline_expired = 0;
         uint64_t rtt_ns = 0;
-        int hit = context->ack_wait_take(context->user, batch, id,
+        int hit = context->ack_wait_take(context->ack_user, batch, id,
                     (uint32_t)wait_ms, &status, &rtt_ns, &deadline_expired);
         if (hit) {
             if (deadline_expired) return XFER_ACK_TIMEOUT;

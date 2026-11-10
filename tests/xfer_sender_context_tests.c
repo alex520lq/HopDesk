@@ -171,6 +171,7 @@ static hop_xfer_sender_context make_context(fake_sender *f) {
     hop_xfer_sender_context ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.user = f;
+    ctx.ack_user = f;
     ctx.now_ns = fake_now;
     ctx.wait_ns = fake_wait;
     ctx.is_stopping = fake_stopping;
@@ -309,6 +310,7 @@ int main(void) {
     REQUIRE_INVALID(is_batch_cancelled);
     REQUIRE_INVALID(peer_aborted);
     REQUIRE_INVALID(request_reconnect);
+    REQUIRE_INVALID(ack_user);
     REQUIRE_INVALID(ack_register);
     REQUIRE_INVALID(ack_mark_sent);
     REQUIRE_INVALID(ack_set_deadline);

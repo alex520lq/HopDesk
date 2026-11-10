@@ -953,13 +953,15 @@ int main(void){
         assert 'sender_context_request_reconnect(&s_sender_platform)' in kick
         assert 'sender_engine_wait_ack' in sender
         assert 'static hop_xfer_ack_coordinator *s_ack' not in sender
-        assert 'hop_xfer_ack_coordinator_wait_take(s_ack' not in sender
+        assert 'hop_xfer_ack_coordinator_' not in sender
+        assert 'hop_xfer_sender_ack_adapter_create' in sender
+        assert 'hop_xfer_sender_ack_adapter_register' in sender
         ack_wait_body=extract(sender,'ack_wait')
-        assert 'context->ack_wait_take(context->user' in ack_wait_body
+        assert 'context->ack_wait_take(context->ack_user' in ack_wait_body
         peer_abort_body=extract(sender,'sender_engine_peer_aborted')
         assert ': peer_aborted(batch)' not in peer_abort_body
         ack_deliver_body=extract(sender,'ack_deliver')
-        assert 's_sender_context.ack_deliver' in ack_deliver_body
+        assert 's_sender_context.ack_deliver(s_sender_context.ack_user' in ack_deliver_body
         platform_xfer=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
         assert 's_ack' not in platform_xfer
         assert 'sender_context_ack_create()' in platform_xfer

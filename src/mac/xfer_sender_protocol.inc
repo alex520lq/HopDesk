@@ -459,11 +459,16 @@ static int peer_aborted(uint32_t batch) {
  * 只等一次会漏掉"信号早于等待"的情况。
  * 等待切片 100 ms，是为了让取消 / 对端中止能在 100 ms 内被看到 ——
  * 不然就要去折腾 condattr_setclock 让条件变量走单调时钟。 */
-static int ack_wait(uint32_t batch, uint32_t id, uint64_t deadline_ns, uint64_t *rtt_us) {
+static int ack_wait(const hop_xfer_sender_context *context,
+                    intptr_t socket_handle, uint64_t epoch,
+                    uint32_t batch, uint64_t task_id,
+                    uint32_t id, uint64_t deadline_ns, uint64_t *rtt_us) {
+    if (!context) context = &s_sender_context;
     if (rtt_us) *rtt_us = 0;
     for (;;) {
-        uint64_t n = rate_now_ns();
-        if (n >= deadline_ns) { ack_unregister(batch,id); return XFER_ACK_TIMEOUT; }
+        uint64_t n = context->now_ns
+            ? context->now_ns(context->user) : rate_now_ns();
+        if (n >= deadline_ns) { ack_unregister(batch, id); return XFER_ACK_TIMEOUT; }
 
         int status = 0, deadline_expired = 0;
         uint64_t rtt_ns = 0;
@@ -474,13 +479,21 @@ static int ack_wait(uint32_t batch, uint32_t id, uint64_t deadline_ns, uint64_t 
             if (rtt_us) *rtt_us = rtt_ns / 1000ull;
             return status;
         }
-        if (peer_aborted(batch)) { ack_unregister(batch,id); return XFER_PEER_ABORT; }
-        if (cancel_requested(batch)) { ack_unregister(batch,id); return XFER_CANCELLED; }
-        if (s_x.stop) { ack_unregister(batch,id); return XFER_SEND_DEAD; }
-        pthread_mutex_lock(&s_x.slock);
-        int peer_ready = s_x.peer_ready;
-        pthread_mutex_unlock(&s_x.slock);
-        if (!peer_ready) { ack_unregister(batch,id); return XFER_SEND_DEAD; }
+        if (context->peer_aborted &&
+            context->peer_aborted(context->user, batch)) {
+            ack_unregister(batch, id);
+            return XFER_PEER_ABORT;
+        }
+        if (sender_job_cancel_requested(context, batch, task_id)) {
+            ack_unregister(batch, id);
+            return XFER_CANCELLED;
+        }
+        if (!context->is_stopping || context->is_stopping(context->user) ||
+            socket_handle == (intptr_t)-1 || !context->session_current ||
+            !context->session_current(context->user, socket_handle, epoch)) {
+            ack_unregister(batch, id);
+            return XFER_SEND_DEAD;
+        }
     }
 }
 

@@ -1443,6 +1443,20 @@ int main(void){
         send_thread=extract(worker,'send_thread')
         clear_active=extract(worker,'sender_worker_clear_active_job')
         dispose_job=extract(worker,'sender_worker_dispose_job')
+        job_free=extract(worker,'job_free')
+        job_claim=extract(worker,'job_claim_for_release')
+        job_defer=extract(worker,'job_defer_to_shutdown')
+        requeue_front=extract(worker,'sender_worker_requeue_front')
+        owner_lock='EnterCriticalSection(&s_x.lock)' if platform=='win' else 'pthread_mutex_lock(&s_x.qlock)'
+        assert owner_lock in job_claim
+        assert 'j->owner = XFER_JOB_OWNER_RELEASING' in job_claim
+        assert owner_lock in job_defer
+        assert 'j->owner == XFER_JOB_OWNER_RELEASING' in job_defer
+        assert 'job_claim_for_release(j, expected_owner)' in job_free
+        assert job_free.index('job_claim_for_release') < job_free.index('job_release_task_resources')
+        assert 'j->owner = XFER_JOB_OWNER_RELEASED' in job_free
+        assert requeue_front.index(owner_lock) < requeue_front.index('call->job->owner')
+        assert 'call->job=NULL' in dispose_job
         transport=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
         receive=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
         protocol=(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')

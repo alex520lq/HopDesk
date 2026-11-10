@@ -66,6 +66,7 @@ typedef enum {
     XFER_JOB_OWNER_QUEUE,
     XFER_JOB_OWNER_WORKER,
     XFER_JOB_OWNER_SHUTDOWN,
+    XFER_JOB_OWNER_RELEASING,
     XFER_JOB_OWNER_RELEASED
 } xfer_job_owner;
 
@@ -556,6 +557,11 @@ static int send_small(SOCKET c, uint8_t type, const uint8_t *p,
 
 int xfer_init(HWND hwnd, const hop_config *cfg) {
     AcquireSRWLockExclusive(&s_x_lifecycle_lock);
+    if (s_x.sync_initialized) {
+        ReleaseSRWLockExclusive(&s_x_lifecycle_lock);
+        hop_log(HOP_LOG_WARN, "xfer: Init rejected while previous instance still owns Shutdown state");
+        return 0;
+    }
     history_load();
     task_history_store_open();
     memset(&s_x, 0, sizeof(s_x));

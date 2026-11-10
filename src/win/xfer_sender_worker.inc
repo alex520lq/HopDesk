@@ -30,14 +30,30 @@ static const hop_xfer_sender_queue_ops s_sender_queue_ops = {
 };
 
 static void job_defer_to_shutdown(xfer_job *j, xfer_job_owner expected_owner) {
-    if (!j || expected_owner == XFER_JOB_OWNER_SHUTDOWN) return;
+    if (!j) return;
     EnterCriticalSection(&s_x.lock);
-    if (j->owner == expected_owner) {
+    if (j->owner == XFER_JOB_OWNER_RELEASING) {
         j->owner = XFER_JOB_OWNER_SHUTDOWN;
-        j->next = s_x.shutdown_jobs;
-        s_x.shutdown_jobs = j;
+        /* A Job already on shutdown_jobs stays at its current list position. */
+        if (expected_owner != XFER_JOB_OWNER_SHUTDOWN) {
+            j->next = s_x.shutdown_jobs;
+            s_x.shutdown_jobs = j;
+        }
     }
     LeaveCriticalSection(&s_x.lock);
+}
+
+static int job_claim_for_release(xfer_job *j, xfer_job_owner expected_owner) {
+    EnterCriticalSection(&s_x.lock);
+    int actual_owner = (int)j->owner;
+    int claimed = j->owner == expected_owner;
+    if (claimed) j->owner = XFER_JOB_OWNER_RELEASING;
+    LeaveCriticalSection(&s_x.lock);
+    if (!claimed) {
+        hop_log(HOP_LOG_ERROR, "xfer: refusing Job release by non-owner (batch=%u owner=%d expected=%d)",
+                j->batch, actual_owner, (int)expected_owner);
+    }
+    return claimed;
 }
 
 static int job_release_task_resources(xfer_job *j) {
@@ -73,11 +89,7 @@ static int job_release_task_resources(xfer_job *j) {
 
 static int job_free(xfer_job *j, xfer_job_owner expected_owner) {
     if (!j) return 1;
-    if (j->owner != expected_owner) {
-        hop_log(HOP_LOG_ERROR, "xfer: refusing Job release by non-owner (batch=%u owner=%d expected=%d)",
-                j->batch, (int)j->owner, (int)expected_owner);
-        return -1;
-    }
+    if (!job_claim_for_release(j, expected_owner)) return -1;
 
     /* A submitter-side rejection is a failure even if resource return must
      * be retried later. Preserve that terminal intent before any early defer. */
@@ -132,7 +144,19 @@ static int job_free(xfer_job *j, xfer_job_owner expected_owner) {
                           j->pending_status_detail[0] ? j->pending_status_detail : "Transfer ended");
         j->pending_status_end=0;
     }
-    j->owner = XFER_JOB_OWNER_RELEASED;
+    int release_owner_ok = 0;
+    EnterCriticalSection(&s_x.lock);
+    if (j->owner == XFER_JOB_OWNER_RELEASING) {
+        j->owner = XFER_JOB_OWNER_RELEASED;
+        release_owner_ok = 1;
+    }
+    LeaveCriticalSection(&s_x.lock);
+    if (!release_owner_ok) {
+        job_defer_to_shutdown(j, expected_owner);
+        hop_log(HOP_LOG_ERROR, "xfer: Job release ownership changed before free (batch=%u)",
+                j->batch);
+        return 0;
+    }
     for (int i = 0; i < j->n; ++i) {
         free(j->e[i].full);
         free(j->e[i].name);
@@ -176,7 +200,7 @@ static void sender_worker_store_retry_state(void *user,const hop_xfer_sender_wor
 }
 static int sender_worker_requeue_front(void *user) {
     sender_worker_call *call=(sender_worker_call *)user;
-    if(!call||!call->job||call->job->owner!=XFER_JOB_OWNER_WORKER)return 0;
+    if(!call||!call->job)return 0;
     EnterCriticalSection(&s_x.lock);
     int queued=call->job->owner==XFER_JOB_OWNER_WORKER &&
         !sender_worker_is_stopping(call) &&
@@ -237,8 +261,8 @@ static void sender_worker_dispose_job(void *user) {
     sender_worker_call *call=(sender_worker_call *)user;
     if(call&&call->job){
         sender_worker_clear_active_job(call->job);
-        int released=job_free(call->job,XFER_JOB_OWNER_WORKER);
-        if(released>=0)call->job=NULL; /* 0 transfers ownership to shutdown_jobs */
+        (void)job_free(call->job,XFER_JOB_OWNER_WORKER);
+        call->job=NULL; /* Worker relinquishes the pointer; Shutdown owns any deferred release. */
     }
 }
 static void sender_worker_log_event(void *user,hop_xfer_sender_worker_log_event event,

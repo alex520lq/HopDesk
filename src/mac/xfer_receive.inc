@@ -198,8 +198,11 @@ static void rx_reset(xfer_rx_context *rx) {
         hop_xfer_rx_terminate_batch(rx, rx->batch_state.batch, HOP_ABORT_DISK, 0);
     else {
         rx_close_file(rx);
+        if (rx->staging_cleanup_pending) (void)rx_discard_dir(rx);
         hop_xfer_rx_reset_batch_state(rx);
     }
+    /* One final retry during orderly shutdown; retain the path if it still fails. */
+    if (rx->staging_cleanup_pending) (void)rx_discard_dir(rx);
 }
 
 
@@ -415,7 +418,7 @@ static void rx_context_configure(void) {
     s_rx.services.status_set_files_total = rx_context_status_set_files_total;
     s_rx.services.status_reset = rx_context_status_reset;
 }
-static void rx_discard_dir(xfer_rx_context *rx);
+static int rx_discard_dir(xfer_rx_context *rx);
 static void rx_bind_session(const hop_session_id *session) {
     hop_xfer_rx_bind_session(&s_rx, session);
 }

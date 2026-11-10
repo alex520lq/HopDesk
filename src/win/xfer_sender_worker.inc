@@ -29,8 +29,39 @@ static const hop_xfer_sender_queue_ops s_sender_queue_ops = {
     sender_queue_batch, sender_queue_retry_at, sender_queue_give_up_at
 };
 
-static void job_free(xfer_job *j) {
-    if (!j) return;
+static int job_free(xfer_job *j, xfer_job_owner expected_owner) {
+    if (!j) return 1;
+    if (j->owner != expected_owner) {
+        hop_log(HOP_LOG_ERROR, "xfer: refusing Job release by non-owner (batch=%u owner=%d expected=%d)",
+                j->batch, (int)j->owner, (int)expected_owner);
+        return -1;
+    }
+
+    /* The Job is the sole Task-handle owner. A nonterminal Task is interrupted
+     * here as a final safety net; Task Manager arbitrates the terminal edge and
+     * returns the Reservation exactly once. Do not free Job memory if dispose
+     * cannot prove that the manager released its handle. */
+    if (j->task.initialized) {
+        if (!hop_xfer_task_is_terminal(&j->task))
+            sender_task_finish(&j->sender_context, &j->task, HOP_XFER_TASK_INTERRUPTED);
+        if (!sender_task_dispose(&j->sender_context, &j->task) ||
+            j->task.initialized || j->task.id) {
+            if (expected_owner != XFER_JOB_OWNER_SHUTDOWN) {
+                EnterCriticalSection(&s_x.lock);
+                if (j->owner == expected_owner) {
+                    j->owner = XFER_JOB_OWNER_SHUTDOWN;
+                    j->next = s_x.shutdown_jobs;
+                    s_x.shutdown_jobs = j;
+                }
+                LeaveCriticalSection(&s_x.lock);
+            }
+            hop_log(HOP_LOG_ERROR, "xfer: Job Task/Reservation disposal deferred (batch=%u task=%llu)",
+                    j->batch, (unsigned long long)j->task.id);
+            return 0;
+        }
+    }
+
+    j->owner = XFER_JOB_OWNER_RELEASED;
     for (int i = 0; i < j->n; ++i) {
         free(j->e[i].full);
         free(j->e[i].name);
@@ -38,8 +69,8 @@ static void job_free(xfer_job *j) {
     }
     free(j->e);
     free(j->pixels);
-    sender_task_dispose(&j->sender_context, &j->task);
     free(j);
+    return 1;
 }
 
 typedef struct { xfer_job *job; SOCKET socket; } sender_worker_call;
@@ -50,6 +81,11 @@ static unsigned sender_worker_retry_delay_ms(void *user, uint32_t attempt) {
 static int sender_worker_is_cancelled(void *user, uint32_t batch, uint64_t task_id) {
     sender_worker_call *call=(sender_worker_call *)user;
     return call&&call->job&&sender_job_cancel_requested(&call->job->sender_context,batch,task_id);
+}
+static int sender_worker_is_stopping(void *user) {
+    sender_worker_call *call=(sender_worker_call *)user;
+    return !call || !call->job || !call->job->sender_context.is_stopping ||
+        call->job->sender_context.is_stopping(call->job->sender_context.user);
 }
 static int sender_worker_begin_completion(void *user, uint64_t task_id) {
     sender_worker_call *call=(sender_worker_call *)user;
@@ -70,9 +106,12 @@ static void sender_worker_store_retry_state(void *user,const hop_xfer_sender_wor
 }
 static int sender_worker_requeue_front(void *user) {
     sender_worker_call *call=(sender_worker_call *)user;
-    if(!call||!call->job)return 0;
+    if(!call||!call->job||call->job->owner!=XFER_JOB_OWNER_WORKER)return 0;
     EnterCriticalSection(&s_x.lock);
-    int queued=hop_xfer_sender_queue_push_front(&s_x.queue,&s_sender_queue_ops,call->job);
+    int queued=call->job->owner==XFER_JOB_OWNER_WORKER &&
+        !sender_worker_is_stopping(call) &&
+        hop_xfer_sender_queue_push_front(&s_x.queue,&s_sender_queue_ops,call->job);
+    if(queued)call->job->owner=XFER_JOB_OWNER_QUEUE;
     LeaveCriticalSection(&s_x.lock);
     return queued;
 }
@@ -104,7 +143,10 @@ static void sender_worker_status_end(void *user,uint32_t batch,int phase,const c
 }
 static void sender_worker_dispose_job(void *user) {
     sender_worker_call *call=(sender_worker_call *)user;
-    if(call&&call->job){job_free(call->job);call->job=NULL;}
+    if(call&&call->job){
+        int released=job_free(call->job,XFER_JOB_OWNER_WORKER);
+        if(released>=0)call->job=NULL; /* 0 transfers ownership to shutdown_jobs */
+    }
 }
 static void sender_worker_log_event(void *user,hop_xfer_sender_worker_log_event event,
     const hop_xfer_sender_worker_job *state,unsigned delay_ms) {
@@ -148,7 +190,7 @@ static hop_xfer_sender_worker_action sender_worker_finish_job(
     ops.user=&call;ops.max_attempts=HOP_XFER_JOB_RETRY_MAX;
     ops.reconnect_budget_ms=HOP_XFER_RECONNECT_BUDGET_MS;
     ops.now_ms=sender_worker_now_ms;ops.retry_delay_ms=sender_worker_retry_delay_ms;
-    ops.is_cancelled=sender_worker_is_cancelled;ops.begin_completion=sender_worker_begin_completion;
+    ops.is_cancelled=sender_worker_is_cancelled;ops.is_stopping=sender_worker_is_stopping;ops.begin_completion=sender_worker_begin_completion;
     ops.set_queued=sender_worker_set_queued;ops.store_retry_state=sender_worker_store_retry_state;
     ops.requeue_front=sender_worker_requeue_front;
     ops.peer_cancelled_and_clear_current=sender_worker_peer_cancelled_and_clear_current;
@@ -161,11 +203,38 @@ static hop_xfer_sender_worker_action sender_worker_finish_job(
         sender_task_finish(&job->sender_context,&job->task,HOP_XFER_TASK_FAILED);
         sender_status_end(&job->sender_context,job->batch,HOP_XFER_FAILED,
                           "Invalid sender worker context");
-        job_free(job);
+        (void)job_free(job,XFER_JOB_OWNER_WORKER);
         return HOP_XFER_SENDER_WORKER_FINISHED;
     }
     return action;
 }
+static int sender_shutdown_drain_jobs(void) {
+    EnterCriticalSection(&s_x.lock);
+    xfer_job *queued=(xfer_job *)hop_xfer_sender_queue_detach_all(&s_x.queue);
+    if (queued) {
+        xfer_job *tail=queued;
+        for (xfer_job *p=queued;p;p=p->next) {
+            p->owner=XFER_JOB_OWNER_SHUTDOWN;
+            tail=p;
+        }
+        tail->next=s_x.shutdown_jobs;
+        s_x.shutdown_jobs=queued;
+    }
+    LeaveCriticalSection(&s_x.lock);
+
+    while (s_x.shutdown_jobs) {
+        xfer_job *job=s_x.shutdown_jobs;
+        xfer_job *next=job->next;
+        sender_task_finish(&job->sender_context,&job->task,HOP_XFER_TASK_INTERRUPTED);
+        sender_status_end(&job->sender_context,job->batch,HOP_XFER_FAILED,
+                          "Transfer interrupted during shutdown");
+        int released=job_free(job,XFER_JOB_OWNER_SHUTDOWN);
+        if (released!=1) return 0; /* retain the list head and its Reservation */
+        s_x.shutdown_jobs=next;
+    }
+    return 1;
+}
+
 static DWORD WINAPI send_thread(LPVOID arg) {
     (void)arg;
 
@@ -194,6 +263,10 @@ static DWORD WINAPI send_thread(LPVOID arg) {
 
             /* 一次只摘一个，摘到就跳出、在锁外处理 —— 队列操作留在锁里，
              * 释放和日志留在锁外，锁的持有时间永远是最短的。 */
+            if (sender_context_is_stopping(&s_sender_platform)) {
+                LeaveCriticalSection(&s_x.lock);
+                break;
+            }
             expired=(xfer_job *)hop_xfer_sender_queue_take_cancelled(&s_x.queue, &s_sender_queue_ops);
             if (!expired) {
                 hop_xfer_sender_queue_take_result take_result = HOP_XFER_SENDER_QUEUE_NONE;
@@ -201,7 +274,8 @@ static DWORD WINAPI send_thread(LPVOID arg) {
                 if (take_result == HOP_XFER_SENDER_QUEUE_EXPIRED) expired = taken;
                 else if (take_result == HOP_XFER_SENDER_QUEUE_READY) j = taken;
             }
-            if (j) { s_x.cur_batch = j->batch; s_x.cur_task_id = j->task.id; s_x.abort_batch=0; s_x.abort_reason=0; }
+            if (expired) expired->owner=XFER_JOB_OWNER_WORKER;
+            if (j) { j->owner=XFER_JOB_OWNER_WORKER; s_x.cur_batch = j->batch; s_x.cur_task_id = j->task.id; s_x.abort_batch=0; s_x.abort_reason=0; }
             LeaveCriticalSection(&s_x.lock);
 
             if (expired) {
@@ -222,7 +296,7 @@ static DWORD WINAPI send_thread(LPVOID arg) {
                 if (show_status) sender_status_end(&expired->sender_context, expired->batch,
                     was_cancelled ? HOP_XFER_CANCELLED : HOP_XFER_FAILED,
                     "Transfer stopped while queued");
-                job_free(expired);
+                (void)job_free(expired,XFER_JOB_OWNER_WORKER);
                 continue;
             }
 
@@ -230,7 +304,7 @@ static DWORD WINAPI send_thread(LPVOID arg) {
             job_bind_session(j, &transport_session);
             if (hop_session_id_valid(&j->session)) (void)sender_task_bind_session(&j->sender_context, &j->task,&j->session);
             if(!sender_task_set_state(&j->sender_context, &j->task,HOP_XFER_TASK_ACTIVE)){
-                sender_task_finish(&j->sender_context, &j->task,HOP_XFER_TASK_FAILED);job_free(j);continue;
+                sender_task_finish(&j->sender_context, &j->task,HOP_XFER_TASK_FAILED);(void)job_free(j,XFER_JOB_OWNER_WORKER);continue;
             }
             sender_status_start_job(&j->sender_context, j);
 

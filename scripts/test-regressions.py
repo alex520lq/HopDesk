@@ -955,6 +955,8 @@ int main(void){
         assert 'hop_xfer_ack_coordinator_wait_take(s_ack' not in sender
         ack_wait_body=extract(sender,'ack_wait')
         assert 'context->ack_wait_take(context->user' in ack_wait_body
+        peer_abort_body=extract(sender,'sender_engine_peer_aborted')
+        assert ': peer_aborted(batch)' not in peer_abort_body
         ack_deliver_body=extract(sender,'ack_deliver')
         assert 's_sender_context.ack_deliver' in ack_deliver_body
         platform_xfer=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')

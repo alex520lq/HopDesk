@@ -881,10 +881,10 @@ static int sender_engine_cancel_requested(void *user, uint32_t batch) {
 
 static int sender_engine_peer_aborted(void *user, uint32_t batch) {
     sender_file_engine_call *call = (sender_file_engine_call *)user;
-    return call && call->job->sender_context.peer_aborted
+    return call && call->job && call->job->sender_context.peer_aborted
         ? call->job->sender_context.peer_aborted(
               call->job->sender_context.user, batch)
-        : peer_aborted(batch);
+        : 0;
 }
 
 static hop_xfer_sender_send_result sender_engine_send_entry(

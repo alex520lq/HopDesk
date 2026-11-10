@@ -1,0 +1,101 @@
+# Sender / Transfer Service Refactor Contract
+
+> Status: audit and extraction contract; no Sender behavior has been changed by this document.
+> Scope: Windows/macOS sender path only. Receiver is treated as a consumer of inbound ACK/ABORT events and is not reworked here.
+> Compatibility: preserve the existing wire protocol, ACK window capacity, retry timing, chunk format, Task/Reservation semantics, and public `xfer.h` API.
+
+## 1. Current production layout
+
+The sender is not an independently compiled module yet:
+
+- `src/win/xfer.c` includes `xfer_sender_protocol.inc` and `xfer_sender_worker.inc`, then `xfer_receive.inc`.
+- `src/mac/xfer.c` has the same include-based arrangement.
+- Windows `xfer_sender_protocol.inc` is approximately 672 lines; macOS is approximately 652 lines.
+- The protocol include contains rate pacing, frame send, ACK-window synchronization wrappers, per-file send, DONE commit, job execution, and outbound ACK/ABORT helpers.
+- `xfer_sender_worker.inc` contains queue unlink/free and the sender thread; it directly reads and mutates the platform `s_x` state and job structure.
+- File enumeration (`elist_push`, `walk_into`, guarded filesystem traversal) remains in each platform `xfer.c`.
+- Public status/history/retry/cancel APIs and persistent history are also in `xfer.c`.
+
+The shared Core already contains independently compiled `xfer_ack_window.[ch]`, `xfer_rate.[ch]`, `xfer_task.[ch]`, `xfer_budget.[ch]`, and `xfer_tracking.[ch]`. These are policy/state primitives, not a complete Sender Service.
+
+## 2. Dependency findings that constrain extraction
+
+### ACK path
+
+The ACK window data structure is shared Core, but the synchronization and wake-up mechanism is still hidden in a file-static `s_ack`:
+
+- Windows: `CRITICAL_SECTION + auto-reset event`.
+- macOS: `pthread_mutex_t + pthread_cond_t`.
+- Sender protocol code owns register/mark-sent/set-deadline/take/unregister/wait.
+- Receiver code calls the same translation unit's `ack_deliver`.
+- shutdown and cancellation paths directly signal `s_ack`.
+
+Therefore ACK storage can only be moved safely after the inbound delivery, sender wait, cancel wake-up, shutdown wake-up, and lifecycle initialization/teardown paths are all migrated together. Moving only the static declaration or wrapper functions would leave a hidden cross-module dependency.
+
+### Sender execution
+
+The sender worker currently depends on:
+
+- platform socket/session state and epoch checks;
+- task cancellation and budget/task APIs;
+- queue locks/conditions/events;
+- status and history functions;
+- the rate limiter and platform clock/sleep;
+- filesystem traversal and file metadata snapshots;
+- frame encoding and socket write serialization.
+
+A new Sender module must receive these dependencies explicitly; it must not include platform application headers or reach into `s_x`, `s_ack`, `s_txlock`, or global status/history state.
+
+### Platform differences that must remain adapters
+
+- Windows uses Winsock, SRW/critical-section synchronization, waitable timers/events, UTF-16 paths and Win32 file metadata.
+- macOS uses POSIX sockets, pthread synchronization, monotonic clock/nanosleep, UTF-8 paths and POSIX metadata.
+- Both must preserve the same protocol decisions, ACK result mapping, retry/checkpoint rules and resource admission semantics.
+
+## 3. Target boundaries
+
+| Module | Owns | Must not own |
+|---|---|---|
+| Transfer Service facade | stable submit/cancel/query API and service lifecycle | platform file traversal or socket calls |
+| Scanner adapter | safe enumeration, metadata snapshot, canonical relative paths | network send, ACK state, Task terminal policy |
+| Sender Core/Application | job execution order, file/chunk/DONE protocol sequencing, retry/checkpoint decisions | HWND/HANDLE/NS* types, raw platform socket calls |
+| ACK coordinator | ACK slot registration/delivery/take and wake-up lifecycle behind an opaque API | socket send, Task terminal ownership |
+| Rate adapter | clock, wait/sleep and stop interruption | token-bucket/adaptive-rate policy |
+| Socket adapter | session/epoch validation, serialized frame writes | ACK checkpoint policy |
+| Status/history adapter | immutable snapshots and persistence | sender control flow |
+
+The existing public `xfer.h` remains the compatibility boundary during migration. Do not introduce a second parallel task lifecycle or a speculative generic framework.
+
+## 4. Extraction sequence
+
+1. **ACK coordinator boundary (first code slice).** Move the platform-specific ACK lock/event/condition and ACK-window operations behind an opaque platform API. Migrate all producers and consumers in both platforms in one slice: sender register/mark/deadline/take/unregister, receiver delivery, cancel wake-up, shutdown wake-up, init/failure cleanup/destroy. Keep the wait policy in Sender until its dependencies are separately injected. Add production-linked tests for early ACK, ACK before deadline assignment, late ACK, duplicate ACK, stale batch, cancel wake-up and shutdown wake-up.
+2. **Scanner boundary.** Define a platform-neutral immutable entry snapshot consumed by Sender. Extract safe traversal into platform scanner adapters. Test unreadable directories, symlinks/reparse points, path-length limits, disappearing files, partial enumeration and allocation/admission failure. Never enqueue an incomplete snapshot.
+3. **Sender dependency context.** Define an explicit context for socket write, monotonic clock, wait, cancellation, peer-abort, status, logging and Task callbacks. First wire the existing implementation through it without changing behavior.
+4. **Sender compilation unit.** Move protocol/job execution out of `.inc` into real compilation units; keep Win32/POSIX calls in adapters. Delete the old include files only after both builds link the new units.
+5. **Transfer Service facade and snapshots.** Route public submit/cancel/retry/query operations through one documented service boundary; expose immutable status/history snapshots.
+6. **Cross-platform parity.** Run identical Core vectors and paired Windows/macOS integration fixtures for ACK races, checkpoint recovery, cancellation, stale session, reconnect and task/reservation release.
+
+## 5. Non-negotiable invariants
+
+- Only a successful remote FILE_ACK advances the durable per-job checkpoint.
+- A local read/send failure never advances the checkpoint.
+- An unacknowledged file is retried after reconnect; an acknowledged file is not resent.
+- ACK identity is the exact `(batch, id)`; stale/duplicate ACKs cannot satisfy another file's wait.
+- ACK may arrive before the sender installs its post-FILE_END deadline; the receive timestamp must still be compared against that deadline.
+- Cancel, peer ABORT, socket loss and shutdown wake a blocked ACK waiter without destroying synchronization objects while threads may still use them.
+- Task and Reservation ownership remains single-owner and exactly-once.
+- Slot and byte budgets remain enforced; no unbounded queue or implicit image copy is introduced.
+- Protocol bytes, message ordering, timeout values and user-visible behavior do not change in this extraction.
+
+## 6. Validation gate
+
+For each slice record the exact tested commit and Actions run. Required checks:
+
+- production-linked unit tests for the extracted module (not source-text extraction alone);
+- Windows MSVC app build and relevant native tests;
+- macOS Apple Clang app build and relevant native tests;
+- transfer protocol and TCP loopback tests;
+- race/fault tests for early/late/duplicate ACK, cancel, shutdown and reconnect;
+- explicit note that physical two-device and long-duration tests remain unverified unless actually performed.
+
+A slice is not complete merely because the new files exist or the CI source-contract assertions pass. The old include/global dependency must be removed from both production paths, and the new module must be linked by both native builds.

@@ -758,7 +758,7 @@ int main(void){
             'WIRE_SEND':extract(sender,'send_abort_msg' if platform=='win' else 'send_abort'),
             'STATUS_FUNCTIONS':'\n'.join(extract(sender,n) for n in ['status_for','status_begin','status_end']),
             'CLEAR_STATE':extract(receiver,'hop_xfer_rx_reset_batch_state'),
-            'TERMINATE':'\n'.join(extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_abort_close_file','rx_abort_discard_staging','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end'])+'\n'+extract(receiver,'hop_xfer_rx_terminate_batch'),
+            'TERMINATE':'\n'.join(extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_release_terminal_resources','rx_abort_release_resources','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end'])+'\n'+extract(receiver,'hop_xfer_rx_terminate_batch'),
             'BEGIN_BATCH':extract(receiver,'hop_xfer_rx_begin_batch'),
             'FINISH_BATCH':extract(receiver,'hop_xfer_rx_finish_batch'),
             'RX_SERVICE_CALLBACKS':'\n'.join([
@@ -837,7 +837,7 @@ int main(void){
         receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         fixture=(ROOT/'tests/session_transport_fixture.c.in').read_text(encoding='utf-8')
-        functions='\n'.join([extract(sender,'job_bind_session'),extract(sender,'send_small'),extract(sender,'send_chunk')]+[extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_abort_close_file','rx_abort_discard_staging','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end','hop_xfer_rx_reset_batch_state','hop_xfer_rx_terminate_batch','hop_xfer_rx_bind_session','rx_bind_session','rx_expire_stale_session','on_data_frame_checked','on_data_frame']])
+        functions='\n'.join([extract(sender,'job_bind_session'),extract(sender,'send_small'),extract(sender,'send_chunk')]+[extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_release_terminal_resources','rx_abort_release_resources','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end','hop_xfer_rx_reset_batch_state','hop_xfer_rx_terminate_batch','hop_xfer_rx_bind_session','rx_bind_session','rx_expire_stale_session','on_data_frame_checked','on_data_frame']])
         fixture=fixture.replace('@FUNCTIONS@',functions)
         run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_task.c','src/core/xfer_budget.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c'],threads=True)
 

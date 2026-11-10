@@ -1458,6 +1458,8 @@ int main(void){
         assert requeue_front.index(owner_lock) < requeue_front.index('call->job->owner')
         assert 'call->job=NULL' in dispose_job
         transport=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        init=extract(transport,'xfer_init')
+        assert init.index('if (s_x.sync_initialized)') < init.index('memset(&s_x')
         receive=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
         protocol=(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
         assert '#include "../core/xfer_sender_active_job.h"' in transport

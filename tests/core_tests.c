@@ -650,13 +650,18 @@ static void test_xfer_global_budget(void) {
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==2&&snap.entries==3&&snap.pending_bytes==701);
     CHECK(snap.jobs_high_water==2&&snap.entries_high_water==3);
-    hop_xfer_budget_release(&a);
+    uint64_t released_before=snap.released_reservations;
     hop_xfer_budget_release(&a);
     hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.released_reservations==released_before+1);
+    hop_xfer_budget_release(&a); /* A repeated return must not release twice. */
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.released_reservations==released_before+1);
     CHECK(snap.jobs==1&&snap.entries==1&&snap.pending_bytes==1);
     hop_xfer_budget_release(&b);
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0);
+    CHECK(snap.released_reservations==released_before+2);
     CHECK(hop_xfer_budget_reserve_job(&a));
     CHECK(hop_xfer_budget_reserve_image(&a,500));
     CHECK(!hop_xfer_budget_reserve_image(&a,501));
@@ -1101,12 +1106,15 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     CHECK(hop_xfer_task_reconcile(&audit) && !audit.mismatches && audit.task_count==2);
     CHECK(audit.jobs==1 && audit.entries==2 && audit.pending_bytes==500 && audit.image_bytes==656);
     CHECK(audit.rx_queue_slots==1 && audit.rx_queue_bytes==128 && audit.image_temp_bytes==256);
+    uint64_t task_releases_before=snap.released_reservations;
     CHECK(!hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));
     CHECK(hop_xfer_task_release_rx_buffer(&a,128));
     CHECK(!hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));
     CHECK(hop_xfer_task_release_image_temp(&a,256));
     CHECK(hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));
     CHECK(!hop_xfer_task_finish(&a,HOP_XFER_TASK_CANCELLED));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.released_reservations==task_releases_before+1);
     CHECK(!hop_xfer_task_set_state(&a,HOP_XFER_TASK_ACTIVE));
     CHECK(!hop_xfer_task_bind_session(&a,session));
     CHECK(!hop_xfer_task_set_kind(&a,HOP_TASK_KIND_IMAGE));
@@ -1122,12 +1130,14 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     CHECK(hop_xfer_task_set_state(&moved,HOP_XFER_TASK_ACTIVE));
     CHECK(hop_xfer_task_finish(&moved,HOP_XFER_TASK_CANCELLED));
     hop_xfer_task_dispose(&a);
+    hop_xfer_task_dispose(&a); /* Disposing the emptied handle is a no-op. */
     hop_xfer_task_dispose(&b);
     hop_xfer_task_dispose(&moved);
     CHECK(!hop_xfer_task_get_snapshot(b_id,&bs));
     CHECK(hop_xfer_task_list(NULL,0,&total)==0 && total==0);
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0&&snap.image_bytes==0);
+    CHECK(snap.released_reservations==task_releases_before+2);
     CHECK(hop_xfer_task_reconcile(&audit) && !audit.mismatches && audit.task_count==0);
     /* A rogue reservation is visible as a discrepancy, never silently repaired. */
     hop_xfer_reservation_handle rogue={0};

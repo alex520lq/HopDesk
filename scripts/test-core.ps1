@@ -241,6 +241,20 @@ if ($LASTEXITCODE -ne 0) { throw "Sender context contract compilation failed ($L
 & $senderContext
 if ($LASTEXITCODE -ne 0) { throw "Sender context contract tests failed ($LASTEXITCODE)" }
 
+$senderQueue = Join-Path $build 'hopdesk-sender-queue-tests.exe'
+$senderQueueSources = @(
+    (Join-Path $root 'tests/xfer_sender_queue_tests.c'),
+    (Join-Path $root 'src/core/xfer_sender_queue.c')
+)
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$senderQueue @senderQueueSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $senderQueue @senderQueueSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Sender queue policy test compilation failed ($LASTEXITCODE)" }
+& $senderQueue
+if ($LASTEXITCODE -ne 0) { throw "Sender queue policy tests failed ($LASTEXITCODE)" }
+
 $senderEngine = Join-Path $build 'hopdesk-sender-engine-tests.exe'
 $senderEngineSources = @(
     (Join-Path $root 'tests/xfer_sender_engine_tests.c'),

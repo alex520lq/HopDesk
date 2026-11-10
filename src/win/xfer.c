@@ -394,6 +394,7 @@ typedef struct {
     CRITICAL_SECTION *tx_lock;
     SOCKET *client;
     int *peer_ready;
+    void *ack_coordinator;
     hop_session_id *session;
     unsigned long *epoch;
     HANDLE *stop;
@@ -557,8 +558,7 @@ int xfer_init(HWND hwnd, const hop_config *cfg) {
 
     InitializeCriticalSection(&s_x.lock);
     InitializeCriticalSection(&s_txlock);
-    s_ack = hop_xfer_ack_coordinator_create();
-    if (!s_ack) goto fail;
+    if (!sender_context_ack_create()) goto fail;
     s_x.stop = CreateEventW(NULL, TRUE, FALSE, NULL);
     s_x.q_evt = CreateEventW(NULL, FALSE, FALSE, NULL);
     s_x.rate_timer = CreateWaitableTimerExW(NULL, NULL,
@@ -590,8 +590,7 @@ fail:
     if (s_x.stop) CloseHandle(s_x.stop);
     if (s_x.q_evt) CloseHandle(s_x.q_evt);
     if (s_x.rate_timer) { CloseHandle(s_x.rate_timer); s_x.rate_timer = NULL; }
-    hop_xfer_ack_coordinator_destroy(s_ack);
-    s_ack = NULL;
+    sender_context_ack_destroy();
     DeleteCriticalSection(&s_x.lock);
     DeleteCriticalSection(&s_txlock);
     return 0;
@@ -599,7 +598,7 @@ fail:
 
 void xfer_shutdown(void) {
     SetEvent(s_x.stop);
-    hop_xfer_ack_coordinator_wake(s_ack); /* 踢醒可能正卡在等 ACK 的发送线程 */
+    sender_context_wake_ack(); /* 踢醒可能正卡在等 ACK 的发送线程 */
     /* listener/connection thread owns closesocket; shutdown only wakes I/O. */
 
     EnterCriticalSection(&s_x.lock);
@@ -635,8 +634,7 @@ void xfer_shutdown(void) {
     CloseHandle(s_x.stop);
     CloseHandle(s_x.q_evt);
     if (s_x.rate_timer) { CloseHandle(s_x.rate_timer); s_x.rate_timer = NULL; }
-    hop_xfer_ack_coordinator_destroy(s_ack);
-    s_ack = NULL;
+    sender_context_ack_destroy();
     DeleteCriticalSection(&s_x.lock);
     DeleteCriticalSection(&s_txlock);
 }
@@ -677,14 +675,14 @@ void xfer_cancel(void) {
     s_x.cancel_rx = 1;
     LeaveCriticalSection(&s_x.lock);
     SetEvent(s_x.q_evt);      /* 唤醒发送线程，别让它等满 200 ms */
-    hop_xfer_ack_coordinator_wake(s_ack); /* 唤醒可能正卡在等 ACK 的发送线程 */
+    sender_context_wake_ack(); /* 唤醒可能正卡在等 ACK 的发送线程 */
     hop_log(HOP_LOG_INFO, "xfer: cancel requested");
 }
 
 int xfer_cancel_task(hop_xfer_task_id id) {
     if (!hop_xfer_task_request_cancel(id)) return 0;
     SetEvent(s_x.q_evt);
-    hop_xfer_ack_coordinator_wake(s_ack);
+    sender_context_wake_ack();
     return 1;
 }
 

@@ -51,6 +51,19 @@ typedef struct hop_xfer_sender_context {
     /* Forces the current data channel down so the connection adapter reconnects. */
     void (*request_reconnect)(void *user);
 
+    /* ACK coordinator operations. The platform adapter owns storage and wakeups. */
+    int (*ack_register)(void *user, uint32_t batch, uint32_t id);
+    int (*ack_mark_sent)(void *user, uint32_t batch, uint32_t id);
+    int (*ack_set_deadline)(void *user, uint32_t batch, uint32_t id,
+                            uint64_t deadline_ns);
+    int (*ack_wait_take)(void *user, uint32_t batch, uint32_t id,
+                         uint32_t timeout_ms, int *status,
+                         uint64_t *rtt_ns, int *deadline_expired);
+    void (*ack_unregister)(void *user, uint32_t batch, uint32_t id);
+    void (*ack_unregister_batch)(void *user, uint32_t batch);
+    int (*ack_deliver)(void *user, uint32_t batch, uint32_t id, int status);
+    void (*ack_wake)(void *user);
+
     /* Application side effects are callbacks; Sender owns their ordering.
      * job is a borrowed opaque platform job and must not be retained. */
     void (*status_start_job)(void *user, const void *job);
@@ -87,7 +100,9 @@ static inline int hop_xfer_sender_context_valid(const hop_xfer_sender_context *c
     return ctx && ctx->now_ns && ctx->wait_ns && ctx->is_stopping &&
            ctx->session_current && ctx->write_frame && ctx->is_cancelled &&
            ctx->is_batch_cancelled && ctx->peer_aborted && ctx->request_reconnect &&
-           ctx->task_bind_session &&
+           ctx->ack_register && ctx->ack_mark_sent && ctx->ack_set_deadline &&
+           ctx->ack_wait_take && ctx->ack_unregister && ctx->ack_unregister_batch &&
+           ctx->ack_deliver && ctx->ack_wake && ctx->task_bind_session &&
            ctx->task_set_state && ctx->task_begin_completion &&
            ctx->task_finish && ctx->task_dispose;
 }

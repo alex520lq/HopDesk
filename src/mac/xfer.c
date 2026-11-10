@@ -140,6 +140,7 @@ typedef struct {
     pthread_mutex_t *tx_lock;
     int *sock;
     int *peer_ready;
+    void *ack_coordinator;
     hop_session_id *session;
     unsigned long *epoch;
     _Atomic int *stop;
@@ -588,8 +589,7 @@ void xfer_init(const hop_config *cfg) {
     pthread_mutex_init(&s_x.qlock, NULL);
     pthread_cond_init(&s_x.qcond, NULL);
     s_x.sync_initialized = 1;
-    s_ack = hop_xfer_ack_coordinator_create();
-    if (!s_ack) {
+    if (!sender_context_ack_create()) {
         hop_log(HOP_LOG_ERROR, "xfer: ACK coordinator initialization failed");
         return;
     }
@@ -597,8 +597,7 @@ void xfer_init(const hop_config *cfg) {
     /* 写盘线程要先起来，接收路径一进来就会往队列里塞 */
     if (!wq_start()) {
         hop_log(HOP_LOG_ERROR, "xfer: writer thread start failed");
-        hop_xfer_ack_coordinator_destroy(s_ack);
-        s_ack = NULL;
+        sender_context_ack_destroy();
         return;
     }
 
@@ -609,7 +608,7 @@ void xfer_init(const hop_config *cfg) {
         pthread_mutex_lock(&s_x.qlock);
         pthread_cond_broadcast(&s_x.qcond);
         pthread_mutex_unlock(&s_x.qlock);
-        if (s_ack) hop_xfer_ack_coordinator_wake(s_ack);
+        sender_context_wake_ack();
         if (!hop_mac_sender_threads_join(&s_x.sender_threads)) {
             hop_log(HOP_LOG_ERROR, "xfer: partially started threads did not join; preserve shared state");
             return;
@@ -632,7 +631,7 @@ void xfer_shutdown(void) {
     pthread_cond_broadcast(&s_x.qcond);
     pthread_mutex_unlock(&s_x.qlock);
 
-    if (s_ack) hop_xfer_ack_coordinator_wake(s_ack);
+    sender_context_wake_ack();
 
     /* 必须 join：两个线程都会碰写盘队列，销毁队列时它们还活着就是释放后使用。
      * read/write 都是阻塞的，靠上面 shutdown(sock) 和 SO_SNDTIMEO 让它们返回。 */
@@ -643,8 +642,7 @@ void xfer_shutdown(void) {
 
     rx_reset(&s_rx);      /* 先把写盘队列排空并关掉文件，再停写线程 */
     wq_stop();
-    if (s_ack) hop_xfer_ack_coordinator_destroy(s_ack);
-    s_ack = NULL;
+    sender_context_ack_destroy();
     hop_xfer_task_history_store_close();
     pthread_cond_destroy(&s_x.qcond);
     pthread_mutex_destroy(&s_x.qlock);
@@ -688,7 +686,7 @@ void xfer_cancel(void) {
     pthread_cond_signal(&s_x.qcond);      /* 唤醒发送线程，别让它等满 200 ms */
     pthread_mutex_unlock(&s_x.qlock);
 
-    hop_xfer_ack_coordinator_wake(s_ack);
+    sender_context_wake_ack();
 
     hop_log(HOP_LOG_INFO, "xfer: cancel requested");
 }
@@ -696,7 +694,7 @@ void xfer_cancel(void) {
 int xfer_cancel_task(hop_xfer_task_id id) {
     if (!hop_xfer_task_request_cancel(id)) return 0;
     pthread_mutex_lock(&s_x.qlock); pthread_cond_signal(&s_x.qcond); pthread_mutex_unlock(&s_x.qlock);
-    hop_xfer_ack_coordinator_wake(s_ack);
+    sender_context_wake_ack();
     return 1;
 }
 

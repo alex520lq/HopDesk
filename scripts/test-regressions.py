@@ -951,6 +951,17 @@ int main(void){
         kick=extract(sender,'xfer_kick')
         assert 'sender_context_request_reconnect(&s_sender_platform)' in kick
         assert 'sender_engine_wait_ack' in sender
+        assert 'static hop_xfer_ack_coordinator *s_ack' not in sender
+        assert 'hop_xfer_ack_coordinator_wait_take(s_ack' not in sender
+        ack_wait_body=extract(sender,'ack_wait')
+        assert 'context->ack_wait_take(context->user' in ack_wait_body
+        ack_deliver_body=extract(sender,'ack_deliver')
+        assert 's_sender_context.ack_deliver' in ack_deliver_body
+        platform_xfer=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        assert 's_ack' not in platform_xfer
+        assert 'sender_context_ack_create()' in platform_xfer
+        assert 'sender_context_ack_destroy()' in platform_xfer
+        assert 'sender_context_wake_ack()' in platform_xfer
         assert 'sender_engine_send_entry' in sender
         assert 'sender_engine_send_image_begin' in sender
         assert 'sender_engine_send_image_chunk' in sender

@@ -14,6 +14,10 @@ typedef struct {
     int aborted;
     int writes;
     int reconnect_calls;
+    int ack_register_calls, ack_mark_calls, ack_deadline_calls, ack_wait_calls;
+    int ack_unregister_calls, ack_batch_unregister_calls, ack_deliver_calls, ack_wake_calls;
+    uint32_t last_ack_id;
+    int last_ack_status;
     int status_start_calls;
     int status_end_calls;
     int status_file_calls;
@@ -67,6 +71,44 @@ static int fake_peer_aborted(void *user, uint32_t batch) {
 }
 static void fake_request_reconnect(void *user) {
     ((fake_sender *)user)->reconnect_calls++;
+}
+static int fake_ack_register(void *user, uint32_t batch, uint32_t id) {
+    fake_sender *f = (fake_sender *)user;
+    f->ack_register_calls++; f->last_batch = batch; f->last_ack_id = id; return 1;
+}
+static int fake_ack_mark_sent(void *user, uint32_t batch, uint32_t id) {
+    fake_sender *f = (fake_sender *)user;
+    f->ack_mark_calls++; f->last_batch = batch; f->last_ack_id = id; return 1;
+}
+static int fake_ack_set_deadline(void *user, uint32_t batch, uint32_t id,
+                                 uint64_t deadline_ns) {
+    fake_sender *f = (fake_sender *)user;
+    assert(deadline_ns > 0); f->ack_deadline_calls++;
+    f->last_batch = batch; f->last_ack_id = id; return 1;
+}
+static int fake_ack_wait_take(void *user, uint32_t batch, uint32_t id,
+                              uint32_t timeout_ms, int *status,
+                              uint64_t *rtt_ns, int *deadline_expired) {
+    fake_sender *f = (fake_sender *)user;
+    assert(timeout_ms > 0 && status && rtt_ns && deadline_expired);
+    f->ack_wait_calls++; f->last_batch = batch; f->last_ack_id = id;
+    *status = 17; *rtt_ns = 1234; *deadline_expired = 0; return 1;
+}
+static void fake_ack_unregister(void *user, uint32_t batch, uint32_t id) {
+    fake_sender *f = (fake_sender *)user;
+    f->ack_unregister_calls++; f->last_batch = batch; f->last_ack_id = id;
+}
+static void fake_ack_unregister_batch(void *user, uint32_t batch) {
+    fake_sender *f = (fake_sender *)user;
+    f->ack_batch_unregister_calls++; f->last_batch = batch;
+}
+static int fake_ack_deliver(void *user, uint32_t batch, uint32_t id, int status) {
+    fake_sender *f = (fake_sender *)user;
+    f->ack_deliver_calls++; f->last_batch = batch; f->last_ack_id = id;
+    f->last_ack_status = status; return 1;
+}
+static void fake_ack_wake(void *user) {
+    ((fake_sender *)user)->ack_wake_calls++;
 }
 static void fake_status_start(void *user, const void *job) {
     fake_sender *f = (fake_sender *)user;
@@ -138,6 +180,14 @@ static hop_xfer_sender_context make_context(fake_sender *f) {
     ctx.is_batch_cancelled = fake_batch_cancelled;
     ctx.peer_aborted = fake_peer_aborted;
     ctx.request_reconnect = fake_request_reconnect;
+    ctx.ack_register = fake_ack_register;
+    ctx.ack_mark_sent = fake_ack_mark_sent;
+    ctx.ack_set_deadline = fake_ack_set_deadline;
+    ctx.ack_wait_take = fake_ack_wait_take;
+    ctx.ack_unregister = fake_ack_unregister;
+    ctx.ack_unregister_batch = fake_ack_unregister_batch;
+    ctx.ack_deliver = fake_ack_deliver;
+    ctx.ack_wake = fake_ack_wake;
     ctx.status_start_job = fake_status_start;
     ctx.status_end = fake_status_end;
     ctx.status_file_phase = fake_status_file_phase;
@@ -202,6 +252,23 @@ int main(void) {
     assert(ctx.peer_aborted(ctx.user, 42) == 1);
     ctx.request_reconnect(ctx.user);
     assert(state.reconnect_calls == 1);
+    int ack_status = 0, deadline_expired = 0;
+    uint64_t ack_rtt_ns = 0;
+    assert(ctx.ack_register(ctx.user, 42, 7));
+    assert(ctx.ack_mark_sent(ctx.user, 42, 7));
+    assert(ctx.ack_set_deadline(ctx.user, 42, 7, 5000));
+    assert(ctx.ack_wait_take(ctx.user, 42, 7, 100, &ack_status,
+                             &ack_rtt_ns, &deadline_expired));
+    assert(ack_status == 17 && ack_rtt_ns == 1234 && !deadline_expired);
+    ctx.ack_unregister(ctx.user, 42, 7);
+    ctx.ack_unregister_batch(ctx.user, 42);
+    assert(ctx.ack_deliver(ctx.user, 42, 7, 9));
+    ctx.ack_wake(ctx.user);
+    assert(state.ack_register_calls == 1 && state.ack_mark_calls == 1);
+    assert(state.ack_deadline_calls == 1 && state.ack_wait_calls == 1);
+    assert(state.ack_unregister_calls == 1 && state.ack_batch_unregister_calls == 1);
+    assert(state.ack_deliver_calls == 1 && state.ack_wake_calls == 1);
+    assert(state.last_batch == 42 && state.last_ack_id == 7 && state.last_ack_status == 9);
     hop_xfer_task task = {99, 1};
     const uint8_t session[HOP_TASK_SESSION_BYTES] = {1};
     int opaque_job = 123;
@@ -242,6 +309,14 @@ int main(void) {
     REQUIRE_INVALID(is_batch_cancelled);
     REQUIRE_INVALID(peer_aborted);
     REQUIRE_INVALID(request_reconnect);
+    REQUIRE_INVALID(ack_register);
+    REQUIRE_INVALID(ack_mark_sent);
+    REQUIRE_INVALID(ack_set_deadline);
+    REQUIRE_INVALID(ack_wait_take);
+    REQUIRE_INVALID(ack_unregister);
+    REQUIRE_INVALID(ack_unregister_batch);
+    REQUIRE_INVALID(ack_deliver);
+    REQUIRE_INVALID(ack_wake);
     REQUIRE_INVALID(task_bind_session);
     REQUIRE_INVALID(task_set_state);
     REQUIRE_INVALID(task_begin_completion);

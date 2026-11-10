@@ -1268,6 +1268,20 @@ int main(void){
         worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
         assert 'hop_xfer_sender_plan_retry' in worker
 
+    lifecycle_core=(ROOT/'src/core/xfer_sender_lifecycle.c').read_text(encoding='utf-8')
+    lifecycle_header=(ROOT/'src/core/xfer_sender_lifecycle.h').read_text(encoding='utf-8')
+    lifecycle_tests=(ROOT/'tests/xfer_sender_lifecycle_tests.c').read_text(encoding='utf-8')
+    assert 'hop_xfer_sender_get_terminal_decision' in lifecycle_core
+    assert 'HOP_XFER_SENDER_JOB_COMMIT_UNKNOWN' in lifecycle_core
+    assert 'HOP_XFER_SENDER_JOB_COMMIT_REJECTED' in lifecycle_core
+    assert 'hop_xfer_sender_terminal_decision' in lifecycle_header
+    assert 'test_initial_and_repeated_retry' in retry_tests
+    assert 'HOP_XFER_TASK_INTERRUPTED' in lifecycle_tests
+    assert 'Cancelled by receiver' in lifecycle_tests
+    for platform in ['win','mac']:
+        worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_get_terminal_decision' in worker
+
     # hop_xfer_tracking embeds 8192 file records with 1024-byte paths
     # (~8 MiB). Keep these fixtures off Windows' default 1 MiB thread stack.
     core_tests=(ROOT/'tests/core_tests.c').read_text(encoding='utf-8')

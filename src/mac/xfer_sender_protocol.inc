@@ -17,18 +17,52 @@ static uint64_t rate_now_ns(void) {
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
+static hop_xfer_sender_context s_sender_context;
+
+static uint64_t sender_context_now_ns(void *user) {
+    (void)user;
+    return rate_now_ns();
+}
+
+static int sender_context_is_stopping(void *user) {
+    (void)user;
+    return s_x.stop != 0;
+}
+
+static int sender_context_wait_ns(void *user, uint64_t duration_ns) {
+    (void)user;
+    if (s_x.stop) return 0;
+    /* Bound each sleep so cancellation/shutdown remains observable. */
+    if (duration_ns > 10000000ull) duration_ns = 10000000ull;
+    struct timespec ts = {
+        (time_t)(duration_ns / 1000000000ull),
+        (long)(duration_ns % 1000000000ull)
+    };
+    while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {
+        if (s_x.stop) return 0;
+    }
+    return !s_x.stop;
+}
+
+static void sender_context_init(void) {
+    memset(&s_sender_context, 0, sizeof(s_sender_context));
+    s_sender_context.now_ns = sender_context_now_ns;
+    s_sender_context.wait_ns = sender_context_wait_ns;
+    s_sender_context.is_stopping = sender_context_is_stopping;
+}
+
 static int rate_wait_for_chunk(uint32_t bytes) {
+    if (!hop_xfer_sender_context_clock_valid(&s_sender_context)) return 0;
     for (;;) {
-        uint64_t delay = hop_xfer_rate_wait_ns(&s_x.rate, bytes, rate_now_ns());
+        uint64_t delay = hop_xfer_rate_wait_ns(
+            &s_x.rate, bytes, s_sender_context.now_ns(s_sender_context.user));
         if (delay == UINT64_MAX) {
             hop_log(HOP_LOG_ERROR, "xfer: chunk exceeds token-bucket burst");
             return 0;
         }
-        if (!delay) return 1;
-        if (s_x.stop) return 0;
-        if (delay > 10000000ull) delay = 10000000ull; /* check shutdown at least every 10 ms */
-        struct timespec ts = {(time_t)(delay / 1000000000ull),(long)(delay % 1000000000ull)};
-        while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {}
+        if (!delay) return !s_sender_context.is_stopping(s_sender_context.user);
+        if (s_sender_context.is_stopping(s_sender_context.user)) return 0;
+        if (!s_sender_context.wait_ns(s_sender_context.user, delay)) return 0;
     }
 }
 

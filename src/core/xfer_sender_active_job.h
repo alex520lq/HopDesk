@@ -21,6 +21,8 @@ typedef struct {
 
 int hop_xfer_sender_active_job_is_active(
     const hop_xfer_sender_active_job *active);
+int hop_xfer_sender_active_job_matches(
+    const hop_xfer_sender_active_job *active, uint32_t batch);
 uint32_t hop_xfer_sender_active_job_cancel_target(
     const hop_xfer_sender_active_job *active, uint32_t queued_head_batch);
 int hop_xfer_sender_active_job_begin(

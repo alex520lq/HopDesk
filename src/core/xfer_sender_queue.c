@@ -1,5 +1,7 @@
 #include "xfer_sender_queue.h"
 
+#include <stddef.h>
+
 static int queue_ops_valid(const hop_xfer_sender_queue_ops *ops) {
     return ops && ops->next && ops->set_next && ops->is_cancelled &&
            ops->batch && ops->retry_at_ms && ops->give_up_at_ms;

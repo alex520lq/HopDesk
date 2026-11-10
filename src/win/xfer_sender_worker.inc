@@ -84,7 +84,8 @@ static DWORD WINAPI send_thread(LPVOID arg) {
                 sender_logf(&expired->sender_context, HOP_LOG_ERROR,
                             "xfer: batch %u abandoned, peer never came back (%d/%d delivered)",
                             expired->batch, expired->ok, expired->n);
-                int was_cancelled=cancel_requested(expired->batch) || sender_task_cancel_requested(&expired->sender_context, expired->batch, &expired->task);
+                int was_cancelled = sender_job_cancel_requested(
+                    &expired->sender_context, expired->batch, expired->task.id);
                 if (was_cancelled && c != INVALID_SOCKET && hop_session_id_equal(&expired->session,&transport_session))
                     send_abort_msg_with_context(&expired->sender_context, c,
                                                 expired->batch, HOP_ABORT_CANCEL,
@@ -117,7 +118,8 @@ static DWORD WINAPI send_thread(LPVOID arg) {
             if (!completion_path) { s_x.cur_batch = 0; s_x.cur_task_id = 0; }
             LeaveCriticalSection(&s_x.lock);
 
-            if (r != JOB_DONE && sender_task_cancel_requested(&j->sender_context, j->batch, &j->task)) r=JOB_CANCELLED;
+            if (r != JOB_DONE && sender_job_cancel_requested(
+                    &j->sender_context, j->batch, j->task.id)) r = JOB_CANCELLED;
             if (r == JOB_DONE && !sender_task_begin_completion(&j->sender_context, &j->task)) r=JOB_CANCELLED;
             if (r == JOB_NET_DOWN) {
                 uint64_t retry_now = now_ms();

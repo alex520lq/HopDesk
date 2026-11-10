@@ -645,8 +645,9 @@ static hop_xfer_sender_send_result sender_engine_send_entry(
     ops.yield_cpu = sender_engine_file_yield;
     ops.log_message = sender_engine_log;
     return hop_xfer_sender_send_file_entry(
-        &ops, batch, id, &view, call->tx + CHUNK_HDR, call->tx + CHUNK_HDR,
-        s_x.chunk, (uint64_t)HOP_XFER_ACK_TIMEOUT_MS * 1000000ull,
+        &ops, batch, id, &view, call->tx + CHUNK_HDR, s_x.chunk,
+        call->tx + CHUNK_HDR, s_x.chunk,
+        (uint64_t)HOP_XFER_ACK_TIMEOUT_MS * 1000000ull,
         HOP_FILE_FLAG_DIR, HOP_FILE_OK, HOP_FILE_IO_ERROR,
         HOP_MSG_FILE_BEGIN, HOP_MSG_FILE_END, ack_deadline_ns);
 }

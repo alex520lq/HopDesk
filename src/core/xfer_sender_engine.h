@@ -1,6 +1,7 @@
 #ifndef HOP_XFER_SENDER_ENGINE_H
 #define HOP_XFER_SENDER_ENGINE_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus

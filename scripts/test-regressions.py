@@ -1288,6 +1288,17 @@ int main(void){
         assert 'hop_xfer_sender_queue_take_cancelled' in worker
         assert 'hop_xfer_sender_queue_take_head' in worker
         assert 'queue_unlink' not in worker
+        transport=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        thread_adapter=(ROOT/f'src/{platform}/xfer_sender_threads.c').read_text(encoding='utf-8')
+        if platform=='win':
+            assert 'CreateThread(' not in transport
+            assert 'hop_win_sender_threads_start' in transport
+            assert 'CreateThread(' in thread_adapter and 'WaitForSingleObject(' in thread_adapter
+        else:
+            assert 'pthread_create(' not in transport
+            assert 'pthread_join(' not in transport
+            assert 'hop_mac_sender_threads_start' in transport
+            assert 'pthread_create(' in thread_adapter and 'pthread_join(' in thread_adapter
 
     retry_core=(ROOT/'src/core/xfer_sender_retry.c').read_text(encoding='utf-8')
     retry_header=(ROOT/'src/core/xfer_sender_retry.h').read_text(encoding='utf-8')

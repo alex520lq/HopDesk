@@ -59,8 +59,17 @@
 
 /* ---------------- 条目 / 作业 ---------------- */
 
+typedef enum {
+    XFER_JOB_OWNER_SUBMITTER = 0,
+    XFER_JOB_OWNER_QUEUE,
+    XFER_JOB_OWNER_WORKER,
+    XFER_JOB_OWNER_SHUTDOWN,
+    XFER_JOB_OWNER_RELEASED
+} xfer_job_owner;
+
 typedef struct xfer_job {
     struct xfer_job *next;
+    xfer_job_owner owner;
     hop_session_id session;
     uint32_t    batch;
     int         is_image;
@@ -87,6 +96,9 @@ typedef struct xfer_job {
 /* ---------------- 全局状态 ---------------- */
 
 static SRWLOCK s_status_lock = SRWLOCK_INIT;
+/* Submission holds the shared side for its entire scan/queue transaction.
+ * Shutdown takes the exclusive side before stopping threads or destroying locks. */
+static SRWLOCK s_x_lifecycle_lock = SRWLOCK_INIT;
 static hop_xfer_tracking s_send_status, s_receive_status;
 static uint64_t s_status_revision;
 static wchar_t *s_retry_paths[HOP_XFER_FILE_LIMIT];
@@ -340,6 +352,9 @@ static struct {
     HANDLE           rate_timer; /* high-resolution pacing wait; sender thread only */
     hop_win_sender_threads sender_threads;
     hop_xfer_sender_queue queue;
+    int              sync_initialized;
+    int              shutting_down; /* protected by s_x_lifecycle_lock */
+    xfer_job        *shutdown_jobs; /* Jobs retained until Task disposal succeeds */
     uint32_t         batch_seq;
     uint32_t         chunk;     /* 实际分块字节数 */
     hop_xfer_rate_limiter rate; /* sender thread only */

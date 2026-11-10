@@ -306,7 +306,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     win_inject_reset();
     kbd_shutdown();
     capture_shutdown();
-    clip_shutdown(g_app.hwnd);
+    while (!clip_shutdown(g_app.hwnd)) Sleep(100); /* retain unresolved image Task owners */
     /* Stop/join control callbacks before destroying transfer locks: on_link()
      * can call xfer_kick after a disconnect. */
     if (g_app.net) { net_server_stop(g_app.net); g_app.net = NULL; }

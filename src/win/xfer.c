@@ -761,8 +761,6 @@ void xfer_shutdown(void) {
     if (s_x.rate_timer) { CloseHandle(s_x.rate_timer); s_x.rate_timer = NULL; }
     hop_xfer_ack_coordinator_destroy(s_ack);
     s_ack = NULL;
-    hop_xfer_ack_coordinator_destroy(s_ack);
-    s_ack = NULL;
     DeleteCriticalSection(&s_x.lock);
     DeleteCriticalSection(&s_txlock);
 }

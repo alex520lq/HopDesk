@@ -280,7 +280,7 @@ static void *send_thread(void *arg) {
         }
 
         if (s_x.stop) {
-            /* 退出时不再发新东西：队列直接释放，避免在这里空转 */
+            /* Queue ownership is transferred to Shutdown after both workers join. */
             pthread_mutex_unlock(&s_x.qlock);
             break;
         }

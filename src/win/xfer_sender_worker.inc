@@ -10,7 +10,7 @@ static void sender_queue_set_next(void *user, void *node, void *next) {
 static int sender_queue_is_cancelled(void *user, const void *node) {
     (void)user;
     const xfer_job *job = (const xfer_job *)node;
-    return sender_task_cancel_requested(job->batch, &job->task);
+    return sender_task_cancel_requested(&job->sender_context, job->batch, &job->task);
 }
 static uint32_t sender_queue_batch(void *user, const void *node) {
     (void)user;
@@ -38,7 +38,7 @@ static void job_free(xfer_job *j) {
     }
     free(j->e);
     free(j->pixels);
-    sender_task_dispose(&j->task);
+    sender_task_dispose(&j->sender_context, &j->task);
     free(j);
 }
 
@@ -84,14 +84,14 @@ static DWORD WINAPI send_thread(LPVOID arg) {
                 hop_log(HOP_LOG_ERROR,
                         "xfer: batch %u abandoned, peer never came back (%d/%d delivered)",
                         expired->batch, expired->ok, expired->n);
-                int was_cancelled=cancel_requested(expired->batch) || sender_task_cancel_requested(expired->batch, &expired->task);
+                int was_cancelled=cancel_requested(expired->batch) || sender_task_cancel_requested(&expired->sender_context, expired->batch, &expired->task);
                 if (was_cancelled && c != INVALID_SOCKET && hop_session_id_equal(&expired->session,&transport_session))
                     send_abort_msg(c,expired->batch,HOP_ABORT_CANCEL,HOP_ABORT_TO_RECEIVER);
                 AcquireSRWLockShared(&s_status_lock);
                 int show_status=!s_send_status.status.active || s_send_status.status.batch==expired->batch;
                 ReleaseSRWLockShared(&s_status_lock);
                 if (show_status) status_start_job(expired);
-                sender_task_finish(&expired->task,was_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
+                sender_task_finish(&expired->sender_context, &expired->task,was_cancelled?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_FAILED);
                 if (show_status) status_end(HOP_XFER_DIR_SEND,expired->batch,was_cancelled?HOP_XFER_CANCELLED:HOP_XFER_FAILED,"Transfer stopped while queued");
                 job_free(expired);
                 continue;
@@ -99,9 +99,9 @@ static DWORD WINAPI send_thread(LPVOID arg) {
 
             if (!j) break;
             job_bind_session(j, &transport_session);
-            if (hop_session_id_valid(&j->session)) (void)sender_task_bind_session(&j->task,&j->session);
-            if(!sender_task_set_state(&j->task,HOP_XFER_TASK_ACTIVE)){
-                sender_task_finish(&j->task,HOP_XFER_TASK_FAILED);job_free(j);continue;
+            if (hop_session_id_valid(&j->session)) (void)sender_task_bind_session(&j->sender_context, &j->task,&j->session);
+            if(!sender_task_set_state(&j->sender_context, &j->task,HOP_XFER_TASK_ACTIVE)){
+                sender_task_finish(&j->sender_context, &j->task,HOP_XFER_TASK_FAILED);job_free(j);continue;
             }
             status_start_job(j);
 
@@ -113,8 +113,8 @@ static DWORD WINAPI send_thread(LPVOID arg) {
             if (!completion_path) { s_x.cur_batch = 0; s_x.cur_task_id = 0; }
             LeaveCriticalSection(&s_x.lock);
 
-            if (r != JOB_DONE && sender_task_cancel_requested(j->batch, &j->task)) r=JOB_CANCELLED;
-            if (r == JOB_DONE && !sender_task_begin_completion(&j->task)) r=JOB_CANCELLED;
+            if (r != JOB_DONE && sender_task_cancel_requested(&j->sender_context, j->batch, &j->task)) r=JOB_CANCELLED;
+            if (r == JOB_DONE && !sender_task_begin_completion(&j->sender_context, &j->task)) r=JOB_CANCELLED;
             if (r == JOB_NET_DOWN) {
                 uint64_t retry_now = now_ms();
                 uint32_t current_attempt = j->attempt > 0

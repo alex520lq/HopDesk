@@ -202,8 +202,8 @@ static void test_success_and_crc(void) {
     assert(hop_get_be64(f.begin+8) == 10 && hop_get_be64(f.begin+16) == 1234);
     assert(f.begin[24] == 0 && hop_get_be16(f.begin+25) == 5);
     assert(memcmp(f.begin+27,"a.txt",5) == 0);
-    assert(hop_get_be16(f.begin+34) == 9);
-    assert(memcmp(f.begin+36,"dir/a.txt",9) == 0);
+    assert(hop_get_be16(f.begin+32) == 9);
+    assert(memcmp(f.begin+34,"dir/a.txt",9) == 0);
     uint32_t expected = hop_xfer_file_crc_step(0, 0, f.crcs[0]);
     expected = hop_xfer_file_crc_step(expected, 8, f.crcs[1]);
     assert(f.end[4] == HOP_FILE_OK && hop_get_be32(f.end+5) == expected);

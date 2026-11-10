@@ -298,6 +298,20 @@ if ($LASTEXITCODE -ne 0) { throw "Sender active-job test compilation failed ($LA
 & $senderActiveJob
 if ($LASTEXITCODE -ne 0) { throw "Sender active-job tests failed ($LASTEXITCODE)" }
 
+$senderContext = Join-Path $build 'hopdesk-sender-context-adapter-tests.exe'
+$senderContextSources = @(
+    (Join-Path $root 'tests/xfer_sender_context_adapter_tests.c'),
+    (Join-Path $root 'src/core/xfer_sender_context_adapter.c')
+)
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$senderContext @senderContextSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $senderContext @senderContextSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Sender context adapter test compilation failed ($LASTEXITCODE)" }
+& $senderContext
+if ($LASTEXITCODE -ne 0) { throw "Sender context adapter tests failed ($LASTEXITCODE)" }
+
 $senderRetry = Join-Path $build 'hopdesk-sender-retry-tests.exe'
 $senderRetrySources = @(
     (Join-Path $root 'tests/xfer_sender_retry_tests.c'),

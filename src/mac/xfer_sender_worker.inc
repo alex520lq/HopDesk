@@ -111,7 +111,8 @@ static void *send_thread(void *arg) {
             sender_logf(&expired->sender_context, HOP_LOG_ERROR,
                         "xfer: batch %u abandoned, peer never came back (%d/%d delivered)",
                         expired->batch, expired->ok, expired->n);
-            int was_cancelled=cancel_requested(expired->batch) || sender_task_cancel_requested(&expired->sender_context, expired->batch, &expired->task);
+            int was_cancelled = sender_job_cancel_requested(
+                &expired->sender_context, expired->batch, expired->task.id);
             pthread_mutex_lock(&s_x.slock);
             int abort_fd=s_x.peer_ready && hop_session_id_equal(&expired->session,&s_x.session) ? s_x.sock : -1;
             s_send_epoch=s_x.epoch;
@@ -151,7 +152,8 @@ static void *send_thread(void *arg) {
         if (!completion_path) { s_x.cur_batch = 0; s_x.cur_task_id = 0; }
         pthread_mutex_unlock(&s_x.qlock);
 
-        if (r != JOB_DONE && sender_task_cancel_requested(&j->sender_context, j->batch, &j->task)) r=JOB_CANCELLED;
+        if (r != JOB_DONE && sender_job_cancel_requested(
+                &j->sender_context, j->batch, j->task.id)) r = JOB_CANCELLED;
         if (r == JOB_DONE && !sender_task_begin_completion(&j->sender_context, &j->task)) r=JOB_CANCELLED;
         if (r == JOB_NET_DOWN) {
             uint64_t retry_now = now_ms();

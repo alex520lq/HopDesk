@@ -371,13 +371,14 @@ static int ack_wait(uint32_t batch, uint32_t id, uint64_t deadline_ns, uint64_t 
 }
 
 /* Image payloads share the same rate limiter and owned-buffer path as files. */
-static int send_done(SOCKET c, const xfer_job *j) {
+static int send_done(SOCKET c, uint32_t batch, uint32_t ok,
+                      uint32_t total) {
     uint8_t dp[20];
-    hop_put_be32(dp, j->batch);
-    hop_put_be32(dp + 4, (uint32_t)j->ok);
-    hop_put_be32(dp + 8, hop_xfer_job_total(j->is_image,j->n));
+    hop_put_be32(dp, batch);
+    hop_put_be32(dp + 4, ok);
+    hop_put_be32(dp + 8, total);
     hop_put_be64(dp + 12, 0);
-    return send_small(c, HOP_MSG_XFER_DONE, dp, 20, j->batch);
+    return send_small(c, HOP_MSG_XFER_DONE, dp, sizeof(dp), batch);
 }
 
 /* run_job 的结局 */
@@ -390,42 +391,103 @@ static int send_done(SOCKET c, const xfer_job *j) {
 
 /* Re-send only DONE, never file contents, while the same control session
  * survives. Receiver caches its last receipt and never reapplies effects. */
-static int send_done_result(SOCKET fd, const xfer_job *job) {
-    uint64_t until=now_ms()+HOP_XFER_RECONNECT_BUDGET_MS;
-    while (now_ms()<until) {
-        if (!hop_session_matches(&job->session)) return JOB_COMMIT_UNKNOWN;
-        if (WaitForSingleObject(s_x.stop,0)==WAIT_OBJECT_0) return JOB_COMMIT_UNKNOWN;
-        EnterCriticalSection(&s_x.lock);
-        fd=s_x.peer_ready?s_x.client:INVALID_SOCKET;
-        hop_session_id session=s_x.session;
-        s_send_epoch=s_x.epoch;
-        LeaveCriticalSection(&s_x.lock);
-        if (fd==INVALID_SOCKET) { Sleep(100); continue; }
-        if (!hop_session_id_equal(&session,&job->session)) return JOB_COMMIT_UNKNOWN;
-        if (!ack_register(job->batch,HOP_DONE_ACK_SLOT)) return JOB_COMMIT_UNKNOWN;
-        if (!ack_mark_sent(job->batch,HOP_DONE_ACK_SLOT)) {
-            ack_unregister(job->batch,HOP_DONE_ACK_SLOT); return JOB_COMMIT_UNKNOWN;
-        }
-        if (!send_done(fd,job)) {
-            ack_unregister(job->batch,HOP_DONE_ACK_SLOT); Sleep(100); continue;
-        }
-        uint64_t now=now_ms();
-        if (now>=until) { ack_unregister(job->batch,HOP_DONE_ACK_SLOT); return JOB_COMMIT_UNKNOWN; }
-        uint64_t wait=until-now;
-        if (wait>HOP_XFER_ACK_TIMEOUT_MS) wait=HOP_XFER_ACK_TIMEOUT_MS;
-        uint64_t deadline=rate_now_ns()+wait*1000000ull;
-        if (!ack_set_deadline(job->batch,HOP_DONE_ACK_SLOT,deadline)) {
-            ack_unregister(job->batch,HOP_DONE_ACK_SLOT); return JOB_COMMIT_UNKNOWN;
-        }
-        int result=ack_wait(job->batch,HOP_DONE_ACK_SLOT,deadline,NULL);
-        if (result==HOP_DONE_ACK_FAILED) return JOB_COMMIT_REJECTED;
-        int expected=job->ok==(int)hop_xfer_job_total(job->is_image,job->n)
-            ? HOP_DONE_ACK_COMPLETE : HOP_DONE_ACK_PARTIAL;
-        if (result==expected) return JOB_DONE;
-        if (result==XFER_PEER_ABORT) return JOB_PEER_ABORT;
-        if (result!=XFER_ACK_TIMEOUT && result!=XFER_SEND_DEAD) return JOB_COMMIT_UNKNOWN;
-        Sleep(100);
+static uint64_t sender_commit_now_ms(void *user) {
+    (void)user;
+    return now_ms();
+}
+static uint64_t sender_commit_now_ns(void *user) {
+    (void)user;
+    return rate_now_ns();
+}
+static int sender_commit_is_stopping(void *user) {
+    (void)user;
+    return sender_context_is_stopping(NULL);
+}
+static int sender_commit_session_matches(void *user, const uint8_t *session) {
+    (void)user;
+    hop_session_id id;
+    memcpy(id.bytes, session, sizeof(id.bytes));
+    return hop_session_matches(&id);
+}
+static int sender_commit_current_connection(void *user, intptr_t *socket_handle,
+                                            uint64_t *epoch, uint8_t *session,
+                                            size_t session_capacity) {
+    (void)user;
+    if (!socket_handle || !epoch || !session ||
+        session_capacity < HOP_SESSION_BYTES) return 0;
+    EnterCriticalSection(&s_x.lock);
+    int ready = s_x.peer_ready && s_x.client != INVALID_SOCKET;
+    if (ready) {
+        *socket_handle = (intptr_t)s_x.client;
+        *epoch = s_x.epoch;
+        memcpy(session, s_x.session.bytes, HOP_SESSION_BYTES);
     }
+    LeaveCriticalSection(&s_x.lock);
+    return ready;
+}
+static int sender_commit_send_done(void *user, intptr_t socket_handle,
+                                   uint64_t epoch, uint32_t batch,
+                                   uint32_t ok_count, uint32_t total_count) {
+    (void)user;
+    s_send_epoch = (unsigned long)epoch;
+    return send_done((SOCKET)socket_handle, batch, ok_count, total_count);
+}
+static int sender_commit_ack_register(void *user, uint32_t batch, uint32_t slot) {
+    (void)user; return ack_register(batch, slot);
+}
+static int sender_commit_ack_mark_sent(void *user, uint32_t batch, uint32_t slot) {
+    (void)user; return ack_mark_sent(batch, slot);
+}
+static int sender_commit_ack_set_deadline(void *user, uint32_t batch,
+                                          uint32_t slot, uint64_t deadline_ns) {
+    (void)user; return ack_set_deadline(batch, slot, deadline_ns);
+}
+static void sender_commit_ack_unregister(void *user, uint32_t batch,
+                                         uint32_t slot) {
+    (void)user; ack_unregister(batch, slot);
+}
+static hop_xfer_sender_commit_ack_result sender_commit_wait_ack(
+    void *user, uint32_t batch, uint32_t slot, uint64_t deadline_ns) {
+    (void)user;
+    int result = ack_wait(batch, slot, deadline_ns, NULL);
+    if (result == HOP_DONE_ACK_COMPLETE) return HOP_XFER_SENDER_COMMIT_ACK_COMPLETE;
+    if (result == HOP_DONE_ACK_PARTIAL) return HOP_XFER_SENDER_COMMIT_ACK_PARTIAL;
+    if (result == HOP_DONE_ACK_FAILED) return HOP_XFER_SENDER_COMMIT_ACK_FAILED;
+    if (result == XFER_PEER_ABORT) return HOP_XFER_SENDER_COMMIT_ACK_PEER_ABORT;
+    if (result == XFER_ACK_TIMEOUT) return HOP_XFER_SENDER_COMMIT_ACK_TIMEOUT;
+    if (result == XFER_SEND_DEAD) return HOP_XFER_SENDER_COMMIT_ACK_SEND_DEAD;
+    return HOP_XFER_SENDER_COMMIT_ACK_OTHER;
+}
+static int sender_commit_wait_ms(void *user, uint32_t duration_ms) {
+    (void)user;
+    return s_sender_context.wait_ns &&
+           s_sender_context.wait_ns(s_sender_context.user,
+                                    (uint64_t)duration_ms * 1000000ull);
+}
+
+static int send_done_result(SOCKET fd, const xfer_job *job) {
+    (void)fd;
+    hop_xfer_sender_commit_ops ops;
+    memset(&ops, 0, sizeof(ops));
+    ops.now_ms = sender_commit_now_ms;
+    ops.now_ns = sender_commit_now_ns;
+    ops.is_stopping = sender_commit_is_stopping;
+    ops.session_matches = sender_commit_session_matches;
+    ops.current_connection = sender_commit_current_connection;
+    ops.send_done = sender_commit_send_done;
+    ops.ack_register = sender_commit_ack_register;
+    ops.ack_mark_sent = sender_commit_ack_mark_sent;
+    ops.ack_set_deadline = sender_commit_ack_set_deadline;
+    ops.ack_unregister = sender_commit_ack_unregister;
+    ops.wait_ack = sender_commit_wait_ack;
+    ops.wait_ms = sender_commit_wait_ms;
+    hop_xfer_sender_commit_result result = hop_xfer_sender_run_commit(
+        &ops, job->session.bytes, job->batch, job->is_image, job->n, job->ok,
+        HOP_DONE_ACK_SLOT, HOP_XFER_ACK_TIMEOUT_MS,
+        HOP_XFER_RECONNECT_BUDGET_MS, 100);
+    if (result == HOP_XFER_SENDER_COMMIT_DONE) return JOB_DONE;
+    if (result == HOP_XFER_SENDER_COMMIT_REJECTED) return JOB_COMMIT_REJECTED;
+    if (result == HOP_XFER_SENDER_COMMIT_PEER_ABORT) return JOB_PEER_ABORT;
     return JOB_COMMIT_UNKNOWN;
 }
 

@@ -10,6 +10,7 @@
 - `xfer_sender_engine.c/.h`：共享 Sender 文件 ACK 窗口/连续 checkpoint、单文件 BEGIN/CHUNK/END 与 CRC/文件 IO 策略、图片分块/CRC 顺序、DONE/DONE_ACK 提交与重连重试策略；平台只提供文件句柄、当前连接快照、帧发送、ACK、时钟和状态回调。
 - `xfer_sender_queue.c/.h` 与 `xfer_sender_scheduler.c/.h`：共享 Sender FIFO 队列、取消/离线期限/重试时机选择，以及等待-重新采样-摘取 Job 的调度流程；平台 adapter 只提供原生锁、可唤醒等待、peer-ready 快照和 Job owner/active 标记回调。
 - `xfer_sender_active_job.c/.h`：共享当前发送 Job、peer ABORT、取消目标和 active marker 清理规则；平台 adapter 在自身 queue/state lock 下调用，不把 Win32/pthread 锁带入 Core。
+- `xfer_sender_context_adapter.c/.h`：共享 Sender context 的 Task/取消/状态/遥测/日志回调转发与参数校验；不包含 socket、平台锁或 UI 实现。
 - `xfer_sender_context.h`：Sender 平台适配器与执行层之间的完整依赖注入契约，覆盖时钟/可中断等待、停止/取消/ABORT、Session 校验、原子帧写入、Task 生命周期和可选遥测；不包含平台类型。Windows/macOS 生产路径已接入这些依赖。
 - `src/win/xfer_sender_protocol.inc`、`src/mac/xfer_sender_protocol.inc`：仍是待拆除的兼容 include 边界；当前协议适配逻辑逐步迁入独立编译单元。
 - `src/win/xfer_writer_io.c/.h`、`src/mac/xfer_writer_io.c/.h`：平台文件句柄和随机偏移写入 adapter；不持有 Task/Reservation，不负责 watchdog/status。

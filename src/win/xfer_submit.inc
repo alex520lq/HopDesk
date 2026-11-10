@@ -22,15 +22,11 @@ static void scanner_watchdog_end(void *context, int ticket) {
 static int submit(xfer_job *j) {
     int ok = 0, duplicate = 0;
     EnterCriticalSection(&s_x.lock);
-    if (s_x.cur_batch == j->batch) duplicate = 1;
-    for (xfer_job *q = s_x.q_head; q && !duplicate; q = q->next)
-        if (q->batch == j->batch) duplicate = 1;
-    if (!duplicate && s_x.client != INVALID_SOCKET && s_x.peer_ready) {
-        if (s_x.q_tail) s_x.q_tail->next = j;
-        else            s_x.q_head = j;
-        s_x.q_tail = j;
-        ok = 1;
-    }
+    if (s_x.cur_batch == j->batch ||
+        hop_xfer_sender_queue_contains_batch(&s_x.queue, &s_sender_queue_ops, j->batch))
+        duplicate = 1;
+    if (!duplicate && s_x.client != INVALID_SOCKET && s_x.peer_ready)
+        ok = hop_xfer_sender_queue_push_back(&s_x.queue, &s_sender_queue_ops, j);
     LeaveCriticalSection(&s_x.lock);
     if (ok) SetEvent(s_x.q_evt);
     return ok;

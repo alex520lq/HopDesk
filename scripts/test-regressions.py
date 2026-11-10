@@ -1149,7 +1149,7 @@ int main(void){
         assert 'wait_for_work_locked' in scheduler_header and 'wait_for_work_locked' in scheduler
         assert 'claim_job_locked' in scheduler and 'end_pass' in scheduler
         assert 'job->owner=XFER_JOB_OWNER_WORKER' in claim_adapter
-        assert 's_x.cur_batch=job->batch' in claim_adapter
+        assert 'hop_xfer_sender_active_job_begin' in claim_adapter
         if platform=='win':
             assert 'EnterCriticalSection(&s_x.lock)' in begin_pass
             assert 'LeaveCriticalSection(&s_x.lock)' in wait_adapter and 'WaitForMultipleObjects' in wait_adapter
@@ -1427,6 +1427,10 @@ int main(void){
     assert 'test_abort_is_scoped_to_active_batch' in active_tests
     for platform in ['win','mac']:
         worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
+        submission=(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
+        send_thread=extract(worker,'send_thread')
+        clear_active=extract(worker,'sender_worker_clear_active_job')
+        dispose_job=extract(worker,'sender_worker_dispose_job')
         transport=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
         receive=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
         protocol=(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')

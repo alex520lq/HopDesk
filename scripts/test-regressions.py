@@ -1137,6 +1137,28 @@ int main(void){
         assert job_free.index('sender_task_dispose') < job_free.index('sender_status_end')
         assert 'Invalid sender worker context' in worker and 'Transfer stopped while queued' in worker
         assert 'shutdown_jobs' in lifecycle and 's_x.shutting_down' in lifecycle
+        # Queue take/wait policy is shared; only native lock/wait/claim effects remain in adapters.
+        scheduler=(ROOT/'src/core/xfer_sender_scheduler.c').read_text(encoding='utf-8')
+        scheduler_header=(ROOT/'src/core/xfer_sender_scheduler.h').read_text(encoding='utf-8')
+        send_thread=extract(worker,'send_thread')
+        begin_pass=extract(worker,'sender_scheduler_begin_pass')
+        wait_adapter=extract(worker,'sender_scheduler_wait_locked')
+        claim_adapter=extract(worker,'sender_scheduler_claim_locked')
+        assert 'hop_xfer_sender_scheduler_wait_next' in send_thread
+        assert 'hop_xfer_sender_queue_take_head' not in send_thread
+        assert 'hop_xfer_sender_queue_take_cancelled' not in send_thread
+        assert 'wait_for_work_locked' in scheduler_header and 'wait_for_work_locked' in scheduler
+        assert 'claim_job_locked' in scheduler and 'end_pass' in scheduler
+        assert 'job->owner=XFER_JOB_OWNER_WORKER' in claim_adapter
+        assert 's_x.cur_batch=job->batch' in claim_adapter
+        if platform=='win':
+            assert 'EnterCriticalSection(&s_x.lock)' in begin_pass
+            assert 'LeaveCriticalSection(&s_x.lock)' in wait_adapter and 'WaitForMultipleObjects' in wait_adapter
+            assert wait_adapter.index('LeaveCriticalSection') < wait_adapter.index('WaitForMultipleObjects') < wait_adapter.index('EnterCriticalSection')
+        else:
+            assert begin_pass.index('pthread_mutex_lock(&s_x.slock)') < begin_pass.index('pthread_mutex_lock(&s_x.qlock)')
+            assert 'pthread_cond_timedwait(&s_x.qcond,&s_x.qlock' in wait_adapter
+        assert 'waited_for_queue' not in worker
         assert 'XFER_JOB_OWNER_QUEUE' in submit and 'XFER_JOB_OWNER_QUEUE' in requeue
         assert 'XFER_JOB_OWNER_WORKER' in requeue and 'sender_worker_is_stopping' in requeue
         assert 'sender_submit_enter' in submit and 'sender_submit_leave' in submit

@@ -1463,12 +1463,12 @@ int main(void){
         assert 'image_work_retry_pending' in clip_shutdown and 'return 0;' in clip_shutdown
         if platform=='win':
             assert 'WaitForSingleObject(s_image_thread' in clip_shutdown
-            assert re.search(r'int\\s+clip_shutdown\\s*\\(HWND hwnd\\);', clip_header)
+            assert re.search(r'int\s+clip_shutdown\s*\(HWND hwnd\);', clip_header)
             assert 'while (!clip_shutdown(g_app.hwnd)) Sleep(100)' in win_main
         else:
             assert 'dispatch_group_wait(s_paste_group' in clip_shutdown
             assert 'pthread_mutex_lock(&s_offer_lock)' in retry_pending
-            assert re.search(r'int\\s+clipboard_shutdown\\s*\\(void\\);', clip_header)
+            assert re.search(r'int\s+clipboard_shutdown\s*\(void\);', clip_header)
             assert 'while (!clipboard_shutdown()) usleep(100000)' in mac_main
 
     # hop_xfer_tracking embeds 8192 file records with 1024-byte paths

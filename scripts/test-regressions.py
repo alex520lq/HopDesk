@@ -1116,10 +1116,10 @@ int main(void){
         job_free=extract(worker,'job_free')
         requeue=extract(worker,'sender_worker_requeue_front')
         submit_enter=extract(submit,'sender_submit_enter')
-        assert 'XFER_JOB_OWNER_SUBMITTER' in job_free and 'XFER_JOB_OWNER_WORKER' in job_free
+        assert 'XFER_JOB_OWNER_WORKER' in job_free and 'XFER_JOB_OWNER_SUBMITTER' in submit
         assert 'XFER_JOB_OWNER_SHUTDOWN' in job_free and 'XFER_JOB_OWNER_RELEASED' in job_free
         assert 'hop_xfer_task_is_terminal' in job_free and 'sender_task_dispose' in job_free
-        assert 'sender_shutdown_jobs' in lifecycle and 's_x.shutting_down' in lifecycle
+        assert 'shutdown_jobs' in lifecycle and 's_x.shutting_down' in lifecycle
         assert 'XFER_JOB_OWNER_QUEUE' in submit and 'XFER_JOB_OWNER_QUEUE' in requeue
         assert 'XFER_JOB_OWNER_WORKER' in requeue and 'sender_worker_is_stopping' in requeue
         assert 'sender_submit_enter' in submit and 'sender_submit_leave' in submit
@@ -1398,6 +1398,15 @@ int main(void){
         worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
         assert 'hop_xfer_sender_worker_finish_job' in worker
         assert 'hop_xfer_sender_get_terminal_decision' not in worker
+
+    # macOS control workers can call xfer_kick during disconnect handling;
+    # they must be joined before xfer_shutdown destroys transfer synchronization.
+    mac_main=(ROOT/'src/mac/main.c').read_text(encoding='utf-8')
+    mac_transport=(ROOT/'src/mac/net_client_transport.inc').read_text(encoding='utf-8')
+    assert mac_main.index('clipboard_shutdown()') < mac_main.index('net_loop_shutdown()') < mac_main.index('xfer_shutdown()')
+    assert 'pthread_detach' not in mac_transport
+    assert 'pthread_join(s_net_thread' in mac_transport
+    assert 'pthread_join(s_control_sender_thread' in mac_transport
 
     # hop_xfer_tracking embeds 8192 file records with 1024-byte paths
     # (~8 MiB). Keep these fixtures off Windows' default 1 MiB thread stack.

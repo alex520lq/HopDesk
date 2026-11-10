@@ -40,6 +40,11 @@ static dispatch_group_t s_paste_group;
 static int s_paste_scan_active;
 static int s_image_work_active;
 static int s_clip_stopping;
+typedef struct image_work_task_owner {
+    struct image_work_task_owner *next;
+    hop_xfer_task task;
+} image_work_task_owner;
+static image_work_task_owner *s_pending_image_tasks;
 static char *s_local_offer_paths[HOP_CLIP_OFFER_MAX_ITEMS];
 static int s_local_offer_count;
 static uint64_t s_local_offer_generation, s_local_offer_sequence;
@@ -66,32 +71,53 @@ static int image_work_can_start(void) {
     return can_start;
 }
 
-static hop_xfer_task *image_work_task_create(void) {
-    hop_xfer_task *task = (hop_xfer_task *)calloc(1, sizeof(*task));
-    if (!task) return NULL;
-    if (!hop_xfer_task_init_classified(task, 0, 0, image_work_transfer_id(), HOP_XFER_DIR_NONE, HOP_TASK_KIND_IMAGE_WORK) ||
-        !hop_xfer_task_reserve_job(task) ||
-        !hop_xfer_task_set_state(task, HOP_XFER_TASK_ACTIVE)) {
-        if (task->initialized) {
-            (void)hop_xfer_task_finish(task, HOP_XFER_TASK_FAILED);
-            hop_xfer_task_dispose(task);
-        }
-        free(task);
-        return NULL;
-    }
-    return task;
-}
-
-static void image_work_task_finish(hop_xfer_task *task, int success) {
-    if (!task) return;
+static int image_work_task_finish_attempt(image_work_task_owner *owner, int success) {
+    if (!owner) return 1;
+    hop_xfer_task *task=&owner->task;
+    if (!task->initialized && !task->id) return 1;
+    if (!task->initialized) return 0; /* keep an uninitialized-but-live handle */
     uint64_t temp_bytes=hop_xfer_task_image_temp_bytes(task);
     if (temp_bytes && !hop_xfer_task_release_image_temp(task, temp_bytes)) {
         hop_log(HOP_LOG_ERROR, "clip: image temporary budget release failed (task=%llu)",
                 (unsigned long long)task->id);
+        return 0;
     }
-    (void)hop_xfer_task_finish(task, success ? HOP_XFER_TASK_COMPLETED : HOP_XFER_TASK_FAILED);
+    if (!hop_xfer_task_is_terminal(task) &&
+        !hop_xfer_task_finish(task, success ? HOP_XFER_TASK_COMPLETED : HOP_XFER_TASK_FAILED))
+        return 0;
     hop_xfer_task_dispose(task);
-    free(task);
+    return !task->initialized && !task->id;
+}
+
+static int image_work_task_finish(image_work_task_owner *owner, int success) {
+    if (!owner) return 1;
+    if (image_work_task_finish_attempt(owner, success)) { free(owner); return 1; }
+    owner->next=s_pending_image_tasks;
+    s_pending_image_tasks=owner;
+    return 0;
+}
+
+static int image_work_retry_pending(void) {
+    while (s_pending_image_tasks) {
+        image_work_task_owner *owner=s_pending_image_tasks;
+        if (!image_work_task_finish_attempt(owner, 0)) return 0;
+        s_pending_image_tasks=owner->next;
+        free(owner);
+    }
+    return 1;
+}
+
+static image_work_task_owner *image_work_task_create(void) {
+    image_work_task_owner *owner=(image_work_task_owner *)calloc(1,sizeof(*owner));
+    if (!owner) return NULL;
+    hop_xfer_task *task=&owner->task;
+    if (!hop_xfer_task_init_classified(task, 0, 0, image_work_transfer_id(), HOP_XFER_DIR_NONE, HOP_TASK_KIND_IMAGE_WORK) ||
+        !hop_xfer_task_reserve_job(task) ||
+        !hop_xfer_task_set_state(task, HOP_XFER_TASK_ACTIVE)) {
+        (void)image_work_task_finish(owner,0);
+        return NULL;
+    }
+    return owner;
 }
 
 /* Check the task's intrinsic requirement, not the currently available
@@ -214,15 +240,16 @@ cleanup:
  * the main queue never materializes a full image NSData snapshot. */
 static BOOL send_image_data_async(NSPasteboardType imageType, NSInteger expected_change, NSInteger previous_change) {
     if (!imageType) return NO;
-    hop_xfer_task *task = image_work_task_create();
-    if (!task) {
+    image_work_task_owner *owner = image_work_task_create();
+    if (!owner) {
         hop_log(HOP_LOG_WARN, "clip: image conversion task budget exhausted; clipboard change will be retried");
         return NO;
     }
+    hop_xfer_task *task=&owner->task;
     if (!hop_xfer_task_reserve_image_temp(task, CLIP_IMG_MAX_BYTES)) {
         hop_log(HOP_LOG_WARN, "clip: image input memory budget exhausted (task=%llu)",
                 (unsigned long long)task->id);
-        image_work_task_finish(task, 0);
+        (void)image_work_task_finish(owner, 0);
         hop_log(HOP_LOG_WARN, "clip: image input budget unavailable; clipboard change will be retried");
         return NO;
     }
@@ -231,7 +258,7 @@ static BOOL send_image_data_async(NSPasteboardType imageType, NSInteger expected
     pthread_mutex_lock(&s_offer_lock);
     if (s_clip_stopping || s_image_work_active || !s_paste_group) {
         pthread_mutex_unlock(&s_offer_lock);
-        image_work_task_finish(task, 0);
+        (void)image_work_task_finish(owner, 0);
         hop_log(HOP_LOG_WARN, "clip: image conversion busy; snapshot deferred");
         return NO;
     }
@@ -284,7 +311,7 @@ static BOOL send_image_data_async(NSPasteboardType imageType, NSInteger expected
         }
         /* Task finish runs after the autorelease pool drains, so NSData/NSImage
          * backing memory stays reserved until those objects have released it. */
-        image_work_task_finish(task, success);
+        (void)image_work_task_finish(owner, success);
         if (budget_deferred) {
             NSPasteboard *pb = [NSPasteboard generalPasteboard];
             pthread_mutex_lock(&s_offer_lock);
@@ -405,10 +432,15 @@ void clipboard_init(void) {
     dispatch_resume(s_timer);
 }
 
-void clipboard_shutdown(void) {
+int clipboard_shutdown(void) {
     pthread_mutex_lock(&s_offer_lock);s_clip_stopping=1;pthread_mutex_unlock(&s_offer_lock);
     if(s_timer){dispatch_source_cancel(s_timer);s_timer=nil;}
     if(s_paste_group)dispatch_group_wait(s_paste_group,DISPATCH_TIME_FOREVER);
+    if (!image_work_retry_pending()) {
+        hop_log(HOP_LOG_ERROR, "clip: image Task/Reservation cleanup remains pending; retain Task owner for retry");
+        return 0;
+    }
+    return 1;
 }
 
 /* ---- 接收（都在主队列执行） ---- */

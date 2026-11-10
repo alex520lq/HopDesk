@@ -101,7 +101,7 @@ static void walk_into(elist *list, const char *full, const char *relative, const
     entry.mtime = (uint64_t)st.st_mtime;
     if (!entry.full || !entry.name || !entry.rel) {
         free(entry.full); free(entry.name); free(entry.rel);
-        list->failed = 1;
+        scan_fail(list, HOP_XFER_SCAN_OUT_OF_MEMORY);
         return;
     }
 
@@ -121,7 +121,7 @@ static void walk_into(elist *list, const char *full, const char *relative, const
 
     entry.size = 0;
     entry.flags = HOP_FILE_FLAG_DIR;
-    if (!elist_push(list, &entry)) {
+    if (!elist_push(list, &entry, services)) {
         free(entry.full); free(entry.name); free(entry.rel);
         return;
     }

@@ -1,0 +1,66 @@
+#ifndef HOP_XFER_SENDER_CONTEXT_H
+#define HOP_XFER_SENDER_CONTEXT_H
+
+/*
+ * Platform-neutral dependencies for Sender execution.
+ *
+ * The context is borrowed for one sender operation. The platform adapter owns
+ * its storage and must keep it alive until the operation and all ACK waits
+ * have returned. No callback may retain the context or its user pointer.
+ *
+ * This header deliberately contains no HANDLE, SOCKET, pthread, HWND or
+ * Objective-C types so Core and both platform adapters share one contract.
+ */
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct hop_xfer_sender_context {
+    void *user;
+
+    /* Monotonic time and interruptible pacing/wait. */
+    uint64_t (*now_ns)(void *user);
+    /* Returns 1 when the requested wait elapsed, 0 when interrupted/stopping. */
+    int (*wait_ns)(void *user, uint64_t duration_ns);
+    int (*is_stopping)(void *user);
+
+    /* Socket identity/session validation and serialized complete-frame write.
+     * socket_handle is an intptr_t-sized platform socket value.
+     * write_frame must preserve whole-frame serialization with other writers.
+     */
+    int (*session_current)(void *user, intptr_t socket_handle, uint64_t epoch);
+    int (*write_frame)(void *user, intptr_t socket_handle, uint64_t epoch,
+                       const uint8_t *frame, size_t frame_size);
+
+    /* Batch/task cancellation and receiver-originated ABORT. */
+    int (*is_cancelled)(void *user, uint32_t batch, uint64_t task_id);
+    int (*peer_aborted)(void *user, uint32_t batch);
+
+    /* Application side effects are callbacks; Sender owns their ordering. */
+    void (*status_stage_time)(void *user, uint32_t batch, int stage,
+                              uint64_t elapsed_ns);
+    void (*log_message)(void *user, int level, const char *message);
+
+    /* Task state remains owned by the existing Task service. */
+    int (*task_set_state)(void *user, uint64_t task_id, int state);
+    int (*task_begin_completion)(void *user, uint64_t task_id);
+    void (*task_finish)(void *user, uint64_t task_id, int outcome);
+} hop_xfer_sender_context;
+
+/* Validate mandatory callbacks before starting a job; optional observability
+ * callbacks may be NULL. */
+static inline int hop_xfer_sender_context_valid(const hop_xfer_sender_context *ctx) {
+    return ctx && ctx->now_ns && ctx->wait_ns && ctx->is_stopping &&
+           ctx->session_current && ctx->write_frame && ctx->is_cancelled &&
+           ctx->peer_aborted && ctx->task_set_state &&
+           ctx->task_begin_completion && ctx->task_finish;
+}
+
+#ifdef __cplusplus
+}
+#endif
+#endif

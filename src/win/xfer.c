@@ -33,6 +33,7 @@
 #include "../core/xfer_task.h"
 #include "../core/xfer_task_history.h"
 #include "../core/xfer_rate.h"
+#include "../core/xfer_sender_context.h"
 #include "../core/xfer_ack_window.h"
 #include "../core/xfer_buffer_pool.h"
 
@@ -451,6 +452,7 @@ int xfer_init(HWND hwnd, const hop_config *cfg) {
     history_load();
     task_history_store_open();
     memset(&s_x, 0, sizeof(s_x));
+    sender_context_init();
     s_x.hwnd = hwnd;
     s_x.cfg = *cfg;
     s_x.listen_s = INVALID_SOCKET;

@@ -139,6 +139,7 @@ typedef struct {
     pthread_mutex_t *queue_lock;
     pthread_mutex_t *tx_lock;
     int *sock;
+    int *peer_ready;
     hop_session_id *session;
     unsigned long *epoch;
     _Atomic int *stop;

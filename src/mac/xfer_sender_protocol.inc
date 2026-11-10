@@ -149,12 +149,22 @@ static void sender_context_log_message(void *user, int level,
     hop_log((hop_log_level)level, "%s", message ? message : "");
 }
 
+static void sender_context_request_reconnect(void *user) {
+    sender_platform_context *ctx = (sender_platform_context *)user;
+    if (!ctx || !ctx->session_lock || !ctx->sock || !ctx->peer_ready) return;
+    pthread_mutex_lock(ctx->session_lock);
+    *ctx->peer_ready = 0;
+    if (*ctx->sock >= 0) shutdown(*ctx->sock, SHUT_RDWR);
+    pthread_mutex_unlock(ctx->session_lock);
+}
+
 static void sender_context_init(void) {
     memset(&s_sender_platform, 0, sizeof(s_sender_platform));
     s_sender_platform.session_lock = &s_x.slock;
     s_sender_platform.queue_lock = &s_x.qlock;
     s_sender_platform.tx_lock = &s_txlock;
     s_sender_platform.sock = &s_x.sock;
+    s_sender_platform.peer_ready = &s_x.peer_ready;
     s_sender_platform.session = &s_x.session;
     s_sender_platform.epoch = &s_x.epoch;
     s_sender_platform.stop = &s_x.stop;
@@ -168,6 +178,7 @@ static void sender_context_init(void) {
     s_sender_context.is_cancelled = sender_context_is_cancelled;
     s_sender_context.is_batch_cancelled = sender_context_is_batch_cancelled;
     s_sender_context.peer_aborted = sender_context_peer_aborted;
+    s_sender_context.request_reconnect = sender_context_request_reconnect;
     s_sender_context.session_current = sender_context_session_current;
     s_sender_context.write_frame = sender_context_write_frame;
     s_sender_context.task_bind_session = sender_context_task_bind_session;
@@ -889,8 +900,11 @@ static int sender_engine_wait_ms(void *user, unsigned duration_ms) {
 }
 
 static void sender_engine_request_reconnect(void *user) {
-    (void)user;
-    xfer_kick();
+    sender_file_engine_call *call = (sender_file_engine_call *)user;
+    const hop_xfer_sender_context *context = call && call->job
+        ? &call->job->sender_context : NULL;
+    if (context && context->request_reconnect)
+        context->request_reconnect(context->user);
 }
 
 static void sender_engine_log(void *user, int level, const char *message) {

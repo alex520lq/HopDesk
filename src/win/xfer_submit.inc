@@ -226,10 +226,7 @@ static int xfer_submit_image_impl(const uint8_t *bgra, uint8_t *owned, int w, in
 }
 
 void xfer_kick(void) {
-    EnterCriticalSection(&s_x.lock);
-    s_x.peer_ready = 0;
-    if (s_x.client != INVALID_SOCKET) shutdown(s_x.client, SD_BOTH);
-    LeaveCriticalSection(&s_x.lock);
+    sender_context_request_reconnect(&s_sender_platform);
 }
 int xfer_listening(void) { return InterlockedCompareExchange(&s_x.listening, 0, 0) != 0; }
 

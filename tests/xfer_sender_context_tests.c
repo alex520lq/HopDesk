@@ -13,6 +13,7 @@ typedef struct {
     int batch_cancelled;
     int aborted;
     int writes;
+    int reconnect_calls;
     int status_start_calls;
     int status_end_calls;
     int status_file_calls;
@@ -63,6 +64,9 @@ static int fake_peer_aborted(void *user, uint32_t batch) {
     fake_sender *f = (fake_sender *)user;
     f->last_batch = batch;
     return f->aborted;
+}
+static void fake_request_reconnect(void *user) {
+    ((fake_sender *)user)->reconnect_calls++;
 }
 static void fake_status_start(void *user, const void *job) {
     fake_sender *f = (fake_sender *)user;
@@ -133,6 +137,7 @@ static hop_xfer_sender_context make_context(fake_sender *f) {
     ctx.is_cancelled = fake_cancelled;
     ctx.is_batch_cancelled = fake_batch_cancelled;
     ctx.peer_aborted = fake_peer_aborted;
+    ctx.request_reconnect = fake_request_reconnect;
     ctx.status_start_job = fake_status_start;
     ctx.status_end = fake_status_end;
     ctx.status_file_phase = fake_status_file_phase;
@@ -195,6 +200,8 @@ int main(void) {
     assert(ctx.is_batch_cancelled(ctx.user, 42) == 1);
     state.aborted = 1;
     assert(ctx.peer_aborted(ctx.user, 42) == 1);
+    ctx.request_reconnect(ctx.user);
+    assert(state.reconnect_calls == 1);
     hop_xfer_task task = {99, 1};
     const uint8_t session[HOP_TASK_SESSION_BYTES] = {1};
     int opaque_job = 123;
@@ -234,6 +241,7 @@ int main(void) {
     REQUIRE_INVALID(is_cancelled);
     REQUIRE_INVALID(is_batch_cancelled);
     REQUIRE_INVALID(peer_aborted);
+    REQUIRE_INVALID(request_reconnect);
     REQUIRE_INVALID(task_bind_session);
     REQUIRE_INVALID(task_set_state);
     REQUIRE_INVALID(task_begin_completion);

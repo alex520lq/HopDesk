@@ -48,6 +48,8 @@ typedef struct hop_xfer_sender_context {
     /* Called outside the native queue lock; the adapter may acquire it. */
     int (*is_batch_cancelled)(void *user, uint32_t batch);
     int (*peer_aborted)(void *user, uint32_t batch);
+    /* Forces the current data channel down so the connection adapter reconnects. */
+    void (*request_reconnect)(void *user);
 
     /* Application side effects are callbacks; Sender owns their ordering.
      * job is a borrowed opaque platform job and must not be retained. */
@@ -84,7 +86,8 @@ static inline int hop_xfer_sender_context_clock_valid(const hop_xfer_sender_cont
 static inline int hop_xfer_sender_context_valid(const hop_xfer_sender_context *ctx) {
     return ctx && ctx->now_ns && ctx->wait_ns && ctx->is_stopping &&
            ctx->session_current && ctx->write_frame && ctx->is_cancelled &&
-           ctx->is_batch_cancelled && ctx->peer_aborted && ctx->task_bind_session &&
+           ctx->is_batch_cancelled && ctx->peer_aborted && ctx->request_reconnect &&
+           ctx->task_bind_session &&
            ctx->task_set_state && ctx->task_begin_completion &&
            ctx->task_finish && ctx->task_dispose;
 }

@@ -393,6 +393,7 @@ typedef struct {
     CRITICAL_SECTION *state_lock;
     CRITICAL_SECTION *tx_lock;
     SOCKET *client;
+    int *peer_ready;
     hop_session_id *session;
     unsigned long *epoch;
     HANDLE *stop;

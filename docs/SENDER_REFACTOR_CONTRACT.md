@@ -347,3 +347,14 @@ No physical two-device or weak-network acceptance is claimed by the unit/CI test
 - Regression checks require status publication to occur after `sender_task_dispose` and prohibit direct publication from the worker status callback.
 - **Validation: GitHub Actions Run #1510 (ID `42848693214`, tested commit `a043fe8dd1c56f8141fcb61042aa5d7246ee2991`) passed on Windows MSVC and macOS Apple Clang.**
 - Next: extract the common Sender worker scheduling loop (wait, queue selection, cancellation/deadline expiry and Job ownership claim) behind an explicit Core scheduler contract. Keep native event/condition waits and platform locks as adapters; preserve the 200 ms reconnect/cancel polling and the Windows/macOS lock-order constraints.
+
+
+## 28. Shared Sender worker scheduler (2026-11-10)
+
+- Added `src/core/xfer_sender_scheduler.[ch]` to own the common wait/select loop: cancellation scan, FIFO-head deadline/retry eligibility, offline expiry, stop checks, and the single transition from queue ownership to worker ownership.
+- Windows and macOS now provide only native synchronization adapters. Windows releases the queue critical section around its persistent stop/queue event wait and reacquires it before the next scheduler pass. macOS uses `pthread_cond_timedwait` with the queue mutex held, preserving atomic unlock/wait/relock and avoiding lost queue wakeups.
+- macOS preserves the lock order by snapshotting peer readiness under the session lock before acquiring the queue lock. Windows captures peer socket/session/epoch while holding its existing queue/state critical section. Both retain the 200 ms reconnect/cancel poll.
+- Added production-linked scheduler tests for immediate ready selection, cancelled middle-node removal while offline, peer-state refresh after wait, offline deadline expiry, FIFO head priority, stop while waiting, lock release on wait failure, and invalid adapters. Wired tests into Windows and macOS Core suites; app build scripts pick up the new Core file automatically.
+- Source-contract regressions ensure platform worker loops no longer perform queue take policy themselves and that native wait callbacks preserve lock semantics.
+- **Validation: pending exact-head Windows MSVC and macOS Apple Clang Actions run.**
+- Next: extract active-job/peer-ABORT arbitration and the platform worker runtime context into an explicit adapter, then remove remaining duplicated sender worker orchestration from the platform include fragments. Keep all native socket/session and thread handles in platform-owned code.

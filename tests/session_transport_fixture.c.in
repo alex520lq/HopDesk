@@ -9,6 +9,7 @@
 #include "xfer_tracking.h"
 #include "xfer_task.h"
 #include "xfer_sender_context.h"
+#include "xfer_sender_context_adapter.h"
 #include "xfer_rx_receipt.h"
 #include "xfer_rx_lifecycle.h"
 #include "xfer_rx_services.h"

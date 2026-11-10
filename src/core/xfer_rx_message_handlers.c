@@ -27,15 +27,18 @@ static void rx_abort_cancel_clipboard(void *context, uint32_t batch) {
     if (rx && rx->services.cancel_clipboard)
         rx->services.cancel_clipboard(rx->services.context, batch);
 }
-static void rx_abort_close_file(void *context) {
-    xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (rx && rx->services.close_file)
+static void rx_release_terminal_resources(xfer_rx_context *rx,
+                                            int close_writer,
+                                            int discard_staging) {
+    if (!rx) return;
+    if (close_writer && rx->services.close_file)
         rx->services.close_file(rx->services.context);
-}
-static void rx_abort_discard_staging(void *context) {
-    xfer_rx_context *rx = (xfer_rx_context *)context;
-    if (rx && rx->services.discard_staging_directory)
+    if (discard_staging && rx->services.discard_staging_directory)
         rx->services.discard_staging_directory(rx->services.context);
+    hop_xfer_rx_reset_batch_state(rx);
+}
+static void rx_abort_release_resources(void *context, int discard_staging) {
+    rx_release_terminal_resources((xfer_rx_context *)context, 1, discard_staging);
 }
 static void rx_abort_mark_dead(void *context, uint32_t batch, uint8_t reason) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
@@ -65,9 +68,8 @@ void hop_xfer_rx_terminate_batch(void *context, uint32_t batch,
     hop_xfer_rx_batch_abort_action action = hop_xfer_rx_batch_abort_decide(
         batch, rx->batch_state.active, rx->batch_state.batch, notify_peer);
     const hop_xfer_rx_abort_ops ops = {
-        rx, rx_abort_send, rx_abort_cancel_clipboard, rx_abort_close_file,
-        rx_abort_discard_staging, rx_abort_mark_dead, rx_abort_finish_task,
-        rx_abort_clear_state, rx_abort_status_end
+        rx, rx_abort_send, rx_abort_cancel_clipboard, rx_abort_release_resources,
+        rx_abort_mark_dead, rx_abort_finish_task, rx_abort_status_end
     };
     (void)hop_xfer_rx_abort_execute(action, batch, reason, notify_peer,
         (batch & HOP_XFER_PASTE_BATCH_FLAG) != 0, &ops);
@@ -122,12 +124,8 @@ void hop_xfer_rx_bind_session(void *context, const hop_session_id *session) {
     }
 
     if (!terminated) {
-        if (rx->services.close_file)
-            rx->services.close_file(rx->services.context);
         if (was_active && rx->batch_state.active) {
             uint32_t previous_batch = rx->batch_state.batch;
-            if (rx->services.discard_staging_directory)
-                rx->services.discard_staging_directory(rx->services.context);
             if ((previous_batch & HOP_XFER_PASTE_BATCH_FLAG) &&
                 rx->services.cancel_clipboard)
                 rx->services.cancel_clipboard(rx->services.context, previous_batch);
@@ -135,7 +133,7 @@ void hop_xfer_rx_bind_session(void *context, const hop_session_id *session) {
                 rx->services.status_end(rx->services.context, previous_batch,
                     HOP_XFER_FAILED, "Receive interrupted");
         }
-        hop_xfer_rx_reset_batch_state(rx);
+        rx_release_terminal_resources(rx, 1, was_active);
     }
 
     if (rx->services.status_reset)
@@ -286,10 +284,9 @@ int hop_xfer_rx_finish_batch(void *context, uint32_t batch, uint32_t ok, uint32_
     int result = complete ? HOP_DONE_ACK_COMPLETE :
         (image_failed ? HOP_DONE_ACK_FAILED : HOP_DONE_ACK_PARTIAL);
 
-    /* The writer was drained/closed above. Release Receiver-owned state before
-     * publishing terminal history, so observers never see a terminal task with
-     * live paths, image memory or batch identity. */
-    hop_xfer_rx_reset_batch_state(rx);
+    /* The writer was drained/closed above. Use the same terminal resource
+     * release path as ABORT, without discarding successfully received files. */
+    rx_release_terminal_resources(rx, 0, 0);
     if (rx->services.status_end)
         rx->services.status_end(rx->services.context, batch,
             complete ? HOP_XFER_COMPLETED :

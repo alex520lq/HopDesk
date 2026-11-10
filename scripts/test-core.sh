@@ -71,6 +71,11 @@ clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-
 "$BUILD/hopdesk-ack-coordinator-tests"
 
 clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I "$ROOT/src/core" -I "$ROOT/src/mac" -o "$BUILD/hopdesk-scanner-tests" \
+  "$ROOT/tests/xfer_scanner_tests.c" "$ROOT/src/mac/xfer_scanner.c"
+"$BUILD/hopdesk-scanner-tests"
+
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-rx-receipt-tests" \
   "$ROOT/tests/xfer_rx_receipt_tests.c" "$ROOT/src/core/xfer_rx_receipt.c" \
   "$ROOT/src/core/protocol.c" "$ROOT/src/core/crc32.c"

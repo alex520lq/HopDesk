@@ -63,6 +63,7 @@ typedef struct xfer_job {
     uint32_t    batch;
     int         is_image;
     hop_xfer_task task;
+    hop_xfer_sender_context sender_context;
     int         n;              /* JOB_FILES 的条目数 */
     xfer_entry *e;
     uint8_t    *pixels;         /* JOB_IMAGE */

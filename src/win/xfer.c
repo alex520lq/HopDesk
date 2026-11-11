@@ -310,13 +310,17 @@ hop_win_xfer_state s_x;
 
 void xfer_get_status_pair(hop_xfer_status_pair *out) {
     if (!out) return;
+    AcquireSRWLockShared(&s_x_lifecycle_lock);
     uint32_t queued=0;
-    EnterCriticalSection(&s_x.lock);
-    queued = hop_xfer_sender_queue_count(&s_x.queue);
-    LeaveCriticalSection(&s_x.lock);
+    if (s_x.sync_initialized) {
+        EnterCriticalSection(&s_x.lock);
+        queued = hop_xfer_sender_queue_count(&s_x.queue);
+        LeaveCriticalSection(&s_x.lock);
+    }
     AcquireSRWLockShared(&s_status_lock);
     hop_xfer_tracking_snapshot_pair(&s_send_status,&s_receive_status,queued,out);
     ReleaseSRWLockShared(&s_status_lock);
+    ReleaseSRWLockShared(&s_x_lifecycle_lock);
 }
 
 void xfer_get_status(hop_xfer_status *out) {

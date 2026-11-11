@@ -1136,7 +1136,41 @@ int main(void){
         assert 'pending_finish_valid=0' not in status_end_callback
         assert job_free.index('hop_xfer_sender_context_task_dispose') < job_free.index('hop_xfer_sender_context_status_end')
         assert 'Invalid sender worker context' in worker and 'Transfer stopped while queued' in worker
-        assert 'shutdown_jobs' in lifecycle and 's_x.shutting_down' in lifecycle
+        internal=(ROOT/f'src/{platform}/xfer_sender_internal.h').read_text(encoding='utf-8')
+        assert 'shutdown_jobs' in internal and 's_x.shutting_down' in shutdown
+        # The only remaining implementation include in xfer.c is Receiver; Sender
+        # protocol/worker and submit are independently compiled translation units.
+        assert '#include "xfer_receive.inc"' in lifecycle
+        assert 'xfer_sender_protocol.inc' not in lifecycle
+        assert 'xfer_sender_worker.inc' not in lifecycle
+        assert 'xfer_submit.inc' not in lifecycle
+        assert not any(name in worker for name in ('xfer_sender_protocol.inc','xfer_sender_worker.inc'))
+        assert 'xfer_submit.inc' not in submit
+
+        # Image-temp Reservation must never outlive the stack frame that owns
+        # its Task. A Job is allocated first and handles every post-init failure.
+        image_submit=extract(submit,'xfer_submit_image_impl')
+        assert image_submit.index('calloc(1,sizeof(*job))') < image_submit.index('hop_xfer_task_init_classified(&job->task')
+        assert 'job->sender_context=s_sender_context' in image_submit
+        assert 'job->image_payload_released=1' in image_submit
+        assert 'hop_xfer_task_transfer_image_temp(source_task,&job->task,total64)' in image_submit
+        assert 'job_free(job,XFER_JOB_OWNER_SUBMITTER)' in image_submit
+        assert 'hop_xfer_task task;' not in image_submit
+        assert 'hop_xfer_task_finish(&task' not in image_submit
+        assert 'hop_xfer_task_dispose(&task' not in image_submit
+        assert 'hop_xfer_task_finish(&job->task' not in image_submit
+        assert 'hop_xfer_task_dispose(&job->task' not in image_submit
+
+        # Public status reads share the lifecycle admission lock with Shutdown
+        # before touching the platform queue mutex/critical section.
+        status_pair=extract(lifecycle,'xfer_get_status_pair')
+        lifecycle_read='AcquireSRWLockShared(&s_x_lifecycle_lock)' if platform=='win' else 'pthread_rwlock_rdlock(&s_x_lifecycle_lock)'
+        lifecycle_unlock='ReleaseSRWLockShared(&s_x_lifecycle_lock)' if platform=='win' else 'pthread_rwlock_unlock(&s_x_lifecycle_lock)'
+        queue_lock='EnterCriticalSection(&s_x.lock)' if platform=='win' else 'pthread_mutex_lock(&s_x.qlock)'
+        assert lifecycle_read in status_pair and lifecycle_unlock in status_pair
+        assert status_pair.index(lifecycle_read) < status_pair.index('if (s_x.sync_initialized)') < status_pair.index(queue_lock)
+        assert status_pair.index('hop_xfer_tracking_snapshot_pair') < status_pair.index(lifecycle_unlock)
+
         # Queue take/wait policy is shared; only native lock/wait/claim effects remain in adapters.
         scheduler=(ROOT/'src/core/xfer_sender_scheduler.c').read_text(encoding='utf-8')
         scheduler_header=(ROOT/'src/core/xfer_sender_scheduler.h').read_text(encoding='utf-8')

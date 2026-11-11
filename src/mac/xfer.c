@@ -336,13 +336,17 @@ int xfer_get_history(hop_xfer_history_entry *out,int capacity) {
 }
 void xfer_get_status_pair(hop_xfer_status_pair *out) {
     if (!out) return;
+    pthread_rwlock_rdlock(&s_x_lifecycle_lock);
     uint32_t queued=0;
-    pthread_mutex_lock(&s_x.qlock);
-    queued = hop_xfer_sender_queue_count(&s_x.queue);
-    pthread_mutex_unlock(&s_x.qlock);
+    if (s_x.sync_initialized) {
+        pthread_mutex_lock(&s_x.qlock);
+        queued = hop_xfer_sender_queue_count(&s_x.queue);
+        pthread_mutex_unlock(&s_x.qlock);
+    }
     pthread_mutex_lock(&s_status_lock);
     hop_xfer_tracking_snapshot_pair(&s_send_status,&s_receive_status,queued,out);
     pthread_mutex_unlock(&s_status_lock);
+    pthread_rwlock_unlock(&s_x_lifecycle_lock);
 }
 
 void xfer_get_status(hop_xfer_status *out) {

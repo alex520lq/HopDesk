@@ -178,73 +178,80 @@ static int xfer_submit_image_impl(const uint8_t *bgra, uint8_t *owned, int w, in
         release_image_source_reservation(source_task, source_reserved_bytes);
         return 0;
     }
-    if(total64>(uint64_t)SIZE_MAX||!xfer_platform_connected_locked()){
-        if(owned)free(owned);
+    if (total64>(uint64_t)SIZE_MAX || !xfer_platform_connected_locked()) {
+        if (owned) free(owned);
         release_image_source_reservation(source_task, source_reserved_bytes);
         return 0;
     }
 
     uint32_t batch;
     do { batch = InterlockedIncrement((LONG *)&s_x.batch_seq); } while (!batch);
-    hop_xfer_task task;
-    memset(&task,0,sizeof(task));
-    if(!hop_xfer_task_init_classified(&task,0,0,batch,HOP_XFER_DIR_SEND,HOP_TASK_KIND_IMAGE)){
-        if(owned)free(owned);
+
+    /* Allocate the durable Job owner before acquiring any Task reservation.
+     * From Task initialization onward every failure is unwound through job_free,
+     * which retains the Job in Shutdown if a Reservation cannot be returned. */
+    xfer_job *job=(xfer_job *)calloc(1,sizeof(*job));
+    if (!job) {
+        if (owned) free(owned);
         release_image_source_reservation(source_task, source_reserved_bytes);
         return 0;
     }
-    int job_reserved = hop_xfer_task_reserve_job(&task);
-    int image_reserved = job_reserved &&
-        (source_task ?
-         hop_xfer_task_transfer_image_temp(source_task, &task, total64) :
-         hop_xfer_task_reserve_image(&task, total64));
-    if (!image_reserved) {
-        uint64_t task_id=task.id;
-        hop_xfer_task_finish(&task,HOP_XFER_TASK_FAILED);
-        hop_xfer_task_dispose(&task);
-        if(owned)free(owned);
-        /* A successful transfer moves the source reservation; a failed one
-         * leaves it untouched, so this is safe only on the failure path. */
+    job->owner=XFER_JOB_OWNER_SUBMITTER;
+    job->batch=batch;
+    job->is_image=1;
+    job->image_payload_released=1; /* no pixel allocation is owned yet */
+    job->w=w; job->h=h; job->stride=stride;
+    job->sender_context=s_sender_context;
+
+    if (!hop_xfer_task_init_classified(&job->task,0,0,batch,
+                                       HOP_XFER_DIR_SEND,HOP_TASK_KIND_IMAGE)) {
+        free(job);
+        if (owned) free(owned);
         release_image_source_reservation(source_task, source_reserved_bytes);
+        return 0;
+    }
+
+    int job_reserved=hop_xfer_task_reserve_job(&job->task);
+    int image_reserved=job_reserved &&
+        (source_task ?
+         hop_xfer_task_transfer_image_temp(source_task,&job->task,total64) :
+         hop_xfer_task_reserve_image(&job->task,total64));
+    if (!image_reserved) {
+        uint64_t task_id=job->task.id;
+        if (owned) free(owned);
+        /* Failed transfer leaves the source Task as the Reservation owner. */
+        release_image_source_reservation(source_task,source_reserved_bytes);
+        (void)job_free(job,XFER_JOB_OWNER_SUBMITTER);
         hop_log(HOP_LOG_WARN,"xfer: global image memory/queue budget exhausted (task=%llu)",
                 (unsigned long long)task_id);
         return 0;
     }
 
-    xfer_job *job=(xfer_job*)calloc(1,sizeof(*job));
-    if(!job){
-        if(owned)free(owned);
-        hop_xfer_task_finish(&task,HOP_XFER_TASK_FAILED);
-        hop_xfer_task_dispose(&task);
-        return 0;
+    if (owned) {
+        /* Successful transfer moved the Reservation with this allocation. */
+        job->pixels=owned;
+        job->image_payload_released=0;
+    } else {
+        job->pixels=(uint8_t *)malloc((size_t)total64);
+        if (!job->pixels) {
+            /* job_free returns the now-owned image-temp Reservation. */
+            (void)job_free(job,XFER_JOB_OWNER_SUBMITTER);
+            return 0;
+        }
+        memcpy(job->pixels,bgra,(size_t)total64);
+        job->image_payload_released=0;
     }
-    size_t total=(size_t)total64;
-    uint8_t *copy=owned ? owned : (uint8_t*)malloc(total);
-    if(!copy){
-        free(job);
-        hop_xfer_task_finish(&task,HOP_XFER_TASK_FAILED);
-        hop_xfer_task_dispose(&task);
-        return 0;
-    }
-    if(!owned)memcpy(copy,bgra,total);
 
-    if(!hop_xfer_task_set_state(&task,HOP_XFER_TASK_QUEUED)||
-       !hop_xfer_task_move(&job->task,&task)){
-        free(copy);free(job);
-        hop_xfer_task_finish(&task,HOP_XFER_TASK_FAILED);
-        hop_xfer_task_dispose(&task);
+    if (!hop_xfer_task_set_state(&job->task,HOP_XFER_TASK_QUEUED)) {
+        (void)job_free(job,XFER_JOB_OWNER_SUBMITTER);
         return 0;
     }
-    job->batch=batch;
-    job->is_image=1;
-    job->pixels=copy;
-    job->w=w;job->h=h;job->stride=stride;
 
     hop_log(HOP_LOG_INFO, "xfer: queued image %dx%d batch=%u task=%llu (%.1f MB)",
-            w, h, job->batch, (unsigned long long)job->task.id, (double)total / 1048576.0);
+            w,h,job->batch,(unsigned long long)job->task.id,
+            (double)total64/1048576.0);
 
     if (!submit(job)) {
-        hop_xfer_task_finish(&job->task,HOP_XFER_TASK_FAILED);
         (void)job_free(job,XFER_JOB_OWNER_SUBMITTER);
         return 0;
     }

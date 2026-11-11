@@ -247,21 +247,7 @@ void sender_context_init(void) {
     s_sender_context.log_message = sender_context_log_message;
 }
 
-static int rate_wait_for_chunk(const hop_xfer_sender_context *context,
-                                uint32_t bytes) {
-    if (!hop_xfer_sender_context_clock_valid(context)) return 0;
-    for (;;) {
-        uint64_t delay = hop_xfer_rate_wait_ns(
-            &s_x.rate, bytes, context->now_ns(context->user));
-        if (delay == UINT64_MAX) {
-            hop_xfer_sender_context_logf(context, HOP_LOG_ERROR, "xfer: chunk exceeds token-bucket burst");
-            return 0;
-        }
-        if (!delay) return !context->is_stopping(context->user);
-        if (context->is_stopping(context->user)) return 0;
-        if (!context->wait_ns(context->user, delay)) return 0;
-    }
-}
+
 
 static void rate_feedback(uint64_t ack_rtt_us) {
     uint64_t before = s_x.rate.current_rate_bytes_per_sec;
@@ -273,58 +259,18 @@ static void rate_feedback(uint64_t ack_rtt_us) {
     }
 }
 
-static int send_chunk(const hop_xfer_sender_context *context, SOCKET c,
-                      uint8_t *tx, uint32_t batch, uint32_t id, uint64_t off,
-                      const uint8_t *data, uint32_t len, uint32_t crc,
-                      uint64_t read_ns, uint64_t crc_ns) {
+static int send_chunk(const hop_xfer_sender_context *context,
+                       SOCKET c,
+                       uint8_t *tx, uint32_t batch, uint32_t id, uint64_t off,
+                       const uint8_t *data, uint32_t len, uint32_t crc,
+                       uint64_t read_ns, uint64_t crc_ns) {
     if (!context) context = &s_sender_context;
-    if (!rate_wait_for_chunk(context, len)) {
-        hop_xfer_sender_context_status_stage_time(context, batch, HOP_XFER_TIME_READ, read_ns);
-        hop_xfer_sender_context_status_stage_time(context, batch, HOP_XFER_TIME_CRC, crc_ns);
-        return 0;
-    }
-    int send_guard = hop_watchdog_begin("data frame send", 10000);
-    hop_session_id session;
-    uint64_t epoch = 0;
-    int current = sender_context_snapshot_session(context->user, c, &session, &epoch);
-    hop_encode_header(tx, HOP_MSG_FILE_CHUNK, 20 + HOP_DATA_PREFIX + len);
-    hop_put_be32(tx + HOP_DATA_PREFIX + 5, id);
-    hop_put_be64(tx + HOP_DATA_PREFIX + 9, off);
-    hop_put_be32(tx + HOP_DATA_PREFIX + 17, len);
-    hop_put_be32(tx + HOP_DATA_PREFIX + 21, crc);
-    if (current) hop_data_prefix(tx + HOP_HEADER_SIZE, &session, batch);
-    hop_xfer_sender_frame_part parts[2];
-    size_t part_count = 1;
-    parts[0] = (hop_xfer_sender_frame_part){tx, CHUNK_HDR};
-    if (data == tx + CHUNK_HDR) {
-        parts[0].size = CHUNK_HDR + len;
-    } else {
-        parts[1] = (hop_xfer_sender_frame_part){data, len};
-        part_count = 2;
-    }
-    uint64_t send_started = context->now_ns
-        ? context->now_ns(context->user) : rate_now_ns();
-    int ok = current && context->write_frame &&
-             context->write_frame(context->user, (intptr_t)c, epoch,
-                                  parts, part_count);
-    uint64_t send_finished = context->now_ns
-        ? context->now_ns(context->user) : rate_now_ns();
-    uint64_t send_us = send_finished >= send_started
-        ? (send_finished - send_started) / 1000ull : 0;
-    hop_xfer_rate_note_send_time(&s_x.rate, len, send_us);
-    int feedback_due = (s_x.rate.send_samples & 7u) == 0;
-    if (feedback_due) rate_feedback(0);
-    uint64_t send_ns = send_us * 1000ull;
-    if (ok) {
-        hop_xfer_sender_context_status_chunk_timed(context, batch, id, off, len,
-                                  read_ns, crc_ns, send_ns, 0);
-    } else {
-        hop_xfer_sender_context_status_stage_time(context, batch, HOP_XFER_TIME_READ, read_ns);
-        hop_xfer_sender_context_status_stage_time(context, batch, HOP_XFER_TIME_CRC, crc_ns);
-        hop_xfer_sender_context_status_stage_time(context, batch, HOP_XFER_TIME_SEND, send_ns);
-    }
-    hop_watchdog_end(send_guard);
-    return ok;
+    hop_xfer_sender_chunk_ops ops = {
+        context, &s_x.rate, (intptr_t)c, tx,
+        (uint32_t)(CHUNK_HDR + s_x.chunk), rate_feedback
+    };
+    return hop_xfer_sender_send_chunk(&ops, batch, id, off, data, len,
+                                      crc, read_ns, crc_ns);
 }
 
 /* ---------------- 有界单文件 ACK 窗口 ----------------
@@ -337,12 +283,17 @@ static int send_chunk(const hop_xfer_sender_context *context, SOCKET c,
  * stream；ACK 由接收端 writer 异步返回，按 batch/id 独立归位。 */
 
 /* 返回值：>=0 是接收端 ACK 的 status；负数是本地/链路层面的失败 */
-#define XFER_ACK_TIMEOUT  (-1)
-#define XFER_SEND_DEAD    (-2)
-#define XFER_LOCAL_IO     (-3)
-#define XFER_CANCELLED    (-4)
-#define XFER_PEER_ABORT   (-5)
+#define XFER_ACK_TIMEOUT  HOP_XFER_SENDER_ACK_WAIT_TIMEOUT
+#define XFER_SEND_DEAD    HOP_XFER_SENDER_ACK_WAIT_SEND_DEAD
+#define XFER_LOCAL_IO     HOP_XFER_SENDER_ACK_WAIT_LOCAL_IO
+#define XFER_CANCELLED    HOP_XFER_SENDER_ACK_WAIT_CANCELLED
+#define XFER_PEER_ABORT   HOP_XFER_SENDER_ACK_WAIT_PEER_ABORT
 #define XFER_ACK_PENDING  (-6)
+#ifdef _WIN32
+#define SENDER_ACK_POLL_INTERVAL_MS 0u
+#else
+#define SENDER_ACK_POLL_INTERVAL_MS 100u
+#endif
 
 static uint64_t now_ms(void) { return (uint64_t)GetTickCount64(); }
 
@@ -408,54 +359,7 @@ void ack_deliver(uint32_t batch, uint32_t id, int status) {
         (void)s_sender_context.ack_deliver(s_sender_context.ack_user,
                                            batch, id, status);
 }
-static int ack_wait(const hop_xfer_sender_context *context,
-                    intptr_t socket_handle, uint64_t epoch,
-                    uint32_t batch, uint64_t task_id,
-                    uint32_t id, uint64_t deadline_ns, uint64_t *rtt_us) {
-    if (!context) context = &s_sender_context;
-    if (!context->ack_user || !context->ack_wait_take || !context->ack_unregister)
-        return XFER_LOCAL_IO;
-    if (rtt_us) *rtt_us = 0;
-    for (;;) {
-        uint64_t n = context->now_ns
-            ? context->now_ns(context->user) : rate_now_ns();
-        if (n >= deadline_ns) {
-            ack_unregister(context, batch, id);
-            return XFER_ACK_TIMEOUT;
-        }
-#ifdef _WIN32
-        uint64_t remaining_ns = deadline_ns - n;
-        uint64_t wait_ms = (remaining_ns + 999999ull) / 1000000ull;
-        if (wait_ms > (uint64_t)(MAXDWORD - 1u)) wait_ms = MAXDWORD - 1u;
-#else
-        uint32_t wait_ms = 100;
-#endif
-        int status = 0, deadline_expired = 0;
-        uint64_t rtt_ns = 0;
-        int hit = context->ack_wait_take(context->ack_user, batch, id,
-                    (uint32_t)wait_ms, &status, &rtt_ns, &deadline_expired);
-        if (hit) {
-            if (deadline_expired) return XFER_ACK_TIMEOUT;
-            if (rtt_us) *rtt_us = rtt_ns / 1000ull;
-            return status;
-        }
-        if (context->peer_aborted &&
-            context->peer_aborted(context->user, batch)) {
-            ack_unregister(context, batch, id);
-            return XFER_PEER_ABORT;
-        }
-        if (hop_xfer_sender_context_job_cancel_requested(context, batch, task_id)) {
-            ack_unregister(context, batch, id);
-            return XFER_CANCELLED;
-        }
-        if (!context->is_stopping || context->is_stopping(context->user) ||
-            socket_handle == (intptr_t)-1 || !context->session_current ||
-            !context->session_current(context->user, socket_handle, epoch)) {
-            ack_unregister(context, batch, id);
-            return XFER_SEND_DEAD;
-        }
-    }
-}
+
 /* Image payloads share the same rate limiter and owned-buffer path as files. */
 static int send_done_with_context(const hop_xfer_sender_context *context,
                                     SOCKET c, uint32_t batch, uint32_t ok,
@@ -557,15 +461,15 @@ static hop_xfer_sender_commit_ack_result sender_commit_wait_ack(
     void *user, uint32_t batch, uint32_t slot, uint64_t deadline_ns) {
     const xfer_job *job = (const xfer_job *)user;
     if (!job) return HOP_XFER_SENDER_COMMIT_ACK_OTHER;
-    int result = ack_wait(&job->sender_context, job->commit_socket,
-                          job->commit_epoch, batch, job->task.id,
-                          slot, deadline_ns, NULL);
+    int result = hop_xfer_sender_ack_wait(&job->sender_context,
+        job->commit_socket, job->commit_epoch, batch, job->task.id, slot,
+        deadline_ns, SENDER_ACK_POLL_INTERVAL_MS, NULL);
     if (result == HOP_DONE_ACK_COMPLETE) return HOP_XFER_SENDER_COMMIT_ACK_COMPLETE;
     if (result == HOP_DONE_ACK_PARTIAL) return HOP_XFER_SENDER_COMMIT_ACK_PARTIAL;
     if (result == HOP_DONE_ACK_FAILED) return HOP_XFER_SENDER_COMMIT_ACK_FAILED;
-    if (result == XFER_PEER_ABORT) return HOP_XFER_SENDER_COMMIT_ACK_PEER_ABORT;
-    if (result == XFER_ACK_TIMEOUT) return HOP_XFER_SENDER_COMMIT_ACK_TIMEOUT;
-    if (result == XFER_SEND_DEAD) return HOP_XFER_SENDER_COMMIT_ACK_SEND_DEAD;
+    if (result == HOP_XFER_SENDER_ACK_WAIT_PEER_ABORT) return HOP_XFER_SENDER_COMMIT_ACK_PEER_ABORT;
+    if (result == HOP_XFER_SENDER_ACK_WAIT_TIMEOUT) return HOP_XFER_SENDER_COMMIT_ACK_TIMEOUT;
+    if (result == HOP_XFER_SENDER_ACK_WAIT_SEND_DEAD) return HOP_XFER_SENDER_COMMIT_ACK_SEND_DEAD;
     return HOP_XFER_SENDER_COMMIT_ACK_OTHER;
 }
 static int sender_commit_wait_ms(void *user, uint32_t duration_ms) {
@@ -764,15 +668,16 @@ static hop_xfer_sender_ack_result sender_engine_wait_ack(
     uint64_t *rtt_us) {
     sender_file_engine_call *call = (sender_file_engine_call *)user;
     if (!call || !call->job) return HOP_XFER_SENDER_ACK_LOCAL_FAILURE;
-    int result = ack_wait(&call->job->sender_context,
-                          (intptr_t)call->socket, s_send_epoch,
-                          batch, call->job->task.id, id, deadline_ns, rtt_us);
+    int result = hop_xfer_sender_ack_wait(&call->job->sender_context,
+        (intptr_t)call->socket, s_send_epoch, batch,
+        call->job->task.id, id, deadline_ns,
+        SENDER_ACK_POLL_INTERVAL_MS, rtt_us);
     if (result == HOP_FILE_ACK_OK) return HOP_XFER_SENDER_ACK_OK;
     if (result == HOP_FILE_ACK_BADPATH) return HOP_XFER_SENDER_ACK_BADPATH;
-    if (result == XFER_ACK_TIMEOUT) return HOP_XFER_SENDER_ACK_TIMEOUT;
-    if (result == XFER_SEND_DEAD) return HOP_XFER_SENDER_ACK_SEND_DEAD;
-    if (result == XFER_PEER_ABORT) return HOP_XFER_SENDER_ACK_PEER_ABORT;
-    if (result == XFER_CANCELLED) return HOP_XFER_SENDER_ACK_CANCELLED;
+    if (result == HOP_XFER_SENDER_ACK_WAIT_TIMEOUT) return HOP_XFER_SENDER_ACK_TIMEOUT;
+    if (result == HOP_XFER_SENDER_ACK_WAIT_SEND_DEAD) return HOP_XFER_SENDER_ACK_SEND_DEAD;
+    if (result == HOP_XFER_SENDER_ACK_WAIT_PEER_ABORT) return HOP_XFER_SENDER_ACK_PEER_ABORT;
+    if (result == HOP_XFER_SENDER_ACK_WAIT_CANCELLED) return HOP_XFER_SENDER_ACK_CANCELLED;
     return result >= 0 ? HOP_XFER_SENDER_ACK_OTHER_REMOTE
                        : HOP_XFER_SENDER_ACK_LOCAL_FAILURE;
 }

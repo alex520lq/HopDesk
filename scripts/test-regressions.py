@@ -1583,10 +1583,10 @@ int main(void){
         assert owner_lock in mark_released and 'j->owner = XFER_JOB_OWNER_RELEASED' in mark_released
         assert 'hop_xfer_sender_job_release(' in job_free
         assert 'job_claim_for_release' not in job_free and 'job_release_task_resources' not in job_free
-        assert job_lifecycle_core.index('o->claim') < job_lifecycle_core.index('release_resources(v)')
+        assert job_lifecycle_core.index('if(!o->claim') < job_lifecycle_core.index('if(!release_resources(v)')
         assert job_lifecycle_core.index('release_resources(v)') < job_lifecycle_core.index('hop_xfer_sender_context_task_dispose')
-        assert job_lifecycle_core.index('hop_xfer_sender_context_task_dispose') < job_lifecycle_core.index('o->mark_released')
-        assert job_lifecycle_core.index('o->mark_released') < job_lifecycle_core.index('o->free_storage')
+        assert job_lifecycle_core.index('hop_xfer_sender_context_task_dispose') < job_lifecycle_core.index('if(!o->mark_released')
+        assert job_lifecycle_core.index('if(!o->mark_released') < job_lifecycle_core.index('o->free_storage(o->user')
         assert requeue_front.index(owner_lock) < requeue_front.index('call->job->owner')
         assert 'hop_xfer_sender_active_job_clear_if_matches' in requeue_front
         assert requeue_front.index('hop_xfer_sender_active_job_clear_if_matches') < requeue_front.index('call->job->owner=XFER_JOB_OWNER_QUEUE')

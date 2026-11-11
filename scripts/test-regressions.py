@@ -1640,8 +1640,8 @@ int main(void){
         assert '#include "../core/xfer_sender_context_adapter.h"' in protocol
         assert 'hop_xfer_sender_context_job_cancel_requested(' in protocol
         assert 'hop_xfer_sender_context_task_cancel_requested(' in worker
-        assert 'hop_xfer_sender_context_task_dispose(' in worker
-        assert 'hop_xfer_sender_context_status_end(' in worker
+        assert 'hop_xfer_sender_context_task_dispose(' in job_lifecycle_core
+        assert 'hop_xfer_sender_context_status_end(' in job_lifecycle_core
         assert 'sender_task_cancel_requested(' not in protocol+worker
         assert 'sender_status_end(' not in protocol+worker
         assert 's_x.cur_batch' not in transport+worker+receive

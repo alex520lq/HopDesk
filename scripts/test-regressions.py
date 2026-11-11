@@ -1227,7 +1227,8 @@ int main(void){
         assert 's_rx.writer = s_wq;' in writer_start
         assert 's_rx.writer = NULL;' in writer_stop
         assert 'if (!s_wq)' in writer_stop and writer_stop.index('if (!s_wq)') < writer_stop.index('s_rx.writer = NULL;')
-        assert writer_stop.index('s_wq = NULL;') < writer_stop.index('s_rx.writer = NULL;') < writer_stop.index('hop_writer_queue_destroy(stopped)')
+        detach=writer_stop.index('hop_writer_queue *stopped = s_wq;')
+        assert detach < writer_stop.index('s_wq = NULL;',detach) < writer_stop.index('s_rx.writer = NULL;',detach) < writer_stop.index('hop_writer_queue_destroy(stopped)',detach)
         assert 'int xfer_shutdown(void)' in lifecycle
         clipboard=(ROOT/('src/win/clipboard.c' if platform=='win' else 'src/mac/clipboard.m')).read_text(encoding='utf-8')
         clip_shutdown=extract(clipboard,'clip_shutdown' if platform=='win' else 'clipboard_shutdown')

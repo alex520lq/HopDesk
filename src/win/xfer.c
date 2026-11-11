@@ -525,9 +525,12 @@ static int xfer_shutdown_task_audit(void) {
         s_x.shutdown_jobs == NULL &&
         !hop_xfer_sender_active_job_is_active(&s_x.active_job);
     LeaveCriticalSection(&s_x.lock);
+    static const hop_xfer_rx_entry_reservations empty_entry_reservations = {0};
     int receiver_clean = s_wq == NULL && s_rx.writer == NULL &&
         !s_rx.task.initialized && !s_rx.task.id &&
         !s_rx.batch_state.active && !s_rx.cur_path &&
+        memcmp(&s_rx.entry_reservations, &empty_entry_reservations,
+               sizeof(empty_entry_reservations)) == 0 &&
         !s_rx.image_buffer.data && !s_rx.tops && s_rx.ntop == 0;
     if (!sender_clean || !receiver_clean) {
         hop_log(HOP_LOG_ERROR,

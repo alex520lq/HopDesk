@@ -1219,6 +1219,7 @@ int main(void){
         assert 's_wq == NULL && s_rx.writer == NULL' in shutdown_audit
         assert '!s_rx.task.initialized && !s_rx.task.id' in shutdown_audit
         assert '!s_rx.batch_state.active' in shutdown_audit
+        assert 'memcmp(&s_rx.entry_reservations, &empty_entry_reservations' in shutdown_audit
         assert '!s_rx.image_buffer.data && !s_rx.tops && s_rx.ntop == 0' in shutdown_audit
         assert 'HOP_XFER_SENDER_JOB_SHUTDOWN' in flow_core
         assert 'ops->is_stopping' in flow_core

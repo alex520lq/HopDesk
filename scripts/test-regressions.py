@@ -947,7 +947,7 @@ int main(void){
     # An unconfirmed ACK must force a fresh data channel before the same
     # batch/file ID is reused; the unresolved file remains the resume point.
     for platform in ['mac','win']:
-        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
         receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         protocol_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
@@ -1108,7 +1108,7 @@ int main(void){
     assert 'HOP_XFER_SENDER_COMMIT_ACK_TIMEOUT' in commit_core
     assert 'HOP_XFER_SENDER_COMMIT_ACK_SEND_DEAD' in commit_core
     for platform in ['win','mac']:
-        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
         commit_adapter=(ROOT/f'src/{platform}/xfer_sender_commit_adapter.c').read_text(encoding='utf-8')
         commit=extract(commit_adapter,'sender_commit_adapter_run')
         assert 'hop_xfer_sender_run_commit' in commit

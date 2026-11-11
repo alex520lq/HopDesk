@@ -593,13 +593,15 @@ static int xfer_shutdown_task_audit(void) {
     }
     if (audit.mismatches || audit.task_count || audit.jobs || audit.entries ||
         audit.pending_bytes || audit.image_bytes || audit.rx_queue_slots ||
-        audit.rx_queue_bytes || audit.image_temp_bytes || audit.ledger.accounting_errors) {
+        audit.rx_queue_bytes || audit.image_temp_bytes ||
+        audit.ledger.rx_pool_bytes || audit.ledger.accounting_errors) {
         hop_log(HOP_LOG_ERROR,
-                "xfer: shutdown audit retained shared state (tasks=%u mismatches=%u jobs=%llu entries=%llu pending=%llu image=%llu rx_slots=%llu rx_bytes=%llu image_temp=%llu)",
+                "xfer: shutdown audit retained shared state (tasks=%u mismatches=%u jobs=%llu entries=%llu pending=%llu image=%llu rx_slots=%llu rx_bytes=%llu rx_pool=%llu image_temp=%llu)",
                 audit.task_count, audit.mismatches,
                 (unsigned long long)audit.jobs, (unsigned long long)audit.entries,
                 (unsigned long long)audit.pending_bytes, (unsigned long long)audit.image_bytes,
                 (unsigned long long)audit.rx_queue_slots, (unsigned long long)audit.rx_queue_bytes,
+                (unsigned long long)audit.ledger.rx_pool_bytes,
                 (unsigned long long)audit.image_temp_bytes);
         if (audit.ledger.accounting_errors)
             hop_log(HOP_LOG_ERROR, "xfer: Reservation accounting errors=%llu released=%llu",

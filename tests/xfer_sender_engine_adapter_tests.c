@@ -37,7 +37,8 @@ static int send_chunk(void *u,intptr_t socket,uint8_t *tx,uint32_t batch,uint32_
     fixture *f=u;(void)tx;(void)batch;(void)id;(void)off;(void)data;(void)len;
     (void)crc;(void)read_ns;(void)crc_ns;assert(socket==7);f->chunks++;return 1;
 }
-static const void *entry_at(void *u,int i){(void)u;return i==0?&(static entry){ "folder","folder",0,0,HOP_FILE_FLAG_DIR }:NULL;}
+static const entry s_entry={"folder","folder",0,0,HOP_FILE_FLAG_DIR};
+static const void *entry_at(void *u,int i){(void)u;return i==0?&s_entry:NULL;}
 static const char *entry_name(void *u,const void *p){(void)u;return ((const entry *)p)->name;}
 static const char *entry_path(void *u,const void *p){(void)u;return ((const entry *)p)->path;}
 static uint64_t entry_size(void *u,const void *p){(void)u;return ((const entry *)p)->size;}

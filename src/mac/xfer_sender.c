@@ -625,10 +625,7 @@ static void sender_engine_yield_cpu(void *user) {
 }
 
 
-static const char *sender_engine_entry_path(void *user, const void *entry) {
-    (void)user;
-    return entry ? ((const xf_entry *)entry)->rel : NULL;
-}
+
 
 
 

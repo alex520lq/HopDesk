@@ -337,7 +337,7 @@ static int adapter_ops_valid(const hop_xfer_sender_engine_adapter_ops *ops) {
         return 0;
     if (ops->is_image)
         return ops->image_pixels && ops->image_width && ops->image_height &&
-               ops->image_stride >= ops->image_width * 4u;
+               ((uint64_t)ops->image_stride >= (uint64_t)ops->image_width * 4ull);
     return ops->entry_count >= 0 && ops->max_attempts &&
         ops->ack_timeout_ns && ops->entry_at && ops->entry_name &&
         ops->entry_path && ops->entry_size && ops->entry_mtime &&

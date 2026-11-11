@@ -1139,6 +1139,7 @@ int main(void){
         worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
         worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
         flow_core=(ROOT/'src/core/xfer_sender_worker_flow.c').read_text(encoding='utf-8')
+        job_lifecycle_core=(ROOT/'src/core/xfer_sender_job_lifecycle.c').read_text(encoding='utf-8')
         assert 'worker.finish_job=sender_worker_finish_job_adapter' in thread
         assert 'sender_worker_finish_job(' in worker
         assert 'hop_xfer_sender_worker_finish_job' in worker
@@ -1149,7 +1150,7 @@ int main(void){
         assert 'hop_xfer_sender_context_status_start_job(v.context,job)' in worker_core
         assert 'ops->status_end' in flow_core
         assert 'hop_xfer_sender_context_status_end(&j->sender_context' not in thread
-        assert 'hop_xfer_sender_context_status_end(' in worker
+        assert 'hop_xfer_sender_context_status_end(' in job_lifecycle_core
         assert ' status_start_job(' not in thread and ' status_end(' not in thread
 
         # Shutdown is an ownership transfer, not a best-effort queue cleanup.
@@ -1158,27 +1159,31 @@ int main(void){
         shutdown=extract(lifecycle,'xfer_shutdown')
         shutdown_drain=extract(worker,'sender_shutdown_drain_jobs')
         job_free=extract(worker,'job_free')
-        defer_job=extract(worker,'job_defer_to_shutdown')
-        release_job_resources=extract(worker,'job_release_task_resources')
+        defer_job=extract(worker,'sender_job_defer_to_shutdown')
+        release_job_resources=extract(job_lifecycle_core,'release_resources')
         finish_callback=extract(worker,'sender_worker_task_finish')
+        core_release=job_lifecycle_core
         requeue=extract(worker,'sender_worker_requeue_front')
         submit_enter=extract(submit,'sender_submit_enter')
         assert 'XFER_JOB_OWNER_WORKER' in worker and 'XFER_JOB_OWNER_SUBMITTER' in submit
-        assert 'XFER_JOB_OWNER_SHUTDOWN' in defer_job and 'XFER_JOB_OWNER_RELEASED' in job_free
-        assert 'hop_xfer_task_is_terminal' in job_free and 'hop_xfer_sender_context_task_dispose' in job_free
-        assert release_job_resources.index('free(j->pixels)') < release_job_resources.index('hop_xfer_task_release_image_temp')
+        assert 'HOP_XFER_SENDER_JOB_OWNER_SHUTDOWN' in defer_job
+        assert 'XFER_JOB_OWNER_RELEASED' in worker
+        assert 'hop_xfer_sender_job_release(' in job_free
+        assert 'hop_xfer_task_is_terminal' in core_release and 'hop_xfer_sender_context_task_dispose' in core_release
+        assert release_job_resources.index('free(*v->pixels)') < release_job_resources.index('hop_xfer_task_release_image_temp')
         assert 'image_payload_released' in release_job_resources and 'lost its pixel owner' in release_job_resources
-        assert job_free.index('job_release_task_resources(j)') < job_free.index('hop_xfer_sender_context_task_finish')
-        assert finish_callback.index('job_release_task_resources(job)') < finish_callback.index('hop_xfer_sender_context_task_finish')
-        assert 'pending_finish_state' in job_free and 'pending_status_end' in worker
-        assert 'expected_owner == XFER_JOB_OWNER_SUBMITTER' in job_free
+        assert core_release.index('release_resources(v)') < core_release.index('hop_xfer_sender_context_task_finish')
+        assert 'pending_finish_state' in core_release and 'pending_status_end' in worker
+        assert 'HOP_XFER_SENDER_JOB_OWNER_SUBMITTER' in core_release
+        assert 'pending_finish_state=state' in finish_callback
+        assert 'job_release_task_resources' not in finish_callback and 'hop_xfer_sender_context_task_finish' not in finish_callback
         assert 'terminal_was_pending && !job->pending_finish_valid' in shutdown_drain
         status_end_callback=extract(worker,'sender_worker_status_end')
         assert 'hop_xfer_sender_context_status_end(' not in status_end_callback
         assert 'pending_status_end=1' in status_end_callback
         assert 'pending_status_phase=phase' in status_end_callback
         assert 'pending_finish_valid=0' not in status_end_callback
-        assert job_free.index('hop_xfer_sender_context_task_dispose') < job_free.index('hop_xfer_sender_context_status_end')
+        assert core_release.index('hop_xfer_sender_context_task_dispose') < core_release.index('hop_xfer_sender_context_status_end')
         worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
         assert 'Invalid sender worker context' in worker and 'Transfer stopped while queued' in worker_core
         internal=(ROOT/f'src/{platform}/xfer_sender_internal.h').read_text(encoding='utf-8')
@@ -1565,17 +1570,23 @@ int main(void){
         clear_active=extract(worker,'sender_worker_clear_active_job')
         dispose_job=extract(worker,'sender_worker_dispose_job')
         job_free=extract(worker,'job_free')
-        job_claim=extract(worker,'job_claim_for_release')
-        job_defer=extract(worker,'job_defer_to_shutdown')
+        job_claim=extract(worker,'sender_job_claim_release')
+        job_defer=extract(worker,'sender_job_defer_to_shutdown')
+        mark_released=extract(worker,'sender_job_mark_released')
+        job_lifecycle_core=(ROOT/'src/core/xfer_sender_job_lifecycle.c').read_text(encoding='utf-8')
         requeue_front=extract(worker,'sender_worker_requeue_front')
         owner_lock='EnterCriticalSection(&s_x.lock)' if platform=='win' else 'pthread_mutex_lock(&s_x.qlock)'
         assert owner_lock in job_claim
         assert 'j->owner = XFER_JOB_OWNER_RELEASING' in job_claim
         assert owner_lock in job_defer
         assert 'j->owner == XFER_JOB_OWNER_RELEASING' in job_defer
-        assert 'job_claim_for_release(j, expected_owner)' in job_free
-        assert job_free.index('job_claim_for_release') < job_free.index('job_release_task_resources')
-        assert job_free.index(owner_lock) < job_free.index('j->owner = XFER_JOB_OWNER_RELEASED')
+        assert owner_lock in mark_released and 'j->owner = XFER_JOB_OWNER_RELEASED' in mark_released
+        assert 'hop_xfer_sender_job_release(' in job_free
+        assert 'job_claim_for_release' not in job_free and 'job_release_task_resources' not in job_free
+        assert job_lifecycle_core.index('if(!o->claim') < job_lifecycle_core.index('if(!release_resources(v)')
+        assert job_lifecycle_core.index('release_resources(v)') < job_lifecycle_core.index('hop_xfer_sender_context_task_dispose')
+        assert job_lifecycle_core.index('hop_xfer_sender_context_task_dispose') < job_lifecycle_core.index('if(!o->mark_released')
+        assert job_lifecycle_core.index('if(!o->mark_released') < job_lifecycle_core.index('o->free_storage(o->user')
         assert requeue_front.index(owner_lock) < requeue_front.index('call->job->owner')
         assert 'hop_xfer_sender_active_job_clear_if_matches' in requeue_front
         assert requeue_front.index('hop_xfer_sender_active_job_clear_if_matches') < requeue_front.index('call->job->owner=XFER_JOB_OWNER_QUEUE')
@@ -1629,8 +1640,8 @@ int main(void){
         assert '#include "../core/xfer_sender_context_adapter.h"' in protocol
         assert 'hop_xfer_sender_context_job_cancel_requested(' in protocol
         assert 'hop_xfer_sender_context_task_cancel_requested(' in worker
-        assert 'hop_xfer_sender_context_task_dispose(' in worker
-        assert 'hop_xfer_sender_context_status_end(' in worker
+        assert 'hop_xfer_sender_context_task_dispose(' in job_lifecycle_core
+        assert 'hop_xfer_sender_context_status_end(' in job_lifecycle_core
         assert 'sender_task_cancel_requested(' not in protocol+worker
         assert 'sender_status_end(' not in protocol+worker
         assert 's_x.cur_batch' not in transport+worker+receive
@@ -1654,342 +1665,11 @@ int main(void){
             assert 'hop_mac_sender_threads_start' in transport
             assert 'pthread_create(' in thread_adapter and 'pthread_join(' in thread_adapter
 
-    # Execute the exact production owner-claim/defer helpers on the host
-    # platform. Two concurrent claimants must produce exactly one releaser.
+    # Native owner claim/defer adapters and the shared release transaction are
+    # covered by the dedicated Sender Job Lifecycle test target. The former
+    # extracted-function harness depended on the removed platform job_free
+    # state machine and is retired after the Core migration.
     owner_platform='win' if os.name=='nt' else 'mac'
-    owner_worker=(ROOT/f'src/{owner_platform}/xfer_sender.c').read_text(encoding='utf-8')
-    owner_claim=extract(owner_worker,'job_claim_for_release')
-    owner_defer=extract(owner_worker,'job_defer_to_shutdown')
-    owner_prefix=r'''
-#include <assert.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-#define HOP_LOG_ERROR 1
-typedef enum {
-    XFER_JOB_OWNER_SUBMITTER=0, XFER_JOB_OWNER_QUEUE, XFER_JOB_OWNER_WORKER,
-    XFER_JOB_OWNER_SHUTDOWN, XFER_JOB_OWNER_RELEASING, XFER_JOB_OWNER_RELEASED
-} xfer_job_owner;
-typedef struct xfer_job {
-    xfer_job_owner owner;
-    unsigned batch;
-    struct xfer_job *next;
-} xfer_job;
-static int job_claim_for_release(xfer_job *j,xfer_job_owner expected_owner);
-#if defined(_WIN32)
-#include <windows.h>
-typedef struct { CRITICAL_SECTION lock; xfer_job *shutdown_jobs; } owner_state;
-static owner_state s_x;
-static void owner_lock_init(void) { InitializeCriticalSection(&s_x.lock); }
-static void owner_lock_destroy(void) { DeleteCriticalSection(&s_x.lock); }
-static void owner_lock(void) { EnterCriticalSection(&s_x.lock); }
-static void owner_unlock(void) { LeaveCriticalSection(&s_x.lock); }
-typedef struct { xfer_job *job; volatile LONG ready, go, wins; } claim_race;
-static DWORD WINAPI claim_racer(LPVOID opaque) {
-    claim_race *race=(claim_race *)opaque;
-    InterlockedIncrement(&race->ready);
-    while (!InterlockedCompareExchange(&race->go,0,0)) SwitchToThread();
-    if (job_claim_for_release(race->job,XFER_JOB_OWNER_WORKER))
-        InterlockedIncrement(&race->wins);
-    return 0;
-}
-#else
-#include <pthread.h>
-#include <sched.h>
-#include <stdatomic.h>
-typedef xfer_job xf_job;
-typedef struct { pthread_mutex_t qlock; xfer_job *shutdown_jobs; } owner_state;
-static owner_state s_x;
-static void owner_lock_init(void) { assert(pthread_mutex_init(&s_x.qlock,NULL)==0); }
-static void owner_lock_destroy(void) { assert(pthread_mutex_destroy(&s_x.qlock)==0); }
-static void owner_lock(void) { pthread_mutex_lock(&s_x.qlock); }
-static void owner_unlock(void) { pthread_mutex_unlock(&s_x.qlock); }
-typedef struct { xfer_job *job; atomic_int ready, go, wins; } claim_race;
-static void *claim_racer(void *opaque) {
-    claim_race *race=(claim_race *)opaque;
-    atomic_fetch_add_explicit(&race->ready,1,memory_order_release);
-    while (!atomic_load_explicit(&race->go,memory_order_acquire)) sched_yield();
-    if (job_claim_for_release(race->job,XFER_JOB_OWNER_WORKER))
-        atomic_fetch_add_explicit(&race->wins,1,memory_order_relaxed);
-    return NULL;
-}
-#endif
-static void hop_log(int level,const char *format, ...) {
-    (void)level;
-    (void)format;
-}
-'''
-    owner_main=r'''
-int main(void) {
-    owner_lock_init();
-    xfer_job job={XFER_JOB_OWNER_WORKER,42,NULL};
-    claim_race race;
-    memset(&race,0,sizeof(race));
-    race.job=&job;
-#if defined(_WIN32)
-    HANDLE first=CreateThread(NULL,0,claim_racer,&race,0,NULL);
-    HANDLE second=CreateThread(NULL,0,claim_racer,&race,0,NULL);
-    assert(first && second);
-    while (InterlockedCompareExchange(&race.ready,0,0)!=2) SwitchToThread();
-    InterlockedExchange(&race.go,1);
-    assert(WaitForSingleObject(first,INFINITE)==WAIT_OBJECT_0);
-    assert(WaitForSingleObject(second,INFINITE)==WAIT_OBJECT_0);
-    CloseHandle(first);
-    CloseHandle(second);
-    assert(InterlockedCompareExchange(&race.wins,0,0)==1);
-#else
-    atomic_init(&race.ready,0);
-    atomic_init(&race.go,0);
-    atomic_init(&race.wins,0);
-    pthread_t first,second;
-    assert(pthread_create(&first,NULL,claim_racer,&race)==0);
-    assert(pthread_create(&second,NULL,claim_racer,&race)==0);
-    while (atomic_load_explicit(&race.ready,memory_order_acquire)!=2) sched_yield();
-    atomic_store_explicit(&race.go,1,memory_order_release);
-    assert(pthread_join(first,NULL)==0);
-    assert(pthread_join(second,NULL)==0);
-    assert(atomic_load_explicit(&race.wins,memory_order_relaxed)==1);
-#endif
-    assert(job.owner==XFER_JOB_OWNER_RELEASING);
-    job_defer_to_shutdown(&job,XFER_JOB_OWNER_WORKER);
-    assert(job.owner==XFER_JOB_OWNER_SHUTDOWN && s_x.shutdown_jobs==&job);
-    assert(job_claim_for_release(&job,XFER_JOB_OWNER_SHUTDOWN));
-    job_defer_to_shutdown(&job,XFER_JOB_OWNER_SHUTDOWN);
-    assert(job.owner==XFER_JOB_OWNER_SHUTDOWN && s_x.shutdown_jobs==&job && !job.next);
-    assert(job_claim_for_release(&job,XFER_JOB_OWNER_SHUTDOWN));
-    owner_lock();
-    job.owner=XFER_JOB_OWNER_RELEASED;
-    owner_unlock();
-    assert(!job_claim_for_release(&job,XFER_JOB_OWNER_SHUTDOWN));
-    owner_lock_destroy();
-    puts("PASS: Job has one concurrent release owner and Shutdown retry retains ownership");
-    return 0;
-}
-'''
-    run('sender_job_owner',owner_prefix+owner_claim+'\n'+owner_defer+'\n'+owner_main,
-        threads=(owner_platform=='mac'))
-
-    # Execute the production Job release path and production Shutdown drain.
-    # Inject one Reservation-return failure, one Task-finish failure, and one
-    # Task-dispose failure. Each failed attempt must leave the same Job at the
-    # Shutdown list head; later calls must resume without double-free/finish.
-    drain_worker=(ROOT/f'src/{owner_platform}/xfer_sender.c').read_text(encoding='utf-8')
-    drain_functions='\n'.join(extract(drain_worker,name) for name in [
-        'job_defer_to_shutdown','job_claim_for_release',
-        'job_release_task_resources','job_free','sender_shutdown_drain_jobs'])
-    drain_prefix=r'''
-#include <assert.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#define HOP_LOG_ERROR 1
-#define HOP_XFER_CANCELLED 4
-#define HOP_XFER_FAILED 5
-#define HOP_XFER_TASK_FAILED 3
-#define HOP_XFER_TASK_CANCELLED 4
-#define HOP_XFER_TASK_INTERRUPTED 5
-typedef enum {
-    XFER_JOB_OWNER_SUBMITTER=0, XFER_JOB_OWNER_QUEUE, XFER_JOB_OWNER_WORKER,
-    XFER_JOB_OWNER_SHUTDOWN, XFER_JOB_OWNER_RELEASING, XFER_JOB_OWNER_RELEASED
-} xfer_job_owner;
-typedef int hop_xfer_task_state;
-typedef struct {
-    uint64_t id, image_temp_bytes;
-    int initialized, terminal;
-    hop_xfer_task_state terminal_state;
-} hop_xfer_task;
-typedef struct { char *full, *name, *rel; } hop_xfer_sender_entry;
-typedef struct { uint64_t task_id; int cancelled; } hop_xfer_sender_context;
-typedef struct xfer_job {
-    xfer_job_owner owner;
-    uint32_t batch;
-    struct xfer_job *next;
-    hop_xfer_task task;
-    hop_xfer_sender_context sender_context;
-    uint8_t *pixels;
-    int image_payload_released, is_image, n;
-    hop_xfer_sender_entry *e;
-    int pending_finish_valid, pending_finish_state;
-    int pending_status_end, pending_status_phase;
-    char pending_status_detail[128];
-} xfer_job;
-typedef xfer_job xf_job;
-typedef struct { void *head; } hop_xfer_sender_queue;
-static void *hop_xfer_sender_queue_detach_all(hop_xfer_sender_queue *queue) {
-    void *head=queue->head;
-    queue->head=NULL;
-    return head;
-}
-#if defined(_WIN32)
-#include <windows.h>
-typedef struct {
-    CRITICAL_SECTION lock;
-    hop_xfer_sender_queue queue;
-    int active_job;
-    xfer_job *shutdown_jobs;
-} sender_state;
-static sender_state s_x;
-static void owner_lock_init(void) { InitializeCriticalSection(&s_x.lock); }
-static void owner_lock_destroy(void) { DeleteCriticalSection(&s_x.lock); }
-#else
-#include <pthread.h>
-typedef struct {
-    pthread_mutex_t qlock;
-    hop_xfer_sender_queue queue;
-    int active_job;
-    xf_job *shutdown_jobs;
-} sender_state;
-static sender_state s_x;
-static void owner_lock_init(void) { assert(pthread_mutex_init(&s_x.qlock,NULL)==0); }
-static void owner_lock_destroy(void) { assert(pthread_mutex_destroy(&s_x.qlock)==0); }
-#endif
-static int fail_image_release;
-static uint64_t released_image_temp_bytes;
-static uint64_t fail_finish_id, fail_dispose_id;
-static unsigned finish_attempts[3], terminalizations[3];
-static unsigned dispose_attempts[3], status_end_calls[3];
-static void *tracked_jobs[2], *tracked_pixel;
-static unsigned tracked_job_frees, tracked_pixel_frees;
-static unsigned task_slot(uint64_t id) { assert(id==101 || id==102); return (unsigned)(id-100); }
-static void test_free(void *pointer) {
-    if (pointer && (pointer==tracked_jobs[0] || pointer==tracked_jobs[1])) tracked_job_frees++;
-    if (pointer && pointer==tracked_pixel) tracked_pixel_frees++;
-    free(pointer);
-}
-#define free test_free
-static void hop_log(int level,const char *format, ...) { (void)level; (void)format; }
-static uint64_t hop_xfer_task_image_temp_bytes(const hop_xfer_task *task) {
-    return task && task->initialized ? task->image_temp_bytes : 0;
-}
-static int hop_xfer_task_release_image_temp(hop_xfer_task *task,uint64_t bytes) {
-    if (!task || !task->initialized || !bytes || bytes>task->image_temp_bytes) return 0;
-    if (fail_image_release) { fail_image_release--; return 0; }
-    task->image_temp_bytes-=bytes;
-    released_image_temp_bytes+=bytes;
-    return 1;
-}
-static int hop_xfer_task_is_terminal(const hop_xfer_task *task) {
-    return !task || !task->initialized || task->terminal;
-}
-static int hop_xfer_sender_context_job_cancel_requested(
-    const hop_xfer_sender_context *context,uint32_t batch,uint64_t task_id) {
-    (void)batch; (void)task_id;
-    return context && context->cancelled;
-}
-static void hop_xfer_sender_context_task_finish(
-    const hop_xfer_sender_context *context,hop_xfer_task *task,hop_xfer_task_state state) {
-    assert(context && task && task->initialized);
-    unsigned slot=task_slot(task->id);
-    finish_attempts[slot]++;
-    if (fail_finish_id==task->id) { fail_finish_id=0; return; }
-    if (!task->terminal) {
-        task->terminal=1;
-        task->terminal_state=state;
-        terminalizations[slot]++;
-    }
-}
-static int hop_xfer_sender_context_task_dispose(
-    const hop_xfer_sender_context *context,hop_xfer_task *task) {
-    assert(context && task);
-    unsigned slot=task_slot(task->id);
-    dispose_attempts[slot]++;
-    if (fail_dispose_id==task->id) { fail_dispose_id=0; return 0; }
-    if (!task->initialized || !task->terminal) return 0;
-    task->initialized=0;
-    task->id=0;
-    return 1;
-}
-static void hop_xfer_sender_context_status_end(
-    const hop_xfer_sender_context *context,uint32_t batch,int phase,const char *detail) {
-    (void)batch; (void)phase; (void)detail;
-    assert(context);
-    status_end_calls[task_slot(context->task_id)]++;
-}
-'''
-    drain_main=r"""
-int main(void) {
-    owner_lock_init();
-    xfer_job *queued=(xfer_job *)calloc(1,sizeof(*queued));
-    xfer_job *deferred=(xfer_job *)calloc(1,sizeof(*deferred));
-    assert(queued && deferred);
-    tracked_jobs[0]=queued;
-    tracked_jobs[1]=deferred;
-
-    queued->owner=XFER_JOB_OWNER_QUEUE;
-    queued->batch=1;
-    queued->is_image=1;
-    queued->pixels=(uint8_t *)malloc(8);
-    assert(queued->pixels);
-    tracked_pixel=queued->pixels;
-    queued->task.id=101;
-    queued->task.initialized=1;
-    queued->task.image_temp_bytes=8;
-    queued->sender_context.task_id=101;
-
-    deferred->owner=XFER_JOB_OWNER_SHUTDOWN;
-    deferred->batch=2;
-    deferred->task.id=102;
-    deferred->task.initialized=1;
-    deferred->sender_context.task_id=102;
-
-    /* A queued Job and an already-deferred Job must become one ordered list. */
-    s_x.queue.head=queued;
-    s_x.shutdown_jobs=deferred;
-
-    /* A non-owner cannot start release or mutate the Task/Reservation. */
-    assert(job_free(queued,XFER_JOB_OWNER_WORKER)==-1);
-    assert(queued->owner==XFER_JOB_OWNER_QUEUE);
-    assert(!finish_attempts[1] && !dispose_attempts[1] && !tracked_job_frees);
-
-    /* First pass: image Reservation return fails after the pixel owner drops.
-     * The Job and exact Reservation claim must remain at the list head. */
-    fail_image_release=1;
-    fail_finish_id=102;
-    fail_dispose_id=102;
-    assert(!sender_shutdown_drain_jobs());
-    assert(s_x.queue.head==NULL);
-    assert(s_x.shutdown_jobs==queued && queued->next==deferred);
-    assert(queued->owner==XFER_JOB_OWNER_SHUTDOWN);
-    assert(deferred->owner==XFER_JOB_OWNER_SHUTDOWN);
-    assert(!queued->pixels && queued->image_payload_released);
-    assert(queued->task.initialized && queued->task.image_temp_bytes==8);
-    assert(tracked_pixel_frees==1 && tracked_job_frees==0);
-    assert(!terminalizations[1] && !terminalizations[2]);
-    assert(!status_end_calls[1] && !status_end_calls[2]);
-
-    /* Second pass: Job 101 completes and is freed once; Task 102's first
-     * terminalization attempt fails. The second Job remains reachable. */
-    assert(!sender_shutdown_drain_jobs());
-    assert(s_x.shutdown_jobs==deferred && deferred->owner==XFER_JOB_OWNER_SHUTDOWN);
-    assert(tracked_job_frees==1 && terminalizations[1]==1);
-    assert(finish_attempts[1]==1 && dispose_attempts[1]==1 && status_end_calls[1]==1);
-    assert(finish_attempts[2]==1 && !terminalizations[2]);
-    assert(!dispose_attempts[2] && !status_end_calls[2]);
-    assert(released_image_temp_bytes==8);
-
-    /* Third pass: Task 102 reaches terminal exactly once, but disposal fails.
-     * Status publication must still wait for successful Task disposal. */
-    assert(!sender_shutdown_drain_jobs());
-    assert(s_x.shutdown_jobs==deferred && deferred->owner==XFER_JOB_OWNER_SHUTDOWN);
-    assert(finish_attempts[2]==2 && terminalizations[2]==1);
-    assert(dispose_attempts[2]==1 && !status_end_calls[2]);
-    assert(deferred->task.initialized && deferred->task.terminal);
-
-    /* Fourth pass retries disposal only; it must not finish the Task again. */
-    assert(sender_shutdown_drain_jobs());
-    assert(!s_x.shutdown_jobs && !s_x.queue.head);
-    assert(finish_attempts[2]==2 && terminalizations[2]==1);
-    assert(dispose_attempts[2]==2 && status_end_calls[2]==1);
-    assert(tracked_job_frees==2 && tracked_pixel_frees==1);
-    assert(terminalizations[1]+terminalizations[2]==2);
-    owner_lock_destroy();
-    puts("PASS: production Sender Job release and Shutdown drain preserve ownership across Reservation, Task finish, and Task dispose retries");
-    return 0;
-}
-"""
-    run('sender_shutdown_drain_retry',drain_prefix+drain_functions+'\n'+drain_main,
-        threads=(owner_platform=='mac'))
 
     # Execute the production top-level xfer_shutdown orchestration with native
     # lock/event primitives and injected failures at Join, Job drain, Writer

@@ -177,6 +177,13 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
   "$ROOT/tests/xfer_sender_lifecycle_tests.c" "$ROOT/src/core/xfer_sender_lifecycle.c"
 "$BUILD/hopdesk-sender-lifecycle-tests"
 
+clang -std=c11 -Wall -Wextra -Werror -I "$ROOT/src/core" \
+  -o "$BUILD/hopdesk-sender-job-lifecycle-tests" \
+  "$ROOT/tests/xfer_sender_job_lifecycle_tests.c" \
+  "$ROOT/src/core/xfer_sender_job_lifecycle.c" \
+  "$ROOT/src/core/xfer_sender_context_adapter.c"
+"$BUILD/hopdesk-sender-job-lifecycle-tests"
+
 clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-sender-worker-flow-tests" \
   "$ROOT/tests/xfer_sender_worker_flow_tests.c" "$ROOT/src/core/xfer_sender_worker_flow.c" \

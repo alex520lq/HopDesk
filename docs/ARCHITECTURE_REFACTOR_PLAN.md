@@ -967,3 +967,12 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 平台 Adapter 仍保留本机路径快照、Win32 Clipboard Sequence Number/HGLOBAL/PostMessage、macOS NSPasteboard changeCount/main queue/Dispatch Group。
 - 新增 tests/xfer_clipboard_txn_tests.c，覆盖 generation、offer matching、clipboard version guard、request idempotency、duplicate/stale/busy admission、worker lifecycle 和 stopping。Windows/macOS test-core 脚本均加入该测试；test-regressions.py 检查两端生产路径实际调用共享 API。
 - 当前实现提交的 Windows/macOS CI 尚未执行；在精确提交 SHA 的 Actions 完成前不得标记验收通过。真实双设备 Paste、剪贴板争用和关闭竞态仍需单独实机验证。
+
+
+### 2026-11-11：Sender Job Lifecycle 完整收口（实现分支，CI 待验）
+
+- 新增 `src/core/xfer_sender_job_lifecycle.{h,c}`，将 Submitter / Worker / Shutdown 的 Job 释放状态机、Task 终态选择、Reservation 释放顺序、Status 发布顺序和延迟回收决策收敛为唯一 Core 实现。
+- Windows/macOS 仅保留原生 owner lock、Shutdown list 插入、Entry/Job 内存析构 Adapter。
+- 两端 `job_free()` 缩减为构造 borrowed view 并调用共享 Core；Owner enum 移至共享契约头。
+- 新增独立生命周期测试并接入 Windows/macOS Core test runner。
+- 验收门槛：双平台应用编译、完整 Core tests、源码回归、CI；失败时先修复，不合并。

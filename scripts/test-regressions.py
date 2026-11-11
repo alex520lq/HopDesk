@@ -552,6 +552,7 @@ static int applied;static uint8_t wire[20];
 static hop_xfer_tracking s_receive_status;
 static xfer_rx_context s_rx;
 static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t batch){(void)batch;(void)fd;(void)type;assert(n==20);memcpy(wire,p,n);return 1;}
+static int fixture_send_done(int fd,uint32_t batch,uint32_t ok,uint32_t total){uint8_t payload[20];hop_put_be32(payload,batch);hop_put_be32(payload+4,ok);hop_put_be32(payload+8,total);hop_put_be64(payload+12,0);return send_small(fd,HOP_MSG_XFER_DONE,payload,sizeof(payload),batch);}
 static void wq_drain(void){}
 static void status_file_phase(int d,uint32_t b,int i,int p,uint32_t a){assert(d==HOP_XFER_DIR_RECEIVE);hop_xfer_tracking_phase(&s_receive_status,b,i,p,a);}
 static void status_end(int d,uint32_t b,int p,const char*s){assert(d==HOP_XFER_DIR_RECEIVE);hop_xfer_tracking_end(&s_receive_status,b,p,s);}
@@ -608,7 +609,7 @@ int main(void){
     /* Both platform callbacks are linked in each host compiler's fixture. */
     (void)&clip_complete_remote_paste;
     (void)&clipboard_complete_remote_paste;
-    assert(send_done(0,10,1,1));
+    assert(fixture_send_done(0,10,1,1));
     assert(hop_get_be32(wire+4)==1 && hop_get_be32(wire+8)==1);
     uint8_t *pixel=(uint8_t*)malloc(4);assert(pixel);memset(pixel,0,4);
     assert(hop_xfer_task_init(&s_rx.task,0,0,j.batch));
@@ -660,7 +661,7 @@ int main(void){
         if platform=='win': common='#define FIXTURE_WINDOWS 1\n'+common
         sender_source=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         core_finish_source=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
-        run('image_'+platform,common+extract(sender_source,'send_done')+'\n'+extract(core_finish_source,'hop_xfer_rx_reset_batch_state')+'\n'+extract(core_finish_source,'rx_release_terminal_resources')+'\n'+extract(core_finish_source,'rx_abort_clear_state')+'\n'+extract(core_finish_source,'hop_xfer_rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_protocol_adapter.c','src/core/xfer_rx_dispatch.c'],threads=True)
+        run('image_'+platform,common+'\n'+extract(core_finish_source,'hop_xfer_rx_reset_batch_state')+'\n'+extract(core_finish_source,'rx_release_terminal_resources')+'\n'+extract(core_finish_source,'rx_abort_clear_state')+'\n'+extract(core_finish_source,'hop_xfer_rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_protocol_adapter.c','src/core/xfer_rx_dispatch.c'],threads=True)
     # Run the actual per-platform state wrappers, not only a reimplemented model.
     for platform in ['win','mac']:
         source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', '\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c')))

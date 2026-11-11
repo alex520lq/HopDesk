@@ -764,7 +764,7 @@ int main(void){
 
     for platform in ['win','mac']:
         transport=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
-        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
         submission=(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
         assert '#include "xfer_sender_internal.h"' in transport
         assert 'xfer_sender_protocol.inc' not in transport
@@ -772,7 +772,9 @@ int main(void){
         assert 'xfer_submit.inc' not in transport
         assert '#include "xfer_sender_internal.h"' in worker
         assert '#include "xfer_sender_internal.h"' in submission
-        assert 'static void' in worker and 'send_thread' in worker
+        worker_adapter=(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
+        assert 'send_thread' not in (ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        assert 'send_thread' in worker_adapter and 'hop_xfer_sender_worker_run(&worker)' in worker_adapter
         scheduler=(ROOT/'src/core/xfer_sender_scheduler.c').read_text(encoding='utf-8')
         worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
         assert 'hop_xfer_sender_queue_take_cancelled' in scheduler and 'hop_xfer_sender_queue_take_head' in scheduler
@@ -1134,7 +1136,7 @@ int main(void){
         assert 'static int ack_register(' not in protocol_source
         assert 'static int send_done(' not in protocol_source
         thread=extract(sender,'send_thread')
-        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
         worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
         flow_core=(ROOT/'src/core/xfer_sender_worker_flow.c').read_text(encoding='utf-8')
         assert 'worker.finish_job=sender_worker_finish_job_adapter' in thread
@@ -1557,7 +1559,7 @@ int main(void){
     assert 'r->jobs > s_used.jobs' in budget_release
     assert 'return 0;' in budget_release
     for platform in ['win','mac']:
-        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
         submission=(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
         send_thread=extract(worker,'send_thread')
         clear_active=extract(worker,'sender_worker_clear_active_job')
@@ -2168,7 +2170,7 @@ int main(void) {
     assert 'test_invalid_view_clears_active' in worker_tests
     assert 'if(v.task&&v.task->id)o->clear_active' in worker_core
     for platform in ['win','mac']:
-        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
         send_thread=extract(worker,'send_thread')
         assert 'hop_xfer_sender_worker_run' in send_thread
         assert 'for (;;)' not in send_thread
@@ -2182,7 +2184,7 @@ int main(void) {
     worker_flow_core=(ROOT/'src/core/xfer_sender_worker_flow.c').read_text(encoding='utf-8')
     assert 'hop_xfer_sender_plan_retry' in worker_flow_core
     for platform in ['win','mac']:
-        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
         assert 'hop_xfer_sender_worker_finish_job' in worker
         assert 'hop_xfer_sender_plan_retry' not in worker
 
@@ -2199,7 +2201,7 @@ int main(void) {
     assert 'Cancelled by receiver' in lifecycle_tests
     assert 'hop_xfer_sender_get_terminal_decision' in worker_flow_core
     for platform in ['win','mac']:
-        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
         assert 'hop_xfer_sender_worker_finish_job' in worker
         assert 'hop_xfer_sender_get_terminal_decision' not in worker
 

@@ -773,8 +773,11 @@ int main(void){
         assert '#include "xfer_sender_internal.h"' in submission
         assert 'static void' in worker and 'send_thread' in worker
         scheduler=(ROOT/'src/core/xfer_sender_scheduler.c').read_text(encoding='utf-8')
+        worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
         assert 'hop_xfer_sender_queue_take_cancelled' in scheduler and 'hop_xfer_sender_queue_take_head' in scheduler
-        assert 'hop_xfer_sender_scheduler_wait_next' in worker
+        assert 'hop_xfer_sender_scheduler_wait_next' in worker_core
+        assert 'hop_xfer_sender_worker_run' in worker
+        assert 'hop_xfer_sender_scheduler_wait_next' not in worker
         assert 'queue_unlink' not in worker
         protocol=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         assert 'sender_engine_send_entry' in protocol and 'send_done_result' in protocol and 'run_job' in protocol

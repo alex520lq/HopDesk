@@ -358,6 +358,23 @@ if ($LASTEXITCODE -ne 0) { throw "Sender worker flow test compilation failed ($L
 & $senderWorkerFlow
 if ($LASTEXITCODE -ne 0) { throw "Sender worker flow tests failed ($LASTEXITCODE)" }
 
+$senderWorker = Join-Path $build 'hopdesk-sender-worker-tests.exe'
+$senderWorkerSources = @(
+    (Join-Path $root 'tests/xfer_sender_worker_tests.c'),
+    (Join-Path $root 'src/core/xfer_sender_worker.c'),
+    (Join-Path $root 'src/core/xfer_sender_context_adapter.c'),
+    (Join-Path $root 'src/core/xfer_sender_scheduler.c'),
+    (Join-Path $root 'src/core/xfer_sender_queue.c')
+)
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$senderWorker @senderWorkerSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $senderWorker @senderWorkerSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Sender worker orchestrator compilation failed ($LASTEXITCODE)" }
+& $senderWorker
+if ($LASTEXITCODE -ne 0) { throw "Sender worker orchestrator tests failed ($LASTEXITCODE)" }
+
 $senderEngine = Join-Path $build 'hopdesk-sender-engine-tests.exe'
 $senderEngineSources = @(
     (Join-Path $root 'tests/xfer_sender_engine_tests.c'),

@@ -2103,6 +2103,24 @@ int main(void) {
     assert 'test_initial_and_repeated_retry' in retry_tests
     assert 'test_attempt_and_deadline_exhaustion' in retry_tests
     assert 'test_saturating_deadlines_and_invalid_input' in retry_tests
+    worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
+    worker_tests=(ROOT/'tests/xfer_sender_worker_tests.c').read_text(encoding='utf-8')
+    assert 'hop_xfer_sender_worker_run' in worker_core
+    assert 'hop_xfer_sender_scheduler_wait_next' in worker_core
+    assert 's_x' not in worker_core and 's_rx' not in worker_core
+    assert 'test_ready' in worker_tests and 'test_expired_cancel' in worker_tests
+    for platform in ['win','mac']:
+        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        send_thread=extract(worker,'send_thread')
+        assert 'hop_xfer_sender_worker_run' in send_thread
+        assert 'for (;;)' not in send_thread
+        assert 'HOP_XFER_TASK_ACTIVE' not in send_thread
+        assert 'job_bind_session' not in worker
+        xfer=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        assert 'job_bind_session' not in xfer
+        internal=(ROOT/f'src/{platform}/xfer_sender_internal.h').read_text(encoding='utf-8')
+        assert 'job_bind_session' not in internal
+
     worker_flow_core=(ROOT/'src/core/xfer_sender_worker_flow.c').read_text(encoding='utf-8')
     assert 'hop_xfer_sender_plan_retry' in worker_flow_core
     for platform in ['win','mac']:

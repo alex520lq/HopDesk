@@ -243,13 +243,6 @@ static void status_add_received_file(uint32_t batch,uint32_t id,const char *path
         snprintf(s_receive_status.status.name,sizeof(s_receive_status.status.name),"%s",path);
     ReleaseSRWLockExclusive(&s_status_lock);
 }
-void job_bind_session(xfer_job *j, const hop_session_id *current) {
-    if (!hop_session_id_valid(current) || hop_session_id_equal(&j->session,current)) return;
-    j->session=*current; j->next_i=0; j->ok=0;
-    AcquireSRWLockExclusive(&s_status_lock);
-    memset(&s_send_status,0,sizeof(s_send_status));
-    ReleaseSRWLockExclusive(&s_status_lock);
-}
 void status_start_job(const xfer_job *j) {
     uint64_t total_bytes=0;
     for(int i=0;i<j->n;i++)total_bytes+=j->e[i].size;

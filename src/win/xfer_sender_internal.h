@@ -72,7 +72,6 @@ void status_stage_time(int,uint32_t,int,uint64_t);
 void status_file_phase(int,uint32_t,int,int,uint32_t);
 void status_end(int,uint32_t,int,const char *);
 void status_start_job(const xfer_job *);
-void job_bind_session(xfer_job *,const hop_session_id *);
 uint64_t rate_now_ns(void);
 int sender_context_is_stopping(void *);
 void sender_context_request_reconnect(void *);

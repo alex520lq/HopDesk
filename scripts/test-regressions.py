@@ -1726,6 +1726,8 @@ int main(void) {
 #include <stdlib.h>
 #include <string.h>
 #define HOP_LOG_ERROR 1
+#define HOP_XFER_CANCELLED 4
+#define HOP_XFER_FAILED 5
 #define HOP_XFER_TASK_FAILED 3
 #define HOP_XFER_TASK_CANCELLED 4
 #define HOP_XFER_TASK_INTERRUPTED 5

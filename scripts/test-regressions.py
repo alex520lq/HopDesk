@@ -1183,7 +1183,7 @@ int main(void){
         assert 'pending_status_end=1' in status_end_callback
         assert 'pending_status_phase=phase' in status_end_callback
         assert 'pending_finish_valid=0' not in status_end_callback
-        assert job_free.index('hop_xfer_sender_context_task_dispose') < job_free.index('hop_xfer_sender_context_status_end')
+        assert core_release.index('hop_xfer_sender_context_task_dispose') < core_release.index('hop_xfer_sender_context_status_end')
         worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
         assert 'Invalid sender worker context' in worker and 'Transfer stopped while queued' in worker_core
         internal=(ROOT/f'src/{platform}/xfer_sender_internal.h').read_text(encoding='utf-8')

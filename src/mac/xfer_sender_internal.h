@@ -52,7 +52,7 @@ extern hop_xfer_tracking s_send_status,s_receive_status;
 extern sender_platform_context s_sender_platform;
 extern hop_xfer_sender_context s_sender_context;
 extern const hop_xfer_sender_queue_ops s_sender_queue_ops;
-int sender_context_snapshot_session(void *,int,hop_session_id *,uint64_t *);
+int sender_context_snapshot_session(void *,intptr_t,uint8_t [HOP_TASK_SESSION_BYTES],uint64_t *);
 void ack_deliver(uint32_t,uint32_t,int);
 int sender_context_session_current(void *,intptr_t,uint64_t);
 int sender_context_write_frame(void *,intptr_t,uint64_t,const hop_xfer_sender_frame_part *,size_t);

@@ -378,18 +378,19 @@ int sender_context_write_frame(void *user, intptr_t socket_handle,
     return ok;
 }
 
-int sender_context_snapshot_session(void *user, SOCKET sock,
-                                           hop_session_id *session,
-                                           uint64_t *epoch) {
+int sender_context_snapshot_session(void *user, intptr_t socket_handle,
+                                    uint8_t session[HOP_TASK_SESSION_BYTES],
+                                    uint64_t *epoch) {
     sender_platform_context *ctx = (sender_platform_context *)user;
-    if (!ctx || !ctx->state_lock || !ctx->client || !ctx->epoch ||
-        !ctx->session || !session || !epoch) return 0;
+    if (!ctx || !ctx->state_lock || !ctx->client ||
+        !ctx->epoch || !ctx->session || !session || !epoch) return 0;
+    SOCKET sock = (SOCKET)socket_handle;
     EnterCriticalSection(ctx->state_lock);
     int current = *ctx->client == sock &&
                   (!s_send_epoch || *ctx->epoch == s_send_epoch) &&
                   hop_session_matches(ctx->session);
     if (current) {
-        *session = *ctx->session;
+        memcpy(session, ctx->session->bytes, HOP_TASK_SESSION_BYTES);
         *epoch = *ctx->epoch;
     }
     LeaveCriticalSection(ctx->state_lock);
@@ -410,8 +411,8 @@ int send_small_with_context(const hop_xfer_sender_context *context,
     uint8_t hdr[HOP_HEADER_SIZE], prefix[HOP_DATA_PREFIX];
     hop_session_id session;
     uint64_t epoch = 0;
-    int ok = context->write_frame != NULL &&
-             sender_context_snapshot_session(context->user, c, &session, &epoch);
+    int ok = context->write_frame != NULL && context->snapshot_session != NULL &&
+             context->snapshot_session(context->user, (intptr_t)c, session.bytes, &epoch);
     hop_xfer_sender_frame_part parts[3];
     size_t part_count = 0;
     if (ok && type != HOP_MSG_XFER_HELLO) {

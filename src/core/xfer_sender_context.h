@@ -41,6 +41,9 @@ typedef struct hop_xfer_sender_context {
      * write_frame must preserve whole-frame serialization with other writers.
      */
     int (*session_current)(void *user, intptr_t socket_handle, uint64_t epoch);
+    /* Snapshot current session bytes and epoch while holding the native state lock. */
+    int (*snapshot_session)(void *user, intptr_t socket_handle,
+                            uint8_t session[HOP_TASK_SESSION_BYTES], uint64_t *epoch);
     int (*write_frame)(void *user, intptr_t socket_handle, uint64_t epoch,
                        const hop_xfer_sender_frame_part *parts,
                        size_t part_count);
@@ -100,7 +103,7 @@ static inline int hop_xfer_sender_context_clock_valid(const hop_xfer_sender_cont
  * Sender operation; optional observability callbacks may be NULL. */
 static inline int hop_xfer_sender_context_valid(const hop_xfer_sender_context *ctx) {
     return ctx && ctx->now_ns && ctx->wait_ns && ctx->is_stopping &&
-           ctx->session_current && ctx->write_frame && ctx->is_cancelled &&
+           ctx->session_current && ctx->snapshot_session && ctx->write_frame && ctx->is_cancelled &&
            ctx->is_batch_cancelled && ctx->peer_aborted && ctx->request_reconnect &&
            ctx->ack_user && ctx->ack_register && ctx->ack_mark_sent && ctx->ack_set_deadline &&
            ctx->ack_wait_take && ctx->ack_unregister && ctx->ack_unregister_batch &&

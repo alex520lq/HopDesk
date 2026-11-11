@@ -55,6 +55,8 @@ hop_xfer_sender_worker_run_result hop_xfer_sender_worker_run(const hop_xfer_send
         hop_xfer_sender_worker_job_view v;memset(&v,0,sizeof(v));
         if(!o->view_job(o->user,job,&v)||!view_valid(&v,job)) {
             hop_log(HOP_LOG_ERROR,"xfer: invalid Sender Job view; releasing worker-owned Job");
+            /* A partial view can still identify the active marker to clear. */
+            if(v.task&&v.task->id)o->clear_active(o->user,v.batch,v.task->id);
             o->release_job(o->user,job);continue;
         }
         if(selected==HOP_XFER_SENDER_SCHEDULER_EXPIRED) {

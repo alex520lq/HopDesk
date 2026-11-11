@@ -540,3 +540,19 @@ if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
 if ($LASTEXITCODE -ne 0) { throw "Clipboard transaction test compilation failed ($LASTEXITCODE)" }
 & $clipboardTxn
 if ($LASTEXITCODE -ne 0) { throw "Clipboard transaction tests failed ($LASTEXITCODE)" }
+
+# Shared Sender Job release transaction (owner/resource/Task/Shutdown ordering).
+$jobLifecycle = Join-Path $build 'hopdesk-sender-job-lifecycle-tests.exe'
+$jobLifecycleSources = @(
+    (Join-Path $root 'tests/xfer_sender_job_lifecycle_tests.c'),
+    (Join-Path $root 'src/core/xfer_sender_job_lifecycle.c'),
+    (Join-Path $root 'src/core/xfer_sender_context_adapter.c')
+)
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I $inc /Fe:$jobLifecycle @jobLifecycleSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $jobLifecycle @jobLifecycleSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Sender Job Lifecycle test compilation failed ($LASTEXITCODE)" }
+& $jobLifecycle
+if ($LASTEXITCODE -ne 0) { throw "Sender Job Lifecycle tests failed ($LASTEXITCODE)" }

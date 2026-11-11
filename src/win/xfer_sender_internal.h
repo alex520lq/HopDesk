@@ -15,15 +15,15 @@
 #include "../core/xfer_sender_queue.h"
 #include "../core/xfer_sender_active_job.h"
 #include "../core/xfer_sender_worker.h"
+#include "../core/xfer_sender_job_lifecycle.h"
 #define CHUNK_HDR (25u + HOP_DATA_PREFIX)
-typedef enum {
-    XFER_JOB_OWNER_SUBMITTER = 0,
-    XFER_JOB_OWNER_QUEUE,
-    XFER_JOB_OWNER_WORKER,
-    XFER_JOB_OWNER_SHUTDOWN,
-    XFER_JOB_OWNER_RELEASING,
-    XFER_JOB_OWNER_RELEASED
-} xfer_job_owner;
+typedef hop_xfer_sender_job_owner xfer_job_owner;
+#define XFER_JOB_OWNER_SUBMITTER HOP_XFER_SENDER_JOB_OWNER_SUBMITTER
+#define XFER_JOB_OWNER_QUEUE HOP_XFER_SENDER_JOB_OWNER_QUEUE
+#define XFER_JOB_OWNER_WORKER HOP_XFER_SENDER_JOB_OWNER_WORKER
+#define XFER_JOB_OWNER_SHUTDOWN HOP_XFER_SENDER_JOB_OWNER_SHUTDOWN
+#define XFER_JOB_OWNER_RELEASING HOP_XFER_SENDER_JOB_OWNER_RELEASING
+#define XFER_JOB_OWNER_RELEASED HOP_XFER_SENDER_JOB_OWNER_RELEASED
 
 typedef struct xfer_job {
     struct xfer_job *next; xfer_job_owner owner; hop_session_id session;

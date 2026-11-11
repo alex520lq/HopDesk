@@ -523,13 +523,26 @@ const hop_xfer_sender_queue_ops s_sender_queue_ops = {
     sender_queue_batch, sender_queue_retry_at, sender_queue_give_up_at
 };
 
-static void job_defer_to_shutdown(xfer_job *j, xfer_job_owner expected_owner) {
-    if (!j) return;
+static int sender_job_claim_release(void *user, void *opaque,
+    hop_xfer_sender_job_owner expected, hop_xfer_sender_job_owner *actual) {
+    xfer_job *j = (xfer_job *)opaque;
+    (void)user;
+    EnterCriticalSection(&s_x.lock);
+    *actual = (hop_xfer_sender_job_owner)j->owner;
+    int claimed = j->owner == (xfer_job_owner)expected;
+    if (claimed) j->owner = XFER_JOB_OWNER_RELEASING;
+    LeaveCriticalSection(&s_x.lock);
+    return claimed;
+}
+
+static void sender_job_defer_to_shutdown(void *user, void *opaque,
+    hop_xfer_sender_job_owner expected) {
+    xfer_job *j = (xfer_job *)opaque;
+    (void)user;
     EnterCriticalSection(&s_x.lock);
     if (j->owner == XFER_JOB_OWNER_RELEASING) {
         j->owner = XFER_JOB_OWNER_SHUTDOWN;
-        /* A Job already on shutdown_jobs stays at its current list position. */
-        if (expected_owner != XFER_JOB_OWNER_SHUTDOWN) {
+        if (expected != HOP_XFER_SENDER_JOB_OWNER_SHUTDOWN) {
             j->next = s_x.shutdown_jobs;
             s_x.shutdown_jobs = j;
         }
@@ -537,120 +550,22 @@ static void job_defer_to_shutdown(xfer_job *j, xfer_job_owner expected_owner) {
     LeaveCriticalSection(&s_x.lock);
 }
 
-static int job_claim_for_release(xfer_job *j, xfer_job_owner expected_owner) {
-    EnterCriticalSection(&s_x.lock);
-    int actual_owner = (int)j->owner;
-    int claimed = j->owner == expected_owner;
-    if (claimed) j->owner = XFER_JOB_OWNER_RELEASING;
-    LeaveCriticalSection(&s_x.lock);
-    if (!claimed) {
-        hop_log(HOP_LOG_ERROR, "xfer: refusing Job release by non-owner (batch=%u owner=%d expected=%d)",
-                j->batch, actual_owner, (int)expected_owner);
-    }
-    return claimed;
-}
-
-static int job_release_task_resources(xfer_job *j) {
-    if (!j) return 0;
-    /* The Job owns the pixel allocation and the Task owns its image-temp
-     * reservation. Drop the allocation first, then return the exact ledger
-     * bytes before Task terminalization (which rejects live temp bytes). */
-    if (j->pixels) {
-        free(j->pixels);
-        j->pixels = NULL;
-        j->image_payload_released = 1;
-    } else if (j->is_image && !j->image_payload_released) {
-        hop_log(HOP_LOG_ERROR, "xfer: image Job lost its pixel owner before Reservation release (batch=%u)", j->batch);
-        return 0;
-    }
-    if (j->task.initialized) {
-        uint64_t bytes = hop_xfer_task_image_temp_bytes(&j->task);
-        if (bytes && !j->image_payload_released) {
-            hop_log(HOP_LOG_ERROR, "xfer: image-temp Reservation has no owned pixel buffer (batch=%u task=%llu bytes=%llu)",
-                    j->batch, (unsigned long long)j->task.id, (unsigned long long)bytes);
-            return 0;
-        }
-        if (bytes && !hop_xfer_task_release_image_temp(&j->task, bytes)) {
-            hop_log(HOP_LOG_ERROR, "xfer: Job image-temp Reservation release deferred (batch=%u task=%llu bytes=%llu)",
-                    j->batch, (unsigned long long)j->task.id, (unsigned long long)bytes);
-            return 0;
-        }
-    } else if (j->task.id) {
-        return 0; /* never discard an uninitialized-but-live Task handle */
-    }
-    return 1;
-}
-
-int job_free(xfer_job *j, xfer_job_owner expected_owner) {
-    if (!j) return 1;
-    if (!job_claim_for_release(j, expected_owner)) return -1;
-
-    /* A submitter-side rejection is a failure even if resource return must
-     * be retried later. Preserve that terminal intent before any early defer. */
-    if ((j->task.initialized || j->task.id) &&
-        expected_owner == XFER_JOB_OWNER_SUBMITTER && !j->pending_finish_valid) {
-        j->pending_finish_state = HOP_XFER_TASK_FAILED;
-        j->pending_finish_valid = 1;
-    }
-
-    /* No Task may terminate while the Job still owns image-temp bytes. */
-    if (!job_release_task_resources(j)) {
-        job_defer_to_shutdown(j, expected_owner);
-        hop_log(HOP_LOG_ERROR, "xfer: Job resource release deferred (batch=%u task=%llu)",
-                j->batch, (unsigned long long)j->task.id);
-        return 0;
-    }
-
-    if (j->task.initialized || j->task.id) {
-        if (!j->task.initialized) {
-            job_defer_to_shutdown(j, expected_owner);
-            hop_log(HOP_LOG_ERROR, "xfer: refusing to release Job with uninitialized live Task handle (batch=%u task=%llu)",
-                    j->batch, (unsigned long long)j->task.id);
-            return 0;
-        }
-        if (!hop_xfer_task_is_terminal(&j->task)) {
-            hop_xfer_task_state state = j->pending_finish_valid
-                ? j->pending_finish_state
-                : (expected_owner == XFER_JOB_OWNER_SUBMITTER
-                    ? HOP_XFER_TASK_FAILED : HOP_XFER_TASK_INTERRUPTED);
-            if (!j->pending_finish_valid &&
-                hop_xfer_sender_context_job_cancel_requested(&j->sender_context,j->batch,j->task.id))
-                state = HOP_XFER_TASK_CANCELLED;
-            hop_xfer_sender_context_task_finish(&j->sender_context,&j->task,state);
-            if (!hop_xfer_task_is_terminal(&j->task)) {
-                job_defer_to_shutdown(j, expected_owner);
-                hop_log(HOP_LOG_ERROR, "xfer: Job Task terminalization deferred (batch=%u task=%llu)",
-                        j->batch, (unsigned long long)j->task.id);
-                return 0;
-            }
-        }
-        if (!hop_xfer_sender_context_task_dispose(&j->sender_context, &j->task) ||
-            j->task.initialized || j->task.id) {
-            job_defer_to_shutdown(j, expected_owner);
-            hop_log(HOP_LOG_ERROR, "xfer: Job Task disposal deferred (batch=%u task=%llu)",
-                    j->batch, (unsigned long long)j->task.id);
-            return 0;
-        }
-    }
-
-    if (j->pending_status_end) {
-        hop_xfer_sender_context_status_end(&j->sender_context,j->batch,j->pending_status_phase,
-                          j->pending_status_detail[0] ? j->pending_status_detail : "Transfer ended");
-        j->pending_status_end=0;
-    }
-    int release_owner_ok = 0;
+static int sender_job_mark_released(void *user, void *opaque) {
+    xfer_job *j = (xfer_job *)opaque;
+    int ok = 0;
+    (void)user;
     EnterCriticalSection(&s_x.lock);
     if (j->owner == XFER_JOB_OWNER_RELEASING) {
         j->owner = XFER_JOB_OWNER_RELEASED;
-        release_owner_ok = 1;
+        ok = 1;
     }
     LeaveCriticalSection(&s_x.lock);
-    if (!release_owner_ok) {
-        job_defer_to_shutdown(j, expected_owner);
-        hop_log(HOP_LOG_ERROR, "xfer: Job release ownership changed before free (batch=%u)",
-                j->batch);
-        return 0;
-    }
+    return ok;
+}
+
+static void sender_job_free_storage(void *user, void *opaque) {
+    xfer_job *j = (xfer_job *)opaque;
+    (void)user;
     for (int i = 0; i < j->n; ++i) {
         free(j->e[i].full);
         free(j->e[i].name);
@@ -658,7 +573,32 @@ int job_free(xfer_job *j, xfer_job_owner expected_owner) {
     }
     free(j->e);
     free(j);
-    return 1;
+}
+
+int job_free(xfer_job *j, xfer_job_owner expected_owner) {
+    if (!j) return 1;
+    hop_xfer_sender_job_release_view view = {0};
+    view.job = j;
+    view.context = &j->sender_context;
+    view.task = &j->task;
+    view.batch = j->batch;
+    view.is_image = j->is_image;
+    view.pixels = &j->pixels;
+    view.image_payload_released = &j->image_payload_released;
+    view.pending_finish_state = &j->pending_finish_state;
+    view.pending_finish_valid = &j->pending_finish_valid;
+    view.pending_status_end = &j->pending_status_end;
+    view.pending_status_phase = &j->pending_status_phase;
+    view.pending_status_detail = j->pending_status_detail;
+    static const hop_xfer_sender_job_release_ops ops = {
+        NULL, sender_job_claim_release, sender_job_defer_to_shutdown,
+        sender_job_mark_released, sender_job_free_storage
+    };
+    hop_xfer_sender_job_release_result result = hop_xfer_sender_job_release(
+        &view, &ops, (hop_xfer_sender_job_owner)expected_owner);
+    if (result == HOP_XFER_SENDER_JOB_RELEASED) return 1;
+    if (result == HOP_XFER_SENDER_JOB_RELEASE_NOT_OWNER) return -1;
+    return 0;
 }
 
 typedef struct { xfer_job *job; SOCKET socket; } sender_worker_call;

@@ -451,3 +451,29 @@ The following checks require two physical HopDesk devices and must not be inferr
 6. After each scenario, inspect sender/receiver status and Task history; confirm no stuck Active/Queued Task, no duplicate history entry, no leaked staging directory, and no unexplained pending Reservation.
 
 Record device OS/build SHA, direction, network conditions, file manifest/hashes, interruption point, reconnect count, duration, and observed resource metrics. Any failed scenario blocks Sender refactor acceptance. CI Run #1635 validates automated production builds and integration fixtures only; it is not evidence that these physical-device checks have passed.
+
+
+## 36. Shared Sender Job release transaction (2026-11-11)
+
+The final Job release policy is now a shared Core transaction in
+`xfer_sender_job_lifecycle.c`. Both platform adapters provide only the native
+owner lock/list operations and the final Entry/Job storage destructor.
+
+Core owns the invariant order:
+
+1. Atomically claim the expected Submitter/Worker/Shutdown owner.
+2. Preserve Submitter rejection as a pending Failed terminal intent.
+3. Release the pixel allocation before returning its exact image-temp ledger bytes.
+4. Refuse Task terminalization while image-temp bytes or an uninitialized live Task handle remain.
+5. Select the terminal Task state from pending intent, cancellation, and owner.
+6. Finish and dispose the Task exactly once.
+7. Publish deferred Status completion only after Task disposal.
+8. Atomically mark the Job Released, then invoke the platform storage destructor.
+
+A failed resource return, terminal transition, disposal, or final owner transition
+moves the still-RELEASING Job to the Shutdown retry list. The shared Core does not
+own platform locks, shutdown list nodes, or Entry layout.
+
+Validation added to both core test runners covers successful release, wrong-owner
+rejection, missing image payload ownership, failed Reservation return and retry.
+Native two-device tests remain part of the final product acceptance checklist.

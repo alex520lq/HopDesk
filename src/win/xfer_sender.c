@@ -423,7 +423,7 @@ static void sender_engine_rate_feedback(void *user, uint64_t rtt_us) {
 
 
 static int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
-    if (!j) return JOB_NET_DOWN;
+    if (!j) return HOP_XFER_SENDER_JOB_NET_DOWN;
     sender_file_engine_call call = {c, tx, j};
     hop_xfer_sender_engine_adapter_ops ops;
     memset(&ops, 0, sizeof(ops));

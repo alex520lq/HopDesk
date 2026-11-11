@@ -1089,7 +1089,9 @@ int main(void){
         assert close < cleanup, 'failed receive cleanup must wait for writer close'
 
         queue=extract(sender,'send_thread')
-        assert 'hop_xfer_sender_scheduler_wait_next' in queue
+        worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_worker_run(&worker)' in queue
+        assert 'hop_xfer_sender_scheduler_wait_next' in worker_core
         assert 'hop_xfer_sender_queue_take_head(' not in queue
         assert 'waited_for_queue' not in queue
 
@@ -1113,14 +1115,17 @@ int main(void){
         assert 'sender_context_is_stopping(NULL)' not in commit_stop
         thread=extract(sender,'send_thread')
         worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
         flow_core=(ROOT/'src/core/xfer_sender_worker_flow.c').read_text(encoding='utf-8')
-        assert 'sender_worker_finish_job(' in thread
+        assert 'worker.finish_job=sender_worker_finish_job_adapter' in thread
+        assert 'sender_worker_finish_job(' in worker
         assert 'hop_xfer_sender_worker_finish_job' in worker
         assert 'hop_xfer_sender_plan_retry(' not in worker
         assert 'hop_xfer_sender_get_terminal_decision(' not in worker
         assert 'hop_xfer_sender_plan_retry(' in flow_core
         assert 'hop_xfer_sender_get_terminal_decision(' in flow_core
-        assert 'hop_xfer_sender_context_status_start_job(&j->sender_context' in thread
+        assert 'hop_xfer_sender_context_status_start_job(v.context,job)' in worker_core
+        assert 'ops->status_end' in flow_core
         assert 'hop_xfer_sender_context_status_end(&j->sender_context' not in thread
         assert 'hop_xfer_sender_context_status_end(' in worker
         assert ' status_start_job(' not in thread and ' status_end(' not in thread
@@ -1192,14 +1197,16 @@ int main(void){
         scheduler=(ROOT/'src/core/xfer_sender_scheduler.c').read_text(encoding='utf-8')
         scheduler_header=(ROOT/'src/core/xfer_sender_scheduler.h').read_text(encoding='utf-8')
         send_thread=extract(worker,'send_thread')
-        assert 'sender_worker_clear_active_job(expired)' in send_thread
+        worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_worker_run(&worker)' in send_thread
+        assert 'o->clear_active(o->user,v.batch,v.task->id)' in worker_core
         assert 'memset(&s_x.active_job,0,sizeof(s_x.active_job))' in shutdown_drain
         begin_pass=extract(worker,'sender_scheduler_begin_pass')
         wait_adapter=extract(worker,'sender_scheduler_wait_locked')
         clear_active=extract(worker,'sender_worker_clear_active_job')
         dispose_job=extract(worker,'sender_worker_dispose_job')
         claim_adapter=extract(worker,'sender_scheduler_claim_locked')
-        assert 'hop_xfer_sender_scheduler_wait_next' in send_thread
+        assert 'hop_xfer_sender_scheduler_wait_next' in worker_core
         assert 'hop_xfer_sender_queue_take_head' not in send_thread
         assert 'hop_xfer_sender_queue_take_cancelled' not in send_thread
         assert 'wait_for_work_locked' in scheduler_header and 'wait_for_work_locked' in scheduler
@@ -1243,7 +1250,7 @@ int main(void){
         if platform=='mac':
             assert 'hop_xfer_sender_queue_detach_all' not in thread
         else:
-            assert 'sender_context_is_stopping(&s_sender_platform)' in thread
+            assert 'sender_context_is_stopping(&s_sender_platform)' in worker
 
         receive=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
         writer_start=extract(receive,'wq_start')
@@ -1589,7 +1596,7 @@ int main(void){
         assert 'hop_xfer_sender_active_job_take_cancelled_and_clear' in worker
         assert 'hop_xfer_sender_active_job_clear_if_matches' in clear_active
         assert dispose_job.index('sender_worker_clear_active_job') < dispose_job.index('job_free')
-        assert 'sender_worker_clear_active_job(j)' in send_thread
+        assert 'sender_worker_clear_active_job(call->job)' in dispose_job
         assert 'hop_xfer_sender_active_job_record_peer_abort' in receive
         assert 'hop_xfer_sender_active_job_reset_peer_abort' in receive
         assert 'active_job.abort_batch' in protocol
@@ -1605,7 +1612,8 @@ int main(void){
         assert 's_x.abort_batch' not in transport+worker+receive
         assert 's_x.abort_reason' not in transport+worker+receive
         assert 's_x.cur_batch' not in submission
-        assert 'hop_xfer_sender_scheduler_wait_next' in worker
+        worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_scheduler_wait_next' in worker_core
         assert 'hop_xfer_sender_queue_take_head' not in worker
         assert 'queue_unlink' not in worker
         transport=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')

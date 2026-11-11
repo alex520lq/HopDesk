@@ -1284,7 +1284,8 @@ int main(void){
             assert 'while (!xfer_shutdown()) usleep(100000)' in startup
         protocol=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         assert 'send_chunk(&call->job->sender_context' in protocol
-        assert 'send_small_with_context(&call->job->sender_context' in protocol
+        send_message=extract(protocol,'sender_engine_send_message')
+        assert 'send_small_with_context(' in send_message and '&call->job->sender_context' in send_message
         assert 'hop_xfer_sender_send_chunk' in protocol
         ack_core=(ROOT/'src/core/xfer_sender_ack_wait.c').read_text(encoding='utf-8')
         chunk_core=(ROOT/'src/core/xfer_sender_chunk.c').read_text(encoding='utf-8')

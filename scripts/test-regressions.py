@@ -1158,20 +1158,24 @@ int main(void){
         shutdown=extract(lifecycle,'xfer_shutdown')
         shutdown_drain=extract(worker,'sender_shutdown_drain_jobs')
         job_free=extract(worker,'job_free')
-        defer_job=extract(worker,'job_defer_to_shutdown')
-        release_job_resources=extract(worker,'job_release_task_resources')
+        defer_job=extract(worker,'sender_job_defer_to_shutdown')
+        release_job_resources=extract(ROOT/'src/core/xfer_sender_job_lifecycle.c','release_resources')
         finish_callback=extract(worker,'sender_worker_task_finish')
+        core_release=(ROOT/'src/core/xfer_sender_job_lifecycle.c').read_text(encoding='utf-8')
         requeue=extract(worker,'sender_worker_requeue_front')
         submit_enter=extract(submit,'sender_submit_enter')
         assert 'XFER_JOB_OWNER_WORKER' in worker and 'XFER_JOB_OWNER_SUBMITTER' in submit
-        assert 'XFER_JOB_OWNER_SHUTDOWN' in defer_job and 'XFER_JOB_OWNER_RELEASED' in job_free
-        assert 'hop_xfer_task_is_terminal' in job_free and 'hop_xfer_sender_context_task_dispose' in job_free
-        assert release_job_resources.index('free(j->pixels)') < release_job_resources.index('hop_xfer_task_release_image_temp')
+        assert 'HOP_XFER_SENDER_JOB_OWNER_SHUTDOWN' in defer_job
+        assert 'XFER_JOB_OWNER_RELEASED' in worker
+        assert 'hop_xfer_sender_job_release(' in job_free
+        assert 'hop_xfer_task_is_terminal' in core_release and 'hop_xfer_sender_context_task_dispose' in core_release
+        assert release_job_resources.index('free(*v->pixels)') < release_job_resources.index('hop_xfer_task_release_image_temp')
         assert 'image_payload_released' in release_job_resources and 'lost its pixel owner' in release_job_resources
-        assert job_free.index('job_release_task_resources(j)') < job_free.index('hop_xfer_sender_context_task_finish')
-        assert finish_callback.index('job_release_task_resources(job)') < finish_callback.index('hop_xfer_sender_context_task_finish')
-        assert 'pending_finish_state' in job_free and 'pending_status_end' in worker
-        assert 'expected_owner == XFER_JOB_OWNER_SUBMITTER' in job_free
+        assert core_release.index('release_resources(v)') < core_release.index('hop_xfer_sender_context_task_finish')
+        assert 'pending_finish_state' in core_release and 'pending_status_end' in worker
+        assert 'HOP_XFER_SENDER_JOB_OWNER_SUBMITTER' in core_release
+        assert 'pending_finish_state=state' in finish_callback
+        assert 'job_release_task_resources' not in finish_callback and 'hop_xfer_sender_context_task_finish' not in finish_callback
         assert 'terminal_was_pending && !job->pending_finish_valid' in shutdown_drain
         status_end_callback=extract(worker,'sender_worker_status_end')
         assert 'hop_xfer_sender_context_status_end(' not in status_end_callback

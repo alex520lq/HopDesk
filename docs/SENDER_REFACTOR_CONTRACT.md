@@ -399,3 +399,24 @@ No physical two-device or weak-network acceptance is claimed by the unit/CI test
 - Added production-linked chunk tests for owned/external data buffers, exact frame decoding, token-bucket waiting, burst rejection, stale session and telemetry; added adapter tests for file and image jobs.
 - Wired the new Core tests into macOS and Windows Core test scripts and the Windows HA link target. App build scripts already include all Core C files automatically.
 - **Validation: GitHub Actions Run #1591 (ID `43019588698`, tested commit `58b99d969f90fb3e8756a47b5ec6b62113217fcd`) passed on Windows MSVC and macOS Apple Clang.** Both app builds, Portable Core and production regression suites, file-transfer protocol tests, TCP loopback, native control/data role + reconnect integration tests, and platform packaging passed. PR release publication was skipped.
+
+
+## 33. DONE/DONE_ACK and reconnect/ACK platform adapter isolation (2026-11-11)
+
+Implementation slice in progress:
+
+- Added independently compiled Windows/macOS xfer_sender_commit_adapter.c modules. They own the native current-connection/session snapshot, DONE frame send, ACK registration/deadline/unregister forwarding, shared ACK-wait invocation, and platform result mapping.
+- The platform Sender orchestration now delegates completion through sender_commit_adapter_run; shared DONE retry/commit policy remains in src/core/xfer_sender_engine.c::hop_xfer_sender_run_commit.
+- DONE_ACK continues to use the single shared hop_xfer_sender_ack_wait state machine. The platform adapters retain only their native poll policy (Windows 0 ms event wait; macOS 100 ms bounded polling).
+- Added independently compiled Windows/macOS xfer_sender_connection_adapter.c modules for reconnect-kick. The callback still invalidates peer readiness and shuts down the current socket under the existing native state/session lock; only its ownership/location changed.
+- Added independently compiled Windows/macOS xfer_sender_ack_platform_adapter.c modules for ACK adapter creation/destruction, wake-up, and inbound delivery. Native event/condition synchronization remains in the opaque xfer_ack_coordinator modules.
+- Removed obsolete ACK forwarding wrappers and unused legacy DONE send wrappers from both xfer_sender.c files. Removed duplicate ACK result macro blocks and duplicate comments.
+- Updated Windows HA source linkage and source-contract regression assertions to follow the new platform adapter boundaries.
+- App build scripts discover nested platform .c files recursively; the new adapters are therefore included by both native app builds.
+
+Validation status at this documentation update:
+- Static repository checks confirm each platform Sender source has exactly one definition of each ACK result macro, no legacy ACK forwarding wrappers, no legacy send_done wrapper, and delegates DONE through sender_commit_adapter_run.
+- GitHub Actions Run #1603 (ID 43029913816) was triggered for this implementation and is in progress. No build/test pass is claimed until it completes.
+- Real physical two-device disconnect/cancel/reconnect and long-duration transfer testing remain unperformed and are still mandatory final acceptance gates.
+
+No protocol bytes, DONE payload layout, retry budget, ACK timeout, ACK slot identity, session/epoch check, or Worker terminal outcome policy is intentionally changed in this extraction.

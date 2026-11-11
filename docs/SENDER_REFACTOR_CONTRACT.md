@@ -420,3 +420,9 @@ Validation status at this documentation update:
 - Real physical two-device disconnect/cancel/reconnect and long-duration transfer testing remain unperformed and are still mandatory final acceptance gates.
 
 No protocol bytes, DONE payload layout, retry budget, ACK timeout, ACK slot identity, session/epoch check, or Worker terminal outcome policy is intentionally changed in this extraction.
+
+
+CI follow-up:
+- Run #1614 exposed a Windows return-code macro accidentally removed with the obsolete DONE wrapper block; the code now returns the shared HOP_XFER_SENDER_JOB_NET_DOWN enum directly.
+- Run #1619 confirmed both native application builds compile, including the new platform adapters. Its portable regression phase then exposed stale source-extraction fixtures that still expected the deleted send_done wrapper and looked for moved commit callbacks in xfer_sender.c. The fixture now builds its DONE test frame locally and extracts the commit callbacks from xfer_sender_commit_adapter.c.
+- A fresh full Windows/macOS Actions run is required for the updated head; neither failed run is counted as acceptance.

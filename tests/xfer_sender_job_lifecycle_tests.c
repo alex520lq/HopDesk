@@ -4,12 +4,19 @@
 #include <stdlib.h>
 #include <string.h>
 typedef struct {hop_xfer_sender_job_owner owner;int deferred,freed,mark,status;} fake;
-static uint64_t temp_bytes;static int terminal,fail_release,cancelled;
+static uint64_t temp_bytes;static int terminal,fail_release,fail_finish,fail_dispose,cancelled;
+static unsigned finish_calls,dispose_calls;
 uint64_t hop_xfer_task_image_temp_bytes(const hop_xfer_task*t){return t&&t->initialized?temp_bytes:0;}
 int hop_xfer_task_release_image_temp(hop_xfer_task*t,uint64_t n){if(!t||!t->initialized||fail_release||n>temp_bytes)return 0;temp_bytes-=n;return 1;}
 int hop_xfer_task_is_terminal(const hop_xfer_task*t){return t&&t->initialized&&terminal;}
-int hop_xfer_task_finish(hop_xfer_task*t,hop_xfer_task_state s){(void)s;if(!t||!t->initialized)return 0;terminal=1;return 1;}
-void hop_xfer_task_dispose(hop_xfer_task*t){if(t&&t->initialized&&terminal)memset(t,0,sizeof(*t));}
+int hop_xfer_task_finish(hop_xfer_task*t,hop_xfer_task_state s){
+ (void)s;if(!t||!t->initialized)return 0;finish_calls++;
+ if(fail_finish){fail_finish=0;return 0;}terminal=1;return 1;
+}
+void hop_xfer_task_dispose(hop_xfer_task*t){
+ dispose_calls++;if(fail_dispose){fail_dispose=0;return;}
+ if(t&&t->initialized&&terminal)memset(t,0,sizeof(*t));
+}
 static int is_cancel(void*u,uint32_t b,uint64_t id){(void)u;(void)b;(void)id;return cancelled;}
 static int no_cancel(void*u,uint32_t b){(void)u;(void)b;return 0;}
 static void finish(void*u,hop_xfer_task*t,int s){(void)u;(void)hop_xfer_task_finish(t,(hop_xfer_task_state)s);}
@@ -35,7 +42,7 @@ static void setup(hop_xfer_sender_job_release_view*v,fake*f,hop_xfer_sender_cont
 int main(void){
  hop_xfer_sender_job_release_view v;hop_xfer_sender_context c;hop_xfer_task t;fake f;
  uint8_t*px;int rel,pv,se,sp;hop_xfer_task_state ps;char d[96];
- temp_bytes=42;terminal=fail_release=cancelled=0;
+ temp_bytes=42;terminal=fail_release=fail_finish=fail_dispose=cancelled=0;finish_calls=dispose_calls=0;
  setup(&v,&f,&c,&t,&px,&rel,&ps,&pv,&se,&sp,d);
  assert(hop_xfer_sender_job_release(&v,&ops,HOP_XFER_SENDER_JOB_OWNER_WORKER)==HOP_XFER_SENDER_JOB_RELEASED);
  assert(!px&&rel&&!temp_bytes&&!t.id&&f.status==1&&f.freed==1&&f.owner==HOP_XFER_SENDER_JOB_OWNER_RELEASED);
@@ -51,7 +58,21 @@ int main(void){
  assert(!px&&!terminal&&t.initialized&&f.freed==0);
  fail_release=0;assert(hop_xfer_sender_job_release(&v,&ops,HOP_XFER_SENDER_JOB_OWNER_SHUTDOWN)==HOP_XFER_SENDER_JOB_RELEASED);
  assert(!temp_bytes&&!t.id&&f.freed==1);
- temp_bytes=0;terminal=fail_release=cancelled=0;
+ /* A failed Task finish is retried by Shutdown without publishing Status. */
+ temp_bytes=42;terminal=fail_release=fail_finish=fail_dispose=cancelled=0;finish_calls=dispose_calls=0;
+ setup(&v,&f,&c,&t,&px,&rel,&ps,&pv,&se,&sp,d);fail_finish=1;
+ assert(hop_xfer_sender_job_release(&v,&ops,HOP_XFER_SENDER_JOB_OWNER_WORKER)==HOP_XFER_SENDER_JOB_RELEASE_DEFERRED);
+ assert(!terminal&&t.initialized&&f.status==0&&f.freed==0&&f.deferred==1);
+ assert(hop_xfer_sender_job_release(&v,&ops,HOP_XFER_SENDER_JOB_OWNER_SHUTDOWN)==HOP_XFER_SENDER_JOB_RELEASED);
+ assert(terminal&&!t.id&&finish_calls==2&&dispose_calls==1&&f.status==1&&f.freed==1);
+ /* A failed Task dispose retries disposal only; terminalization stays once-only. */
+ temp_bytes=42;terminal=fail_release=fail_finish=fail_dispose=cancelled=0;finish_calls=dispose_calls=0;
+ setup(&v,&f,&c,&t,&px,&rel,&ps,&pv,&se,&sp,d);fail_dispose=1;
+ assert(hop_xfer_sender_job_release(&v,&ops,HOP_XFER_SENDER_JOB_OWNER_WORKER)==HOP_XFER_SENDER_JOB_RELEASE_DEFERRED);
+ assert(terminal&&t.initialized&&f.status==0&&f.freed==0&&finish_calls==1&&dispose_calls==1);
+ assert(hop_xfer_sender_job_release(&v,&ops,HOP_XFER_SENDER_JOB_OWNER_SHUTDOWN)==HOP_XFER_SENDER_JOB_RELEASED);
+ assert(!t.id&&finish_calls==1&&dispose_calls==2&&f.status==1&&f.freed==1);
+ temp_bytes=0;terminal=fail_release=fail_finish=fail_dispose=cancelled=0;
  setup(&v,&f,&c,&t,&px,&rel,&ps,&pv,&se,&sp,d);
  assert(hop_xfer_sender_job_release(&v,&ops,HOP_XFER_SENDER_JOB_OWNER_QUEUE)==HOP_XFER_SENDER_JOB_RELEASE_NOT_OWNER);
  assert(px&&t.initialized&&!f.freed);free(px);

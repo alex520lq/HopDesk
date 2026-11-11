@@ -1224,8 +1224,9 @@ int main(void){
         writer_start=extract(receive,'wq_start')
         writer_stop=extract(receive,'wq_stop')
         assert 'static int wq_stop(void)' in receive and 'return 0;' in writer_stop
-        assert 'if (s_wq) s_rx.writer = s_wq;' in writer_start
+        assert 's_rx.writer = s_wq;' in writer_start
         assert 's_rx.writer = NULL;' in writer_stop
+        assert 'if (!s_wq)' in writer_stop and writer_stop.index('if (!s_wq)') < writer_stop.index('s_rx.writer = NULL;')
         assert writer_stop.index('s_wq = NULL;') < writer_stop.index('s_rx.writer = NULL;') < writer_stop.index('hop_writer_queue_destroy(stopped)')
         assert 'int xfer_shutdown(void)' in lifecycle
         clipboard=(ROOT/('src/win/clipboard.c' if platform=='win' else 'src/mac/clipboard.m')).read_text(encoding='utf-8')

@@ -62,7 +62,10 @@ static void wq_write_error(void *context, uint64_t offset, unsigned long error) 
 }
 
 static int wq_start(void) {
-    if (s_wq) return 0;
+    if (s_wq) {
+        s_rx.writer = s_wq;
+        return 0;
+    }
     const hop_writer_queue_callbacks callbacks = {
         HOP_IO_DEADLINE_MS,
         wq_reserve_task_rx, wq_release_task_rx, wq_task_cancelled,
@@ -96,7 +99,10 @@ static int wq_error_get(void) {
 }
 
 static int wq_stop(void) {
-    if (!s_wq) return 1;
+    if (!s_wq) {
+        s_rx.writer = NULL;
+        return 1;
+    }
     if (!hop_writer_queue_stop(s_wq)) {
         hop_log(HOP_LOG_WARN, "xfer: writer worker did not exit, retain queue state");
         return 0;

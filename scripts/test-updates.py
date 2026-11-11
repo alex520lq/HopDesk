@@ -78,7 +78,7 @@ with tempfile.TemporaryDirectory(prefix='hopdesk-updates-') as tmp:
     assert 'prepared_ok' in after_spawn and 'PostMessageW(owner, WM_CLOSE' in after_spawn
     assert 'MB_OK | MB_ICONINFORMATION' not in after_spawn
     for platform in ('win','mac'):
-        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
         receiver=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
         for name in ('xfer_submit_paths','xfer_submit_image'):
             wrapper=sender[sender.rindex('int '+name+'('):]

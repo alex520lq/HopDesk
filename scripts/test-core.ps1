@@ -526,3 +526,17 @@ if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
 if ($LASTEXITCODE -ne 0) { throw "Sender ACK adapter test compilation failed ($LASTEXITCODE)" }
 & $senderAckAdapter
 if ($LASTEXITCODE -ne 0) { throw "Sender ACK adapter tests failed ($LASTEXITCODE)" }
+
+$clipboardTxn = Join-Path $build 'hopdesk-clipboard-txn-tests.exe'
+$clipboardTxnSources = @(
+    (Join-Path $root 'tests/xfer_clipboard_txn_tests.c'),
+    (Join-Path $root 'src/core/xfer_clipboard_txn.c')
+)
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$clipboardTxn @clipboardTxnSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $clipboardTxn @clipboardTxnSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Clipboard transaction test compilation failed ($LASTEXITCODE)" }
+& $clipboardTxn
+if ($LASTEXITCODE -ne 0) { throw "Clipboard transaction tests failed ($LASTEXITCODE)" }

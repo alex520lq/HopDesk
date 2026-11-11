@@ -4,18 +4,15 @@ static uint32_t clip_local_device(void) {
 static void clip_send_offer_clear(uint32_t origin,uint64_t generation);
 static void clip_clear_remote_offer_local(void) {
     pthread_mutex_lock(&s_offer_lock);
-    s_remote_offer_origin=0; s_remote_offer_generation=0;
-    s_pending_paste_request=0; s_pending_paste_change=0;
+    (void)hop_clipboard_txn_clear_remote_offer(&s_clip_txn);
     pthread_mutex_unlock(&s_offer_lock);
 }
 static void clip_invalidate_remote_offer(int notify_peer) {
-    uint32_t origin=0;uint64_t generation=0;
+    hop_clipboard_offer_key old;
     pthread_mutex_lock(&s_offer_lock);
-    origin=s_remote_offer_origin;generation=s_remote_offer_generation;
-    s_remote_offer_origin=0;s_remote_offer_generation=0;
-    s_pending_paste_request=0;s_pending_paste_change=0;
+    old=hop_clipboard_txn_clear_remote_offer(&s_clip_txn);
     pthread_mutex_unlock(&s_offer_lock);
-    if(notify_peer&&origin&&generation)clip_send_offer_clear(origin,generation);
+    if(notify_peer&&old.origin&&old.generation)clip_send_offer_clear(old.origin,old.generation);
 }
 static void clip_send_offer_clear(uint32_t origin,uint64_t generation) {
     uint8_t p[HOP_CLIP_OFFER_CLEAR_BYTES];
@@ -26,10 +23,10 @@ static void clip_send_offer_clear(uint32_t origin,uint64_t generation) {
 static void clip_clear_local_offer(int notify_peer) {
     uint64_t generation;
     pthread_mutex_lock(&s_offer_lock);
-    generation=s_local_offer_generation;
+    generation=hop_clipboard_txn_clear_local_offer(&s_clip_txn);
     for(int i=0;i<s_local_offer_count;++i)free(s_local_offer_paths[i]);
     memset(s_local_offer_paths,0,sizeof(s_local_offer_paths));
-    s_local_offer_count=0;s_local_offer_generation=0;
+    s_local_offer_count=0;
     pthread_mutex_unlock(&s_offer_lock);
     if(notify_peer&&generation)clip_send_offer_clear(clip_local_device(),generation);
 }
@@ -62,9 +59,7 @@ static int clip_publish_local_paths(NSArray<NSURL *> *urls) {
     }
     clip_invalidate_remote_offer(1);clip_clear_local_offer(1);
     pthread_mutex_lock(&s_offer_lock);
-    uint64_t generation=++s_local_offer_sequence;
-    if(!generation)generation=++s_local_offer_sequence;
-    s_local_offer_generation=generation;
+    uint64_t generation=hop_clipboard_txn_publish_local_offer(&s_clip_txn);
     for(NSUInteger i=0;i<n;++i)s_local_offer_paths[i]=copies[i];
     s_local_offer_count=(int)n;
     pthread_mutex_unlock(&s_offer_lock);

@@ -22,6 +22,7 @@
 #include "mac_app.h"
 #include "xfer.h"
 #include "../core/xfer_task.h"
+#include "../core/xfer_clipboard_txn.h"
 
 #include <stdlib.h>
 #include <limits.h>
@@ -37,9 +38,19 @@ static dispatch_source_t s_timer;
 
 static pthread_mutex_t s_offer_lock = PTHREAD_MUTEX_INITIALIZER;
 static dispatch_group_t s_paste_group;
-static int s_paste_scan_active;
 static int s_image_work_active;
-static int s_clip_stopping;
+static hop_clipboard_txn s_clip_txn;
+#define s_local_offer_generation (s_clip_txn.local_offer_generation)
+#define s_local_offer_sequence (s_clip_txn.local_offer_sequence)
+#define s_offer_request_seq (s_clip_txn.request_sequence)
+#define s_remote_offer_origin (s_clip_txn.remote_offer_origin)
+#define s_remote_offer_generation (s_clip_txn.remote_offer_generation)
+#define s_pending_paste_request (s_clip_txn.pending_request_id)
+#define s_pending_paste_change (s_clip_txn.pending_clipboard_version)
+#define s_seen_paste_requests (s_clip_txn.seen_requests)
+#define s_seen_paste_next (s_clip_txn.seen_next)
+#define s_paste_scan_active (s_clip_txn.paste_scan_active)
+#define s_clip_stopping (s_clip_txn.stopping)
 typedef struct image_work_task_owner {
     struct image_work_task_owner *next;
     hop_xfer_task task;
@@ -47,16 +58,8 @@ typedef struct image_work_task_owner {
 static image_work_task_owner *s_pending_image_tasks;
 static char *s_local_offer_paths[HOP_CLIP_OFFER_MAX_ITEMS];
 static int s_local_offer_count;
-static uint64_t s_local_offer_generation, s_local_offer_sequence;
-static uint32_t s_offer_request_seq;
-static uint32_t s_remote_offer_origin;
-static uint64_t s_remote_offer_generation;
-static uint32_t s_pending_paste_request;
-static NSInteger s_pending_paste_change;
-static uint32_t s_seen_paste_requests[32];
-static unsigned s_seen_paste_next;
 
-#include "clipboard_offer.inc"
+#include "clipboard_offer.inc"#include "clipboard_offer.inc"
 
 static uint32_t image_work_transfer_id(void) {
     uint32_t id = __sync_add_and_fetch(&s_image_work_seq, 1);
@@ -427,7 +430,7 @@ static void poll_pasteboard(void) {
 
 void clipboard_init(void) {
     pthread_mutex_lock(&s_offer_lock);
-    s_clip_stopping=0;s_paste_scan_active=0;s_image_work_active=0;
+    hop_clipboard_txn_init(&s_clip_txn);hop_clipboard_txn_set_stopping(&s_clip_txn,0);s_image_work_active=0;
     s_paste_group=dispatch_group_create();
     s_last_change = [[NSPasteboard generalPasteboard] changeCount];
     pthread_mutex_unlock(&s_offer_lock);
@@ -446,7 +449,7 @@ void clipboard_init(void) {
 }
 
 int clipboard_shutdown(void) {
-    pthread_mutex_lock(&s_offer_lock);s_clip_stopping=1;pthread_mutex_unlock(&s_offer_lock);
+    pthread_mutex_lock(&s_offer_lock);hop_clipboard_txn_set_stopping(&s_clip_txn,1);pthread_mutex_unlock(&s_offer_lock);
     if(s_timer){dispatch_source_cancel(s_timer);s_timer=nil;}
     if(s_paste_group)dispatch_group_wait(s_paste_group,DISPATCH_TIME_FOREVER);
     if (!image_work_retry_pending()) {
@@ -474,7 +477,7 @@ static void apply_objects_retry(NSArray *objects, NSString *kind,
         hop_log(HOP_LOG_INFO, "clip: %s apply retry cancelled; clipboard changed locally",
                 [kind UTF8String]);
         if([kind isEqualToString:@"paths-paste"]) {
-            pthread_mutex_lock(&s_offer_lock); s_pending_paste_request=0; s_pending_paste_change=0; pthread_mutex_unlock(&s_offer_lock);
+            pthread_mutex_lock(&s_offer_lock); hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,0); pthread_mutex_unlock(&s_offer_lock);
         }
         return;
     }
@@ -486,8 +489,7 @@ static void apply_objects_retry(NSArray *objects, NSString *kind,
         pthread_mutex_lock(&s_offer_lock); s_last_change = [pb changeCount]; pthread_mutex_unlock(&s_offer_lock);
         if([kind isEqualToString:@"paths-paste"]) {
             pthread_mutex_lock(&s_offer_lock);
-            s_remote_offer_origin=0;s_remote_offer_generation=0;
-            s_pending_paste_request=0;s_pending_paste_change=0;
+            (void)hop_clipboard_txn_clear_remote_offer(&s_clip_txn);
             pthread_mutex_unlock(&s_offer_lock);
             /* PID alone cannot prove the original Finder window or folder is
              * unchanged. Keep the files on the pasteboard and ask the user to
@@ -509,7 +511,7 @@ static void apply_objects_retry(NSArray *objects, NSString *kind,
             apply_objects_retry(objects, kind, attempt + 1, expected);
         });
     } else {
-        if([kind isEqualToString:@"paths-paste"]) { pthread_mutex_lock(&s_offer_lock); s_pending_paste_request=0; s_pending_paste_change=0; pthread_mutex_unlock(&s_offer_lock); }
+        if([kind isEqualToString:@"paths-paste"]) { pthread_mutex_lock(&s_offer_lock); hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,0); pthread_mutex_unlock(&s_offer_lock); }
         hop_log(HOP_LOG_ERROR, "clip: %s pasteboard write failed after retries",
                 [kind UTF8String]);
     }

@@ -957,3 +957,13 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 **验收**：两端生产构建使用同一套事务规则；覆盖 Offer 替换/清除、重复/过期/迟到 Request、成功/失败 Paste、取消/断线、图片预算与重试、Task/Reservation exactly-once 释放；删除两端重复的事务状态机和旧包装；Windows/macOS 原生构建与相关测试通过。完成前不得开始 Connection、Input 或 UI 重构。
 
 **当前状态**：仅完成远程源码初步盘点，尚未完成本地完整调用链审计；不得标记为已实施或已验证。
+
+
+### Clipboard 完整重构实现记录（2026-11-11，等待 CI）
+
+- 新增共享 Core：src/core/xfer_clipboard_txn.[ch]。由单一状态对象拥有本地 Offer generation、远端 Offer identity、Paste Request ID 与 clipboard version、32 项重复请求记录、stale/busy admission、Paste 完成校验和 paste worker admission 状态。
+- Windows/macOS 的 SRWLOCK 与 pthread mutex 仍然是平台序列化原语；Core 不包含 Win32/NSPasteboard API、原生路径类型、线程/队列 API 或系统句柄。
+- 两端生产代码已迁移到相同 Core 转换：Offer 发布/清除、远端 Offer 接收/清除、发起 Paste Request、入站 Request 去重与 admission、Paste 完成校验、Worker 完成。
+- 平台 Adapter 仍保留本机路径快照、Win32 Clipboard Sequence Number/HGLOBAL/PostMessage、macOS NSPasteboard changeCount/main queue/Dispatch Group。
+- 新增 tests/xfer_clipboard_txn_tests.c，覆盖 generation、offer matching、clipboard version guard、request idempotency、duplicate/stale/busy admission、worker lifecycle 和 stopping。Windows/macOS test-core 脚本均加入该测试；test-regressions.py 检查两端生产路径实际调用共享 API。
+- 当前实现提交的 Windows/macOS CI 尚未执行；在精确提交 SHA 的 Actions 完成前不得标记验收通过。真实双设备 Paste、剪贴板争用和关闭竞态仍需单独实机验证。

@@ -313,3 +313,25 @@
 - 不在未确认键盘事件目标、修饰键状态和焦点变化时盲目自动重放 Ctrl+V。
 - 不把本机回环压测当作真实双机性能证据。
 - 不因传输重构顺手改动无关的双角色键鼠/UI 功能。
+
+
+## Clipboard transaction Core consolidation (2026-11-11)
+
+The shared src/core/xfer_clipboard_txn.[ch] module now owns the cross-platform Offer/Paste business state:
+local Offer generations, remote Offer identity, pending paste request identity and clipboard version,
+request ID allocation, bounded duplicate-request history, stale/busy admission decisions, completion
+validation, and paste-worker admission state. Windows SRWLOCK and macOS pthread mutex remain the
+serialization primitives; no OS clipboard API, path representation, worker scheduler, or native handle
+has moved into Core.
+
+Both platform implementations call the same Core transitions for Offer publish/clear/replace,
+remote Offer receipt/clear, outbound Paste Request creation, inbound request admission/deduplication,
+Paste completion validation, and worker completion. Native code continues to own path snapshots,
+Win32 clipboard sequence sampling and HGLOBAL writes, NSPasteboard changeCount sampling and main-queue
+writes, and platform worker lifecycle.
+
+Automated Core coverage is in tests/xfer_clipboard_txn_tests.c; Windows and macOS core test scripts
+compile and execute it. The source regression suite asserts that both production platform paths use
+the shared transaction API. CI and native app builds are required before this change is accepted.
+Physical two-device paste, clipboard contention, and shutdown-race validation remain separately
+required and are not inferred from unit tests.

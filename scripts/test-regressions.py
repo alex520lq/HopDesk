@@ -978,12 +978,13 @@ int main(void){
         assert 'adapter_wait_ack' in engine_adapter
         assert 'static hop_xfer_ack_coordinator *s_ack' not in sender
         assert 'hop_xfer_ack_coordinator_' not in sender
-        assert 'hop_xfer_sender_ack_adapter_create' in sender
+        ack_platform=(ROOT/f'src/{platform}/xfer_sender_ack_platform_adapter.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_ack_adapter_create' in ack_platform
         assert 'hop_xfer_sender_ack_adapter_register' in sender
         assert 'context->ack_wait_take(context->ack_user' in ack_wait_core
         peer_abort_body=extract(sender,'sender_context_peer_aborted')
         assert '*ctx->abort_batch == batch' in peer_abort_body
-        ack_deliver_body=extract(sender,'ack_deliver')
+        ack_deliver_body=extract(ack_platform,'ack_deliver')
         assert 's_sender_context.ack_deliver(s_sender_context.ack_user' in ack_deliver_body
         platform_xfer=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
         assert 's_ack' not in platform_xfer

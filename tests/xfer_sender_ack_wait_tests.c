@@ -1,4 +1,5 @@
 #include "../src/core/xfer_sender_ack_wait.h"
+#include "../src/core/xfer_sender_engine.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -43,9 +44,9 @@ static hop_xfer_sender_context make_context(fixture *f){
 }
 static void init(fixture *f){memset(f,0,sizeof(*f));f->current=1;f->now_ns=100;}
 static void test_delivered(void){
-    fixture f;init(&f);f.hit=1;f.status=HOP_FILE_ACK_OK;f.rtt_ns=45000;
+    fixture f;init(&f);f.hit=1;f.status=HOP_XFER_SENDER_ACK_OK;f.rtt_ns=45000;
     hop_xfer_sender_context c=make_context(&f);uint64_t rtt=0;
-    assert(hop_xfer_sender_ack_wait(&c,7,9,12,99,3,1000000,100,&rtt)==HOP_FILE_ACK_OK);
+    assert(hop_xfer_sender_ack_wait(&c,7,9,12,99,3,1000000,100,&rtt)==HOP_XFER_SENDER_ACK_OK);
     assert(rtt==45&&f.waits==1&&f.last_wait_ms==100&&f.unregisters==0);
 }
 static void test_dynamic_slice(void){

@@ -54,27 +54,27 @@ static void init(fixture *f,job *j){memset(f,0,sizeof(*f));memset(j,0,sizeof(*j)
     j->batch=12;j->task.id=1200;j->task.initialized=1;j->session.bytes[0]=1;j->next_index=4;j->ok=3;
     j->context.user=f;j->context.is_cancelled=cc;j->context.is_batch_cancelled=cb;j->context.task_bind_session=bind;
     j->context.task_set_state=setstate;j->context.status_start_job=start;assert(hop_xfer_sender_queue_push_back(&f->queue,&qops,j));}
-static hop_xfer_sender_worker_ops makeops(fixture *f){hop_xfer_sender_worker_ops o;memset(&o,0,sizeof(o));o.user=f;o.queue=&f->queue;o.queue_ops=&qops;
+static hop_xfer_sender_worker_runtime_ops makeops(fixture *f){hop_xfer_sender_worker_runtime_ops o;memset(&o,0,sizeof(o));o.user=f;o.queue=&f->queue;o.queue_ops=&qops;
     o.scheduler.user=f;o.scheduler.begin_pass=sb;o.scheduler.is_stopping=ss;o.scheduler.wait_for_work_locked=sw;o.scheduler.claim_job_locked=sc;o.scheduler.end_pass=se;
     o.poll_interval_ms=200;o.chunk_size=1024;o.view_job=view;o.is_stopping=stopping;o.snapshot_connection=snap;o.status_should_start=show;
     o.status_reset=reset;o.clear_active=clear;o.send_abort=abort_send;o.run_job=run;o.take_peer_cancelled_and_clear=peer_cancel;
     o.finish_job=finish;o.release_job=release;return o;}
-static void test_ready(void){fixture f;job j;init(&f,&j);hop_xfer_sender_worker_ops o=makeops(&f);
+static void test_ready(void){fixture f;job j;init(&f,&j);hop_xfer_sender_worker_runtime_ops o=makeops(&f);
     assert(hop_xfer_sender_worker_run(&o)==HOP_XFER_SENDER_WORKER_RUN_STOPPED);
     assert(!f.locked&&f.claims==1&&f.snapshots==1&&f.resets==1&&f.binds==1&&f.state_sets==1&&f.starts==1&&f.runs==1&&f.finishes==1&&!f.releases);
     assert(j.next_index==0&&j.ok==0&&j.owner==2);}
 static void test_expired_cancel(void){fixture f;job j;init(&f,&j);j.cancelled=1;f.peer=0;f.cancelled=1;
-    hop_xfer_sender_worker_ops o=makeops(&f);assert(hop_xfer_sender_worker_run(&o)==HOP_XFER_SENDER_WORKER_RUN_STOPPED);
+    hop_xfer_sender_worker_runtime_ops o=makeops(&f);assert(hop_xfer_sender_worker_run(&o)==HOP_XFER_SENDER_WORKER_RUN_STOPPED);
     assert(f.claims==1&&f.snapshots==1&&f.aborts==1&&f.starts==1&&f.clears==1&&f.releases==1);
     assert(j.finish_valid&&j.finish_state==HOP_XFER_TASK_CANCELLED&&j.status_end&&j.status_phase==HOP_XFER_CANCELLED);
     assert(!strcmp(j.detail,"Transfer stopped while queued")&&!f.runs&&!f.finishes);}
 static void test_old_session_no_abort(void){fixture f;job j;init(&f,&j);j.cancelled=1;f.peer=0;f.cancelled=1;f.session.bytes[0]=3;
-    hop_xfer_sender_worker_ops o=makeops(&f);assert(hop_xfer_sender_worker_run(&o)==HOP_XFER_SENDER_WORKER_RUN_STOPPED);
+    hop_xfer_sender_worker_runtime_ops o=makeops(&f);assert(hop_xfer_sender_worker_run(&o)==HOP_XFER_SENDER_WORKER_RUN_STOPPED);
     assert(!f.aborts&&f.releases==1);}
-static void test_stop_after_selection(void){fixture f;job j;init(&f,&j);f.worker_stop=1;hop_xfer_sender_worker_ops o=makeops(&f);
+static void test_stop_after_selection(void){fixture f;job j;init(&f,&j);f.worker_stop=1;hop_xfer_sender_worker_runtime_ops o=makeops(&f);
     assert(hop_xfer_sender_worker_run(&o)==HOP_XFER_SENDER_WORKER_RUN_STOPPED);
     assert(f.claims==1&&f.clears==1&&f.releases==1&&!f.state_sets&&!f.runs&&!f.finishes);}
-static void test_activation_failure(void){fixture f;job j;init(&f,&j);f.activate=0;hop_xfer_sender_worker_ops o=makeops(&f);
+static void test_activation_failure(void){fixture f;job j;init(&f,&j);f.activate=0;hop_xfer_sender_worker_runtime_ops o=makeops(&f);
     assert(hop_xfer_sender_worker_run(&o)==HOP_XFER_SENDER_WORKER_RUN_STOPPED);
     assert(f.state_sets==1&&f.clears==1&&f.releases==1&&j.finish_valid&&j.finish_state==HOP_XFER_TASK_FAILED&&!j.status_end&&!f.runs);}
 int main(void){test_ready();test_expired_cancel();test_old_session_no_abort();test_stop_after_selection();test_activation_failure();

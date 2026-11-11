@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #define SENDER_CHUNK_HEADER_BYTES 25u
-static int ops_valid(const hop_xfer_sender_worker_ops *o) {
+static int ops_valid(const hop_xfer_sender_worker_runtime_ops *o) {
     return o&&o->queue&&o->queue_ops&&o->poll_interval_ms&&o->chunk_size&&o->view_job&&
         o->is_stopping&&o->snapshot_connection&&o->status_should_start&&o->status_reset&&
         o->clear_active&&o->send_abort&&o->run_job&&o->take_peer_cancelled_and_clear&&
@@ -23,18 +23,18 @@ static void pending_terminal(hop_xfer_sender_worker_job_view *v,hop_xfer_task_st
     (void)snprintf(v->pending_status_detail,v->pending_status_detail_capacity,"%s",
                    detail?detail:"Transfer ended");
 }
-static int snapshot(const hop_xfer_sender_worker_ops *o,intptr_t *socket,uint64_t *epoch,
+static int snapshot(const hop_xfer_sender_worker_runtime_ops *o,intptr_t *socket,uint64_t *epoch,
     hop_session_id *session,int *connected) {
     *socket=(intptr_t)-1;*epoch=0;memset(session,0,sizeof(*session));*connected=0;
     if(o->snapshot_connection(o->user,socket,epoch,session,connected))return 1;
     *socket=(intptr_t)-1;*epoch=0;memset(session,0,sizeof(*session));*connected=0;return 0;
 }
-static void release_selected(const hop_xfer_sender_worker_ops *o,
+static void release_selected(const hop_xfer_sender_worker_runtime_ops *o,
     hop_xfer_sender_worker_job_view *v,void *job) {
     if(v&&v->task&&v->task->id)o->clear_active(o->user,v->batch,v->task->id);
     o->release_job(o->user,job);
 }
-hop_xfer_sender_worker_run_result hop_xfer_sender_worker_run(const hop_xfer_sender_worker_ops *o) {
+hop_xfer_sender_worker_run_result hop_xfer_sender_worker_run(const hop_xfer_sender_worker_runtime_ops *o) {
     if(!ops_valid(o)||(size_t)o->chunk_size>SIZE_MAX-SENDER_CHUNK_HEADER_BYTES-HOP_DATA_PREFIX) {
         hop_log(HOP_LOG_ERROR,"xfer: invalid shared Sender Worker adapter");
         return HOP_XFER_SENDER_WORKER_RUN_ERROR;

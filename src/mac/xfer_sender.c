@@ -1262,7 +1262,7 @@ static hop_xfer_sender_worker_action sender_worker_finish_job(
     state.total_count=(int)hop_xfer_job_total(job->is_image,job->n);
     state.result=(hop_xfer_sender_job_result)result;
     state.completion_path=completion_path;state.peer_cancelled=peer_cancelled;
-    hop_xfer_sender_worker_ops ops;
+    hop_xfer_sender_worker_runtime_ops ops;
     memset(&ops,0,sizeof(ops));
     ops.user=&call;ops.max_attempts=HOP_XFER_JOB_RETRY_MAX;
     ops.reconnect_budget_ms=HOP_XFER_RECONNECT_BUDGET_MS;
@@ -1434,7 +1434,7 @@ void *send_thread(void *arg){
     sender_scheduler_state state;memset(&state,0,sizeof(state));
     hop_xfer_sender_scheduler_ops scheduler={&state,sender_scheduler_begin_pass,sender_scheduler_is_stopping,
         sender_scheduler_wait_locked,sender_scheduler_claim_locked,sender_scheduler_end_pass};
-    hop_xfer_sender_worker_ops worker;memset(&worker,0,sizeof(worker));
+    hop_xfer_sender_worker_runtime_ops worker;memset(&worker,0,sizeof(worker));
     worker.user=&state;worker.queue=&s_x.queue;worker.queue_ops=&s_sender_queue_ops;worker.scheduler=scheduler;
     worker.poll_interval_ms=200;worker.chunk_size=s_x.chunk;worker.view_job=sender_worker_view_job_adapter;
     worker.is_stopping=sender_scheduler_is_stopping;worker.snapshot_connection=sender_worker_snapshot_connection;

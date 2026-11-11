@@ -39,10 +39,10 @@ typedef struct {
     hop_xfer_sender_worker_action (*finish_job)(void *, void *, intptr_t, uint64_t,
         hop_xfer_sender_job_result, int, int);
     void (*release_job)(void *, void *);
-} hop_xfer_sender_worker_ops;
+} hop_xfer_sender_worker_runtime_ops;
 typedef enum { HOP_XFER_SENDER_WORKER_RUN_ERROR=0, HOP_XFER_SENDER_WORKER_RUN_STOPPED=1 }
     hop_xfer_sender_worker_run_result;
-hop_xfer_sender_worker_run_result hop_xfer_sender_worker_run(const hop_xfer_sender_worker_ops *ops);
+hop_xfer_sender_worker_run_result hop_xfer_sender_worker_run(const hop_xfer_sender_worker_runtime_ops *ops);
 #ifdef __cplusplus
 }
 #endif

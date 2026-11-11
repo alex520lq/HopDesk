@@ -1,4 +1,5 @@
 #include "xfer_rate.h"
+#include "xfer_budget.h"
 #include <string.h>
 
 #define RATE_NS_PER_SEC 1000000000ull
@@ -6,6 +7,42 @@
 #define RATE_ACK_HEALTHY_US 100000ull
 #define RATE_QUEUE_CONGESTED_PERMILLE 750u
 #define RATE_QUEUE_HEALTHY_PERMILLE 250u
+
+
+void hop_xfer_rate_init_from_config(hop_xfer_rate_limiter *rate,
+                                     int configured_max_mib,
+                                     uint64_t burst_bytes,
+                                     uint64_t now_ns) {
+    uint64_t max_mib = configured_max_mib < 16 ? 16u :
+                       configured_max_mib > 4096 ? 4096u :
+                       (uint64_t)configured_max_mib;
+    uint64_t max_bps = max_mib * HOP_XFER_RATE_MIB_BYTES;
+    uint64_t min_bps = 4ull * HOP_XFER_RATE_MIB_BYTES;
+    uint64_t initial_bps = 64ull * HOP_XFER_RATE_MIB_BYTES;
+    if (min_bps > max_bps) min_bps = max_bps;
+    if (initial_bps > max_bps) initial_bps = max_bps;
+    hop_xfer_rate_init(rate, initial_bps, min_bps, max_bps, burst_bytes, now_ns);
+}
+
+uint32_t hop_xfer_rate_queue_pressure_permille(uint64_t rx_queue_bytes,
+                                                uint32_t rx_queue_slots) {
+    uint64_t bytes = rx_queue_bytes >= HOP_XFER_DEFAULT_RX_QUEUE_BYTES
+        ? 1000ull : rx_queue_bytes * 1000ull / HOP_XFER_DEFAULT_RX_QUEUE_BYTES;
+    uint64_t slots = rx_queue_slots >= HOP_XFER_DEFAULT_RX_QUEUE_SLOTS
+        ? 1000ull : (uint64_t)rx_queue_slots * 1000ull / HOP_XFER_DEFAULT_RX_QUEUE_SLOTS;
+    uint64_t pressure = bytes > slots ? bytes : slots;
+    return (uint32_t)(pressure > 1000ull ? 1000ull : pressure);
+}
+
+uint32_t hop_xfer_rate_feedback_from_budget(hop_xfer_rate_limiter *rate,
+                                             uint64_t ack_rtt_us) {
+    hop_xfer_budget_snapshot snapshot;
+    hop_xfer_budget_get_snapshot(&snapshot);
+    uint32_t pressure = hop_xfer_rate_queue_pressure_permille(
+        snapshot.rx_queue_bytes, snapshot.rx_queue_slots);
+    hop_xfer_rate_feedback(rate, ack_rtt_us, pressure);
+    return pressure;
+}
 
 static uint64_t ewma(uint64_t old_value, uint64_t sample) {
     if (!old_value) return sample;

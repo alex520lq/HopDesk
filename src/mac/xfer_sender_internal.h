@@ -13,9 +13,6 @@
 #include "../core/xfer_sender_queue.h"
 #include "../core/xfer_sender_active_job.h"
 #define CHUNK_HDR (25u + HOP_DATA_PREFIX)
-#define XFER_RATE_MIN_MIB 4ull
-#define XFER_RATE_INITIAL_MIB 64ull
-#define XFER_RATE_MIB_BYTES (1024ull * 1024ull)
 typedef enum {
     XFER_JOB_OWNER_SUBMITTER = 0,
     XFER_JOB_OWNER_QUEUE,
@@ -55,7 +52,6 @@ extern hop_xfer_tracking s_send_status,s_receive_status;
 extern sender_platform_context s_sender_platform;
 extern hop_xfer_sender_context s_sender_context;
 extern const hop_xfer_sender_queue_ops s_sender_queue_ops;
-void rate_init_from_config(hop_xfer_rate_limiter *,int,uint64_t,uint64_t);
 int sender_context_snapshot_session(void *,int,hop_session_id *,uint64_t *);
 void ack_deliver(uint32_t,uint32_t,int);
 int sender_context_session_current(void *,intptr_t,uint64_t);

@@ -780,6 +780,12 @@ int main(void){
         assert 'hop_xfer_sender_scheduler_wait_next' not in worker
         assert 'queue_unlink' not in worker
         protocol=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        rate_core=(ROOT/'src/core/xfer_rate.c').read_text(encoding='utf-8')
+        rate_header=(ROOT/'src/core/xfer_rate.h').read_text(encoding='utf-8')
+        assert 'hop_xfer_rate_init_from_config' in rate_core and 'hop_xfer_rate_queue_pressure_permille' in rate_core
+        assert 'rate_init_from_config' not in protocol and 'rate_queue_pressure_permille' not in protocol
+        assert 'XFER_RATE_MIN_MIB' not in (ROOT/f'src/{platform}/xfer_sender_internal.h').read_text(encoding='utf-8')
+        assert 'HOP_XFER_RATE_MIB_BYTES' in rate_header
         assert 'sender_engine_send_entry' in protocol and 'send_done_result' in protocol and 'run_job' in protocol
         assert 'ack_wait' in protocol and 'rate_feedback' in protocol
         assert 'xfer_submit_paths_impl' in submission and 'xfer_submit_image_impl' in submission

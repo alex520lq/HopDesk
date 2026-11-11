@@ -919,6 +919,17 @@ static void test_xfer_rate_limiter(void) {
     CHECK(hop_xfer_rate_wait_ns(&rate,50,100000000ull)==0);
     CHECK(hop_xfer_rate_wait_ns(&rate,101,100000000ull)==UINT64_MAX);
 
+    hop_xfer_rate_init_from_config(&rate,8,1024,0);
+    CHECK(rate.min_rate_bytes_per_sec==4ull*HOP_XFER_RATE_MIB_BYTES);
+    CHECK(rate.max_rate_bytes_per_sec==16ull*HOP_XFER_RATE_MIB_BYTES);
+    CHECK(rate.current_rate_bytes_per_sec==16ull*HOP_XFER_RATE_MIB_BYTES);
+    hop_xfer_rate_init_from_config(&rate,9000,1024,0);
+    CHECK(rate.max_rate_bytes_per_sec==4096ull*HOP_XFER_RATE_MIB_BYTES);
+    CHECK(rate.current_rate_bytes_per_sec==64ull*HOP_XFER_RATE_MIB_BYTES);
+    CHECK(hop_xfer_rate_queue_pressure_permille(7ull*1024ull*1024ull,0)==875);
+    CHECK(hop_xfer_rate_queue_pressure_permille(0,6)==750);
+    CHECK(hop_xfer_rate_queue_pressure_permille(UINT64_MAX,UINT32_MAX)==1000);
+
     hop_xfer_rate_init(&rate,1000,100,2000,100,0);
     hop_xfer_rate_note_send_time(&rate,100,1000);
     hop_xfer_rate_feedback(&rate,50000,0);

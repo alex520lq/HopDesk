@@ -501,11 +501,11 @@ int xfer_init(const hop_config *cfg) {
     if (ck < 64) ck = 64;
     if (ck > 4096) ck = 4096;
     s_x.chunk = (uint32_t)ck * 1024u;
-    rate_init_from_config(&s_x.rate, cfg->xfer_rate_limit_mib,
+    hop_xfer_rate_init_from_config(&s_x.rate, cfg->xfer_rate_limit_mib,
                           (uint64_t)s_x.chunk * 2u, rate_now_ns());
     hop_log(HOP_LOG_INFO, "xfer: adaptive rate initial %.1f MiB/s, ceiling %.1f MiB/s",
-            (double)s_x.rate.current_rate_bytes_per_sec / XFER_RATE_MIB_BYTES,
-            (double)s_x.rate.max_rate_bytes_per_sec / XFER_RATE_MIB_BYTES);
+            (double)s_x.rate.current_rate_bytes_per_sec / HOP_XFER_RATE_MIB_BYTES,
+            (double)s_x.rate.max_rate_bytes_per_sec / HOP_XFER_RATE_MIB_BYTES);
 
     if (pthread_mutex_init(&s_x.slock, NULL) != 0) {
         pthread_rwlock_unlock(&s_x_lifecycle_lock);

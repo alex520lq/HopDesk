@@ -34,6 +34,10 @@ uint64_t hop_wallclock_ms(void){return 1700000000000ull+fake_ms;}
 #define RX_WRITE 2
 #define AcquireSRWLockExclusive(p) ((void)(p))
 #define ReleaseSRWLockExclusive(p) ((void)(p))
+#define AcquireSRWLockShared(p) ((void)(p))
+#define ReleaseSRWLockShared(p) ((void)(p))
+#define pthread_rwlock_rdlock(p) ((void)(p))
+#define pthread_rwlock_unlock(p) ((void)(p))
 #define EnterCriticalSection(p) ((void)(p))
 #define LeaveCriticalSection(p) ((void)(p))
 #define pthread_mutex_lock(p) ((void)(p))
@@ -44,7 +48,8 @@ uint64_t hop_wallclock_ms(void){return 1700000000000ull+fake_ms;}
 #define SetEvent(p) ((void)(p))
 typedef unsigned long DWORD;
 typedef int SOCKET;
-static struct {int lock,slock,qlock,client,sock,cancel_rx,peer_ready;hop_xfer_sender_active_job active_job;hop_xfer_sender_queue queue;hop_session_id session;} s_x;
+static struct {int lock,slock,qlock,client,sock,cancel_rx,peer_ready,sync_initialized,shutting_down;hop_xfer_sender_active_job active_job;hop_xfer_sender_queue queue;hop_session_id session;} s_x;
+static int s_x_lifecycle_lock;
 static int s_status_lock;
 static uint64_t s_status_revision;
 static hop_xfer_tracking s_send_status,s_receive_status;
@@ -245,6 +250,7 @@ static void assert_terminal(uint32_t batch,uint8_t reason,int before){
     assert(s_send_status.status.active); /* receiving ABORT cannot end outgoing state */
 }
 int main(void){
+    s_x.sync_initialized=1;
     (void)&status_begin; (void)&status_end; (void)&clip_complete_remote_paste; (void)&clipboard_complete_remote_paste;
     (void)&status_image; (void)&rate_now_ns; (void)&status_chunk_timed;
     (void)&status_file_phase; (void)&apply_image; (void)&apply_paths;

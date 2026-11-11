@@ -971,7 +971,7 @@ int main(void){
         assert timeout < unregister < kick < net_down
         reconnect=extract(sender,'sender_context_request_reconnect')
         assert '*ctx->peer_ready = 0' in reconnect and 'shutdown(' in reconnect
-        assert 'context->request_reconnect' in engine_adapter
+        assert 'ctx->request_reconnect' in engine_adapter
         kick=extract(sender,'xfer_kick')
         assert 'sender_context_request_reconnect(&s_sender_platform)' in kick
         assert 'adapter_wait_ack' in engine_adapter

@@ -70,6 +70,7 @@ static int wq_start(void) {
         wq_write_time, wq_open_error, wq_write_error
     };
     s_wq = hop_writer_queue_create(&s_rx, &callbacks);
+    if (s_wq) s_rx.writer = s_wq;
     return s_wq != NULL;
 }
 
@@ -100,8 +101,14 @@ static int wq_stop(void) {
         hop_log(HOP_LOG_WARN, "xfer: writer worker did not exit, retain queue state");
         return 0;
     }
-    hop_writer_queue_destroy(s_wq);
+    /* Receiver services may outlive a successful queue stop when the
+     * subsequent Task/Reservation audit asks Shutdown to be retried. Detach
+     * the context before freeing the queue so a retry cannot drain a stale
+     * writer pointer. */
+    hop_writer_queue *stopped = s_wq;
     s_wq = NULL;
+    s_rx.writer = NULL;
+    hop_writer_queue_destroy(stopped);
     return 1;
 }
 

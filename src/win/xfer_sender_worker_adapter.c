@@ -5,7 +5,6 @@
 #include "../core/xfer_sender_scheduler.h"
 #include <string.h>
 
-typedef struct { int unused; } sender_scheduler_state;
 static int sender_scheduler_begin_pass(void *user,int *peer_ready,uint64_t *now,uint32_t *cancel_batch){
     (void)user;if(!peer_ready||!now||!cancel_batch)return 0;EnterCriticalSection(&s_x.lock);
     *peer_ready=s_x.peer_ready&&s_x.client!=INVALID_SOCKET;*now=now_ms();*cancel_batch=s_x.cancel_batch;return 1;
@@ -84,11 +83,10 @@ static void sender_worker_release_job_adapter(void *u,void *job){(void)u;(void)j
 
 DWORD WINAPI send_thread(LPVOID arg){
     (void)arg;SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
-    sender_scheduler_state state;memset(&state,0,sizeof(state));
-    hop_xfer_sender_scheduler_ops scheduler={&state,sender_scheduler_begin_pass,sender_scheduler_is_stopping,
+    hop_xfer_sender_scheduler_ops scheduler={NULL,sender_scheduler_begin_pass,sender_scheduler_is_stopping,
         sender_scheduler_wait_locked,sender_scheduler_claim_locked,sender_scheduler_end_pass};
     hop_xfer_sender_worker_runtime_ops worker;memset(&worker,0,sizeof(worker));
-    worker.user=&state;worker.queue=&s_x.queue;worker.queue_ops=&s_sender_queue_ops;worker.scheduler=scheduler;
+    worker.user=NULL;worker.queue=&s_x.queue;worker.queue_ops=&s_sender_queue_ops;worker.scheduler=scheduler;
     worker.poll_interval_ms=200;worker.chunk_size=s_x.chunk;worker.view_job=sender_worker_view_job_adapter;
     worker.is_stopping=sender_scheduler_is_stopping;worker.snapshot_connection=sender_worker_snapshot_connection;
     worker.status_should_start=sender_worker_status_should_start;worker.status_reset=sender_worker_status_reset;

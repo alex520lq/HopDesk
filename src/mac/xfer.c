@@ -408,7 +408,7 @@ int sender_context_write_frame(void *user, intptr_t socket_handle,
     return ok;
 }
 
-static int sender_context_snapshot_session(void *user, int fd,
+int sender_context_snapshot_session(void *user, int fd,
                                            hop_session_id *session,
                                            uint64_t *epoch) {
     sender_platform_context *ctx = (sender_platform_context *)user;

@@ -1,6 +1,16 @@
 #include "xfer_sender_internal.h"
 #include "../core/xfer_sender_ack_adapter.h"
 #include "../core/xfer_sender_context_adapter.h"
+#include "../core/xfer_sender_engine.h"
+#include "../core/xfer_sender_scheduler.h"
+#include "../core/xfer_sender_retry.h"
+#include "../core/xfer_sender_lifecycle.h"
+#include "../core/xfer_sender_worker_flow.h"
+#include "../core/xfer_ack_window.h"
+#include "../core/xfer_buffer_pool.h"
+#include "../core/xfer_budget.h"
+#include "../core/xfer_task.h"
+#include "../core/xfer_tracking.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,14 +22,11 @@
 #include <fcntl.h>
 #include <pthread/qos.h>
 
-#include "../core/xfer_sender_ack_adapter.h"
-#include "../core/xfer_sender_context_adapter.h"
-
 int sender_context_ack_create(void);
 void sender_context_ack_destroy(void);
 void sender_context_wake_ack(void);
 
-static void rate_init_from_config(hop_xfer_rate_limiter *rate, int configured_max_mib,
+void rate_init_from_config(hop_xfer_rate_limiter *rate, int configured_max_mib,
                                   uint64_t burst_bytes, uint64_t now_ns) {
     uint64_t max_mib = configured_max_mib < 16 ? 16u :
                        configured_max_mib > 4096 ? 4096u :
@@ -387,7 +394,7 @@ static void ack_unregister_batch(const hop_xfer_sender_context *context,
     if (context && context->ack_user && context->ack_unregister_batch)
         context->ack_unregister_batch(context->ack_user, batch);
 }
-static void ack_deliver(uint32_t batch, uint32_t id, int status) {
+void ack_deliver(uint32_t batch, uint32_t id, int status) {
     if (s_sender_context.ack_user && s_sender_context.ack_deliver)
         (void)s_sender_context.ack_deliver(s_sender_context.ack_user,
                                            batch, id, status);

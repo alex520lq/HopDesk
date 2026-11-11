@@ -251,13 +251,6 @@ static int send_chunk(const hop_xfer_sender_context *context,
 static uint64_t now_ms(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000L); }
 
 /* run_job 的结局 */
-#define JOB_DONE        0   /* 全部条目都有结论了（可能部分失败），该送 DONE */
-#define JOB_NET_DOWN    1   /* 链路断了，整批退回队列等重连 */
-#define JOB_CANCELLED   2   /* 用户取消，通知对端丢弃，不送 DONE */
-#define JOB_PEER_ABORT  3   /* 对端中止，什么都不用送 */
-#define JOB_COMMIT_UNKNOWN 4 /* receiver outcome is unknown */
-#define JOB_COMMIT_REJECTED 5 /* receiver explicitly rejected completion */
-
 /* 发一个批量级 ABORT（取消时通知对端丢弃本批） */
 static void send_abort_msg_with_context(
     const hop_xfer_sender_context *context, int fd,
@@ -443,7 +436,7 @@ static void sender_engine_rate_feedback(void *user, uint64_t rtt_us) {
 
 
 static int run_job(int fd, uint8_t *tx, xf_job *j) {
-    if (!j) return JOB_NET_DOWN;
+    if (!j) return HOP_XFER_SENDER_JOB_NET_DOWN;
     sender_file_engine_call call = {fd, tx, j};
     hop_xfer_sender_engine_adapter_ops ops;
     memset(&ops, 0, sizeof(ops));

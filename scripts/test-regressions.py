@@ -1933,6 +1933,165 @@ int main(void) {
     run('sender_shutdown_drain_retry',drain_prefix+drain_functions+'\n'+drain_main,
         threads=(owner_platform=='mac'))
 
+    # Execute the production top-level xfer_shutdown orchestration with native
+    # lock/event primitives and injected failures at Join, Job drain, Writer
+    # stop, and final Task/Reservation audit. No shared state may be destroyed
+    # until every phase succeeds; a later call must resume from retained state.
+    shutdown_source=(ROOT/f'src/{owner_platform}/xfer.c').read_text(encoding='utf-8')
+    shutdown_function=extract(shutdown_source,'xfer_shutdown')
+    shutdown_prefix=r'''
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#define HOP_LOG_ERROR 1
+static int join_failures=1, drain_failures=1, writer_failures=1, audit_failures=1;
+static unsigned join_calls, drain_calls, reset_calls, writer_calls, audit_calls;
+static unsigned wake_calls, ack_destroy_calls, history_close_calls;
+static int s_rx;
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+typedef uintptr_t SOCKET;
+#define INVALID_SOCKET ((SOCKET)-1)
+#define SD_BOTH 2
+typedef struct {
+    CRITICAL_SECTION lock;
+    SOCKET client;
+    HANDLE stop, q_evt, rate_timer;
+    int sync_initialized, shutting_down, sender_threads;
+} shutdown_state;
+static shutdown_state s_x;
+static CRITICAL_SECTION s_txlock;
+static SRWLOCK s_x_lifecycle_lock=SRWLOCK_INIT;
+static int shutdown(SOCKET socket_handle,int how) {
+    (void)socket_handle; (void)how;
+    return 0;
+}
+static int hop_win_sender_threads_join(void *threads,DWORD timeout_ms,int *joined) {
+    (void)threads;
+    assert(timeout_ms==3000);
+    join_calls++;
+    if (join_failures) { join_failures--; *joined=0; return 0; }
+    *joined=1;
+    return 1;
+}
+static void shutdown_fixture_init(void) {
+    InitializeCriticalSection(&s_x.lock);
+    InitializeCriticalSection(&s_txlock);
+    s_x.stop=CreateEventW(NULL,TRUE,FALSE,NULL);
+    s_x.q_evt=CreateEventW(NULL,FALSE,FALSE,NULL);
+    assert(s_x.stop && s_x.q_evt);
+    s_x.client=INVALID_SOCKET;
+    s_x.sync_initialized=1;
+}
+#else
+#include <pthread.h>
+#include <stdatomic.h>
+#define SHUT_RDWR 2
+typedef struct {
+    pthread_mutex_t slock, qlock;
+    pthread_cond_t qcond;
+    _Atomic int stop;
+    int sock;
+    int sync_initialized, shutting_down, sender_threads;
+} shutdown_state;
+static shutdown_state s_x;
+static pthread_rwlock_t s_x_lifecycle_lock=PTHREAD_RWLOCK_INITIALIZER;
+static int shutdown(int socket_fd,int how) {
+    (void)socket_fd; (void)how;
+    return 0;
+}
+static int hop_mac_sender_threads_join(void *threads) {
+    (void)threads;
+    join_calls++;
+    if (join_failures) { join_failures--; return 0; }
+    return 1;
+}
+static void shutdown_fixture_init(void) {
+    assert(pthread_mutex_init(&s_x.slock,NULL)==0);
+    assert(pthread_mutex_init(&s_x.qlock,NULL)==0);
+    assert(pthread_cond_init(&s_x.qcond,NULL)==0);
+    atomic_init(&s_x.stop,0);
+    s_x.sock=-1;
+    s_x.sync_initialized=1;
+}
+#endif
+static void sender_context_wake_ack(void) { wake_calls++; }
+static int sender_shutdown_drain_jobs(void) {
+    drain_calls++;
+    if (drain_failures) { drain_failures--; return 0; }
+    return 1;
+}
+static void rx_reset(void *context) { assert(context==&s_rx); reset_calls++; }
+static int wq_stop(void) {
+    writer_calls++;
+    if (writer_failures) { writer_failures--; return 0; }
+    return 1;
+}
+static int xfer_shutdown_task_audit(void) {
+    audit_calls++;
+    if (audit_failures) { audit_failures--; return 0; }
+    return 1;
+}
+static void sender_context_ack_destroy(void) { ack_destroy_calls++; }
+static void hop_xfer_task_history_store_close(void) { history_close_calls++; }
+static void hop_log(int level,const char *format, ...) { (void)level; (void)format; }
+'''
+    shutdown_main=r"""
+int main(void) {
+    shutdown_fixture_init();
+
+    /* Join timeout: no queue drain, Receiver reset, or native destruction. */
+    assert(!xfer_shutdown());
+    assert(s_x.sync_initialized && s_x.shutting_down);
+    assert(join_calls==1 && !drain_calls && !reset_calls && !writer_calls);
+    assert(!audit_calls && !ack_destroy_calls && !history_close_calls);
+#if defined(_WIN32)
+    assert(WaitForSingleObject(s_x.stop,0)==WAIT_OBJECT_0);
+    assert(s_x.stop && s_x.q_evt);
+#else
+    assert(atomic_load_explicit(&s_x.stop,memory_order_acquire)==1);
+#endif
+
+    /* Job drain failure: all thread state remains joined but shared state lives. */
+    assert(!xfer_shutdown());
+    assert(join_calls==2 && drain_calls==1);
+    assert(!reset_calls && !writer_calls && !audit_calls);
+    assert(!ack_destroy_calls && !history_close_calls && s_x.sync_initialized);
+
+    /* Writer stop failure: Receiver reset may be retried, but no audit/teardown. */
+    assert(!xfer_shutdown());
+    assert(join_calls==3 && drain_calls==2 && reset_calls==1 && writer_calls==1);
+    assert(!audit_calls && !ack_destroy_calls && !history_close_calls);
+    assert(s_x.sync_initialized);
+
+    /* Final audit failure: ACK/history/locks must still remain alive. */
+    assert(!xfer_shutdown());
+    assert(join_calls==4 && drain_calls==3 && reset_calls==2 && writer_calls==2);
+    assert(audit_calls==1 && !ack_destroy_calls && !history_close_calls);
+    assert(s_x.sync_initialized);
+
+    /* A later retry finishes cleanup exactly once. */
+    assert(xfer_shutdown());
+    assert(join_calls==5 && drain_calls==4 && reset_calls==3 && writer_calls==3);
+    assert(audit_calls==2 && ack_destroy_calls==1 && history_close_calls==1);
+    assert(wake_calls==5 && !s_x.sync_initialized);
+#if defined(_WIN32)
+    assert(!s_x.stop && !s_x.q_evt && !s_x.rate_timer);
+#endif
+
+    /* Shutdown after successful teardown is idempotent and touches no dead lock. */
+    assert(xfer_shutdown());
+    assert(join_calls==5 && drain_calls==4 && reset_calls==3 && writer_calls==3);
+    assert(audit_calls==2 && ack_destroy_calls==1 && history_close_calls==1);
+    puts("PASS: production xfer_shutdown retains native state across Join, Job drain, Writer stop, and audit failures; retry and idempotent close succeed");
+    return 0;
+}
+"""
+    run('sender_shutdown_orchestration_retry',shutdown_prefix+shutdown_function+'\n'+shutdown_main,
+        threads=(owner_platform=='mac'))
+
     retry_core=(ROOT/'src/core/xfer_sender_retry.c').read_text(encoding='utf-8')
     retry_header=(ROOT/'src/core/xfer_sender_retry.h').read_text(encoding='utf-8')
     retry_tests=(ROOT/'tests/xfer_sender_retry_tests.c').read_text(encoding='utf-8')

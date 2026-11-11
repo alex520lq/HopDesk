@@ -1,4 +1,5 @@
 #include <winsock2.h>
+#include <windows.h>
 #include "xfer_sender_internal.h"
 #include "../core/xfer_sender_ack_wait.h"
 #include "../core/xfer_sender_engine.h"

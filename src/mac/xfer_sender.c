@@ -27,6 +27,19 @@ int sender_context_ack_create(void);
 void sender_context_ack_destroy(void);
 void sender_context_wake_ack(void);
 
+void rate_init_from_config(hop_xfer_rate_limiter *rate, int configured_max_mib,
+                                  uint64_t burst_bytes, uint64_t now_ns) {
+    uint64_t max_mib = configured_max_mib < 16 ? 16u :
+                       configured_max_mib > 4096 ? 4096u :
+                       (uint64_t)configured_max_mib;
+    uint64_t max_bps = max_mib * XFER_RATE_MIB_BYTES;
+    uint64_t min_bps = XFER_RATE_MIN_MIB * XFER_RATE_MIB_BYTES;
+    uint64_t initial_bps = XFER_RATE_INITIAL_MIB * XFER_RATE_MIB_BYTES;
+    if (min_bps > max_bps) min_bps = max_bps;
+    if (initial_bps > max_bps) initial_bps = max_bps;
+    hop_xfer_rate_init(rate, initial_bps, min_bps, max_bps, burst_bytes, now_ns);
+}
+
 uint64_t rate_now_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -232,9 +245,19 @@ static int rate_wait_for_chunk(const hop_xfer_sender_context *context,
     }
 }
 
+static uint32_t rate_queue_pressure_permille(void) {
+    hop_xfer_budget_snapshot snap;
+    hop_xfer_budget_get_snapshot(&snap);
+    uint64_t bytes = snap.rx_queue_bytes * 1000ull / HOP_XFER_DEFAULT_RX_QUEUE_BYTES;
+    uint64_t slots = (uint64_t)snap.rx_queue_slots * 1000ull / HOP_XFER_DEFAULT_RX_QUEUE_SLOTS;
+    uint64_t pressure = bytes > slots ? bytes : slots;
+    return (uint32_t)(pressure > 1000ull ? 1000ull : pressure);
+}
+
 static void rate_feedback(uint64_t ack_rtt_us) {
     uint64_t before = s_x.rate.current_rate_bytes_per_sec;
-    uint32_t pressure = hop_xfer_rate_feedback_from_budget(&s_x.rate, ack_rtt_us);
+    uint32_t pressure = rate_queue_pressure_permille();
+    hop_xfer_rate_feedback(&s_x.rate, ack_rtt_us, pressure);
     if (s_x.rate.current_rate_bytes_per_sec < before) {
         hop_log(HOP_LOG_INFO, "xfer: adaptive send rate %.1f MB/s (ack %.1f ms, local rx queue %u/1000)",
                 (double)s_x.rate.current_rate_bytes_per_sec / 1048576.0,
@@ -446,6 +469,16 @@ static int send_done_with_context(const hop_xfer_sender_context *context,
     hop_put_be64(dp + 12, 0);
     return send_small_with_context(context, fd, HOP_MSG_XFER_DONE,
                                    dp, sizeof(dp), batch);
+}
+
+static int send_done(int fd, uint32_t batch, uint32_t ok,
+                      uint32_t total) {
+    uint8_t dp[20];
+    hop_put_be32(dp, batch);
+    hop_put_be32(dp + 4, ok);
+    hop_put_be32(dp + 8, total);
+    hop_put_be64(dp + 12, 0);
+    return send_small(fd, HOP_MSG_XFER_DONE, dp, sizeof(dp), batch);
 }
 
 /* Re-send only DONE, never file contents, while the same control session

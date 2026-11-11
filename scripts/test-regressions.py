@@ -1846,7 +1846,7 @@ static void hop_xfer_sender_context_status_end(
     assert(context);
     status_end_calls[task_slot(context->task_id)]++;
 }
-    drain_main=r'''
+    drain_main=r"""
 int main(void) {
     owner_lock_init();
     xfer_job *queued=(xfer_job *)calloc(1,sizeof(*queued));
@@ -1926,7 +1926,7 @@ int main(void) {
     puts("PASS: production Sender Job release and Shutdown drain preserve ownership across Reservation, Task finish, and Task dispose retries");
     return 0;
 }
-'''
+"""
     run('sender_shutdown_drain_retry',drain_prefix+drain_functions+'\n'+drain_main,
         threads=(owner_platform=='mac'))
 

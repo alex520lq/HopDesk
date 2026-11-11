@@ -969,7 +969,8 @@ int main(void){
         kick=engine.index('ops->request_reconnect(ops->user)',timeout)
         net_down=engine.index('return HOP_XFER_SENDER_JOB_NET_DOWN;',kick)
         assert timeout < unregister < kick < net_down
-        reconnect=extract(sender,'sender_context_request_reconnect')
+        connection_adapter=(ROOT/f'src/{platform}/xfer_sender_connection_adapter.c').read_text(encoding='utf-8')
+        reconnect=extract(connection_adapter,'sender_context_request_reconnect')
         assert '*ctx->peer_ready = 0' in reconnect and 'shutdown(' in reconnect
         assert 'ctx->request_reconnect' in engine_adapter
         kick=extract(sender,'xfer_kick')

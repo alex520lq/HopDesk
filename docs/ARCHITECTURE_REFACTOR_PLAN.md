@@ -872,3 +872,13 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - **最终验证：GitHub Actions Run #1236（ID \`42771934666\`，tested head \`8dafd1dbf4adc970b4dbadc3580d5e11962fb5bf\`）Windows MSVC 与 macOS Apple Clang 全流程 PASS**：应用编译、portable Core/regression（含 Scanner 与 ACK Coordinator）、传输协议、TCP loopback、Windows native role/reconnect、macOS control/listener loopback、updater 检查与双平台打包均通过。PR 流程按预期跳过 Release 发布。
 - 尚未直接做确定性 mid-stream readdir 故障注入和 Windows reparse-point 运行时 fixture；代码路径与源码契约断言已覆盖。文件系统 TOCTOU 竞争仍属于后续安全加固，不在本切片宣称已解决。
 - 下一步：先建立显式 Sender dependency context，将 socket/session、clock/wait、cancel/peer-abort、status/logging、Task callbacks 注入现有 Sender 实现；确认无行为变化后，再将协议执行迁移为独立编译单元。
+
+
+### 2026-11-11：Sender Worker Runtime 平台 Adapter 抽取（第十四切片，CI 待验）
+
+- 将 Windows/macOS `send_thread`、平台 Scheduler lock/wait/claim callbacks、Job View 投影、连接与状态快照、active-job cancel handoff、ABORT send adaptation 从 `xfer_sender.c` 移入独立编译单元 `xfer_sender_worker_adapter.c`。
+- 共享队列选择与等待策略仍由 `xfer_sender_scheduler.c` 负责；Worker 编排与 Job 生命周期由 `xfer_sender_worker.c` 负责；重试计划和终结决策由 `xfer_sender_worker_flow.c` 负责。没有把平台同步原语移入 Core，也没有新增第二套业务状态机。
+- `xfer_sender.c` 保留协议执行、Job 资源释放及 Worker finish callback；通过 `xfer_sender_internal.h` 显式声明 Worker Adapter 必须调用的窄入口。
+- 更新 Windows HA 编译源列表与源码回归：生产 fixture 现在从新 Worker Adapter 读取 `send_thread`，并断言平台主文件不再定义该入口。
+- CI 纠错：Run #1631 的 Windows 应用构建通过；macOS 构建发现 Worker Adapter 缺少 `<errno.h>`，导致 `ETIMEDOUT` 未声明。已补齐 include。Run #1632 在 macOS 应用构建与 Core 测试阶段通过后被后续提交 supersede；Run #1633（head `becc2437af5a54f95492b271ed4c0b3b1ba14141`）需完成双平台全流程后才能验收本切片。
+- 真实双设备断线、取消、重连及长时间传输仍未执行，不得用 CI loopback 代替。

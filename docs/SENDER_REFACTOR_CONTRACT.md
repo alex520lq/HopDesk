@@ -437,3 +437,17 @@ CI follow-up:
 - Windows HA source linkage and source-contract regression checks now include the new Worker adapter and assert that `send_thread` no longer lives in `xfer_sender.c`.
 - **Final CI validation: GitHub Actions Run #1635 (ID `43037203168`, tested head `07ecf5fbea98477ad67efd2d2a0f58900e6d13fb`) passed on Windows MSVC and macOS Apple Clang**: app build, portable Core/regression, file-transfer protocol, TCP loopback, native control/data role/reconnect (Windows), control/listener loopback (macOS), updater/bundle checks, and both package uploads. Release publication was skipped as expected for a PR.
 - Real two-device disconnect/cancel/reconnect and long-duration transfer validation remains outstanding.
+
+
+## 35. Real-device acceptance checklist (not yet executed)
+
+The following checks require two physical HopDesk devices and must not be inferred from CI loopback/protocol-peer tests:
+
+1. Cross-platform baseline in both directions: Windows sender → macOS receiver, then macOS sender → Windows receiver. Transfer a mixed batch of small files, large files, nested directories, and an image batch; compare source/destination sizes and SHA-256 hashes.
+2. Mid-stream disconnect: interrupt the active data channel during a large file. Confirm the Task remains recoverable, reconnect restores the same authenticated peer/session policy, and transfer resumes from the last receiver-confirmed checkpoint without silently skipping or duplicating bytes.
+3. Cancel while disconnected and during reconnect: cancel the active batch while the peer is unavailable, then reconnect. Confirm one terminal Cancelled outcome, no stale retry/requeue, no unexpected DONE, and no leftover partial output beyond the documented cleanup policy.
+4. Repeated reconnect stress: repeat disconnect/reconnect during active transfer and while jobs are queued; include a delayed/late ACK after connection replacement. Confirm old epoch/session ACKs cannot complete the new connection's work and each Task reaches one terminal outcome.
+5. Sustained transfer: run a long mixed-file transfer under normal use and record duration, total bytes, throughput, CPU/memory trend, and final SHA-256 results. Observe queue/ACK-window bounds and confirm no growing reservation/task/resource ledger.
+6. After each scenario, inspect sender/receiver status and Task history; confirm no stuck Active/Queued Task, no duplicate history entry, no leaked staging directory, and no unexplained pending Reservation.
+
+Record device OS/build SHA, direction, network conditions, file manifest/hashes, interruption point, reconnect count, duration, and observed resource metrics. Any failed scenario blocks Sender refactor acceptance. CI Run #1635 validates automated production builds and integration fixtures only; it is not evidence that these physical-device checks have passed.

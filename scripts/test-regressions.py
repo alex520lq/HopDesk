@@ -1116,6 +1116,18 @@ int main(void){
         assert 'job->sender_context.is_stopping' in commit_stop
         assert 'job->sender_context.wait_ns' in commit_wait
         assert 'sender_context_is_stopping(NULL)' not in commit_stop
+        connection_adapter=(ROOT/f'src/{platform}/xfer_sender_connection_adapter.c').read_text(encoding='utf-8')
+        reconnect=extract(connection_adapter,'sender_context_request_reconnect')
+        assert '*ctx->peer_ready = 0' in reconnect and 'shutdown(' in reconnect
+        ack_platform=(ROOT/f'src/{platform}/xfer_sender_ack_platform_adapter.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_ack_adapter_create' in ack_platform
+        assert 'void ack_deliver(' in ack_platform
+        assert 'sender_context_ack_destroy' in ack_platform
+        protocol_source=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        for macro in ['XFER_ACK_TIMEOUT','XFER_SEND_DEAD','XFER_LOCAL_IO','XFER_CANCELLED','XFER_PEER_ABORT','XFER_ACK_PENDING']:
+            assert protocol_source.count(f'#define {macro} ') == 1
+        assert 'static int ack_register(' not in protocol_source
+        assert 'static int send_done(' not in protocol_source
         thread=extract(sender,'send_thread')
         worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')

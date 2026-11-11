@@ -37,7 +37,7 @@ static xfer_rx_context s_rx;
 static hop_xfer_rx_done_receipt s_done_receipt;
 static hop_xfer_rx_lifecycle s_rx_lifecycle;
 static struct {int marker;} s_send_status,s_receive_status;
-static int s_status_lock,resets,closes,discarded,paste_cancelled;
+static int resets,closes,discarded,paste_cancelled;
 void hop_xfer_rx_reset_batch_state(void *context);
 static void fixture_close_file(void *context){(void)context;closes++;}
 static int fixture_discard_dir(void *context){(void)context;assert(closes>0);discarded++;return 1;}

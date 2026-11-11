@@ -570,11 +570,11 @@ int xfer_init(const hop_config *cfg) {
 static int xfer_shutdown_task_audit(void) {
     /* The manager audit can only see registered Task records. Also verify the
      * platform owners themselves are empty before synchronization is destroyed. */
-    pthread_mutex_lock(&s_x.qlock)
+    pthread_mutex_lock(&s_x.qlock);
     int sender_clean = hop_xfer_sender_queue_empty(&s_x.queue) &&
         s_x.shutdown_jobs == NULL &&
         !hop_xfer_sender_active_job_is_active(&s_x.active_job);
-    pthread_mutex_unlock(&s_x.qlock)
+    pthread_mutex_unlock(&s_x.qlock);
     int receiver_clean = s_wq == NULL && s_rx.writer == NULL &&
         !s_rx.task.initialized && !s_rx.task.id &&
         !s_rx.batch_state.active && !s_rx.cur_path &&

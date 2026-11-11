@@ -1,4 +1,5 @@
 #include "xfer_sender_internal.h"
+#include <errno.h>
 #include "../core/xfer_sender_worker.h"
 #include "../core/xfer_sender_scheduler.h"
 #include <string.h>

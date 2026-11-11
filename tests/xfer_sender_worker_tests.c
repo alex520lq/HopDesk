@@ -71,7 +71,7 @@ static void test_ready(void){fixture f;job j;init(&f,&j);hop_xfer_sender_worker_
     assert(hop_xfer_sender_worker_run(&o)==HOP_XFER_SENDER_WORKER_RUN_STOPPED);
     assert(!f.locked&&f.claims==1&&f.snapshots==1&&f.resets==1&&f.binds==1&&f.state_sets==1&&f.starts==1&&f.runs==1&&f.finishes==1&&!f.releases);
     assert(j.next_index==0&&j.ok==0&&j.owner==2);}
-static void test_expired_cancel(void){fixture f;job j;init(&f,&j);j.cancelled=1;f.peer=0;f.cancelled=1;
+static void test_expired_cancel(void){fixture f;job j;init(&f,&j);j.session=f.session;j.cancelled=1;f.peer=0;f.cancelled=1;
     hop_xfer_sender_worker_runtime_ops o=makeops(&f);assert(hop_xfer_sender_worker_run(&o)==HOP_XFER_SENDER_WORKER_RUN_STOPPED);
     assert(f.claims==1&&f.snapshots==1&&f.aborts==1&&f.starts==1&&f.clears==1&&f.releases==1);
     assert(j.finish_valid&&j.finish_state==HOP_XFER_TASK_CANCELLED&&j.status_end&&j.status_phase==HOP_XFER_CANCELLED);

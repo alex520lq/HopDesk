@@ -1160,7 +1160,7 @@ int main(void){
         shutdown_drain=extract(worker,'sender_shutdown_drain_jobs')
         job_free=extract(worker,'job_free')
         defer_job=extract(worker,'sender_job_defer_to_shutdown')
-        release_job_resources=extract(ROOT/'src/core/xfer_sender_job_lifecycle.c','release_resources')
+        release_job_resources=extract(job_lifecycle_core,'release_resources')
         finish_callback=extract(worker,'sender_worker_task_finish')
         core_release=job_lifecycle_core
         requeue=extract(worker,'sender_worker_requeue_front')

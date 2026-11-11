@@ -1669,6 +1669,7 @@ int main(void){
     # covered by the dedicated Sender Job Lifecycle test target. The former
     # extracted-function harness depended on the removed platform job_free
     # state machine and is retired after the Core migration.
+    owner_platform='win' if os.name=='nt' else 'mac'
 
     # Execute the production top-level xfer_shutdown orchestration with native
     # lock/event primitives and injected failures at Join, Job drain, Writer

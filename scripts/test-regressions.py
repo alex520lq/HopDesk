@@ -911,9 +911,9 @@ int main(void){
             assert 's_x.' not in extract(context_protocol,callback)
         for callback in ['sender_context_session_current','sender_context_write_frame','sender_context_snapshot_session']:
             assert 's_x.' not in extract(sender,callback)
-        functions='\n'.join([extract(sender,'sender_context_session_current'),extract(sender,'sender_context_write_frame'),extract(sender,'sender_context_snapshot_session'),extract(sender,'send_small_with_context'),extract(sender,'job_bind_session'),extract(sender,'sender_commit_is_stopping'),extract(sender,'sender_commit_wait_ms'),extract(sender,'send_small'),extract(sender,'send_chunk')]+[extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_release_terminal_resources','rx_abort_release_resources','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end','hop_xfer_rx_reset_batch_state','hop_xfer_rx_terminate_batch','hop_xfer_rx_bind_session','rx_bind_session','rx_expire_stale_session','on_data_frame_checked','on_data_frame']])
+        functions='\n'.join([extract(sender,'sender_context_session_current'),extract(sender,'sender_context_write_frame'),extract(sender,'sender_context_snapshot_session'),extract(sender,'send_small_with_context'),extract(sender,'sender_commit_is_stopping'),extract(sender,'sender_commit_wait_ms'),extract(sender,'send_small'),extract(sender,'send_chunk')]+[extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_release_terminal_resources','rx_abort_release_resources','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end','hop_xfer_rx_reset_batch_state','hop_xfer_rx_terminate_batch','hop_xfer_rx_bind_session','rx_bind_session','rx_expire_stale_session','on_data_frame_checked','on_data_frame']])
         fixture=fixture.replace('@FUNCTIONS@',functions)
-        run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_task.c','src/core/xfer_budget.c','src/core/xfer_sender_context_adapter.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c'],threads=True)
+        run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c','src/core/xfer_sender_chunk.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_task.c','src/core/xfer_budget.c','src/core/xfer_sender_context_adapter.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c'],threads=True)
 
     control=(ROOT/'src/mac/net_client.c').read_text(encoding='utf-8')+'\n'+(ROOT/'src/mac/net_client_protocol.inc').read_text(encoding='utf-8')
     for platform,source_name,module_name in [('win','net_server.c','net_server_protocol.inc'),('mac','net_client.c','net_client_protocol.inc')]:
@@ -1269,18 +1269,25 @@ int main(void){
         protocol=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         assert 'send_chunk(&call->job->sender_context' in protocol
         assert 'send_small_with_context(&call->job->sender_context' in protocol
-        assert 'hop_xfer_sender_context_status_file_phase(call ? &call->job->sender_context' in protocol
-        assert 'hop_xfer_sender_context_status_stage_time(call ? &call->job->sender_context' in protocol
-        ack_wait=extract(protocol,'ack_wait')
-        assert 's_x.' not in ack_wait
-        assert 'context->session_current' in ack_wait
-        assert 'hop_xfer_sender_context_job_cancel_requested(context' in ack_wait
-        assert 'context->peer_aborted' in ack_wait
+        assert 'hop_xfer_sender_send_chunk' in protocol
+        ack_core=(ROOT/'src/core/xfer_sender_ack_wait.c').read_text(encoding='utf-8')
+        chunk_core=(ROOT/'src/core/xfer_sender_chunk.c').read_text(encoding='utf-8')
+        engine_adapter=(ROOT/'src/core/xfer_sender_engine_adapter.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_ack_wait' in ack_core
+        assert 'hop_xfer_sender_context_job_cancel_requested' in ack_core
+        assert 'context->session_current' in ack_core and 'context->peer_aborted' in ack_core
+        assert 'hop_xfer_sender_context_status_chunk_timed' in chunk_core
+        assert 'hop_xfer_sender_context_status_stage_time' in chunk_core
+        assert 'hop_xfer_sender_context_status_file_phase' in engine_adapter
+        assert 'hop_xfer_sender_context_status_stage_time' in engine_adapter
+        assert 'hop_xfer_sender_ack_wait' in engine_adapter
+        assert 'hop_xfer_sender_engine_adapter_run(&ops)' in protocol
+        assert 'hop_xfer_sender_run_files' not in protocol
+        assert 'hop_xfer_sender_run_image' not in protocol
         commit_wait_ack=extract(protocol,'sender_commit_wait_ack')
         assert 'job->commit_socket' in commit_wait_ack
         assert 'job->commit_epoch' in commit_wait_ack
-        file_wait_ack=extract(protocol,'sender_engine_wait_ack')
-        assert 'call->job->sender_context' in file_wait_ack
+        assert 'hop_xfer_sender_ack_wait' in commit_wait_ack
         commit_send=extract(protocol,'sender_commit_send_done')
         assert 'send_done_with_context(&job->sender_context' in commit_send
         abort_send=extract(protocol,'send_abort_msg_with_context')
@@ -2118,6 +2125,8 @@ int main(void) {
     assert 'hop_xfer_sender_scheduler_wait_next' in worker_core
     assert 's_x' not in worker_core and 's_rx' not in worker_core
     assert 'test_ready' in worker_tests and 'test_expired_cancel' in worker_tests
+    assert 'test_invalid_view_clears_active' in worker_tests
+    assert 'if(v.task&&v.task->id)o->clear_active' in worker_core
     for platform in ['win','mac']:
         worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         send_thread=extract(worker,'send_thread')

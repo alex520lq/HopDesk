@@ -10,6 +10,7 @@
 #include "xfer_task.h"
 #include "xfer_sender_context.h"
 #include "xfer_sender_context_adapter.h"
+#include "xfer_sender_chunk.h"
 #include "xfer_rx_receipt.h"
 #include "xfer_rx_lifecycle.h"
 #include "xfer_rx_services.h"
@@ -19,7 +20,7 @@
 #define SHUT_RDWR 2
 #define INVALID_SOCKET -1
 typedef int SOCKET;
-static struct {int client,sock,lock,slock;unsigned long epoch;hop_session_id session;hop_xfer_rate_limiter rate;} s_x;
+static struct {int client,sock,lock,slock;unsigned long epoch;uint32_t chunk;hop_session_id session;hop_xfer_rate_limiter rate;} s_x;
 typedef struct {
     int *state_lock;
     int *session_lock;
@@ -66,7 +67,9 @@ static uint8_t captured[512];static size_t captured_len;static int delivered,clo
 static int s_txlock;
 static unsigned long s_send_epoch;
 static uint64_t rate_now_ns(void){return 0;}
-static int rate_wait_for_chunk(const hop_xfer_sender_context *context,uint32_t bytes){(void)context;(void)bytes;return 1;}
+static uint64_t fixture_context_now_ns(void *user){(void)user;return rate_now_ns();}
+static int fixture_context_wait_ns(void *user,uint64_t ns){(void)user;(void)ns;return 1;}
+static int fixture_context_is_stopping(void *user){(void)user;return 0;}
 typedef struct {int stopping;uint64_t waited_ns;} fixture_sender_wait;
 static int fixture_sender_is_stopping(void *user){
     return ((fixture_sender_wait *)user)->stopping;
@@ -88,14 +91,18 @@ int main(void){
  s_rx.lifecycle=&s_rx_lifecycle;s_rx.done_receipt=&s_done_receipt;s_rx.services.context=&s_rx;
  s_rx.services.close_file=fixture_close_file;s_rx.services.discard_staging_directory=fixture_discard_dir;
 s_rx.services.cancel_clipboard=fixture_cancel_clipboard;s_rx.services.status_reset=fixture_status_reset;
- s_x.session.bytes[0]=1;s_x.client=s_x.sock=7;s_x.epoch=3;hop_session_publish(&s_x.session);
+ s_x.session.bytes[0]=1;s_x.client=s_x.sock=7;s_x.epoch=3;s_x.chunk=2;
+  hop_xfer_rate_init(&s_x.rate,1000,1000,1000,2,0);hop_session_publish(&s_x.session);
  s_sender_platform.state_lock=&s_x.lock;s_sender_platform.session_lock=&s_x.slock;
  s_sender_platform.tx_lock=&s_txlock;s_sender_platform.queue_lock=&s_x.lock;
  s_sender_platform.client=&s_x.client;s_sender_platform.sock=&s_x.sock;
  s_sender_platform.session=&s_x.session;s_sender_platform.epoch=&s_x.epoch;
  s_sender_context.user=&s_sender_platform;
  s_sender_context.session_current=sender_context_session_current;
- s_sender_context.write_frame=sender_context_write_frame;
+ s_sender_context.snapshot_session=sender_context_snapshot_session;
+  s_sender_context.now_ns=fixture_context_now_ns;s_sender_context.wait_ns=fixture_context_wait_ns;
+  s_sender_context.is_stopping=fixture_context_is_stopping;
+  s_sender_context.write_frame=sender_context_write_frame;
  hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle,42,HOP_ABORT_CANCEL);s_receive_status.marker=9;rx_bind_session(&s_x.session);
  assert(resets==1 && !hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,42,NULL) && !s_receive_status.marker);
  assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,HOP_XFER_PASTE_BATCH_FLAG|42));hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle,42,HOP_ABORT_DISK);rx_bind_session(&s_x.session);
@@ -119,8 +126,7 @@ s_rx.services.cancel_clipboard=fixture_cancel_clipboard;s_rx.services.status_res
  assert(sender_commit_is_stopping(&job));
  assert(!sender_commit_wait_ms(&job,1));
  wait_state.stopping=0;
- job_bind_session(&job, &s_x.session);assert(!job.next_i && !job.ok && !s_send_status.marker);
- job.next_i=2;job.ok=2;job_bind_session(&job, &s_x.session);assert(job.next_i==2 && job.ok==2);
+ /* Session rebinding and checkpoint reset are covered by the shared Worker tests. */
  uint8_t end[9]={0};hop_put_be32(end,3);
  assert(send_small(7,HOP_MSG_FILE_END,end,sizeof(end),42));
  assert(captured_len==HOP_HEADER_SIZE+HOP_DATA_PREFIX+sizeof(end));

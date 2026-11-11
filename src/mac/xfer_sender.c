@@ -278,31 +278,6 @@ void sender_context_wake_ack(void) {
     if (s_sender_context.ack_wake && s_sender_context.ack_user)
         s_sender_context.ack_wake(s_sender_context.ack_user);
 }
-static int ack_register(const hop_xfer_sender_context *context,
-                        uint32_t batch, uint32_t id) {
-    return context && context->ack_user && context->ack_register &&
-           context->ack_register(context->ack_user, batch, id);
-}
-static int ack_mark_sent(const hop_xfer_sender_context *context,
-                         uint32_t batch, uint32_t id) {
-    return context && context->ack_user && context->ack_mark_sent &&
-           context->ack_mark_sent(context->ack_user, batch, id);
-}
-static int ack_set_deadline(const hop_xfer_sender_context *context,
-                            uint32_t batch, uint32_t id, uint64_t deadline_ns) {
-    return context && context->ack_user && context->ack_set_deadline &&
-           context->ack_set_deadline(context->ack_user, batch, id, deadline_ns);
-}
-static void ack_unregister(const hop_xfer_sender_context *context,
-                           uint32_t batch, uint32_t id) {
-    if (context && context->ack_user && context->ack_unregister)
-        context->ack_unregister(context->ack_user, batch, id);
-}
-static void ack_unregister_batch(const hop_xfer_sender_context *context,
-                                 uint32_t batch) {
-    if (context && context->ack_user && context->ack_unregister_batch)
-        context->ack_unregister_batch(context->ack_user, batch);
-}
 void ack_deliver(uint32_t batch, uint32_t id, int status) {
     if (s_sender_context.ack_user && s_sender_context.ack_deliver)
         (void)s_sender_context.ack_deliver(s_sender_context.ack_user,

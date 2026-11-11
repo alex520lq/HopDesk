@@ -118,11 +118,21 @@ int main(int argc, char **argv) {
 
     inject_init();
     if(g_mac.cfg.role==HOP_ROLE_SERVER)mac_capture_init();
-    xfer_init(&g_mac.cfg);
+    if (!xfer_init(&g_mac.cfg)) {
+        hop_log(HOP_LOG_ERROR, "xfer: initialization failed; settling partial startup before exit");
+        while (!xfer_shutdown()) usleep(100000);
+        return 1;
+    }
     statusbar_init();
     clipboard_init();
     net_loop_run();
     hop_watchdog_end(startup_guard);
     app_run();
+    /* clipboard workers may still own image-temp Reservations; the control
+     * reader may still call xfer_kick. Join both before tearing down xfer. */
+    while (!clipboard_shutdown()) usleep(100000); /* retain unresolved image Task owners */
+    net_loop_shutdown();
+    /* No control or clipboard worker may call into xfer after this point. */
+    while (!xfer_shutdown()) usleep(100000);
     return 0;
 }

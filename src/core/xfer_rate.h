@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#define HOP_XFER_RATE_MIB_BYTES (1024ull * 1024ull)
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -23,6 +25,15 @@ typedef struct {
     uint32_t send_samples;
     uint8_t send_congested;
 } hop_xfer_rate_limiter;
+
+void hop_xfer_rate_init_from_config(hop_xfer_rate_limiter *rate,
+                                     int configured_max_mib,
+                                     uint64_t burst_bytes,
+                                     uint64_t now_ns);
+uint32_t hop_xfer_rate_queue_pressure_permille(uint64_t rx_queue_bytes,
+                                                uint32_t rx_queue_slots);
+uint32_t hop_xfer_rate_feedback_from_budget(hop_xfer_rate_limiter *rate,
+                                             uint64_t ack_rtt_us);
 
 void hop_xfer_rate_init(hop_xfer_rate_limiter *rate,
                         uint64_t initial_rate_bytes_per_sec,

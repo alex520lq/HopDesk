@@ -18,11 +18,11 @@ def extract(source,name):
 
 with tempfile.TemporaryDirectory(prefix='hopdesk-regression-') as directory:
     work=pathlib.Path(directory)
-    def run(name,source,extra=(),threads=False):
+    def run(name,source,extra=(),threads=False,libraries=()):
         path=work/(name+'.c');path.write_text(source,encoding='utf-8')
         exe=work/(name+('.exe' if os.name=='nt' else ''))
         if os.name=='nt' and shutil.which('cl'):
-            cmd=['cl','/nologo','/std:c11','/W4','/utf-8','/D_CRT_SECURE_NO_WARNINGS','/I'+str(ROOT/'src/core'),'/Fe:'+str(exe),str(path)]+[str(ROOT/x) for x in extra]
+            cmd=['cl','/nologo','/std:c11','/W4','/utf-8','/D_CRT_SECURE_NO_WARNINGS','/I'+str(ROOT/'src/core'),'/I'+str(ROOT/'src/win'),'/Fe:'+str(exe),str(path)]+[str(ROOT/x) for x in extra]+list(libraries)
         else:
             cc=os.environ.get('CC') or shutil.which('clang') or shutil.which('cc')
             cmd=[cc,'-std=c11','-D_POSIX_C_SOURCE=200809L','-Wall','-Wextra','-Werror','-I',str(ROOT/'src/core'),str(path)]+[str(ROOT/x) for x in extra]+['-o',str(exe)]
@@ -32,7 +32,70 @@ with tempfile.TemporaryDirectory(prefix='hopdesk-regression-') as directory:
         subprocess.run(cmd,cwd=work,check=True)
         subprocess.run([str(exe)],cwd=work,check=True,timeout=30)
 
-    run('tracking_config',(ROOT/'tests/regression_tests.c').read_text(encoding='utf-8'),['src/core/config.c'])
+    run('tracking_config',(ROOT/'tests/regression_tests.c').read_text(encoding='utf-8'),['src/core/config.c','src/core/xfer_tracking.c'])
+    run('rx_protocol_adapter',r'''
+#include "hop.h"
+#include "xfer_rx_protocol_adapter.h"
+#include <assert.h>
+#include <stdio.h>
+typedef struct { int calls; int marker; } test_context;
+static void on_file_begin(void *context,const uint8_t *payload,uint32_t length) {
+    test_context *state=(test_context *)context;
+    assert(state && state->marker==73 && length==2 && payload[0]==4);
+    state->calls++;
+}
+int main(void) {
+    hop_xfer_rx_protocol_adapter adapter={0};
+    hop_xfer_rx_dispatch_handlers handlers={0};
+    test_context context={0,73};
+    uint8_t payload[2]={4,5};
+    assert(!hop_xfer_rx_protocol_adapter_dispatch(&adapter,HOP_MSG_FILE_BEGIN,payload,2));
+    assert(!hop_xfer_rx_protocol_adapter_init(NULL,&handlers,&context));
+    assert(!hop_xfer_rx_protocol_adapter_init(&adapter,NULL,&context));
+    handlers.file_begin=on_file_begin;
+    assert(hop_xfer_rx_protocol_adapter_init(&adapter,&handlers,&context));
+    assert(hop_xfer_rx_protocol_adapter_dispatch(&adapter,HOP_MSG_FILE_BEGIN,payload,2));
+    assert(context.calls==1);
+    assert(!hop_xfer_rx_protocol_adapter_dispatch(&adapter,0xff,payload,2));
+    assert(context.calls==1);
+    puts("PASS: receiver protocol adapter validates lifecycle and forwards explicit context");
+    return 0;
+}
+''',['src/core/xfer_rx_protocol_adapter.c','src/core/xfer_rx_dispatch.c'])
+
+    # Exercise the real Windows filesystem adapter with the exact staging
+    # path shape produced by xfer_receive.inc, not a generic "HopDesk" prefix.
+    if os.name == 'nt':
+        run('win_rx_fs_staging_cleanup',r"""
+ #include "xfer_rx_fs.h"
+ #include <assert.h>
+ #include <stdio.h>
+ #include <windows.h>
+ int main(void) {
+     wchar_t temp[MAX_PATH], root[MAX_PATH], session[MAX_PATH], batch[MAX_PATH], file[MAX_PATH];
+     DWORD n=GetTempPathW(MAX_PATH,temp); assert(n>0 && n<MAX_PATH);
+     assert(swprintf(root,MAX_PATH,L"%sHopDesk",temp)>0);
+     assert(CreateDirectoryW(root,NULL) || GetLastError()==ERROR_ALREADY_EXISTS);
+     assert(swprintf(session,MAX_PATH,L"%s\\rx-fs-session",root)>0);
+     assert(CreateDirectoryW(session,NULL));
+     assert(swprintf(batch,MAX_PATH,L"%s\\batch",session)>0);
+     assert(CreateDirectoryW(batch,NULL));
+     assert(swprintf(file,MAX_PATH,L"%s\\payload.bin",batch)>0);
+     HANDLE h=CreateFileW(file,GENERIC_WRITE,0,NULL,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,NULL);
+     assert(h!=INVALID_HANDLE_VALUE); CloseHandle(h);
+     assert(hop_xfer_rx_fs_remove_tree(batch,L"\\HopDesk\\")==0);
+     assert(GetFileAttributesW(batch)==INVALID_FILE_ATTRIBUTES);
+     /* Repeating cleanup for an already absent staging tree is idempotent. */
+     assert(hop_xfer_rx_fs_remove_tree(batch,L"\\HopDesk\\")==0);
+     /* The previous over-escaped fragment must still be rejected by the guard. */
+     assert(hop_xfer_rx_fs_remove_tree(batch,L"\\\\HopDesk\\\\")==-2);
+     assert(RemoveDirectoryW(session));
+     assert(RemoveDirectoryW(root));
+     puts("PASS: Windows staging tree is deleted with the exact production path guard");
+     return 0;
+ }
+        """,['src/win/xfer_rx_fs.c'],libraries=['shell32.lib'])
+
     assert not list(work.glob('*.tmp.*')), 'failed migration leaked temporary files'
     run('ack_window_checkpoint',r'''
 #include "xfer_ack_window.h"
@@ -53,7 +116,46 @@ int main(void) {
     puts("PASS: only contiguous ACK-confirmed entries advance resume checkpoint");
     return 0;
 }
-''')
+''',['src/core/xfer_ack_window.c'])
+
+    run('rx_dispatch',r'''
+#include "hop.h"
+#include "xfer_rx_dispatch.h"
+#include <assert.h>
+int main(void) {
+    assert(hop_xfer_rx_dispatch_classify(HOP_MSG_FILE_BEGIN)==HOP_RX_DISPATCH_FILE_BEGIN);
+    assert(hop_xfer_rx_dispatch_classify(HOP_MSG_IMAGE_BEGIN)==HOP_RX_DISPATCH_IMAGE_BEGIN);
+    assert(hop_xfer_rx_dispatch_classify(HOP_MSG_FILE_CHUNK)==HOP_RX_DISPATCH_FILE_CHUNK);
+    assert(hop_xfer_rx_dispatch_classify(HOP_MSG_FILE_END)==HOP_RX_DISPATCH_FILE_END);
+    assert(hop_xfer_rx_dispatch_classify(HOP_MSG_FILE_ACK)==HOP_RX_DISPATCH_FILE_ACK);
+    assert(hop_xfer_rx_dispatch_classify(HOP_MSG_XFER_ABORT)==HOP_RX_DISPATCH_ABORT);
+    assert(hop_xfer_rx_dispatch_classify(HOP_MSG_XFER_DONE)==HOP_RX_DISPATCH_DONE);
+    assert(hop_xfer_rx_dispatch_classify(HOP_MSG_XFER_DONE_ACK)==HOP_RX_DISPATCH_DONE_ACK);
+    assert(hop_xfer_rx_dispatch_classify(HOP_MSG_XFER_HELLO)==HOP_RX_DISPATCH_UNKNOWN);
+    assert(hop_xfer_rx_dispatch_classify(255)==HOP_RX_DISPATCH_UNKNOWN);
+    return 0;
+}
+''',['src/core/xfer_rx_dispatch.c'])
+
+    run('rx_batch_state',r'''
+#include "xfer_rx_batch_state.h"
+#include <assert.h>
+int main(void) {
+    hop_xfer_rx_batch_state s;
+    hop_xfer_rx_batch_state_init(&s);
+    assert(hop_xfer_rx_batch_state_begin(&s,7));
+    assert(hop_xfer_rx_batch_state_matches(&s,7));
+    assert(!hop_xfer_rx_batch_state_begin(&s,8));
+    assert(!hop_xfer_rx_batch_state_end(&s,8));
+    assert(hop_xfer_rx_batch_state_end(&s,7));
+    assert(!s.active && !s.batch && s.generation==1);
+    assert(hop_xfer_rx_batch_state_begin(&s,7));
+    assert(s.generation==2);
+    hop_xfer_rx_batch_state_reset(&s);
+    assert(!s.active && !s.batch && s.generation==2);
+    return 0;
+}
+''',['src/core/xfer_rx_batch_state.c'])
 
     # Cards are painted by the page, never sibling HWNDs obscuring its controls.
     ui=(ROOT/'src/win/main_ui.c').read_text(encoding='utf-8')
@@ -244,7 +346,7 @@ int main(void){
     assert win_return.index('send_button(i, 0)') < win_return.index('net_server_send(g_app.net, HOP_MSG_EDGE_LEAVE, NULL, 0)')
 
 
-    clip=(ROOT/'src/win/clipboard.c').read_text(encoding='utf-8')
+    clip=(ROOT/'src/win/clipboard.c').read_text(encoding='utf-8')+'\n'+(ROOT/'src/win/clipboard_offer.inc').read_text(encoding='utf-8')+'\n'+(ROOT/'src/win/clipboard_paste.inc').read_text(encoding='utf-8')
     clip_preamble=r'''
 #include <stdint.h>
 #include <stdio.h>
@@ -306,52 +408,83 @@ int main(void){
     run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','apply_global_expected','apply_global','clip_retry_pending','clip_on_paste_message'])+clip_main)
     # A cross-device paste batch must never fall through to the ordinary clipboard writer.
     for platform in ['win','mac']:
-        rx=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        rx='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
         if platform=='win':
-            assert 'clip_complete_remote_paste(batch,(const wchar_t *const *)s_rx.tops,s_rx.ntop,1)' in rx
-            assert 'clip_complete_remote_paste(batch,NULL,0,0)' in rx
-            clip=(ROOT/'src/win/clipboard.c').read_text(encoding='utf-8')
+            assert 'clip_complete_remote_paste(batch, (const wchar_t *const *)top_paths, top_count, 1)' in rx
+            assert 'clip_complete_remote_paste(batch, NULL, 0, 0)' in rx
+            clip=(ROOT/'src/win/clipboard.c').read_text(encoding='utf-8')+'\n'+(ROOT/'src/win/clipboard_offer.inc').read_text(encoding='utf-8')+'\n'+(ROOT/'src/win/clipboard_paste.inc').read_text(encoding='utf-8')
             assert 'GetClipboardSequenceNumber()!=expected' in clip
             paste_message=extract(clip,'clip_on_paste_message')
             assert 'SendInput(' not in paste_message
             assert 'apply_global_expected(CF_HDROP,h,expected_sequence,1,1)' in paste_message
         else:
-            assert 'clipboard_complete_remote_paste(batch,(const char *const *)s_rx.tops,s_rx.ntop,1)' in rx
-            assert 'clipboard_complete_remote_paste(batch,NULL,0,0)' in rx
-            clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
+            assert 'clipboard_complete_remote_paste(batch, (const char *const *)top_paths, top_count, 1)' in rx
+            assert 'clipboard_complete_remote_paste(batch, NULL, 0, 0)' in rx
+            clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')+'\n'+(ROOT/'src/mac/clipboard_offer.inc').read_text(encoding='utf-8')+'\n'+(ROOT/'src/mac/clipboard_paste.inc').read_text(encoding='utf-8')
             assert '[pb changeCount] != expected_count' in clip
             apply_objects=extract(clip,'apply_objects_retry')
             assert 'inject_paste_shortcut()' not in apply_objects
             assert 'statusbar_notify_paste_ready()' in apply_objects
 
-        # Exercise the actual production selector with a small slot before a
-        # later fitting slot. The later slot must be reused without allocation.
-        pool_source=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
-        pool_preamble=r'''
-#include <stdint.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <assert.h>
-#define RX_Q_SLOTS 4
-#define RX_Q_MAX_BYTES 1024
-typedef struct { uint8_t *data; uint32_t capacity; int in_use; } rx_buffer_slot;
-static struct { rx_buffer_slot buffers[RX_Q_SLOTS]; uint64_t pool_capacity; } s_wq;
-static int hop_xfer_budget_set_rx_pool_bytes(uint64_t bytes) { (void)bytes; return 1; }
-'''
-        pool_main=r'''
-int main(void) {
-    uint8_t small[8], large[64], *selected=NULL;
-    int slot=-1;
-    s_wq.buffers[0].data=small; s_wq.buffers[0].capacity=8;
-    s_wq.buffers[1].data=large; s_wq.buffers[1].capacity=64;
-    s_wq.pool_capacity=72;
-    assert(wq_pool_acquire_locked(32,&slot,&selected)==1);
-    assert(slot==1 && selected==large && s_wq.pool_capacity==72);
-    puts("PASS: best-fit RX pool selector reuses later fitting slot");
-    return 0;
-}
-'''
-        run('rx_pool_best_fit_'+platform,pool_preamble+extract(pool_source,'wq_pool_acquire_locked')+pool_main)
+        platform_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
+        core_handlers=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
+        begin=extract(core_handlers,'hop_xfer_rx_handle_file_begin')
+        end=extract(core_handlers,'hop_xfer_rx_handle_file_end')
+        assert 'if (rx->batch_state.active && hop_xfer_task_cancel_requested(rx->task.id))' in begin
+        assert 'if (!hop_xfer_task_set_kind(&rx->task, HOP_TASK_KIND_FILES)' in begin
+        assert 'hop_xfer_rx_file_state_prepare_entry(&rx->file_state, id, size,' in begin
+        begin_reserve=begin.index('hop_xfer_rx_entry_reservations_reserve(')
+        begin_commit=begin.index('rx->cur_path = (hop_xfer_rx_path_char *)candidate')
+        assert begin_reserve < begin_commit
+        for side_effect in ['rx->services.reset_file_error(', 'rx->services.remove_top_path(', 'rx->services.status_add_received_file(', 'rx->services.prepare_file_path(']:
+            assert begin.index(side_effect) > begin_reserve
+        assert 'rx->services.open_file(' in begin
+        assert 'hop_xfer_rx_file_state_evaluate_end' in end
+        assert 'rx->services.close_file(' in end and 'rx->services.send_file_ack(' in end
+        assert 'rx->services.remove_file(' in end and 'rx->services.is_top_level_path(' in end
+        assert 'rx_dispatch_file_begin' not in platform_handlers and 'rx_dispatch_file_end' not in platform_handlers
+        # RX storage/accounting lives in the production writer implementation,
+        # not in Receiver protocol code. Windows has completed this extraction;
+        # macOS is intentionally checked against its current adapter until parity lands.
+        if platform == 'win':
+            writer=(ROOT/'src/win/xfer_writer_queue.c').read_text(encoding='utf-8')
+            assert 'hop_xfer_buffer_pool_acquire_locked(' in writer and '&queue->pool' in writer
+            assert 'hop_xfer_buffer_pool_release_locked(&queue->pool' in writer
+            assert 'hop_xfer_rx_queue_can_push(&queue->accounting' in writer
+            assert 'hop_xfer_rx_queue_reserve(&queue->accounting' in writer
+            assert 'hop_xfer_rx_queue_commit_reserved(&queue->accounting)' in writer
+            assert 'hop_xfer_rx_queue_drained(&queue->accounting)' in writer
+            assert 'hop_xfer_buffer_pool_acquire_locked' not in rx
+            assert 'static int wq_worker_take' not in rx
+            assert 'hop_writer_queue_enqueue_write' in rx
+        else:
+            writer=(ROOT/'src/mac/xfer_writer_queue.c').read_text(encoding='utf-8')
+            assert 'hop_xfer_buffer_pool_acquire_locked(' in writer and '&queue->pool' in writer
+            assert 'hop_xfer_buffer_pool_release_locked(&queue->pool' in writer
+            assert 'hop_xfer_rx_queue_can_push(&queue->accounting' in writer
+            assert 'hop_xfer_rx_queue_reserve(&queue->accounting' in writer
+            assert 'hop_xfer_rx_queue_commit_reserved(&queue->accounting)' in writer
+            assert 'hop_xfer_rx_queue_drained(&queue->accounting)' in writer
+            assert 'hop_xfer_buffer_pool_acquire_locked' not in rx
+            assert 'static int wq_worker_take' not in rx
+            assert 'hop_writer_queue_enqueue_write' in rx
+        assert 'rx_buffer_slot' not in rx and 'wq_pool_acquire_locked' not in rx
+        assert 'queue->callbacks.task_cancelled' in writer
+        assert 'if (!cancelled) run_command(queue, command);' in writer
+    shared_rx_handlers=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
+    file_state_tests=(ROOT/'tests/xfer_rx_file_state_tests.c').read_text(encoding='utf-8')
+    assert 'hop_xfer_rx_file_state_prepare_entry' in file_state_tests
+    assert 'hop_xfer_rx_file_state_evaluate_end' in file_state_tests
+    assert 'HOP_RX_FILE_END_INCOMPLETE' in file_state_tests
+    assert 'HOP_FILE_ACK_BADPATH' in file_state_tests
+    assert 'if (rx->batch_state.active && hop_xfer_task_cancel_requested(rx->task.id))' in shared_rx_handlers
+    assert 'if (!hop_xfer_task_set_kind(&rx->task,HOP_TASK_KIND_IMAGE) || hop_xfer_task_cancel_requested(rx->task.id))' in shared_rx_handlers
+    assert 'if (!hop_xfer_decode_image_begin(p, len, &msg))' in shared_rx_handlers
+    assert 'if (!rx->batch_state.active) return; /* late data after termination */' in shared_rx_handlers
+    assert 'if (hop_xfer_task_cancel_requested(rx->task.id))' in shared_rx_handlers
+    assert 'if (!hop_xfer_decode_image_begin(p, len, &msg))' in shared_rx_handlers
+    assert 'if (!rx->batch_state.active) return; /* late data after termination */' in shared_rx_handlers
+    assert 'if (hop_xfer_task_cancel_requested(rx->task.id))' in shared_rx_handlers
     clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
     assert 'send_image_data_async(imageType, cc, previous_change)' in clip
     assert 'budget_deferred = 1' in clip
@@ -383,14 +516,26 @@ int main(void){
     run('image_budget_permanent',image_limits_preamble+extract(clip,'image_conversion_fits_budget')+image_limits_main)
 
     for platform in ['win','mac']:
-        source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', (ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8'))
+        rx_sources='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
+        source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        source=source.replace('#include "xfer_receive.inc"', rx_sources)
         common=r'''
 #include "hop.h"
+#include "xfer_rx_batch_rules.h"
+#include "xfer_rx_batch_state.h"
+#include "xfer_rx_image_state.h"
+#include "xfer_rx_image_buffer.h"
+#include "xfer_rx_file_state.h"
 #include "xfer_tracking.h"
 #include "xfer_budget.h"
 #include "xfer_task.h"
+#include "xfer_rx_services.h"
+#include "xfer_rx_context.h"
 #include <assert.h>
 #include <wchar.h>
+#include <string.h>
+#include <stdlib.h>
+static void hop_xfer_rx_terminate_batch(void *context,uint32_t batch,uint8_t reason,int notify_peer){(void)context;(void)batch;(void)reason;(void)notify_peer;}
 #define hop_log(...) ((void)0)
 #define HOP_MSG_XFER_DONE 54
 #define RX_CLOSE 1
@@ -402,24 +547,45 @@ uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
 typedef int SOCKET;
 typedef struct {uint32_t batch;int is_image,ok,n;} xf_job;
 typedef xf_job xfer_job;
-typedef struct {int kind;} rx_task;
-static int s_status_lock,applied;static uint8_t wire[20];
+static xf_job j={10,1,1,1};
+static int applied;static uint8_t wire[20];
 static hop_xfer_tracking s_receive_status;
-static struct {int active,cur_is_image,ntop;uint32_t batch;char *dir;uint8_t *img;size_t img_len,img_expected;int img_w,img_h,img_stride;void **tops;hop_xfer_task task;} s_rx;
+static xfer_rx_context s_rx;
 static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t batch){(void)batch;(void)fd;(void)type;assert(n==20);memcpy(wire,p,n);return 1;}
-static void wq_push(rx_task*t){(void)t;}
+static int fixture_send_done(int fd,uint32_t batch,uint32_t ok,uint32_t total){uint8_t payload[20];hop_put_be32(payload,batch);hop_put_be32(payload+4,ok);hop_put_be32(payload+8,total);hop_put_be64(payload+12,0);return send_small(fd,HOP_MSG_XFER_DONE,payload,sizeof(payload),batch);}
 static void wq_drain(void){}
-static void rx_reset(void){s_rx.active=0;hop_xfer_task_dispose(&s_rx.task);}
-static void rx_terminate(uint32_t batch,uint8_t reason,int notify){(void)batch;(void)reason;(void)notify;assert(!"unexpected cancellation in successful fixture");}
 static void status_file_phase(int d,uint32_t b,int i,int p,uint32_t a){assert(d==HOP_XFER_DIR_RECEIVE);hop_xfer_tracking_phase(&s_receive_status,b,i,p,a);}
 static void status_end(int d,uint32_t b,int p,const char*s){assert(d==HOP_XFER_DIR_RECEIVE);hop_xfer_tracking_end(&s_receive_status,b,p,s);}
 static void apply_image(const uint8_t*p,int w,int h,int stride){(void)p;(void)w;(void)h;(void)stride;applied++;}
 static void apply_paths(const void*p,int n){(void)p;(void)n;}
-static uint64_t rate_now_ns(void){static uint64_t now=100;return ++now;}
-static void status_stage_time(int direction,uint32_t batch,int stage,uint64_t elapsed_ns){
-    (void)batch;(void)stage;(void)elapsed_ns;assert(direction==HOP_XFER_DIR_RECEIVE);
+static void fixture_close_file(void *context){(void)context;wq_drain();}
+static void fixture_status_end(void *context,uint32_t batch,int phase,const char *detail){(void)context;status_end(HOP_XFER_DIR_RECEIVE,batch,phase,detail);}
+static void fixture_status_file_phase(void *context,uint32_t batch,int index,int phase,uint32_t attempts){(void)context;status_file_phase(HOP_XFER_DIR_RECEIVE,batch,index,phase,attempts);}
+static void fixture_status_total(void *context,uint32_t total){(void)context;(void)total;}
+static void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n,int success);
+static void clipboard_complete_remote_paste(uint32_t batch,const char *const *paths,int n,int success);
+static void fixture_finish_clipboard(void *context,uint32_t batch,const void *image_data,uint32_t width,uint32_t height,uint32_t stride,int image_valid,const void *const *paths,int count,int allow_publish){
+    (void)context;
+    if(allow_publish && image_valid && image_data){apply_image((const uint8_t *)image_data,(int)width,(int)height,(int)stride);return;}
+    if(allow_publish && count>0){
+        if(batch&HOP_XFER_PASTE_BATCH_FLAG){
+#ifdef FIXTURE_WINDOWS
+            clip_complete_remote_paste(batch,(const wchar_t *const *)paths,count,1);
+#else
+            clipboard_complete_remote_paste(batch,(const char *const *)paths,count,1);
+#endif
+        } else apply_paths(paths,count);
+    } else if(batch&HOP_XFER_PASTE_BATCH_FLAG){
+#ifdef FIXTURE_WINDOWS
+        clip_complete_remote_paste(batch,NULL,0,0);
+#else
+        clipboard_complete_remote_paste(batch,NULL,0,0);
+#endif
+    }
 }
 static int paste_success_calls,paste_failure_calls;
+static void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n,int success);
+static void clipboard_complete_remote_paste(uint32_t batch,const char *const *paths,int n,int success);
 static void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n,int success){
     (void)batch;(void)paths;(void)n;
     if(success)paste_success_calls++;else paste_failure_calls++;
@@ -435,62 +601,78 @@ static void clipboard_complete_remote_paste(uint32_t batch,const char *const *pa
 '''
         main=r'''
 int main(void){
+    s_rx.services.close_file=fixture_close_file;
+    s_rx.services.finish_clipboard=fixture_finish_clipboard;
+    s_rx.services.status_end=fixture_status_end;
+    s_rx.services.status_file_phase=fixture_status_file_phase;
+    s_rx.services.status_set_files_total=fixture_status_total;
     /* Both platform callbacks are linked in each host compiler's fixture. */
     (void)&clip_complete_remote_paste;
     (void)&clipboard_complete_remote_paste;
-    xf_job j={0};j.batch=10;j.is_image=1;j.ok=1;assert(send_done(0,&j));
+    assert(fixture_send_done(0,10,1,1));
     assert(hop_get_be32(wire+4)==1 && hop_get_be32(wire+8)==1);
-    uint8_t pixel[4]={0};
+    uint8_t *pixel=(uint8_t*)malloc(4);assert(pixel);memset(pixel,0,4);
     assert(hop_xfer_task_init(&s_rx.task,0,0,j.batch));
     assert(hop_xfer_task_reserve_job(&s_rx.task));
     assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
-    s_rx.active=1;s_rx.batch=j.batch;s_rx.cur_is_image=1;
-    s_rx.img=pixel;s_rx.img_len=4;s_rx.img_expected=4;
+    assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,j.batch));hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,1,0);
+    s_rx.image_buffer.data=pixel;s_rx.image_buffer.capacity=4;assert(hop_xfer_rx_image_state_begin(&s_rx.image_state,1,1,4,4));s_rx.image_state.received=4;s_rx.image_state.capacity=4;
     hop_xfer_tracking_begin(&s_receive_status,j.batch,HOP_XFER_DIR_RECEIVE,0,0,"Image",HOP_XFER_RECEIVING);
     hop_xfer_tracking_file(&s_receive_status,j.batch,1,"Image",4,0,HOP_XFER_FILE_RECEIVING);
-    rx_finish_batch(j.batch,hop_get_be32(wire+4),hop_get_be32(wire+8));
+    hop_xfer_rx_finish_batch(&s_rx,j.batch,hop_get_be32(wire+4),hop_get_be32(wire+8));
     assert(applied==1 && !s_receive_status.status.active && s_receive_status.status.phase==HOP_XFER_COMPLETED);
     assert(s_receive_status.status.files_done==1);
-    rx_finish_batch(j.batch,1,1);assert(applied==1);
+    hop_xfer_rx_finish_batch(&s_rx,j.batch,1,1);assert(applied==1);
     assert(hop_xfer_task_init(&s_rx.task,0,0,11));
     assert(hop_xfer_task_reserve_job(&s_rx.task));
     assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
-    s_rx.active=1;s_rx.batch=11;s_rx.cur_is_image=1;s_rx.img_len=3;s_rx.img_expected=4;
+    assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,11));hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,1,0);assert(hop_xfer_rx_image_state_begin(&s_rx.image_state,1,1,4,4));s_rx.image_state.received=3;s_rx.image_state.capacity=4;
     hop_xfer_tracking_begin(&s_receive_status,11,HOP_XFER_DIR_RECEIVE,1,4,"Image",HOP_XFER_RECEIVING);
-    rx_finish_batch(11,1,1);assert(applied==1 && s_receive_status.status.phase==HOP_XFER_FAILED);
+    hop_xfer_rx_finish_batch(&s_rx,11,1,1);assert(applied==1 && s_receive_status.status.phase==HOP_XFER_FAILED);
 
     /* Requested file paste must use the validated callback, not generic paths. */
-    const char *one_path="received.txt";void *tops[1]={(void *)one_path};
+#ifdef FIXTURE_WINDOWS
+    const wchar_t one_path[]=L"received.txt";
+#else
+    const char one_path[]="received.txt";
+#endif
+    s_rx.tops=malloc(sizeof(*s_rx.tops));assert(s_rx.tops);
+    s_rx.tops[0]=malloc(sizeof(one_path));assert(s_rx.tops[0]);memcpy(s_rx.tops[0],one_path,sizeof(one_path));s_rx.ntop=1;
     uint32_t paste_batch=HOP_XFER_PASTE_BATCH_FLAG|12u;
     assert(hop_xfer_task_init(&s_rx.task,0,0,paste_batch));
     assert(hop_xfer_task_reserve_job(&s_rx.task));
     assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
-    s_rx.active=1;s_rx.batch=paste_batch;s_rx.cur_is_image=0;s_rx.ntop=1;s_rx.tops=tops;
+    assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,paste_batch));hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,0,0);
     hop_xfer_tracking_begin(&s_receive_status,paste_batch,HOP_XFER_DIR_RECEIVE,1,0,"File",HOP_XFER_RECEIVING);
-    rx_finish_batch(paste_batch,1,1);
+    hop_xfer_rx_finish_batch(&s_rx,paste_batch,1,1);
     assert(paste_success_calls==1 && paste_failure_calls==0);
 
     paste_batch=HOP_XFER_PASTE_BATCH_FLAG|13u;
     assert(hop_xfer_task_init(&s_rx.task,0,0,paste_batch));
     assert(hop_xfer_task_reserve_job(&s_rx.task));
     assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
-    s_rx.active=1;s_rx.batch=paste_batch;s_rx.cur_is_image=0;s_rx.ntop=1;s_rx.tops=tops;
+    assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,paste_batch));hop_xfer_rx_file_state_begin(&s_rx.file_state,1);hop_xfer_rx_file_state_set_kind(&s_rx.file_state,0,0);s_rx.tops=malloc(sizeof(*s_rx.tops));assert(s_rx.tops);s_rx.tops[0]=malloc(sizeof(one_path));assert(s_rx.tops[0]);memcpy(s_rx.tops[0],one_path,sizeof(one_path));s_rx.ntop=1;
     hop_xfer_tracking_begin(&s_receive_status,paste_batch,HOP_XFER_DIR_RECEIVE,1,0,"File",HOP_XFER_RECEIVING);
-    rx_finish_batch(paste_batch,0,1);
+    hop_xfer_rx_finish_batch(&s_rx,paste_batch,0,1);
     assert(paste_success_calls==1 && paste_failure_calls==1);
     puts("PASS: production IMAGE DONE and validated file-paste completion paths");return 0;
 }
 '''
-        run('image_'+platform,common+extract(source,'send_done')+'\n'+extract(source,'rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+        if platform=='win': common='#define FIXTURE_WINDOWS 1\n'+common
+        sender_source=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        core_finish_source=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
+        run('image_'+platform,common+'\n'+extract(core_finish_source,'hop_xfer_rx_reset_batch_state')+'\n'+extract(core_finish_source,'rx_release_terminal_resources')+'\n'+extract(core_finish_source,'rx_abort_clear_state')+'\n'+extract(core_finish_source,'hop_xfer_rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_protocol_adapter.c','src/core/xfer_rx_dispatch.c'],threads=True)
     # Run the actual per-platform state wrappers, not only a reimplemented model.
     for platform in ['win','mac']:
-        source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', (ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8'))
+        source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', '\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c')))
         preamble=r'''
 #include "hop.h"
 #include "xfer_tracking.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <time.h>
+#include <stdio.h>
+#include <string.h>
 #define AcquireSRWLockExclusive(p) ((void)(p))
 #define ReleaseSRWLockExclusive(p) ((void)(p))
 #define pthread_mutex_lock(p) ((void)(p))
@@ -526,7 +708,7 @@ int main(void){
 }
 '''
         names=['status_for','status_begin','status_chunk_timed','status_file_phase','status_end','status_add_received_file']
-        run('wrappers_'+platform,preamble+'\n'.join(extract(source,n) for n in names)+main)
+        run('wrappers_'+platform,preamble+'\n'.join(extract(source,n) for n in names)+main,['src/core/xfer_tracking.c'])
 
     if os.name!='nt':
         source=(ROOT/'src/mac/xfer.c').read_text(encoding='utf-8')
@@ -580,40 +762,147 @@ int main(void){
 '''
         run('history',preamble+code+main,threads=True)
 
+    for platform in ['win','mac']:
+        transport=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
+        submission=(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
+        assert '#include "xfer_sender_internal.h"' in transport
+        assert 'xfer_sender_protocol.inc' not in transport
+        assert 'xfer_sender_worker.inc' not in transport
+        assert 'xfer_submit.inc' not in transport
+        assert '#include "xfer_sender_internal.h"' in worker
+        assert '#include "xfer_sender_internal.h"' in submission
+        worker_adapter=(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
+        assert 'send_thread' not in (ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        assert 'send_thread' in worker_adapter and 'hop_xfer_sender_worker_run(&worker)' in worker_adapter
+        scheduler=(ROOT/'src/core/xfer_sender_scheduler.c').read_text(encoding='utf-8')
+        worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_queue_take_cancelled' in scheduler and 'hop_xfer_sender_queue_take_head' in scheduler
+        assert 'hop_xfer_sender_scheduler_wait_next' in worker_core
+        assert 'hop_xfer_sender_worker_run' in worker
+        assert 'hop_xfer_sender_scheduler_wait_next' not in worker
+        assert 'queue_unlink' not in worker
+        protocol=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        rate_core=(ROOT/'src/core/xfer_rate.c').read_text(encoding='utf-8')
+        rate_header=(ROOT/'src/core/xfer_rate.h').read_text(encoding='utf-8')
+        assert 'hop_xfer_rate_init_from_config' in rate_core and 'hop_xfer_rate_queue_pressure_permille' in rate_core
+        assert 'rate_init_from_config' not in protocol and 'rate_queue_pressure_permille' not in protocol
+        assert 'XFER_RATE_MIN_MIB' not in (ROOT/f'src/{platform}/xfer_sender_internal.h').read_text(encoding='utf-8')
+        assert 'HOP_XFER_RATE_MIB_BYTES' in rate_header
+        engine_adapter=(ROOT/'src/core/xfer_sender_engine_adapter.c').read_text(encoding='utf-8')
+        ack_wait_core=(ROOT/'src/core/xfer_sender_ack_wait.c').read_text(encoding='utf-8')
+        chunk_core=(ROOT/'src/core/xfer_sender_chunk.c').read_text(encoding='utf-8')
+        assert 'adapter_send_entry' in engine_adapter and 'adapter_wait_ack' in engine_adapter
+        assert 'hop_xfer_sender_engine_adapter_run(&ops)' in protocol
+        assert 'sender_commit_adapter_run' in protocol and 'run_job' in protocol
+        assert 'hop_xfer_sender_ack_wait(' in ack_wait_core and 'hop_xfer_sender_ack_wait(' in engine_adapter
+        assert 'hop_xfer_sender_send_chunk(' in chunk_core and 'hop_xfer_sender_send_chunk(&ops' in protocol
+        assert 'rate_feedback' in protocol and 'rate_feedback' in engine_adapter
+        assert 'xfer_submit_paths_impl' in submission and 'xfer_submit_image_impl' in submission
+
+        scanner=(ROOT/f'src/{platform}/xfer_scanner.c').read_text(encoding='utf-8')
+        scanner_header=(ROOT/f'src/{platform}/xfer_scanner.h').read_text(encoding='utf-8')
+        assert 'hop_xfer_scan_paths' in scanner and 'walk_into' in scanner and 'elist_push' in scanner
+        assert 'services->reserve_entry' in scanner and 'services->is_cancelled' in scanner
+        assert 'services->watchdog_begin' in scanner and 'services->watchdog_end' in scanner
+        assert 'hop_xfer_task_' not in scanner and 'hop_watchdog_' not in scanner and 'hop_log(' not in scanner
+        assert 'hop_xfer_scan_error' in scanner_header and 'HOP_XFER_SCAN_OUT_OF_MEMORY' in scanner_header
+        assert 'hop_xfer_scan_paths(&l, paths, n, &scan_services)' in submission
+        assert 'hop_xfer_task task;' in submission and 'hop_xfer_task_dispose(&task)' in submission
+        assert 'HOP_XFER_SCAN_MAX_ENTRIES' in scanner_header
+        if platform=='win':
+            assert 'FILE_ATTRIBUTE_REPARSE_POINT' in scanner and 'FindFirstFileW' in scanner
+        else:
+            assert 'S_ISLNK' in scanner and 'lstat(' in scanner and 'S_ISREG' in scanner and 'read_error' in scanner and 'errno = 0' in scanner
+        assert 'walk_into' not in transport and 'elist_push' not in transport
+        assert 'hop_xfer_scan_paths(&l, paths, n, &scan_services)' in submission
+
     # Exact production case bodies + lifecycle helpers; only OS I/O is doubled.
     for platform in ['win','mac']:
-        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
-        receiver=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
-        state_start=receiver.index('typedef struct {',receiver.index('/* ---------------- 接收')) if platform=='win' else receiver.index('static struct {',receiver.index('/* ---------------- 接收'))
-        state_end=receiver.index('static xfer_rx s_rx;',state_start)+len('static xfer_rx s_rx;') if platform=='win' else receiver.index('} s_rx;',state_start)+len('} s_rx;')
-        handler=extract(receiver,'on_data_msg')
-        def cases(first,after):
-            return handler[handler.index('        case '+first+':'):handler.index('        case '+after+':')]
-        selected=cases('HOP_MSG_IMAGE_BEGIN','HOP_MSG_XFER_ABORT')+cases('HOP_MSG_XFER_ABORT','HOP_MSG_XFER_DONE')
-        selected+=handler[handler.index('        case HOP_MSG_XFER_DONE:'):handler.index('        default:')]
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
+        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
+        assert 's_ack' not in receiver
+        receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
+        protocol_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
+        context_header=(ROOT/'src/core/xfer_rx_context.h').read_text(encoding='utf-8')
+        assert 'typedef struct xfer_rx_context' in context_header
+        state_contract='#include "xfer_rx_context.h"\n#include "xfer_rx_message_handlers.h"\nstatic xfer_rx_context s_rx;\nstatic void rx_release_terminal_resources(xfer_rx_context *rx, int close_writer, int discard_staging);\nstatic void rx_abort_clear_state(void *context);'
+        dispatch_names=[]
+        dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_reserve_entry_budget','rx_handler_terminate','rx_handler_begin_batch','rx_handler_finish_batch','rx_ack_deliver_file','rx_ack_deliver_done','rx_now_ns','hop_xfer_rx_bind_session'])+'\n'+'\n'.join(extract(receiver,name) for name in ['hop_xfer_rx_handle_file_begin','hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_handle_file_end','hop_xfer_rx_dispatch_file_ack_message','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_dispatch_done_ack_message'])
+        dispatch_handlers+='\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { hop_xfer_rx_handle_file_begin, hop_xfer_rx_handle_image_begin, hop_xfer_rx_handle_file_chunk, hop_xfer_rx_handle_file_end, hop_xfer_rx_dispatch_file_ack_message, hop_xfer_rx_handle_abort, hop_xfer_rx_handle_done, hop_xfer_rx_dispatch_done_ack_message };\n'
         fixture=(ROOT/'tests/receive_abort_fixture.c.in').read_text(encoding='utf-8')
         values={
-            'RX_STATE':receiver[state_start:state_end],
+            'RX_STATE':state_contract,
             'WIRE_SEND':extract(sender,'send_abort_msg' if platform=='win' else 'send_abort'),
             'STATUS_FUNCTIONS':'\n'.join(extract(sender,n) for n in ['status_for','status_begin','status_end']),
-            'CLOSE_FILE':extract(receiver,'rx_close_file'),
-            'CLEAR_STATE':extract(receiver,'rx_clear_state'),
-            'RESET_STATE':extract(receiver,'rx_reset'),
-            'TERMINATE':extract(receiver,'rx_terminate'),
-            'BEGIN_BATCH':extract(receiver,'rx_begin_batch'),
-            'FINISH_BATCH':extract(receiver,'rx_finish_batch'),
+            'CLEAR_STATE':extract(receiver,'hop_xfer_rx_reset_batch_state'),
+            'TERMINATE':'\n'.join(extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_release_terminal_resources','rx_abort_release_resources','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end'])+'\n'+extract(receiver,'hop_xfer_rx_terminate_batch'),
+            'BEGIN_BATCH':extract(receiver,'hop_xfer_rx_begin_batch'),
+            'FINISH_BATCH':extract(receiver,'hop_xfer_rx_finish_batch'),
+            'RX_SERVICE_CALLBACKS':'\n'.join([
+                'static void fixture_send_abort(void *context,uint32_t batch,uint8_t reason){(void)context;\n#ifdef FIXTURE_WINDOWS\nsend_abort_msg(s_x.client,batch,reason,HOP_ABORT_TO_SENDER);\n#else\nsend_abort(batch,reason);\n#endif\n}',
+                'static int fixture_add_top_path(void *context,const void *path){(void)context;(void)path;return 1;}',
+                'static void fixture_remove_top_path(void *context,const void *path){(void)context;(void)path;}',
+                'static void fixture_finish_clipboard(void *context,uint32_t batch,const void *image,uint32_t w,uint32_t h,uint32_t stride,int image_valid,const void *const *paths,int count,int allow){(void)context;if(allow&&image_valid&&image){apply_image((const uint8_t*)image,(int)w,(int)h,(int)stride);return;}if(allow&&count>0){if(batch&HOP_XFER_PASTE_BATCH_FLAG){',
+                '#ifdef FIXTURE_WINDOWS',
+                'clip_complete_remote_paste(batch,(const wchar_t *const *)paths,count,1);',
+                '#else',
+                'clipboard_complete_remote_paste(batch,(const char *const *)paths,count,1);',
+                '#endif',
+                '}else apply_paths(paths,count);}else if(batch&HOP_XFER_PASTE_BATCH_FLAG){',
+                '#ifdef FIXTURE_WINDOWS',
+                'clip_complete_remote_paste(batch,NULL,0,0);',
+                '#else',
+                'clipboard_complete_remote_paste(batch,NULL,0,0);',
+                '#endif',
+                '}}',
+                'static void fixture_cancel_clipboard(void *context,uint32_t batch){(void)context;if(batch&HOP_XFER_PASTE_BATCH_FLAG){',
+                '#ifdef FIXTURE_WINDOWS',
+                'clip_complete_remote_paste(batch,NULL,0,0);',
+                '#else',
+                'clipboard_complete_remote_paste(batch,NULL,0,0);',
+                '#endif',
+                '}}',
+                'static uint64_t fixture_now_ns(void *context){(void)context;return rate_now_ns();}',
+                'static int fixture_status_begin(void *context,uint32_t batch,uint32_t files,uint64_t bytes,const char *name,int phase){(void)context;return status_begin(batch,HOP_XFER_DIR_RECEIVE,files,bytes,name,phase);}',
+                'static void fixture_status_end(void *context,uint32_t batch,int phase,const char *detail){(void)context;status_end(HOP_XFER_DIR_RECEIVE,batch,phase,detail);}',
+                'static void fixture_status_add_file(void *context,uint32_t batch,uint32_t id,const char *path,uint64_t size,int directory){(void)context;hop_xfer_tracking_file(&s_receive_status,batch,id,path,size,directory,HOP_XFER_FILE_RECEIVING);}',
+                'static void fixture_status_image(void *context,uint32_t batch,uint64_t size){(void)context;status_image(batch,HOP_XFER_DIR_RECEIVE,size);}',
+                'static void fixture_status_stage(void *context,uint32_t batch,int stage,uint64_t elapsed){(void)context;status_stage_time(HOP_XFER_DIR_RECEIVE,batch,stage,elapsed);}',
+                'static void fixture_status_chunk(void *context,uint32_t batch,uint32_t id,uint64_t offset,uint32_t length,uint64_t crc,uint64_t receive){(void)context;status_chunk_timed(HOP_XFER_DIR_RECEIVE,batch,id,offset,length,0,crc,0,receive);}',
+                'static void fixture_status_file_phase(void *context,uint32_t batch,int index,int phase,uint32_t attempts){(void)context;status_file_phase(HOP_XFER_DIR_RECEIVE,batch,index,phase,attempts);}',
+                'static void fixture_status_total(void *context,uint32_t total){(void)context;s_receive_status.status.files_total=total;}',
+                'static void fixture_status_reset(void *context){(void)context;memset(&s_receive_status,0,sizeof(s_receive_status));}',
+                'static void fixture_clear_cancel_request(void *context){(void)context;}',
+                'static int fixture_create_staging_directory(void *context,const char *session_hex,uint32_t batch){xfer_rx_context *rx=(xfer_rx_context*)context;(void)session_hex;(void)batch;if(!rx||fail_directory)return 0;\n#ifdef FIXTURE_WINDOWS\nwcscpy(rx->dir,L"tmp\\\\HopDesk\\\\fixture");\n#else\nstrcpy(rx->dir,"/tmp/HopDesk/fixture");\n#endif\nreturn 1;}',
+            ]),
+            'RX_WRITER_CALLBACKS':'\n'.join([
+                'static void fixture_reset_file_error(void *context){(void)context;}',
+                'static int fixture_open_file(void *context,const void *native_path){(void)context;(void)native_path;return 1;}',
+                'static int fixture_write_file_chunk(void *context,hop_xfer_task *task,uint64_t offset,const uint8_t *data,uint32_t length){(void)context;if(fail_write)return 0;return wq_push_data(task,offset,data,length);}',
+                'static void fixture_close_file(void *context){(void)context;wq_drain();rx_task task;memset(&task,0,sizeof(task));task.kind=RX_CLOSE;(void)wq_push(&task);wq_drain();}',
+                'static int fixture_file_error(void *context){(void)context;return fail_writer_io;}'
+            ]),
             'CANCEL_LOCAL':extract(receiver,'rx_cancel_local'),
             'BIND_SESSION':extract(receiver,'rx_bind_session'),
             'POLL_CANCEL':extract(receiver,'rx_poll_cancel'),
             'BUSY':extract(sender,'xfer_busy'),
-            'RECEIVE_CASES':selected,
+            'DISPATCH_HANDLERS':dispatch_handlers,
         }
         for key,value in values.items():fixture=fixture.replace('@'+key+'@',value)
         assert '@' not in fixture
-        assert 'if (!s_rx.active || s_rx.batch != batch) return;' in cases('HOP_MSG_FILE_BEGIN','HOP_MSG_IMAGE_BEGIN')
-        assert 'if (!s_rx.active || s_rx.batch != batch) return;' in cases('HOP_MSG_IMAGE_BEGIN','HOP_MSG_FILE_CHUNK')
+        assert 'if (!rx->batch_state.active || rx->batch_state.batch != batch) return;' in extract(receiver,'hop_xfer_rx_handle_file_begin')
+        for handler_name in ['hop_xfer_rx_handle_file_begin','hop_xfer_rx_handle_file_end']:
+            handler=extract(receiver,handler_name)
+            assert 'xfer_rx_context *rx = (xfer_rx_context *)context;' in handler
+            assert not any(token in handler for token in ['s_rx.', 's_x.', 's_ack.', 's_wq']), f'{platform} {handler_name} still reads receiver/platform globals'
+        assert 'rx_handler_begin_batch(rx, batch)' in extract(receiver,'hop_xfer_rx_handle_image_begin')
+        for core_handler in ['hop_xfer_rx_handle_file_begin','hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_handle_file_end','hop_xfer_rx_dispatch_file_ack_message','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_dispatch_done_ack_message']:
+            handler=extract(receiver,core_handler)
+            assert 'xfer_rx_context *rx = (xfer_rx_context *)context;' in handler
+            assert not any(token in handler for token in ['s_rx.', 's_x.', 's_ack.', 's_wq'])
         if platform=='win':fixture='#define FIXTURE_WINDOWS 1\n'+fixture
-        run('abort_'+platform,fixture,['src/core/protocol.c','src/core/crc32.c','src/core/xfer_validate.c','src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+        run('abort_'+platform,fixture,['src/core/protocol.c','src/core/crc32.c','src/core/xfer_sender_queue.c','src/core/xfer_sender_active_job.c','src/core/xfer_validate.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_dispatch.c','src/core/xfer_rx_ack_handler.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_file_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_image_buffer.c'],threads=True)
 
     inject=(ROOT/'src/mac/inject.c').read_text(encoding='utf-8')
     fixture=(ROOT/'tests/inject_release_fixture.c.in').read_text(encoding='utf-8')
@@ -622,14 +911,32 @@ int main(void){
     run('inject_release',fixture,['src/core/keymap.c'])
 
     for platform in ['win','mac']:
-        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
-        receiver=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
+        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
+        receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         fixture=(ROOT/'tests/session_transport_fixture.c.in').read_text(encoding='utf-8')
-        functions='\n'.join([extract(sender,'job_bind_session'),extract(sender,'send_small'),extract(sender,'send_chunk'),extract(receiver,'rx_bind_session'),extract(receiver,'rx_expire_stale_session'),extract(receiver,'on_data_frame_checked'),extract(receiver,'on_data_frame')])
+        context_protocol=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        commit_adapter=(ROOT/f'src/{platform}/xfer_sender_commit_adapter.c').read_text(encoding='utf-8')
+        assert 's_sender_context.user = &s_sender_platform' in context_protocol
+        for callback in ['sender_context_is_stopping','sender_context_is_batch_cancelled','sender_context_peer_aborted','sender_context_wait_ns']:
+            assert 's_x.' not in extract(context_protocol,callback)
+        for callback in ['sender_context_session_current','sender_context_write_frame','sender_context_snapshot_session']:
+            assert 's_x.' not in extract(sender,callback)
+        functions='\n'.join([extract(sender,'sender_context_session_current'),extract(sender,'sender_context_write_frame'),extract(sender,'sender_context_snapshot_session'),extract(sender,'send_small_with_context'),extract(commit_adapter,'sender_commit_is_stopping'),extract(commit_adapter,'sender_commit_wait_ms'),extract(sender,'send_small'),extract(sender,'send_chunk')]+[extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_release_terminal_resources','rx_abort_release_resources','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end','hop_xfer_rx_reset_batch_state','hop_xfer_rx_terminate_batch','hop_xfer_rx_bind_session','rx_bind_session','rx_expire_stale_session','on_data_frame_checked','on_data_frame']])
         fixture=fixture.replace('@FUNCTIONS@',functions)
-        run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c'],threads=True)
+        run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c','src/core/xfer_sender_chunk.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_task.c','src/core/xfer_budget.c','src/core/xfer_sender_context_adapter.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c'],threads=True)
 
-    control=(ROOT/'src/mac/net_client.c').read_text(encoding='utf-8')
+    control=(ROOT/'src/mac/net_client.c').read_text(encoding='utf-8')+'\n'+(ROOT/'src/mac/net_client_protocol.inc').read_text(encoding='utf-8')
+    for platform,source_name,module_name in [('win','net_server.c','net_server_protocol.inc'),('mac','net_client.c','net_client_protocol.inc')]:
+        transport=(ROOT/f'src/{platform}/{source_name}').read_text(encoding='utf-8')
+        protocol=(ROOT/f'src/{platform}/{module_name}').read_text(encoding='utf-8')
+        assert '#include "'+module_name+'"' in transport
+        assert '#include "'+('net_server_transport.inc' if platform=='win' else 'net_client_transport.inc')+'"' in transport
+        transport_module=(ROOT/'src'/platform/('net_server_transport.inc' if platform=='win' else 'net_client_transport.inc')).read_text(encoding='utf-8')
+        assert 'reader_thread' in transport_module or 'control_sender' in transport_module
+        assert 'net_loop_run' in transport_module or 'server_thread' in transport_module
+        assert 'HOP_MSG_HELLO' in protocol and 'HOP_MSG_PING' in protocol
+
     dispatch=extract(control,'dispatch_message')
     dispatch=dispatch.replace('dispatch_async(dispatch_get_main_queue(),^{mac_capture_peer_geometry(pw,ph);});','mac_capture_peer_geometry(pw,ph);')
     dispatch=dispatch.replace('dispatch_async(dispatch_get_main_queue(),^{mac_capture_return();});','mac_capture_return();')
@@ -640,61 +947,395 @@ int main(void){
     # An unconfirmed ACK must force a fresh data channel before the same
     # batch/file ID is reused; the unresolved file remains the resume point.
     for platform in ['mac','win']:
-        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
-        receiver=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
-        entry=extract(sender,'send_file_entry')
-        assert 'tx + CHUNK_HDR' in entry
-        assert 'malloc(blen)' not in entry and 'free(bp)' not in entry
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
+        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
+        receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
+        protocol_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
+        engine_adapter=(ROOT/'src/core/xfer_sender_engine_adapter.c').read_text(encoding='utf-8')
+        ack_wait_core=(ROOT/'src/core/xfer_sender_ack_wait.c').read_text(encoding='utf-8')
+        entry=extract(engine_adapter,'adapter_send_entry')
+        assert 'hop_xfer_sender_send_file_entry' in entry
+        assert 'ops->tx_buffer + ops->chunk_header_size' in entry
+        assert 'malloc(blen)' not in entry
         job=extract(sender,'run_job')
-        assert 'int acknowledged;' in job
-        assert 'if (st >= 0) item->acknowledged = 1;' in job
-        assert 'if (st != XFER_ACK_PENDING)' in job
-        assert 'fill_result = JOB_NET_DOWN;' in job
-        assert 'if (!item->acknowledged)' in job
-        assert 'hop_xfer_ack_window_advance_checkpoint(&j->next_i,item->index,1)' in job
-        timeout=job.index('if (st == XFER_ACK_TIMEOUT)')
-        unregister=job.index('ack_unregister_batch(j->batch)',timeout)
-        kick=job.index('xfer_kick();',timeout)
-        net_down=job.index('return JOB_NET_DOWN;',kick)
+        assert 'hop_xfer_sender_engine_adapter_run(&ops)' in job
+        assert 'hop_xfer_sender_run_files' not in job
+        assert 'hop_xfer_sender_run_image' not in job
+        assert 'window_item' not in job
+        engine=(ROOT/'src/core/xfer_sender_engine.c').read_text(encoding='utf-8')
+        assert 'int acknowledged;' in engine
+        assert 'HOP_XFER_SENDER_SEND_PENDING' in engine
+        assert 'if (!item->acknowledged)' in engine
+        assert 'hop_xfer_ack_window_advance_checkpoint(next_index,' in engine
+        assert 'fill_result = HOP_XFER_SENDER_JOB_NET_DOWN;' in engine
+        timeout=engine.index('if (ack == HOP_XFER_SENDER_ACK_TIMEOUT)')
+        unregister=engine.index('sender_unregister(ops, batch);',timeout)
+        kick=engine.index('ops->request_reconnect(ops->user)',timeout)
+        net_down=engine.index('return HOP_XFER_SENDER_JOB_NET_DOWN;',kick)
         assert timeout < unregister < kick < net_down
-        kick_fn=extract(sender,'xfer_kick')
-        assert 'peer_ready = 0' in kick_fn or 'peer_ready=0' in kick_fn
+        connection_adapter=(ROOT/f'src/{platform}/xfer_sender_connection_adapter.c').read_text(encoding='utf-8')
+        reconnect=extract(connection_adapter,'sender_context_request_reconnect')
+        assert '*ctx->peer_ready = 0' in reconnect and 'shutdown(' in reconnect
+        assert 'ctx->request_reconnect' in engine_adapter
+        kick=extract(sender,'xfer_kick')
+        assert 'sender_context_request_reconnect(&s_sender_platform)' in kick
+        assert 'adapter_wait_ack' in engine_adapter
+        assert 'static hop_xfer_ack_coordinator *s_ack' not in sender
+        assert 'hop_xfer_ack_coordinator_' not in sender
+        ack_platform=(ROOT/f'src/{platform}/xfer_sender_ack_platform_adapter.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_ack_adapter_create' in ack_platform
+        assert 'hop_xfer_sender_ack_adapter_register' in sender
+        assert 'context->ack_wait_take(context->ack_user' in ack_wait_core
+        peer_abort_body=extract(sender,'sender_context_peer_aborted')
+        assert '*ctx->abort_batch == batch' in peer_abort_body
+        ack_deliver_body=extract(ack_platform,'ack_deliver')
+        assert 's_sender_context.ack_deliver(s_sender_context.ack_user' in ack_deliver_body
+        platform_xfer=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        assert 's_ack' not in platform_xfer
+        assert 'sender_context_ack_create()' in platform_xfer
+        assert 'sender_context_ack_destroy()' in platform_xfer
+        assert 'sender_context_wake_ack()' in platform_xfer
+        assert 'adapter_send_entry' in engine_adapter
+        assert 'image_send_begin' in engine_adapter
+        assert 'image_send_chunk' in engine_adapter
+        assert 'hop_xfer_sender_run_image' in engine
+        assert 'hop_crc32(0, pixels + offset, length)' in engine
+        assert 'hop_xfer_sender_send_file_entry' in engine
+        assert 'ops->ack_register' in engine and 'ops->ack_mark_sent' in engine
+        assert 'ops->read_file' in engine and 'ops->send_chunk' in engine
+        assert 'hop_xfer_file_crc_step' in engine
 
-        handler=extract(receiver,'on_data_msg')
-        begin=handler[handler.index('case HOP_MSG_FILE_BEGIN:'):handler.index('case HOP_MSG_IMAGE_BEGIN:')]
-        end=handler[handler.index('case HOP_MSG_FILE_END:'):handler.index('case HOP_MSG_FILE_ACK:')]
-        assert 'rx_remove_top(s_rx.cur_path)' in begin
-        assert '!rx_add_top(path)' in begin or '!rx_add_top(s_rx.cur_path)' in end
+        begin=extract(receiver,'hop_xfer_rx_handle_file_begin')
+        end=extract(receiver,'hop_xfer_rx_handle_file_end')
+        # FILE_BEGIN must keep the candidate path local until the task entry
+        # reservation succeeds; only then may it replace live context state
+        # or trigger clipboard/status/writer/filesystem side effects.
+        admission=begin.index('hop_xfer_rx_entry_reservations_reserve(')
+        commit=begin.index('rx->cur_path = (hop_xfer_rx_path_char *)candidate')
+        assert admission < commit, 'FILE_BEGIN publishes candidate path before budget admission'
+        for side_effect in ['rx->services.reset_file_error(', 'rx->services.remove_top_path(', 'rx->services.status_add_received_file(', 'rx->services.prepare_file_path(']:
+            assert admission < begin.index(side_effect), 'FILE_BEGIN side effect precedes budget admission: '+side_effect
+        file_ack_handler=extract(receiver,'hop_xfer_rx_dispatch_file_ack_message')
+        done_ack_handler=extract(receiver,'hop_xfer_rx_dispatch_done_ack_message')
+        services=(ROOT/'src/core/xfer_rx_services.h').read_text(encoding='utf-8')
+        core_message_handlers=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
+        assert 'if (!rx->services.write_file_chunk || !rx->services.write_file_chunk(' in core_message_handlers
+        context_header=(ROOT/'src/core/xfer_rx_context.h').read_text(encoding='utf-8')
+        assert 'typedef struct xfer_rx_context' in context_header
+        assert 'hop_xfer_rx_services services;' in context_header
+        assert 'void *writer;' in context_header
+        receive_impl=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        assert 's_rx.services.context = &s_rx;' in receive_impl
+        assert 's_rx.writer = s_wq;' in receive_impl
+        assert 's_rx.services.build_path = rx_context_build_path;' in receive_impl
+        assert 's_rx.services.prepare_file_path = rx_context_prepare_file_path;' in receive_impl
+        assert 's_rx.services.is_top_level_path = rx_context_is_top_level_path;' in receive_impl
+        assert 's_rx.services.remove_file = rx_context_remove_file;' in receive_impl
+        assert 'task != &rx->task' in receive_impl
+        assert 'rx->writer' in receive_impl
+        assert 'typedef struct xfer_rx_context' not in receiver
+        assert all(name in services for name in ['shutdown_data_channel','mark_sender_aborted','send_abort','send_file_ack','send_done_ack','deliver_ack','clear_cancel_request','create_staging_directory','discard_staging_directory','send_abort','reset_file_error','open_file','write_file_chunk','close_file','file_error','build_path','prepare_file_path','is_top_level_path','remove_file'])
+        on_data_msg=extract(receiver,'on_data_msg')
+        assert 'rx_context_configure();' in on_data_msg and '&hop_xfer_rx_platform_dispatch_handlers, &s_rx' in on_data_msg
+        assert 'hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, rx)' in file_ack_handler
+        assert 'hop_xfer_rx_handle_done_ack(p, len, rx_ack_deliver_done, rx)' in done_ack_handler
+        assert 'hop_xfer_rx_batch_abort_decide(' in core_message_handlers
+        assert 'hop_xfer_rx_abort_execute(' in core_message_handlers
+        abort_policy=(ROOT/'src/core/xfer_rx_lifecycle.c').read_text(encoding='utf-8')
+        assert 'HOP_RX_BATCH_ABORT_REPLY_ONLY' in abort_policy
+        assert 'HOP_RX_BATCH_ABORT_TERMINATE_ACTIVE' in abort_policy
+        assert 'hop_xfer_rx_batch_begin_decide(' in core_message_handlers
+        assert 'hop_xfer_rx_batch_finish_decide(' in core_message_handlers
+        for writer_call in ['reset_file_error','open_file','write_file_chunk','close_file','file_error']:
+            assert 'rx->services.'+writer_call in protocol_handlers or 'rx->services.'+writer_call in core_message_handlers
+        assert not any(token in protocol_handlers for token in ['wq_push(', 'wq_push_data(', 'wq_error_get(', 'rx_close_file(', 'hop_writer_queue_error_reset('])
+        assert not re.search(r'(?<!services\.)\b(?:rx_add_top|rx_remove_top|status_add_received_file|status_image|status_stage_time|status_chunk_timed|status_file_phase|rate_now_ns)\s*\(', protocol_handlers)
+        for service in ['add_top_path','remove_top_path','finish_clipboard','cancel_clipboard','now_ns','status_begin','status_end','status_add_received_file','status_image','status_stage_time','status_chunk_received','status_file_phase','status_set_files_total','status_reset']:
+            assert 'rx->services.'+service in protocol_handlers or service in receiver
+        done_handler=extract(receiver,'hop_xfer_rx_handle_done')
+        assert 'hop_xfer_rx_done_receipt_find(rx->done_receipt,' in done_handler
+        assert 'hop_xfer_rx_done_receipt_find(&rx->done_receipt,' not in done_handler
+        shared_ack=(ROOT/'src/core/xfer_rx_ack_handler.c').read_text(encoding='utf-8')
+        assert 'ack.id < 1u' in shared_ack and 'ack.id > HOP_XFER_FILE_LIMIT' in shared_ack
+        assert 'status > HOP_DONE_ACK_FAILED' in shared_ack
+        lifecycle=extract(receiver,'hop_xfer_rx_begin_batch')
+        assert 'hop_xfer_rx_reset_batch_state(rx)' in lifecycle
+        assert 'hop_xfer_rx_reset_batch_state' in core_message_handlers
+        assert 'hop_xfer_rx_terminate_batch' in core_message_handlers
+        assert 'rx_clear_state' not in receive_impl
+        assert 'xfer_rx_batch_lifecycle.inc' not in receive_impl
+        assert 's_rx.services.clear_cancel_request = rx_context_clear_cancel_request;' in receive_impl
+        assert 's_rx.services.create_staging_directory = rx_context_create_staging_directory;' in receive_impl
+        assert 's_rx.services.discard_staging_directory = rx_context_discard_staging_directory;' in receive_impl
+        assert 'hop_xfer_rx_bind_session(&s_rx, session);' in receive_impl
+        assert 'hop_xfer_rx_bind_session' in core_message_handlers
         if platform=='mac':
-            assert 'if (mkdir_p(path) != 0)' in begin
-            assert 'if (!parent_ok)' in begin
+            assert 'hop_xfer_rx_fs_mkdir_p(rx->dir)' in receive_impl
         else:
-            assert 'create_directory_if_missing(path)' in begin
-            assert 'if (!parent_ok)' in begin
-            assert 'GetFileAttributesW(path)' in extract(receiver,'create_directory_if_missing')
-        close=end.index('rx_close_file()')
-        cleanup=end.index('unlink(' if platform=='mac' else 'DeleteFileW(')
+            assert 'hop_xfer_rx_fs_create_directory_if_missing(rx->dir)' in receive_impl
+        assert 'rx->services.remove_top_path' in begin
+        assert 'rx->services.add_top_path' in begin and 'rx->services.add_top_path' in end
+        if platform=='mac':
+            assert 'hop_xfer_rx_fs_mkdir_p(copy)' in receive_impl
+            fs=(ROOT/'src/mac/xfer_rx_fs.c').read_text(encoding='utf-8')
+            assert 'hop_xfer_rx_fs_path_for' in fs and 'hop_xfer_rx_fs_remove_tree' in fs and 'hop_xfer_rx_fs_remove_file' in fs
+        else:
+            assert 'hop_xfer_rx_fs_create_directory_if_missing(path)' in receive_impl
+            assert 'hop_xfer_rx_fs_ensure_dirs(copy)' in receive_impl
+            fs=(ROOT/'src/win/xfer_rx_fs.c').read_text(encoding='utf-8')
+            assert 'GetFileAttributesW(path)' in fs
+            assert 'operation.fAnyOperationsAborted' in fs
+            assert 'operation_result != 0 || operation.fAnyOperationsAborted' in fs
+            assert 'hop_xfer_rx_fs_path_for' in fs and 'hop_xfer_rx_fs_remove_tree' in fs
+            assert 'L"\\\\HopDesk\\\\"' in receive_impl, 'Windows staging cleanup must match the single-separator production path'
+            assert 'retaining path for retry' in receive_impl
+            assert 'if (!rx->staging_cleanup_pending) rx->dir[0] = 0;' in (ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
+        close=end.index('rx->services.close_file(')
+        cleanup=end.index('rx->services.remove_file(')
         assert close < cleanup, 'failed receive cleanup must wait for writer close'
 
-        if platform=='mac':
-            queue=extract(sender,'send_thread')
-            assert 'peer_ready_snapshot' in queue and 'waited_for_queue' in queue
-            assert '!waited_for_queue && peer_ready_snapshot' in queue
-        else:
-            queue=extract(sender,'send_thread')
-            assert 'c != INVALID_SOCKET && cur->retry_at <= now' in queue
+        queue=extract(sender,'send_thread')
+        worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_worker_run(&worker)' in queue
+        assert 'hop_xfer_sender_scheduler_wait_next' in worker_core
+        assert 'hop_xfer_sender_queue_take_head(' not in queue
+        assert 'waited_for_queue' not in queue
 
-    # Exercise the exact completion-ACK loop from both platform senders with
-    # deterministic clocks, dropped ACK, reconnect, session replacement, and abort.
+    # DONE/DONE_ACK retry policy is now shared Core; platform files only adapt
+    # current connection/session, wire send, ACK coordinator and wait callbacks.
+    commit_core=(ROOT/'src/core/xfer_sender_engine.c').read_text(encoding='utf-8')
+    assert 'hop_xfer_sender_run_commit' in commit_core
+    assert 'HOP_XFER_SENDER_COMMIT_ACK_TIMEOUT' in commit_core
+    assert 'HOP_XFER_SENDER_COMMIT_ACK_SEND_DEAD' in commit_core
     for platform in ['win','mac']:
-        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
-        source=(ROOT/'tests/done_ack_wait_fixture.c.in').read_text(encoding='utf-8')
-        source=source.replace('@FUNCTION@',extract(sender,'send_done_result'))
-        if platform=='win':source='#define FIXTURE_WINDOWS 1\n'+source
-        run('done_ack_'+platform,source,['src/core/protocol.c'])
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
+        commit_adapter=(ROOT/f'src/{platform}/xfer_sender_commit_adapter.c').read_text(encoding='utf-8')
+        commit=extract(commit_adapter,'sender_commit_adapter_run')
+        assert 'hop_xfer_sender_run_commit' in commit
+        assert 'ops.user = (void *)job' in commit
+        assert 'sender_commit_current_connection' in commit_adapter
+        assert 'sender_commit_wait_ack' in commit_adapter
+        commit_stop=extract(commit_adapter,'sender_commit_is_stopping')
+        commit_wait=extract(commit_adapter,'sender_commit_wait_ms')
+        assert 'job->sender_context.is_stopping' in commit_stop
+        assert 'job->sender_context.wait_ns' in commit_wait
+        assert 'sender_context_is_stopping(NULL)' not in commit_stop
+        connection_adapter=(ROOT/f'src/{platform}/xfer_sender_connection_adapter.c').read_text(encoding='utf-8')
+        reconnect=extract(connection_adapter,'sender_context_request_reconnect')
+        assert '*ctx->peer_ready = 0' in reconnect and 'shutdown(' in reconnect
+        ack_platform=(ROOT/f'src/{platform}/xfer_sender_ack_platform_adapter.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_ack_adapter_create' in ack_platform
+        assert 'void ack_deliver(' in ack_platform
+        assert 'sender_context_ack_destroy' in ack_platform
+        protocol_source=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        ack_wait_header=(ROOT/'src/core/xfer_sender_ack_wait.h').read_text(encoding='utf-8')
+        for macro in ['XFER_ACK_TIMEOUT','XFER_SEND_DEAD','XFER_LOCAL_IO','XFER_CANCELLED','XFER_PEER_ABORT','XFER_ACK_PENDING']:
+            assert f'#define {macro} ' not in protocol_source
+        for result in ['HOP_XFER_SENDER_ACK_WAIT_TIMEOUT','HOP_XFER_SENDER_ACK_WAIT_SEND_DEAD','HOP_XFER_SENDER_ACK_WAIT_LOCAL_IO','HOP_XFER_SENDER_ACK_WAIT_CANCELLED','HOP_XFER_SENDER_ACK_WAIT_PEER_ABORT']:
+            assert result in ack_wait_header
+        assert 'static int ack_register(' not in protocol_source
+        assert 'static int send_done(' not in protocol_source
         thread=extract(sender,'send_thread')
-        assert 'send_done_result(' in thread and 'HOP_XFER_TASK_INTERRUPTED' in thread
-        assert 'Completion delivery uncertain' in thread and 'completion_path' in thread
+        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
+        worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
+        flow_core=(ROOT/'src/core/xfer_sender_worker_flow.c').read_text(encoding='utf-8')
+        assert 'worker.finish_job=sender_worker_finish_job_adapter' in thread
+        assert 'sender_worker_finish_job(' in worker
+        assert 'hop_xfer_sender_worker_finish_job' in worker
+        assert 'hop_xfer_sender_plan_retry(' not in worker
+        assert 'hop_xfer_sender_get_terminal_decision(' not in worker
+        assert 'hop_xfer_sender_plan_retry(' in flow_core
+        assert 'hop_xfer_sender_get_terminal_decision(' in flow_core
+        assert 'hop_xfer_sender_context_status_start_job(v.context,job)' in worker_core
+        assert 'ops->status_end' in flow_core
+        assert 'hop_xfer_sender_context_status_end(&j->sender_context' not in thread
+        assert 'hop_xfer_sender_context_status_end(' in worker
+        assert ' status_start_job(' not in thread and ' status_end(' not in thread
+
+        # Shutdown is an ownership transfer, not a best-effort queue cleanup.
+        lifecycle=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        submit=(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
+        shutdown=extract(lifecycle,'xfer_shutdown')
+        shutdown_drain=extract(worker,'sender_shutdown_drain_jobs')
+        job_free=extract(worker,'job_free')
+        defer_job=extract(worker,'job_defer_to_shutdown')
+        release_job_resources=extract(worker,'job_release_task_resources')
+        finish_callback=extract(worker,'sender_worker_task_finish')
+        requeue=extract(worker,'sender_worker_requeue_front')
+        submit_enter=extract(submit,'sender_submit_enter')
+        assert 'XFER_JOB_OWNER_WORKER' in worker and 'XFER_JOB_OWNER_SUBMITTER' in submit
+        assert 'XFER_JOB_OWNER_SHUTDOWN' in defer_job and 'XFER_JOB_OWNER_RELEASED' in job_free
+        assert 'hop_xfer_task_is_terminal' in job_free and 'hop_xfer_sender_context_task_dispose' in job_free
+        assert release_job_resources.index('free(j->pixels)') < release_job_resources.index('hop_xfer_task_release_image_temp')
+        assert 'image_payload_released' in release_job_resources and 'lost its pixel owner' in release_job_resources
+        assert job_free.index('job_release_task_resources(j)') < job_free.index('hop_xfer_sender_context_task_finish')
+        assert finish_callback.index('job_release_task_resources(job)') < finish_callback.index('hop_xfer_sender_context_task_finish')
+        assert 'pending_finish_state' in job_free and 'pending_status_end' in worker
+        assert 'expected_owner == XFER_JOB_OWNER_SUBMITTER' in job_free
+        assert 'terminal_was_pending && !job->pending_finish_valid' in shutdown_drain
+        status_end_callback=extract(worker,'sender_worker_status_end')
+        assert 'hop_xfer_sender_context_status_end(' not in status_end_callback
+        assert 'pending_status_end=1' in status_end_callback
+        assert 'pending_status_phase=phase' in status_end_callback
+        assert 'pending_finish_valid=0' not in status_end_callback
+        assert job_free.index('hop_xfer_sender_context_task_dispose') < job_free.index('hop_xfer_sender_context_status_end')
+        worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
+        assert 'Invalid sender worker context' in worker and 'Transfer stopped while queued' in worker_core
+        internal=(ROOT/f'src/{platform}/xfer_sender_internal.h').read_text(encoding='utf-8')
+        assert 'shutdown_jobs' in internal and 's_x.shutting_down' in shutdown
+        # The only remaining implementation include in xfer.c is Receiver; Sender
+        # protocol/worker and submit are independently compiled translation units.
+        assert '#include "xfer_receive.inc"' in lifecycle
+        assert 'xfer_sender_protocol.inc' not in lifecycle
+        assert 'xfer_sender_worker.inc' not in lifecycle
+        assert 'xfer_submit.inc' not in lifecycle
+        assert not any(name in worker for name in ('xfer_sender_protocol.inc','xfer_sender_worker.inc'))
+        assert 'xfer_submit.inc' not in submit
+
+        # Image-temp Reservation must never outlive the stack frame that owns
+        # its Task. A Job is allocated first and handles every post-init failure.
+        image_submit=extract(submit,'xfer_submit_image_impl')
+        assert image_submit.index('calloc(1,sizeof(*job))') < image_submit.index('hop_xfer_task_init_classified(&job->task')
+        assert 'job->sender_context=s_sender_context' in image_submit
+        assert 'job->image_payload_released=1' in image_submit
+        assert 'hop_xfer_task_transfer_image_temp(source_task,&job->task,total64)' in image_submit
+        assert 'job_free(job,XFER_JOB_OWNER_SUBMITTER)' in image_submit
+        assert 'hop_xfer_task task;' not in image_submit
+        assert 'hop_xfer_task_finish(&task' not in image_submit
+        assert 'hop_xfer_task_dispose(&task' not in image_submit
+        assert 'hop_xfer_task_finish(&job->task' not in image_submit
+        assert 'hop_xfer_task_dispose(&job->task' not in image_submit
+
+        # Public status reads share the lifecycle admission lock with Shutdown
+        # before touching the platform queue mutex/critical section.
+        status_pair=extract(lifecycle,'xfer_get_status_pair')
+        lifecycle_read='AcquireSRWLockShared(&s_x_lifecycle_lock)' if platform=='win' else 'pthread_rwlock_rdlock(&s_x_lifecycle_lock)'
+        lifecycle_unlock='ReleaseSRWLockShared(&s_x_lifecycle_lock)' if platform=='win' else 'pthread_rwlock_unlock(&s_x_lifecycle_lock)'
+        queue_lock='EnterCriticalSection(&s_x.lock)' if platform=='win' else 'pthread_mutex_lock(&s_x.qlock)'
+        assert lifecycle_read in status_pair and lifecycle_unlock in status_pair
+        assert status_pair.index(lifecycle_read) < status_pair.index('if (s_x.sync_initialized)') < status_pair.index(queue_lock)
+        assert status_pair.index('hop_xfer_tracking_snapshot_pair') < status_pair.index(lifecycle_unlock)
+
+        # Queue take/wait policy is shared; only native lock/wait/claim effects remain in adapters.
+        scheduler=(ROOT/'src/core/xfer_sender_scheduler.c').read_text(encoding='utf-8')
+        scheduler_header=(ROOT/'src/core/xfer_sender_scheduler.h').read_text(encoding='utf-8')
+        send_thread=extract(worker,'send_thread')
+        worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_worker_run(&worker)' in send_thread
+        assert 'o->clear_active(o->user,v.batch,v.task->id)' in worker_core
+        assert 'memset(&s_x.active_job,0,sizeof(s_x.active_job))' in shutdown_drain
+        begin_pass=extract(worker,'sender_scheduler_begin_pass')
+        wait_adapter=extract(worker,'sender_scheduler_wait_locked')
+        clear_active=extract(worker,'sender_worker_clear_active_job')
+        dispose_job=extract(worker,'sender_worker_dispose_job')
+        claim_adapter=extract(worker,'sender_scheduler_claim_locked')
+        assert 'hop_xfer_sender_scheduler_wait_next' in worker_core
+        assert 'hop_xfer_sender_queue_take_head' not in send_thread
+        assert 'hop_xfer_sender_queue_take_cancelled' not in send_thread
+        assert 'wait_for_work_locked' in scheduler_header and 'wait_for_work_locked' in scheduler
+        assert 'claim_job_locked' in scheduler and 'end_pass' in scheduler
+        assert 'job->owner=XFER_JOB_OWNER_WORKER' in claim_adapter
+        assert 'hop_xfer_sender_active_job_begin' in claim_adapter
+        if platform=='win':
+            assert 'EnterCriticalSection(&s_x.lock)' in begin_pass
+            assert 'LeaveCriticalSection(&s_x.lock)' in wait_adapter and 'WaitForMultipleObjects' in wait_adapter
+            assert wait_adapter.index('LeaveCriticalSection') < wait_adapter.index('WaitForMultipleObjects') < wait_adapter.index('EnterCriticalSection')
+        else:
+            assert begin_pass.index('pthread_mutex_lock(&s_x.slock)') < begin_pass.index('pthread_mutex_lock(&s_x.qlock)')
+            assert 'pthread_cond_timedwait(&s_x.qcond,&s_x.qlock' in wait_adapter
+        assert 'waited_for_queue' not in worker
+        assert 'XFER_JOB_OWNER_QUEUE' in submit and 'XFER_JOB_OWNER_QUEUE' in requeue
+        assert 'XFER_JOB_OWNER_WORKER' in requeue and 'sender_worker_is_stopping' in requeue
+        assert 'sender_submit_enter' in submit and 'sender_submit_leave' in submit
+        assert ('AcquireSRWLockShared' in submit_enter if platform=='win' else 'pthread_rwlock_rdlock' in submit_enter)
+        assert ('AcquireSRWLockExclusive' in shutdown if platform=='win' else 'pthread_rwlock_wrlock' in shutdown)
+        assert shutdown.index('sender_threads_join') < shutdown.index('sender_shutdown_drain_jobs')
+        assert shutdown.index('sender_shutdown_drain_jobs') < shutdown.index('rx_reset')
+        assert shutdown.index('rx_reset') < shutdown.index('wq_stop') < shutdown.index('xfer_shutdown_task_audit')
+        assert shutdown.index('xfer_shutdown_task_audit') < shutdown.index('hop_xfer_task_history_store_close')
+        assert 'Transfer interrupted during shutdown' in shutdown_drain
+        assert 'HOP_XFER_TASK_INTERRUPTED' in shutdown_drain
+        assert 'hop_xfer_sender_queue_detach_all' in shutdown_drain
+        assert 'while (s_x.shutdown_jobs)' in shutdown_drain
+        shutdown_audit=extract(lifecycle,'xfer_shutdown_task_audit')
+        assert 'hop_xfer_task_reconcile' in shutdown_audit
+        assert 'audit.ledger.accounting_errors' in shutdown_audit
+        assert 'hop_xfer_sender_queue_empty(&s_x.queue)' in shutdown_audit
+        assert 's_x.shutdown_jobs == NULL' in shutdown_audit
+        assert 'hop_xfer_sender_active_job_is_active(&s_x.active_job)' in shutdown_audit
+        assert 's_wq == NULL && s_rx.writer == NULL' in shutdown_audit
+        assert '!s_rx.task.initialized && !s_rx.task.id' in shutdown_audit
+        assert '!s_rx.batch_state.active' in shutdown_audit
+        assert 'memcmp(&s_rx.entry_reservations, &empty_entry_reservations' in shutdown_audit
+        assert '!s_rx.image_buffer.data && !s_rx.tops && s_rx.ntop == 0' in shutdown_audit
+        assert 'HOP_XFER_SENDER_JOB_SHUTDOWN' in flow_core
+        assert 'ops->is_stopping' in flow_core
+        if platform=='mac':
+            assert 'hop_xfer_sender_queue_detach_all' not in thread
+        else:
+            assert 'sender_context_is_stopping(&s_sender_platform)' in worker
+
+        receive=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        writer_start=extract(receive,'wq_start')
+        writer_stop=extract(receive,'wq_stop')
+        assert 'static int wq_stop(void)' in receive and 'return 0;' in writer_stop
+        assert 's_rx.writer = s_wq;' in writer_start
+        assert 's_rx.writer = NULL;' in writer_stop
+        assert 'if (!s_wq)' in writer_stop and writer_stop.index('if (!s_wq)') < writer_stop.index('s_rx.writer = NULL;')
+        detach=writer_stop.index('hop_writer_queue *stopped = s_wq;')
+        assert detach < writer_stop.index('s_wq = NULL;',detach) < writer_stop.index('s_rx.writer = NULL;',detach) < writer_stop.index('hop_writer_queue_destroy(stopped)',detach)
+        assert 'int xfer_shutdown(void)' in lifecycle
+        clipboard=(ROOT/('src/win/clipboard.c' if platform=='win' else 'src/mac/clipboard.m')).read_text(encoding='utf-8')
+        clip_shutdown=extract(clipboard,'clip_shutdown' if platform=='win' else 'clipboard_shutdown')
+        assert ('int clip_shutdown(' if platform=='win' else 'int clipboard_shutdown(') in clipboard
+        assert 'image_work_retry_pending()' in clip_shutdown
+        assert 'image_work_task_finish_attempt' in clipboard
+        assert ('clip_image_task_owner' if platform=='win' else 'image_work_task_owner') in clipboard
+        assert 'if (!task->initialized && !task->id) return 1;' in clipboard
+        if platform=='win':
+            app=(ROOT/'src/win/win_main.c').read_text(encoding='utf-8')
+            startup=extract(app,'wWinMain')
+            assert startup.index('xfer_init(') < startup.index('net_server_start(')
+            assert startup.index('clip_shutdown(') < startup.index('net_server_stop(') < startup.rindex('xfer_shutdown()')
+            assert 'while (!xfer_shutdown()) Sleep(100)' in startup
+        else:
+            app=(ROOT/'src/mac/main.c').read_text(encoding='utf-8')
+            startup=extract(app,'main')
+            assert startup.index('xfer_init(') < startup.index('net_loop_run(')
+            assert startup.index('clipboard_shutdown(') < startup.index('net_loop_shutdown(') < startup.rindex('xfer_shutdown()')
+            assert 'while (!xfer_shutdown()) usleep(100000)' in startup
+        protocol=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        assert 'send_chunk(&call->job->sender_context' in protocol
+        send_message=extract(protocol,'sender_engine_send_message')
+        assert 'send_small_with_context(' in send_message and '&call->job->sender_context' in send_message
+        assert 'hop_xfer_sender_send_chunk' in protocol
+        ack_core=(ROOT/'src/core/xfer_sender_ack_wait.c').read_text(encoding='utf-8')
+        chunk_core=(ROOT/'src/core/xfer_sender_chunk.c').read_text(encoding='utf-8')
+        engine_adapter=(ROOT/'src/core/xfer_sender_engine_adapter.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_ack_wait' in ack_core
+        assert 'hop_xfer_sender_context_job_cancel_requested' in ack_core
+        assert 'context->session_current' in ack_core and 'context->peer_aborted' in ack_core
+        assert 'hop_xfer_sender_context_status_chunk_timed' in chunk_core
+        assert 'hop_xfer_sender_context_status_stage_time' in chunk_core
+        assert 'hop_xfer_sender_context_status_file_phase' in engine_adapter
+        assert 'hop_xfer_sender_context_status_stage_time' in engine_adapter
+        assert 'hop_xfer_sender_ack_wait' in engine_adapter
+        assert 'hop_xfer_sender_engine_adapter_run(&ops)' in protocol
+        assert 'hop_xfer_sender_run_files' not in protocol
+        assert 'hop_xfer_sender_run_image' not in protocol
+        commit_adapter=(ROOT/f'src/{platform}/xfer_sender_commit_adapter.c').read_text(encoding='utf-8')
+        commit_wait_ack=extract(commit_adapter,'sender_commit_wait_ack')
+        assert 'job->commit_socket' in commit_wait_ack
+        assert 'job->commit_epoch' in commit_wait_ack
+        assert 'hop_xfer_sender_ack_wait' in commit_wait_ack
+        commit_send=extract(commit_adapter,'sender_commit_send_done')
+        assert 'send_small_with_context(&job->sender_context' in commit_send
+        assert 'HOP_MSG_XFER_DONE' in commit_send
+        abort_send=extract(protocol,'send_abort_msg_with_context')
+        assert 'send_small_with_context(context' in abort_send
+        assert 'send_abort_msg_with_context(&call->job->sender_context' in worker
+        assert 'sender_commit_adapter_run(' in worker
+        assert 'hop_xfer_sender_get_terminal_decision' not in thread and 'completion_path' in flow_core
 
     # Test exact Windows task-list selection and action logic with UI doubles.
     # Rows may move/disappear between refreshes; only the selected Task ID may
@@ -797,58 +1438,809 @@ int main(void) {
 """
     run('task_disconnect_timer',timer_fixture,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
 
+    # Cancellation and DONE completion share one manager lock. Exactly one
+    # contender must claim the terminal transition; the loser cannot win later.
+    if os.name != 'nt':
+        race_fixture=r"""
+#include "xfer_task.h"
+#include <assert.h>
+#include <pthread.h>
+#include <stdio.h>
+uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
+static hop_xfer_task task;
+static pthread_mutex_t gate_lock=PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t gate_cond=PTHREAD_COND_INITIALIZER;
+static int ready,go,completion_won,cancel_won;
+static void await_gate(void){pthread_mutex_lock(&gate_lock);ready++;if(ready==3){go=1;pthread_cond_broadcast(&gate_cond);}while(!go)pthread_cond_wait(&gate_cond,&gate_lock);pthread_mutex_unlock(&gate_lock);}
+static void *complete(void *unused){(void)unused;await_gate();completion_won=hop_xfer_task_begin_completion(&task);return NULL;}
+static void *cancel(void *unused){(void)unused;await_gate();cancel_won=hop_xfer_task_request_cancel(task.id);return NULL;}
+int main(void){
+ for(unsigned i=0;i<500;i++){
+  task=(hop_xfer_task){0};completion_won=cancel_won=0;
+  assert(hop_xfer_task_init_classified(&task,0,0,i+1,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_FILES));
+  assert(hop_xfer_task_reserve_job(&task));
+  assert(hop_xfer_task_set_state(&task,HOP_XFER_TASK_ACTIVE));
+  pthread_mutex_lock(&gate_lock);ready=0;go=0;pthread_mutex_unlock(&gate_lock);
+  pthread_t a,b;assert(pthread_create(&a,NULL,complete,NULL)==0);
+  assert(pthread_create(&b,NULL,cancel,NULL)==0);
+  await_gate();pthread_join(a,NULL);pthread_join(b,NULL);
+  assert(completion_won+cancel_won==1);
+  assert(!hop_xfer_task_request_cancel(task.id) || cancel_won);
+  assert(hop_xfer_task_finish(&task,cancel_won?HOP_XFER_TASK_CANCELLED:HOP_XFER_TASK_COMPLETED));
+  hop_xfer_task_dispose(&task);
+ }
+ hop_xfer_task_audit audit;assert(hop_xfer_task_reconcile(&audit)&&!audit.mismatches&&!audit.jobs);
+ puts("PASS: 500 concurrent receive cancellation vs DONE completion races");return 0;
+}
+"""
+        run('task_cancel_completion_race',race_fixture,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+
+
     run('task_history',(ROOT/'tests/task_history_tests.c').read_text(encoding='utf-8'),['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
 
     history_ui=(ROOT/'tests/task_history_ui_fixture.c.in').read_text(encoding='utf-8')
     history_ui=history_ui.replace('@UI_FUNCTIONS@',extract(ui,'task_state_name')+'\n'+extract(ui,'refresh_task_history'))
     run('task_history_ui_win',history_ui,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
 
+    for platform,source_name in [('win','clipboard.c'),('mac','clipboard.m')]:
+        clipboard_source=(ROOT/f'src/{platform}/{source_name}').read_text(encoding='utf-8')
+        paste_module=(ROOT/f'src/{platform}/clipboard_paste.inc').read_text(encoding='utf-8')
+        offer_module=(ROOT/f'src/{platform}/clipboard_offer.inc').read_text(encoding='utf-8')
+        assert '#include "clipboard_paste.inc"' in clipboard_source
+        assert '#include "clipboard_offer.inc"' in clipboard_source
+        assert 'clip_send_offer' in offer_module and 'clip_publish_local' in offer_module
+        assert 'clip_send_paste_failed' in paste_module
+        assert 'clip_complete_remote_paste' in paste_module or 'clipboard_complete_remote_paste' in paste_module
+
     # A paste request cannot be replayed as a generic transfer: that would
     # discard destination/version context and may overwrite the peer clipboard.
     retry_fixture=(ROOT/'tests/retry_guard_fixture.c.in').read_text(encoding='utf-8')
     for platform in ['win','mac']:
-        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
         fixture=retry_fixture.replace('@RETRY@',extract(sender,'xfer_retry_file'))
         if platform=='win':fixture='#define FIXTURE_WINDOWS 1\n'+fixture
         run('retry_guard_'+platform,fixture,[])
 
-    # Exercise the production queue removal helper with manager-owned IDs.
+    # The shared Core queue policy is production-linked by both platform workers.
+    queue_core=(ROOT/'src/core/xfer_sender_queue.c').read_text(encoding='utf-8')
+    queue_header=(ROOT/'src/core/xfer_sender_queue.h').read_text(encoding='utf-8')
+    queue_tests=(ROOT/'tests/xfer_sender_queue_tests.c').read_text(encoding='utf-8')
+    assert 'hop_xfer_sender_queue_push_back' in queue_core
+    assert 'hop_xfer_sender_queue_push_front' in queue_core
+    assert 'hop_xfer_sender_queue_detach_all' in queue_core
+    assert 'hop_xfer_sender_queue_contains_batch' in queue_core
+    assert 'hop_xfer_sender_queue_take_cancelled' in queue_core
+    assert 'hop_xfer_sender_queue_take_head' in queue_core
+    assert 'now_ms >= give_up_at' in queue_core
+    assert 'retry_at_ms(ops->user, node) <= now_ms' in queue_core
+    assert 'HOP_XFER_SENDER_QUEUE_READY' in queue_header
+    assert 'HOP_XFER_SENDER_QUEUE_EXPIRED' in queue_header
+    assert 'test_cancelled_middle_and_tail' in queue_tests
+    assert 'test_head_readiness_and_fifo' in queue_tests
+    assert 'test_front_insert_lookup_and_detach' in queue_tests
+    assert 'test_expiry_while_offline' in queue_tests
+    scheduler_core=(ROOT/'src/core/xfer_sender_scheduler.c').read_text(encoding='utf-8')
+    scheduler_header=(ROOT/'src/core/xfer_sender_scheduler.h').read_text(encoding='utf-8')
+    scheduler_tests=(ROOT/'tests/xfer_sender_scheduler_tests.c').read_text(encoding='utf-8')
+    active_core=(ROOT/'src/core/xfer_sender_active_job.c').read_text(encoding='utf-8')
+    active_header=(ROOT/'src/core/xfer_sender_active_job.h').read_text(encoding='utf-8')
+    active_tests=(ROOT/'tests/xfer_sender_active_job_tests.c').read_text(encoding='utf-8')
+    abort_fixture=(ROOT/'tests/receive_abort_fixture.c.in').read_text(encoding='utf-8')
+    context_adapter=(ROOT/'src/core/xfer_sender_context_adapter.c').read_text(encoding='utf-8')
+    context_adapter_header=(ROOT/'src/core/xfer_sender_context_adapter.h').read_text(encoding='utf-8')
+    context_adapter_tests=(ROOT/'tests/xfer_sender_context_adapter_tests.c').read_text(encoding='utf-8')
+    assert 'hop_xfer_sender_scheduler_wait_next' in scheduler_core
+    assert 'hop_xfer_sender_queue_take_cancelled' in scheduler_core
+    assert 'hop_xfer_sender_queue_take_head' in scheduler_core
+    assert 'wait_for_work_locked' in scheduler_header
+    assert 'test_offline_wait_refreshes_peer_before_selection' in scheduler_tests
+    assert 'test_stop_after_wait_leaves_queue_owned_by_shutdown' in scheduler_tests
+    assert 'hop_xfer_sender_active_job_take_cancelled_and_clear' in active_core
+    assert 'hop_xfer_sender_active_job_record_peer_abort' in active_core
+    assert 'hop_xfer_sender_active_job_matches' in active_core
+    assert 'hop_xfer_sender_active_job_clear_if_matches' in active_header
+    assert 'test_abort_is_scoped_to_active_batch' in active_tests
+    assert 'hop_xfer_sender_active_job_record_peer_abort' in abort_fixture
+    assert 's_x.cur_batch' not in abort_fixture and 's_x.abort_batch' not in abort_fixture
+    assert 'hop_xfer_sender_context_task_cancel_requested' in context_adapter
+    assert 'hop_xfer_sender_context_task_dispose' in context_adapter
+    assert 'hop_xfer_sender_context_status_chunk_timed' in context_adapter
+    assert 'hop_xfer_sender_context_logf' in context_adapter
+    assert 'hop_xfer_sender_context_task_bind_session' in context_adapter_header
+    assert 'test_task_lifecycle_forwarding' in context_adapter_tests
+    task_core=(ROOT/'src/core/xfer_task.c').read_text(encoding='utf-8')
+    budget_core=(ROOT/'src/core/xfer_budget.c').read_text(encoding='utf-8')
+    task_finish=extract(task_core,'finish')
+    task_dispose=extract(task_core,'hop_xfer_task_dispose')
+    budget_release=extract(budget_core,'hop_xfer_budget_release')
+    assert task_finish.index('hop_xfer_budget_release(&r->reservation)') < task_finish.index('r->state=state')
+    assert 'if (!hop_xfer_budget_release(&r->reservation)) return 0;' in task_finish
+    assert 'r->reservation.active ||' in task_dispose
+    assert 'r->jobs > s_used.jobs' in budget_release
+    assert 'return 0;' in budget_release
     for platform in ['win','mac']:
-        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
-        common=r"""
-#include "xfer_task.h"
+        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
+        submission=(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
+        send_thread=extract(worker,'send_thread')
+        clear_active=extract(worker,'sender_worker_clear_active_job')
+        dispose_job=extract(worker,'sender_worker_dispose_job')
+        job_free=extract(worker,'job_free')
+        job_claim=extract(worker,'job_claim_for_release')
+        job_defer=extract(worker,'job_defer_to_shutdown')
+        requeue_front=extract(worker,'sender_worker_requeue_front')
+        owner_lock='EnterCriticalSection(&s_x.lock)' if platform=='win' else 'pthread_mutex_lock(&s_x.qlock)'
+        assert owner_lock in job_claim
+        assert 'j->owner = XFER_JOB_OWNER_RELEASING' in job_claim
+        assert owner_lock in job_defer
+        assert 'j->owner == XFER_JOB_OWNER_RELEASING' in job_defer
+        assert 'job_claim_for_release(j, expected_owner)' in job_free
+        assert job_free.index('job_claim_for_release') < job_free.index('job_release_task_resources')
+        assert job_free.index(owner_lock) < job_free.index('j->owner = XFER_JOB_OWNER_RELEASED')
+        assert requeue_front.index(owner_lock) < requeue_front.index('call->job->owner')
+        assert 'hop_xfer_sender_active_job_clear_if_matches' in requeue_front
+        assert requeue_front.index('hop_xfer_sender_active_job_clear_if_matches') < requeue_front.index('call->job->owner=XFER_JOB_OWNER_QUEUE')
+        assert 'call->job=NULL' in dispose_job
+        transport=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        init=extract(transport,'xfer_init')
+        assert init.index('if (s_x.sync_initialized)') < init.index('memset(&s_x')
+        connected=extract(transport,'xfer_connected')
+        busy=extract(transport,'xfer_busy')
+        cancel=extract(transport,'xfer_cancel')
+        cancel_task=extract(transport,'xfer_cancel_task')
+        if platform=='win':
+            lifecycle_read='AcquireSRWLockShared(&s_x_lifecycle_lock)'
+            lifecycle_unlock='ReleaseSRWLockShared(&s_x_lifecycle_lock)'
+        else:
+            lifecycle_read='pthread_rwlock_rdlock(&s_x_lifecycle_lock)'
+            lifecycle_unlock='pthread_rwlock_unlock(&s_x_lifecycle_lock)'
+        assert lifecycle_read in connected and lifecycle_unlock in connected
+        assert connected.index(lifecycle_read) < connected.index('xfer_platform_connected_locked')
+        for entry in (busy,cancel,cancel_task):
+            assert lifecycle_read in entry and lifecycle_unlock in entry
+            assert entry.index(lifecycle_read) < entry.index('s_x.sync_initialized')
+        connected_guard=extract(transport,'xfer_platform_connected_locked')
+        assert 's_x.sync_initialized' in connected_guard and 's_x.shutting_down' in connected_guard
+        submit=(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
+        kick=extract(submit,'xfer_kick')
+        kick_try='TryAcquireSRWLockShared(&s_x_lifecycle_lock)' if platform=='win' else 'pthread_rwlock_tryrdlock(&s_x_lifecycle_lock)'
+        assert kick_try in kick and lifecycle_unlock in kick
+        assert kick.index(kick_try) < kick.index('s_x.sync_initialized') < kick.index(lifecycle_unlock)
+        assert 'if (!TryAcquireSRWLockShared' in kick if platform=='win' else 'if (pthread_rwlock_tryrdlock' in kick
+        if platform=='win':
+            listening=extract(submit,'xfer_listening')
+            assert lifecycle_read in listening and lifecycle_unlock in listening
+            assert listening.index(lifecycle_read) < listening.index('s_x.sync_initialized')
+        receive=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        protocol=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        internal=(ROOT/f'src/{platform}/xfer_sender_internal.h').read_text(encoding='utf-8')
+        assert '#include "../core/xfer_sender_active_job.h"' in internal
+        assert 'hop_xfer_sender_active_job active_job' in internal
+        assert 'hop_xfer_sender_active_job_cancel_target' in transport
+        assert 'hop_xfer_sender_active_job_is_active' in transport
+        assert 'hop_xfer_sender_active_job_matches' in submission
+        assert 'hop_xfer_sender_active_job_begin' in worker
+        assert 'hop_xfer_sender_active_job_take_cancelled_and_clear' in worker
+        assert 'hop_xfer_sender_active_job_clear_if_matches' in clear_active
+        assert dispose_job.index('sender_worker_clear_active_job') < dispose_job.index('job_free')
+        assert 'sender_worker_clear_active_job(call->job)' in dispose_job
+        assert 'hop_xfer_sender_active_job_record_peer_abort' in receive
+        assert 'hop_xfer_sender_active_job_reset_peer_abort' in receive
+        assert 'active_job.abort_batch' in protocol
+        assert '#include "../core/xfer_sender_context_adapter.h"' in protocol
+        assert 'hop_xfer_sender_context_job_cancel_requested(' in protocol
+        assert 'hop_xfer_sender_context_task_cancel_requested(' in worker
+        assert 'hop_xfer_sender_context_task_dispose(' in worker
+        assert 'hop_xfer_sender_context_status_end(' in worker
+        assert 'sender_task_cancel_requested(' not in protocol+worker
+        assert 'sender_status_end(' not in protocol+worker
+        assert 's_x.cur_batch' not in transport+worker+receive
+        assert 's_x.cur_task_id' not in transport+worker+receive
+        assert 's_x.abort_batch' not in transport+worker+receive
+        assert 's_x.abort_reason' not in transport+worker+receive
+        assert 's_x.cur_batch' not in submission
+        worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_scheduler_wait_next' in worker_core
+        assert 'hop_xfer_sender_queue_take_head' not in worker
+        assert 'queue_unlink' not in worker
+        transport=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        thread_adapter=(ROOT/f'src/{platform}/xfer_sender_threads.c').read_text(encoding='utf-8')
+        if platform=='win':
+            assert 'CreateThread(' not in transport
+            assert 'hop_win_sender_threads_start' in transport
+            assert 'CreateThread(' in thread_adapter and 'WaitForSingleObject(' in thread_adapter
+        else:
+            assert 'pthread_create(' not in transport
+            assert 'pthread_join(' not in transport
+            assert 'hop_mac_sender_threads_start' in transport
+            assert 'pthread_create(' in thread_adapter and 'pthread_join(' in thread_adapter
+
+    # Execute the exact production owner-claim/defer helpers on the host
+    # platform. Two concurrent claimants must produce exactly one releaser.
+    owner_platform='win' if os.name=='nt' else 'mac'
+    owner_worker=(ROOT/f'src/{owner_platform}/xfer_sender.c').read_text(encoding='utf-8')
+    owner_claim=extract(owner_worker,'job_claim_for_release')
+    owner_defer=extract(owner_worker,'job_defer_to_shutdown')
+    owner_prefix=r'''
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
-typedef struct job { struct job *next; hop_xfer_task task; } job;
-typedef job xfer_job; typedef job xf_job;
-static struct { job *q_head,*q_tail; } s_x;
-uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
-"""
-        main=r"""
-int main(void){
-    job a={0}, b={0}, c={0};
-    assert(hop_xfer_task_init_classified(&a.task,0,0,1,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
-    assert(hop_xfer_task_init_classified(&b.task,0,0,2,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
-    assert(hop_xfer_task_init_classified(&c.task,0,0,3,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
-    assert(hop_xfer_task_reserve_job(&a.task)); assert(hop_xfer_task_reserve_job(&b.task)); assert(hop_xfer_task_reserve_job(&c.task));
-    a.next=&b; b.next=&c; s_x.q_head=&a; s_x.q_tail=&c;
-    assert(hop_xfer_task_request_cancel(b.task.id));
-    assert(queue_take_cancelled()==&b && !b.next);
-    assert(s_x.q_head==&a && a.next==&c && s_x.q_tail==&c);
-    assert(!hop_xfer_task_cancel_requested(a.task.id) && !hop_xfer_task_cancel_requested(c.task.id));
-    assert(hop_xfer_task_finish(&b.task,HOP_XFER_TASK_CANCELLED)); hop_xfer_task_dispose(&b.task);
-    assert(hop_xfer_task_request_cancel(c.task.id));
-    assert(queue_take_cancelled()==&c && s_x.q_tail==&a && !a.next);
-    assert(hop_xfer_task_finish(&c.task,HOP_XFER_TASK_CANCELLED)); hop_xfer_task_dispose(&c.task);
-    assert(hop_xfer_task_request_cancel(a.task.id));
-    assert(queue_take_cancelled()==&a && !s_x.q_head && !s_x.q_tail);
-    assert(hop_xfer_task_finish(&a.task,HOP_XFER_TASK_CANCELLED)); hop_xfer_task_dispose(&a.task);
-    hop_xfer_budget_snapshot budget;hop_xfer_budget_get_snapshot(&budget);assert(!budget.jobs);
-    puts("PASS: production queue cancels only selected task, preserving links and reservations");return 0;
+#include <string.h>
+#define HOP_LOG_ERROR 1
+typedef enum {
+    XFER_JOB_OWNER_SUBMITTER=0, XFER_JOB_OWNER_QUEUE, XFER_JOB_OWNER_WORKER,
+    XFER_JOB_OWNER_SHUTDOWN, XFER_JOB_OWNER_RELEASING, XFER_JOB_OWNER_RELEASED
+} xfer_job_owner;
+typedef struct xfer_job {
+    xfer_job_owner owner;
+    unsigned batch;
+    struct xfer_job *next;
+} xfer_job;
+static int job_claim_for_release(xfer_job *j,xfer_job_owner expected_owner);
+#if defined(_WIN32)
+#include <windows.h>
+typedef struct { CRITICAL_SECTION lock; xfer_job *shutdown_jobs; } owner_state;
+static owner_state s_x;
+static void owner_lock_init(void) { InitializeCriticalSection(&s_x.lock); }
+static void owner_lock_destroy(void) { DeleteCriticalSection(&s_x.lock); }
+static void owner_lock(void) { EnterCriticalSection(&s_x.lock); }
+static void owner_unlock(void) { LeaveCriticalSection(&s_x.lock); }
+typedef struct { xfer_job *job; volatile LONG ready, go, wins; } claim_race;
+static DWORD WINAPI claim_racer(LPVOID opaque) {
+    claim_race *race=(claim_race *)opaque;
+    InterlockedIncrement(&race->ready);
+    while (!InterlockedCompareExchange(&race->go,0,0)) SwitchToThread();
+    if (job_claim_for_release(race->job,XFER_JOB_OWNER_WORKER))
+        InterlockedIncrement(&race->wins);
+    return 0;
+}
+#else
+#include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
+typedef xfer_job xf_job;
+typedef struct { pthread_mutex_t qlock; xfer_job *shutdown_jobs; } owner_state;
+static owner_state s_x;
+static void owner_lock_init(void) { assert(pthread_mutex_init(&s_x.qlock,NULL)==0); }
+static void owner_lock_destroy(void) { assert(pthread_mutex_destroy(&s_x.qlock)==0); }
+static void owner_lock(void) { pthread_mutex_lock(&s_x.qlock); }
+static void owner_unlock(void) { pthread_mutex_unlock(&s_x.qlock); }
+typedef struct { xfer_job *job; atomic_int ready, go, wins; } claim_race;
+static void *claim_racer(void *opaque) {
+    claim_race *race=(claim_race *)opaque;
+    atomic_fetch_add_explicit(&race->ready,1,memory_order_release);
+    while (!atomic_load_explicit(&race->go,memory_order_acquire)) sched_yield();
+    if (job_claim_for_release(race->job,XFER_JOB_OWNER_WORKER))
+        atomic_fetch_add_explicit(&race->wins,1,memory_order_relaxed);
+    return NULL;
+}
+#endif
+static void hop_log(int level,const char *format, ...) {
+    (void)level;
+    (void)format;
+}
+'''
+    owner_main=r'''
+int main(void) {
+    owner_lock_init();
+    xfer_job job={XFER_JOB_OWNER_WORKER,42,NULL};
+    claim_race race;
+    memset(&race,0,sizeof(race));
+    race.job=&job;
+#if defined(_WIN32)
+    HANDLE first=CreateThread(NULL,0,claim_racer,&race,0,NULL);
+    HANDLE second=CreateThread(NULL,0,claim_racer,&race,0,NULL);
+    assert(first && second);
+    while (InterlockedCompareExchange(&race.ready,0,0)!=2) SwitchToThread();
+    InterlockedExchange(&race.go,1);
+    assert(WaitForSingleObject(first,INFINITE)==WAIT_OBJECT_0);
+    assert(WaitForSingleObject(second,INFINITE)==WAIT_OBJECT_0);
+    CloseHandle(first);
+    CloseHandle(second);
+    assert(InterlockedCompareExchange(&race.wins,0,0)==1);
+#else
+    atomic_init(&race.ready,0);
+    atomic_init(&race.go,0);
+    atomic_init(&race.wins,0);
+    pthread_t first,second;
+    assert(pthread_create(&first,NULL,claim_racer,&race)==0);
+    assert(pthread_create(&second,NULL,claim_racer,&race)==0);
+    while (atomic_load_explicit(&race.ready,memory_order_acquire)!=2) sched_yield();
+    atomic_store_explicit(&race.go,1,memory_order_release);
+    assert(pthread_join(first,NULL)==0);
+    assert(pthread_join(second,NULL)==0);
+    assert(atomic_load_explicit(&race.wins,memory_order_relaxed)==1);
+#endif
+    assert(job.owner==XFER_JOB_OWNER_RELEASING);
+    job_defer_to_shutdown(&job,XFER_JOB_OWNER_WORKER);
+    assert(job.owner==XFER_JOB_OWNER_SHUTDOWN && s_x.shutdown_jobs==&job);
+    assert(job_claim_for_release(&job,XFER_JOB_OWNER_SHUTDOWN));
+    job_defer_to_shutdown(&job,XFER_JOB_OWNER_SHUTDOWN);
+    assert(job.owner==XFER_JOB_OWNER_SHUTDOWN && s_x.shutdown_jobs==&job && !job.next);
+    assert(job_claim_for_release(&job,XFER_JOB_OWNER_SHUTDOWN));
+    owner_lock();
+    job.owner=XFER_JOB_OWNER_RELEASED;
+    owner_unlock();
+    assert(!job_claim_for_release(&job,XFER_JOB_OWNER_SHUTDOWN));
+    owner_lock_destroy();
+    puts("PASS: Job has one concurrent release owner and Shutdown retry retains ownership");
+    return 0;
+}
+'''
+    run('sender_job_owner',owner_prefix+owner_claim+'\n'+owner_defer+'\n'+owner_main,
+        threads=(owner_platform=='mac'))
+
+    # Execute the production Job release path and production Shutdown drain.
+    # Inject one Reservation-return failure, one Task-finish failure, and one
+    # Task-dispose failure. Each failed attempt must leave the same Job at the
+    # Shutdown list head; later calls must resume without double-free/finish.
+    drain_worker=(ROOT/f'src/{owner_platform}/xfer_sender.c').read_text(encoding='utf-8')
+    drain_functions='\n'.join(extract(drain_worker,name) for name in [
+        'job_defer_to_shutdown','job_claim_for_release',
+        'job_release_task_resources','job_free','sender_shutdown_drain_jobs'])
+    drain_prefix=r'''
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#define HOP_LOG_ERROR 1
+#define HOP_XFER_CANCELLED 4
+#define HOP_XFER_FAILED 5
+#define HOP_XFER_TASK_FAILED 3
+#define HOP_XFER_TASK_CANCELLED 4
+#define HOP_XFER_TASK_INTERRUPTED 5
+typedef enum {
+    XFER_JOB_OWNER_SUBMITTER=0, XFER_JOB_OWNER_QUEUE, XFER_JOB_OWNER_WORKER,
+    XFER_JOB_OWNER_SHUTDOWN, XFER_JOB_OWNER_RELEASING, XFER_JOB_OWNER_RELEASED
+} xfer_job_owner;
+typedef int hop_xfer_task_state;
+typedef struct {
+    uint64_t id, image_temp_bytes;
+    int initialized, terminal;
+    hop_xfer_task_state terminal_state;
+} hop_xfer_task;
+typedef struct { char *full, *name, *rel; } hop_xfer_sender_entry;
+typedef struct { uint64_t task_id; int cancelled; } hop_xfer_sender_context;
+typedef struct xfer_job {
+    xfer_job_owner owner;
+    uint32_t batch;
+    struct xfer_job *next;
+    hop_xfer_task task;
+    hop_xfer_sender_context sender_context;
+    uint8_t *pixels;
+    int image_payload_released, is_image, n;
+    hop_xfer_sender_entry *e;
+    int pending_finish_valid, pending_finish_state;
+    int pending_status_end, pending_status_phase;
+    char pending_status_detail[128];
+} xfer_job;
+typedef xfer_job xf_job;
+typedef struct { void *head; } hop_xfer_sender_queue;
+static void *hop_xfer_sender_queue_detach_all(hop_xfer_sender_queue *queue) {
+    void *head=queue->head;
+    queue->head=NULL;
+    return head;
+}
+#if defined(_WIN32)
+#include <windows.h>
+typedef struct {
+    CRITICAL_SECTION lock;
+    hop_xfer_sender_queue queue;
+    int active_job;
+    xfer_job *shutdown_jobs;
+} sender_state;
+static sender_state s_x;
+static void owner_lock_init(void) { InitializeCriticalSection(&s_x.lock); }
+static void owner_lock_destroy(void) { DeleteCriticalSection(&s_x.lock); }
+#else
+#include <pthread.h>
+typedef struct {
+    pthread_mutex_t qlock;
+    hop_xfer_sender_queue queue;
+    int active_job;
+    xf_job *shutdown_jobs;
+} sender_state;
+static sender_state s_x;
+static void owner_lock_init(void) { assert(pthread_mutex_init(&s_x.qlock,NULL)==0); }
+static void owner_lock_destroy(void) { assert(pthread_mutex_destroy(&s_x.qlock)==0); }
+#endif
+static int fail_image_release;
+static uint64_t released_image_temp_bytes;
+static uint64_t fail_finish_id, fail_dispose_id;
+static unsigned finish_attempts[3], terminalizations[3];
+static unsigned dispose_attempts[3], status_end_calls[3];
+static void *tracked_jobs[2], *tracked_pixel;
+static unsigned tracked_job_frees, tracked_pixel_frees;
+static unsigned task_slot(uint64_t id) { assert(id==101 || id==102); return (unsigned)(id-100); }
+static void test_free(void *pointer) {
+    if (pointer && (pointer==tracked_jobs[0] || pointer==tracked_jobs[1])) tracked_job_frees++;
+    if (pointer && pointer==tracked_pixel) tracked_pixel_frees++;
+    free(pointer);
+}
+#define free test_free
+static void hop_log(int level,const char *format, ...) { (void)level; (void)format; }
+static uint64_t hop_xfer_task_image_temp_bytes(const hop_xfer_task *task) {
+    return task && task->initialized ? task->image_temp_bytes : 0;
+}
+static int hop_xfer_task_release_image_temp(hop_xfer_task *task,uint64_t bytes) {
+    if (!task || !task->initialized || !bytes || bytes>task->image_temp_bytes) return 0;
+    if (fail_image_release) { fail_image_release--; return 0; }
+    task->image_temp_bytes-=bytes;
+    released_image_temp_bytes+=bytes;
+    return 1;
+}
+static int hop_xfer_task_is_terminal(const hop_xfer_task *task) {
+    return !task || !task->initialized || task->terminal;
+}
+static int hop_xfer_sender_context_job_cancel_requested(
+    const hop_xfer_sender_context *context,uint32_t batch,uint64_t task_id) {
+    (void)batch; (void)task_id;
+    return context && context->cancelled;
+}
+static void hop_xfer_sender_context_task_finish(
+    const hop_xfer_sender_context *context,hop_xfer_task *task,hop_xfer_task_state state) {
+    assert(context && task && task->initialized);
+    unsigned slot=task_slot(task->id);
+    finish_attempts[slot]++;
+    if (fail_finish_id==task->id) { fail_finish_id=0; return; }
+    if (!task->terminal) {
+        task->terminal=1;
+        task->terminal_state=state;
+        terminalizations[slot]++;
+    }
+}
+static int hop_xfer_sender_context_task_dispose(
+    const hop_xfer_sender_context *context,hop_xfer_task *task) {
+    assert(context && task);
+    unsigned slot=task_slot(task->id);
+    dispose_attempts[slot]++;
+    if (fail_dispose_id==task->id) { fail_dispose_id=0; return 0; }
+    if (!task->initialized || !task->terminal) return 0;
+    task->initialized=0;
+    task->id=0;
+    return 1;
+}
+static void hop_xfer_sender_context_status_end(
+    const hop_xfer_sender_context *context,uint32_t batch,int phase,const char *detail) {
+    (void)batch; (void)phase; (void)detail;
+    assert(context);
+    status_end_calls[task_slot(context->task_id)]++;
+}
+'''
+    drain_main=r"""
+int main(void) {
+    owner_lock_init();
+    xfer_job *queued=(xfer_job *)calloc(1,sizeof(*queued));
+    xfer_job *deferred=(xfer_job *)calloc(1,sizeof(*deferred));
+    assert(queued && deferred);
+    tracked_jobs[0]=queued;
+    tracked_jobs[1]=deferred;
+
+    queued->owner=XFER_JOB_OWNER_QUEUE;
+    queued->batch=1;
+    queued->is_image=1;
+    queued->pixels=(uint8_t *)malloc(8);
+    assert(queued->pixels);
+    tracked_pixel=queued->pixels;
+    queued->task.id=101;
+    queued->task.initialized=1;
+    queued->task.image_temp_bytes=8;
+    queued->sender_context.task_id=101;
+
+    deferred->owner=XFER_JOB_OWNER_SHUTDOWN;
+    deferred->batch=2;
+    deferred->task.id=102;
+    deferred->task.initialized=1;
+    deferred->sender_context.task_id=102;
+
+    /* A queued Job and an already-deferred Job must become one ordered list. */
+    s_x.queue.head=queued;
+    s_x.shutdown_jobs=deferred;
+
+    /* A non-owner cannot start release or mutate the Task/Reservation. */
+    assert(job_free(queued,XFER_JOB_OWNER_WORKER)==-1);
+    assert(queued->owner==XFER_JOB_OWNER_QUEUE);
+    assert(!finish_attempts[1] && !dispose_attempts[1] && !tracked_job_frees);
+
+    /* First pass: image Reservation return fails after the pixel owner drops.
+     * The Job and exact Reservation claim must remain at the list head. */
+    fail_image_release=1;
+    fail_finish_id=102;
+    fail_dispose_id=102;
+    assert(!sender_shutdown_drain_jobs());
+    assert(s_x.queue.head==NULL);
+    assert(s_x.shutdown_jobs==queued && queued->next==deferred);
+    assert(queued->owner==XFER_JOB_OWNER_SHUTDOWN);
+    assert(deferred->owner==XFER_JOB_OWNER_SHUTDOWN);
+    assert(!queued->pixels && queued->image_payload_released);
+    assert(queued->task.initialized && queued->task.image_temp_bytes==8);
+    assert(tracked_pixel_frees==1 && tracked_job_frees==0);
+    assert(!terminalizations[1] && !terminalizations[2]);
+    assert(!status_end_calls[1] && !status_end_calls[2]);
+
+    /* Second pass: Job 101 completes and is freed once; Task 102's first
+     * terminalization attempt fails. The second Job remains reachable. */
+    assert(!sender_shutdown_drain_jobs());
+    assert(s_x.shutdown_jobs==deferred && deferred->owner==XFER_JOB_OWNER_SHUTDOWN);
+    assert(tracked_job_frees==1 && terminalizations[1]==1);
+    assert(finish_attempts[1]==1 && dispose_attempts[1]==1 && status_end_calls[1]==1);
+    assert(finish_attempts[2]==1 && !terminalizations[2]);
+    assert(!dispose_attempts[2] && !status_end_calls[2]);
+    assert(released_image_temp_bytes==8);
+
+    /* Third pass: Task 102 reaches terminal exactly once, but disposal fails.
+     * Status publication must still wait for successful Task disposal. */
+    assert(!sender_shutdown_drain_jobs());
+    assert(s_x.shutdown_jobs==deferred && deferred->owner==XFER_JOB_OWNER_SHUTDOWN);
+    assert(finish_attempts[2]==2 && terminalizations[2]==1);
+    assert(dispose_attempts[2]==1 && !status_end_calls[2]);
+    assert(deferred->task.initialized && deferred->task.terminal);
+
+    /* Fourth pass retries disposal only; it must not finish the Task again. */
+    assert(sender_shutdown_drain_jobs());
+    assert(!s_x.shutdown_jobs && !s_x.queue.head);
+    assert(finish_attempts[2]==2 && terminalizations[2]==1);
+    assert(dispose_attempts[2]==2 && status_end_calls[2]==1);
+    assert(tracked_job_frees==2 && tracked_pixel_frees==1);
+    assert(terminalizations[1]+terminalizations[2]==2);
+    owner_lock_destroy();
+    puts("PASS: production Sender Job release and Shutdown drain preserve ownership across Reservation, Task finish, and Task dispose retries");
+    return 0;
 }
 """
-        code=common+extract(sender,'queue_unlink')+'\n'+extract(sender,'queue_take_cancelled')+main
-        run('task_cancel_queue_'+platform,code,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+    run('sender_shutdown_drain_retry',drain_prefix+drain_functions+'\n'+drain_main,
+        threads=(owner_platform=='mac'))
+
+    # Execute the production top-level xfer_shutdown orchestration with native
+    # lock/event primitives and injected failures at Join, Job drain, Writer
+    # stop, and final Task/Reservation audit. No shared state may be destroyed
+    # until every phase succeeds; a later call must resume from retained state.
+    shutdown_source=(ROOT/f'src/{owner_platform}/xfer.c').read_text(encoding='utf-8')
+    shutdown_function=extract(shutdown_source,'xfer_shutdown')
+    shutdown_prefix=r'''
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#define HOP_LOG_ERROR 1
+#define HOP_LOG_WARN 2
+static int join_failures=1, drain_failures=1, writer_failures=1, audit_failures=1;
+static unsigned join_calls, drain_calls, reset_calls, writer_calls, audit_calls;
+static unsigned wake_calls, ack_destroy_calls, history_close_calls;
+static int s_rx;
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+typedef uintptr_t SOCKET;
+#define INVALID_SOCKET ((SOCKET)-1)
+#define SD_BOTH 2
+typedef struct {
+    CRITICAL_SECTION lock;
+    SOCKET client;
+    HANDLE stop, q_evt, rate_timer;
+    int sync_initialized, shutting_down, sender_threads;
+} shutdown_state;
+static shutdown_state s_x;
+static CRITICAL_SECTION s_txlock;
+static SRWLOCK s_x_lifecycle_lock=SRWLOCK_INIT;
+static int shutdown(SOCKET socket_handle,int how) {
+    (void)socket_handle; (void)how;
+    return 0;
+}
+static int hop_win_sender_threads_join(void *threads,DWORD timeout_ms,int *joined) {
+    (void)threads;
+    assert(timeout_ms==3000);
+    join_calls++;
+    if (join_failures) { join_failures--; *joined=0; return 0; }
+    *joined=1;
+    return 1;
+}
+static void shutdown_fixture_init(void) {
+    InitializeCriticalSection(&s_x.lock);
+    InitializeCriticalSection(&s_txlock);
+    s_x.stop=CreateEventW(NULL,TRUE,FALSE,NULL);
+    s_x.q_evt=CreateEventW(NULL,FALSE,FALSE,NULL);
+    assert(s_x.stop && s_x.q_evt);
+    s_x.client=INVALID_SOCKET;
+    s_x.sync_initialized=1;
+}
+#else
+#include <pthread.h>
+#include <stdatomic.h>
+#define SHUT_RDWR 2
+typedef struct {
+    pthread_mutex_t slock, qlock;
+    pthread_cond_t qcond;
+    _Atomic int stop;
+    int sock;
+    int sync_initialized, shutting_down, sender_threads;
+} shutdown_state;
+static shutdown_state s_x;
+static pthread_rwlock_t s_x_lifecycle_lock=PTHREAD_RWLOCK_INITIALIZER;
+static int shutdown(int socket_fd,int how) {
+    (void)socket_fd; (void)how;
+    return 0;
+}
+static int hop_mac_sender_threads_join(void *threads) {
+    (void)threads;
+    join_calls++;
+    if (join_failures) { join_failures--; return 0; }
+    return 1;
+}
+static void shutdown_fixture_init(void) {
+    assert(pthread_mutex_init(&s_x.slock,NULL)==0);
+    assert(pthread_mutex_init(&s_x.qlock,NULL)==0);
+    assert(pthread_cond_init(&s_x.qcond,NULL)==0);
+    atomic_init(&s_x.stop,0);
+    s_x.sock=-1;
+    s_x.sync_initialized=1;
+}
+#endif
+static void sender_context_wake_ack(void) { wake_calls++; }
+static int sender_shutdown_drain_jobs(void) {
+    drain_calls++;
+    if (drain_failures) { drain_failures--; return 0; }
+    return 1;
+}
+static void rx_reset(void *context) { assert(context==&s_rx); reset_calls++; }
+static int wq_stop(void) {
+    writer_calls++;
+    if (writer_failures) { writer_failures--; return 0; }
+    return 1;
+}
+static int xfer_shutdown_task_audit(void) {
+    audit_calls++;
+    if (audit_failures) { audit_failures--; return 0; }
+    return 1;
+}
+static void sender_context_ack_destroy(void) { ack_destroy_calls++; }
+static void hop_xfer_task_history_store_close(void) { history_close_calls++; }
+static void hop_log(int level,const char *format, ...) { (void)level; (void)format; }
+'''
+    shutdown_main=r"""
+int main(void) {
+    shutdown_fixture_init();
+
+    /* Join timeout: no queue drain, Receiver reset, or native destruction. */
+    assert(!xfer_shutdown());
+    assert(s_x.sync_initialized && s_x.shutting_down);
+    assert(join_calls==1 && !drain_calls && !reset_calls && !writer_calls);
+    assert(!audit_calls && !ack_destroy_calls && !history_close_calls);
+#if defined(_WIN32)
+    assert(WaitForSingleObject(s_x.stop,0)==WAIT_OBJECT_0);
+    assert(s_x.stop && s_x.q_evt);
+#else
+    assert(atomic_load_explicit(&s_x.stop,memory_order_acquire)==1);
+#endif
+
+    /* Job drain failure: all thread state remains joined but shared state lives. */
+    assert(!xfer_shutdown());
+    assert(join_calls==2 && drain_calls==1);
+    assert(!reset_calls && !writer_calls && !audit_calls);
+    assert(!ack_destroy_calls && !history_close_calls && s_x.sync_initialized);
+
+    /* Writer stop failure: Receiver reset may be retried, but no audit/teardown. */
+    assert(!xfer_shutdown());
+    assert(join_calls==3 && drain_calls==2 && reset_calls==1 && writer_calls==1);
+    assert(!audit_calls && !ack_destroy_calls && !history_close_calls);
+    assert(s_x.sync_initialized);
+
+    /* Final audit failure: ACK/history/locks must still remain alive. */
+    assert(!xfer_shutdown());
+    assert(join_calls==4 && drain_calls==3 && reset_calls==2 && writer_calls==2);
+    assert(audit_calls==1 && !ack_destroy_calls && !history_close_calls);
+    assert(s_x.sync_initialized);
+
+    /* A later retry finishes cleanup exactly once. */
+    assert(xfer_shutdown());
+    assert(join_calls==5 && drain_calls==4 && reset_calls==3 && writer_calls==3);
+    assert(audit_calls==2 && ack_destroy_calls==1 && history_close_calls==1);
+    assert(wake_calls==5 && !s_x.sync_initialized);
+#if defined(_WIN32)
+    assert(!s_x.stop && !s_x.q_evt && !s_x.rate_timer);
+#endif
+
+    /* Shutdown after successful teardown is idempotent and touches no dead lock. */
+    assert(xfer_shutdown());
+    assert(join_calls==5 && drain_calls==4 && reset_calls==3 && writer_calls==3);
+    assert(audit_calls==2 && ack_destroy_calls==1 && history_close_calls==1);
+    puts("PASS: production xfer_shutdown retains native state across Join, Job drain, Writer stop, and audit failures; retry and idempotent close succeed");
+    return 0;
+}
+"""
+    run('sender_shutdown_orchestration_retry',shutdown_prefix+shutdown_function+'\n'+shutdown_main,
+        threads=(owner_platform=='mac'))
+
+    retry_core=(ROOT/'src/core/xfer_sender_retry.c').read_text(encoding='utf-8')
+    retry_header=(ROOT/'src/core/xfer_sender_retry.h').read_text(encoding='utf-8')
+    retry_tests=(ROOT/'tests/xfer_sender_retry_tests.c').read_text(encoding='utf-8')
+    assert 'hop_xfer_sender_plan_retry' in retry_core
+    assert 'retry_add_saturating' in retry_core
+    assert 'HOP_XFER_SENDER_RETRY_SCHEDULED' in retry_header
+    assert 'HOP_XFER_SENDER_RETRY_EXHAUSTED' in retry_header
+    assert 'test_initial_and_repeated_retry' in retry_tests
+    assert 'test_attempt_and_deadline_exhaustion' in retry_tests
+    assert 'test_saturating_deadlines_and_invalid_input' in retry_tests
+    worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
+    worker_tests=(ROOT/'tests/xfer_sender_worker_tests.c').read_text(encoding='utf-8')
+    assert 'hop_xfer_sender_worker_run' in worker_core
+    assert 'hop_xfer_sender_scheduler_wait_next' in worker_core
+    assert 's_x' not in worker_core and 's_rx' not in worker_core
+    assert 'test_ready' in worker_tests and 'test_expired_cancel' in worker_tests
+    assert 'test_invalid_view_clears_active' in worker_tests
+    assert 'if(v.task&&v.task->id)o->clear_active' in worker_core
+    for platform in ['win','mac']:
+        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
+        send_thread=extract(worker,'send_thread')
+        assert 'hop_xfer_sender_worker_run' in send_thread
+        assert 'for (;;)' not in send_thread
+        assert 'HOP_XFER_TASK_ACTIVE' not in send_thread
+        assert 'job_bind_session' not in worker
+        xfer=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        assert 'job_bind_session' not in xfer
+        internal=(ROOT/f'src/{platform}/xfer_sender_internal.h').read_text(encoding='utf-8')
+        assert 'job_bind_session' not in internal
+
+    worker_flow_core=(ROOT/'src/core/xfer_sender_worker_flow.c').read_text(encoding='utf-8')
+    assert 'hop_xfer_sender_plan_retry' in worker_flow_core
+    for platform in ['win','mac']:
+        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_worker_finish_job' in worker
+        assert 'hop_xfer_sender_plan_retry' not in worker
+
+    lifecycle_core=(ROOT/'src/core/xfer_sender_lifecycle.c').read_text(encoding='utf-8')
+    lifecycle_header=(ROOT/'src/core/xfer_sender_lifecycle.h').read_text(encoding='utf-8')
+    lifecycle_tests=(ROOT/'tests/xfer_sender_lifecycle_tests.c').read_text(encoding='utf-8')
+    assert 'hop_xfer_sender_get_terminal_decision' in lifecycle_core
+    assert 'HOP_XFER_SENDER_JOB_COMMIT_UNKNOWN' in lifecycle_core
+    assert 'HOP_XFER_SENDER_JOB_COMMIT_REJECTED' in lifecycle_core
+    assert 'hop_xfer_sender_terminal_decision' in lifecycle_header
+    assert 'expect(HOP_XFER_SENDER_JOB_COMMIT_REJECTED' in lifecycle_tests
+    assert 'expect(HOP_XFER_SENDER_JOB_COMMIT_UNKNOWN' in lifecycle_tests
+    assert 'HOP_XFER_TASK_INTERRUPTED' in lifecycle_tests
+    assert 'Cancelled by receiver' in lifecycle_tests
+    assert 'hop_xfer_sender_get_terminal_decision' in worker_flow_core
+    for platform in ['win','mac']:
+        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_worker_finish_job' in worker
+        assert 'hop_xfer_sender_get_terminal_decision' not in worker
+
+    win_main=(ROOT/'src/win/win_main.c').read_text(encoding='utf-8')
+    assert win_main.index('clip_shutdown(g_app.hwnd)') < win_main.index('net_server_stop(g_app.net)') < win_main.rindex('xfer_shutdown()')
+
+    # macOS control workers can call xfer_kick during disconnect handling;
+    # they must be joined before xfer_shutdown destroys transfer synchronization.
+    mac_main=(ROOT/'src/mac/main.c').read_text(encoding='utf-8')
+    mac_transport=(ROOT/'src/mac/net_client_transport.inc').read_text(encoding='utf-8')
+    assert mac_main.index('clipboard_shutdown()') < mac_main.index('net_loop_shutdown()') < mac_main.rindex('xfer_shutdown()')
+    assert 'pthread_detach' not in mac_transport
+    assert 'pthread_join(s_net_thread' in mac_transport
+    assert 'pthread_join(s_control_sender_thread' in mac_transport
+
+    # Clipboard image-work Tasks own image-temp Reservations independently
+    # of sender Jobs. Failed release/dispose must retain an explicit owner.
+    for platform in ['win','mac']:
+        clip=(ROOT/f'src/{platform}/clipboard.c').read_text(encoding='utf-8') if platform=='win' else (ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
+        clip_header=(ROOT/'src/win/app.h').read_text(encoding='utf-8') if platform=='win' else (ROOT/'src/mac/mac_app.h').read_text(encoding='utf-8')
+        clip_shutdown=extract(clip,'clip_shutdown' if platform=='win' else 'clipboard_shutdown')
+        finish_attempt=extract(clip,'image_work_task_finish_attempt')
+        retry_pending=extract(clip,'image_work_retry_pending')
+        owner_type='clip_image_task_owner' if platform=='win' else 'image_work_task_owner'
+        assert owner_type in clip and 's_pending_image_tasks' in clip
+        assert 'hop_xfer_task_release_image_temp' in finish_attempt
+        assert 'hop_xfer_task_is_terminal' in finish_attempt and 'hop_xfer_task_finish' in finish_attempt
+        assert 'hop_xfer_task_dispose' in finish_attempt
+        assert 'return 0;' in finish_attempt and 'return !task->initialized && !task->id;' in finish_attempt
+        assert 'image_work_retry_pending' in clip_shutdown and 'return 0;' in clip_shutdown
+        if platform=='win':
+            assert 'WaitForSingleObject(s_image_thread' in clip_shutdown
+            assert re.search(r'int\s+clip_shutdown\s*\(HWND hwnd\);', clip_header)
+            assert 'while (!clip_shutdown(g_app.hwnd)) Sleep(100)' in win_main
+        else:
+            assert 'dispatch_group_wait(s_paste_group' in clip_shutdown
+            assert 'pthread_mutex_lock(&s_offer_lock)' in retry_pending
+            assert re.search(r'int\s+clipboard_shutdown\s*\(void\);', clip_header)
+            assert 'while (!clipboard_shutdown()) usleep(100000)' in mac_main
 
     # hop_xfer_tracking embeds 8192 file records with 1024-byte paths
     # (~8 MiB). Keep these fixtures off Windows' default 1 MiB thread stack.

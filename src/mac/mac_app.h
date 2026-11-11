@@ -19,6 +19,7 @@ void local_addresses(char *out,size_t cap);
 
 /* net_client.c */
 void net_loop_run(void);                 /* 连接 + 重连 + 接收（后台线程） */
+void net_loop_shutdown(void);             /* stop and join control workers */
 int  net_send(uint8_t type, const void *p, uint32_t len);
 void net_request_stop(void);
 void net_request_reconnect(void); /* close current socket; background loop reconnects */
@@ -45,7 +46,7 @@ void inject_release_all(void);            /* 断线时松开所有修饰键 */
 
 /* clipboard.m */
 void clipboard_init(void);
-void clipboard_shutdown(void);
+int  clipboard_shutdown(void);
 void clipboard_on_link(int connected);
 void clipboard_on_remote_file_offer(const uint8_t *p, uint32_t len);
 void clipboard_on_remote_file_offer_clear(const uint8_t *p, uint32_t len);

@@ -131,6 +131,19 @@ int hop_xfer_image_valid(int32_t width, int32_t height, int32_t stride) {
     return (uint64_t)(uint32_t)stride * (uint64_t)(uint32_t)height <= HOP_IMG_MAX_BYTES;
 }
 
+int hop_xfer_decode_file_chunk(const uint8_t *payload, uint32_t len,
+                               uint64_t declared_size, int is_image,
+                               hop_xfer_file_chunk_msg *out) {
+    if (!payload || !out || !hop_xfer_chunk_valid(payload, len, declared_size, is_image))
+        return 0;
+    out->id = hop_get_be32(payload);
+    out->offset = hop_get_be64(payload + 4);
+    out->length = hop_get_be32(payload + 12);
+    out->crc = hop_get_be32(payload + 16);
+    out->data = payload + 20;
+    return 1;
+}
+
 int hop_xfer_chunk_valid(const uint8_t *p, uint32_t len,
                          uint64_t declared_size, int is_image) {
     if (!p || len < 20u) return 0;

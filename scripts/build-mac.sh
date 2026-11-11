@@ -35,9 +35,9 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$ICONSET" -o "$RESOURCES/HopDesk.icns"
 
-CORE=$(find "$ROOT/src/core" -maxdepth 1 -name '*.c' -print | sort)
-MAC_C=$(find "$ROOT/src/mac" -maxdepth 1 -name '*.c' -print | sort)
-MAC_M=$(find "$ROOT/src/mac" -maxdepth 1 -name '*.m' -print | sort)
+CORE=$(find "$ROOT/src/core" -type f -name '*.c' -print | sort)
+MAC_C=$(find "$ROOT/src/mac" -type f -name '*.c' -print | sort)
+MAC_M=$(find "$ROOT/src/mac" -type f -name '*.m' -print | sort)
 if [ -z "$CORE$MAC_C$MAC_M" ]; then echo "No HopDesk source files found." >&2; exit 1; fi
 INC="$ROOT/src/core"
 FRAMEWORKS="-framework Cocoa -framework ApplicationServices -framework CoreGraphics -framework IOKit"

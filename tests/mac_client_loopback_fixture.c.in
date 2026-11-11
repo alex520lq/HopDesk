@@ -58,6 +58,7 @@ static void disp_set_input(uint16_t n){(void)n;}
 static void disp_sleep(void){}
 static void xfer_kick(void){}
 static void statusbar_update(int on,int sharing){(void)sharing;atomic_store(&status_connected,on);}
+static void dispatch_message(void *user,uint8_t type,const uint8_t *p,uint32_t len);
 @PRODUCTION@
 static int read_exact(int fd,uint8_t *p,size_t n){
     while(n){ssize_t r=read(fd,p,n);if(r<=0)return 0;p+=r;n-=(size_t)r;}return 1;

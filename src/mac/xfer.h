@@ -15,9 +15,9 @@
 #include "../core/xfer_budget.h"
 #include "../core/xfer_task.h"
 
-void xfer_init(const hop_config *cfg);
+int  xfer_init(const hop_config *cfg);
 void xfer_kick(void);
-void xfer_shutdown(void);
+int  xfer_shutdown(void);
 
 int  xfer_connected(void);
 

@@ -40,6 +40,11 @@ static dispatch_group_t s_paste_group;
 static int s_paste_scan_active;
 static int s_image_work_active;
 static int s_clip_stopping;
+typedef struct image_work_task_owner {
+    struct image_work_task_owner *next;
+    hop_xfer_task task;
+} image_work_task_owner;
+static image_work_task_owner *s_pending_image_tasks;
 static char *s_local_offer_paths[HOP_CLIP_OFFER_MAX_ITEMS];
 static int s_local_offer_count;
 static uint64_t s_local_offer_generation, s_local_offer_sequence;
@@ -51,101 +56,7 @@ static NSInteger s_pending_paste_change;
 static uint32_t s_seen_paste_requests[32];
 static unsigned s_seen_paste_next;
 
-static uint32_t clip_local_device(void) {
-    return g_mac.cfg.role == HOP_ROLE_SERVER ? HOP_DEV_SERVER : HOP_DEV_CLIENT;
-}
-static void clip_send_offer_clear(uint32_t origin,uint64_t generation);
-static void clip_clear_remote_offer_local(void) {
-    pthread_mutex_lock(&s_offer_lock);
-    s_remote_offer_origin=0; s_remote_offer_generation=0;
-    s_pending_paste_request=0; s_pending_paste_change=0;
-    pthread_mutex_unlock(&s_offer_lock);
-}
-static void clip_invalidate_remote_offer(int notify_peer) {
-    uint32_t origin=0;uint64_t generation=0;
-    pthread_mutex_lock(&s_offer_lock);
-    origin=s_remote_offer_origin;generation=s_remote_offer_generation;
-    s_remote_offer_origin=0;s_remote_offer_generation=0;
-    s_pending_paste_request=0;s_pending_paste_change=0;
-    pthread_mutex_unlock(&s_offer_lock);
-    if(notify_peer&&origin&&generation)clip_send_offer_clear(origin,generation);
-}
-static void clip_send_offer_clear(uint32_t origin,uint64_t generation) {
-    uint8_t p[HOP_CLIP_OFFER_CLEAR_BYTES];
-    if(!origin||!generation)return;
-    hop_put_be32(p,origin);hop_put_be64(p+4,generation);
-    (void)net_send(HOP_MSG_CLIP_FILE_OFFER_CLEAR,p,sizeof(p));
-}
-static void clip_clear_local_offer(int notify_peer) {
-    uint64_t generation;
-    pthread_mutex_lock(&s_offer_lock);
-    generation=s_local_offer_generation;
-    for(int i=0;i<s_local_offer_count;++i)free(s_local_offer_paths[i]);
-    memset(s_local_offer_paths,0,sizeof(s_local_offer_paths));
-    s_local_offer_count=0;s_local_offer_generation=0;
-    pthread_mutex_unlock(&s_offer_lock);
-    if(notify_peer&&generation)clip_send_offer_clear(clip_local_device(),generation);
-}
-static int clip_send_offer(const char *const *paths,int count,uint64_t generation) {
-    char *names[HOP_CLIP_OFFER_MAX_ITEMS]={0};
-    uint8_t *payload=NULL;uint32_t len=0;int ok=0;
-    if(!paths||count<=0||count>(int)HOP_CLIP_OFFER_MAX_ITEMS)return 0;
-    for(int i=0;i<count;++i){
-        const char *base=strrchr(paths[i],'/');base=base?base+1:paths[i];
-        size_t n=strlen(base);
-        if(!n||n>HOP_NAME_LEN_MAX)goto done;
-        names[i]=strdup(base);if(!names[i])goto done;
-    }
-    payload=(uint8_t*)malloc(HOP_CLIP_OFFER_MAX_PAYLOAD);if(!payload)goto done;
-    len=hop_clip_file_offer_encode(payload,HOP_CLIP_OFFER_MAX_PAYLOAD,
-        clip_local_device(),generation,(const char *const *)names,count);
-    if(len)ok=net_send(HOP_MSG_CLIP_FILE_OFFER,payload,len);
-done:
-    for(int i=0;i<count;++i)free(names[i]);free(payload);return ok;
-}
-static int clip_publish_local_paths(NSArray<NSURL *> *urls) {
-    NSUInteger n=[urls count];
-    if(!n||n>HOP_CLIP_OFFER_MAX_ITEMS)return 0;
-    char *copies[HOP_CLIP_OFFER_MAX_ITEMS]={0};
-    for(NSUInteger i=0;i<n;++i){
-        const char *path=[[urls objectAtIndex:i] fileSystemRepresentation];
-        if(!path||!*path||!(copies[i]=strdup(path))){
-            for(NSUInteger j=0;j<n;++j)free(copies[j]);return 0;
-        }
-    }
-    clip_invalidate_remote_offer(1);clip_clear_local_offer(1);
-    pthread_mutex_lock(&s_offer_lock);
-    uint64_t generation=++s_local_offer_sequence;
-    if(!generation)generation=++s_local_offer_sequence;
-    s_local_offer_generation=generation;
-    for(NSUInteger i=0;i<n;++i)s_local_offer_paths[i]=copies[i];
-    s_local_offer_count=(int)n;
-    pthread_mutex_unlock(&s_offer_lock);
-    if(!clip_send_offer((const char *const *)copies,(int)n,generation))
-        hop_log(HOP_LOG_WARN,"clip: file offer stored; peer will be updated on reconnect");
-    else hop_log(HOP_LOG_INFO,"clip: file offer published (%lu top-level item(s), no file data sent)",(unsigned long)n);
-    return 1;
-}
-static void clip_send_local_offer_snapshot(void) {
-    char *copies[HOP_CLIP_OFFER_MAX_ITEMS]={0};int count;uint64_t generation;
-    pthread_mutex_lock(&s_offer_lock);
-    count=s_local_offer_count;generation=s_local_offer_generation;
-    for(int i=0;i<count;++i)if(s_local_offer_paths[i])copies[i]=strdup(s_local_offer_paths[i]);
-    pthread_mutex_unlock(&s_offer_lock);
-    int valid=count>0;for(int i=0;i<count;++i)if(!copies[i])valid=0;
-    if(valid&&!clip_send_offer((const char *const *)copies,count,generation))
-        hop_log(HOP_LOG_WARN,"clip: file offer resend failed");
-    for(int i=0;i<count;++i)free(copies[i]);
-}
-
-/* ---- 发送 ---- */
-
-static BOOL send_paths(NSArray<NSURL *> *urls) {
-    /* Only store local paths and publish a lightweight Offer. */
-    return clip_publish_local_paths(urls) ? YES : NO;
-}
-
-static uint32_t s_image_work_seq;
+#include "clipboard_offer.inc"
 
 static uint32_t image_work_transfer_id(void) {
     uint32_t id = __sync_add_and_fetch(&s_image_work_seq, 1);
@@ -160,32 +71,66 @@ static int image_work_can_start(void) {
     return can_start;
 }
 
-static hop_xfer_task *image_work_task_create(void) {
-    hop_xfer_task *task = (hop_xfer_task *)calloc(1, sizeof(*task));
-    if (!task) return NULL;
-    if (!hop_xfer_task_init_classified(task, 0, 0, image_work_transfer_id(), HOP_XFER_DIR_NONE, HOP_TASK_KIND_IMAGE_WORK) ||
-        !hop_xfer_task_reserve_job(task) ||
-        !hop_xfer_task_set_state(task, HOP_XFER_TASK_ACTIVE)) {
-        if (task->initialized) {
-            (void)hop_xfer_task_finish(task, HOP_XFER_TASK_FAILED);
-            hop_xfer_task_dispose(task);
-        }
-        free(task);
-        return NULL;
-    }
-    return task;
-}
-
-static void image_work_task_finish(hop_xfer_task *task, int success) {
-    if (!task) return;
+static int image_work_task_finish_attempt(image_work_task_owner *owner, int success) {
+    if (!owner) return 1;
+    hop_xfer_task *task=&owner->task;
+    if (!task->initialized && !task->id) return 1;
+    if (!task->initialized) return 0; /* keep an uninitialized-but-live handle */
     uint64_t temp_bytes=hop_xfer_task_image_temp_bytes(task);
     if (temp_bytes && !hop_xfer_task_release_image_temp(task, temp_bytes)) {
         hop_log(HOP_LOG_ERROR, "clip: image temporary budget release failed (task=%llu)",
                 (unsigned long long)task->id);
+        return 0;
     }
-    (void)hop_xfer_task_finish(task, success ? HOP_XFER_TASK_COMPLETED : HOP_XFER_TASK_FAILED);
+    if (!hop_xfer_task_is_terminal(task) &&
+        !hop_xfer_task_finish(task, success ? HOP_XFER_TASK_COMPLETED : HOP_XFER_TASK_FAILED))
+        return 0;
     hop_xfer_task_dispose(task);
-    free(task);
+    return !task->initialized && !task->id;
+}
+
+static int image_work_task_finish(image_work_task_owner *owner, int success) {
+    if (!owner) return 1;
+    if (image_work_task_finish_attempt(owner, success)) { free(owner); return 1; }
+    /* Creation can fail on the main queue while the utility worker is also
+     * finishing. Protect the pending-owner list independently of Task Manager. */
+    pthread_mutex_lock(&s_offer_lock);
+    owner->next=s_pending_image_tasks;
+    s_pending_image_tasks=owner;
+    pthread_mutex_unlock(&s_offer_lock);
+    return 0;
+}
+
+static int image_work_retry_pending(void) {
+    for (;;) {
+        pthread_mutex_lock(&s_offer_lock);
+        image_work_task_owner *owner=s_pending_image_tasks;
+        if (owner) s_pending_image_tasks=owner->next;
+        pthread_mutex_unlock(&s_offer_lock);
+        if (!owner) return 1;
+        owner->next=NULL;
+        if (!image_work_task_finish_attempt(owner, 0)) {
+            pthread_mutex_lock(&s_offer_lock);
+            owner->next=s_pending_image_tasks;
+            s_pending_image_tasks=owner;
+            pthread_mutex_unlock(&s_offer_lock);
+            return 0;
+        }
+        free(owner);
+    }
+}
+
+static image_work_task_owner *image_work_task_create(void) {
+    image_work_task_owner *owner=(image_work_task_owner *)calloc(1,sizeof(*owner));
+    if (!owner) return NULL;
+    hop_xfer_task *task=&owner->task;
+    if (!hop_xfer_task_init_classified(task, 0, 0, image_work_transfer_id(), HOP_XFER_DIR_NONE, HOP_TASK_KIND_IMAGE_WORK) ||
+        !hop_xfer_task_reserve_job(task) ||
+        !hop_xfer_task_set_state(task, HOP_XFER_TASK_ACTIVE)) {
+        (void)image_work_task_finish(owner,0);
+        return NULL;
+    }
+    return owner;
 }
 
 /* Check the task's intrinsic requirement, not the currently available
@@ -308,15 +253,16 @@ cleanup:
  * the main queue never materializes a full image NSData snapshot. */
 static BOOL send_image_data_async(NSPasteboardType imageType, NSInteger expected_change, NSInteger previous_change) {
     if (!imageType) return NO;
-    hop_xfer_task *task = image_work_task_create();
-    if (!task) {
+    image_work_task_owner *owner = image_work_task_create();
+    if (!owner) {
         hop_log(HOP_LOG_WARN, "clip: image conversion task budget exhausted; clipboard change will be retried");
         return NO;
     }
+    hop_xfer_task *task=&owner->task;
     if (!hop_xfer_task_reserve_image_temp(task, CLIP_IMG_MAX_BYTES)) {
         hop_log(HOP_LOG_WARN, "clip: image input memory budget exhausted (task=%llu)",
                 (unsigned long long)task->id);
-        image_work_task_finish(task, 0);
+        (void)image_work_task_finish(owner, 0);
         hop_log(HOP_LOG_WARN, "clip: image input budget unavailable; clipboard change will be retried");
         return NO;
     }
@@ -325,7 +271,7 @@ static BOOL send_image_data_async(NSPasteboardType imageType, NSInteger expected
     pthread_mutex_lock(&s_offer_lock);
     if (s_clip_stopping || s_image_work_active || !s_paste_group) {
         pthread_mutex_unlock(&s_offer_lock);
-        image_work_task_finish(task, 0);
+        (void)image_work_task_finish(owner, 0);
         hop_log(HOP_LOG_WARN, "clip: image conversion busy; snapshot deferred");
         return NO;
     }
@@ -378,7 +324,7 @@ static BOOL send_image_data_async(NSPasteboardType imageType, NSInteger expected
         }
         /* Task finish runs after the autorelease pool drains, so NSData/NSImage
          * backing memory stays reserved until those objects have released it. */
-        image_work_task_finish(task, success);
+        (void)image_work_task_finish(owner, success);
         if (budget_deferred) {
             NSPasteboard *pb = [NSPasteboard generalPasteboard];
             pthread_mutex_lock(&s_offer_lock);
@@ -499,10 +445,15 @@ void clipboard_init(void) {
     dispatch_resume(s_timer);
 }
 
-void clipboard_shutdown(void) {
+int clipboard_shutdown(void) {
     pthread_mutex_lock(&s_offer_lock);s_clip_stopping=1;pthread_mutex_unlock(&s_offer_lock);
     if(s_timer){dispatch_source_cancel(s_timer);s_timer=nil;}
     if(s_paste_group)dispatch_group_wait(s_paste_group,DISPATCH_TIME_FOREVER);
+    if (!image_work_retry_pending()) {
+        hop_log(HOP_LOG_ERROR, "clip: image Task/Reservation cleanup remains pending; retain Task owner for retry");
+        return 0;
+    }
+    return 1;
 }
 
 /* ---- 接收（都在主队列执行） ---- */
@@ -626,140 +577,4 @@ void clipboard_apply_image(const uint8_t *bgra, int w, int h, int stride) {
 
 /* Lazy file clipboard request/response control plane. */
 typedef struct { char **paths; int count; uint32_t request_id; uint64_t offer_id; } clip_paste_work;
-static void clip_send_paste_failed(uint32_t request_id,uint8_t reason) {
-    uint8_t p[HOP_CLIP_PASTE_FAILED_BYTES];
-    uint32_t n=hop_clip_paste_failed_encode(p,request_id,reason);
-    if(n)(void)net_send(HOP_MSG_CLIP_PASTE_FAILED,p,n);
-}
-void clipboard_on_link(int connected) {
-    pthread_mutex_lock(&s_offer_lock);int stopping=s_clip_stopping;pthread_mutex_unlock(&s_offer_lock);
-    if(stopping)return;
-    if(connected)clip_send_local_offer_snapshot();
-    else clip_clear_remote_offer_local();
-}
-void clipboard_on_remote_file_offer(const uint8_t *p,uint32_t len) {
-    hop_clip_file_offer_msg m;
-    if(!hop_clip_file_offer_decode(p,len,&m)||m.origin==clip_local_device())return;
-    pthread_mutex_lock(&s_offer_lock);int stopping=s_clip_stopping;pthread_mutex_unlock(&s_offer_lock);
-    if(stopping)return;
-    clip_clear_local_offer(1);
-    pthread_mutex_lock(&s_offer_lock);
-    s_remote_offer_origin=m.origin;s_remote_offer_generation=m.generation;
-    pthread_mutex_unlock(&s_offer_lock);
-    hop_log(HOP_LOG_INFO,"clip: remote file offer received (%u item(s)); no data requested",m.count);
-}
-void clipboard_on_remote_file_offer_clear(const uint8_t *p,uint32_t len) {
-    uint32_t origin=0;uint64_t generation=0;
-    if(!hop_clip_file_offer_clear_decode(p,len,&origin,&generation))return;
-    int clear_local=0;
-    pthread_mutex_lock(&s_offer_lock);
-    if(origin==clip_local_device()&&s_local_offer_generation==generation)clear_local=1;
-    else if(s_remote_offer_origin==origin&&s_remote_offer_generation==generation){
-        s_remote_offer_origin=0;s_remote_offer_generation=0;
-    }
-    pthread_mutex_unlock(&s_offer_lock);
-    if(clear_local)clip_clear_local_offer(0);
-}
-int clipboard_request_remote_paste(void) {
-    __block NSInteger current=0;
-    void (^read_paste_context)(void)=^{
-        current=[[NSPasteboard generalPasteboard] changeCount];
-    };
-    if([NSThread isMainThread]) read_paste_context();
-    else dispatch_sync(dispatch_get_main_queue(),read_paste_context);
-    uint8_t p[HOP_CLIP_PASTE_REQUEST_BYTES];
-    uint32_t id=0,origin=0;uint64_t generation=0;
-    pthread_mutex_lock(&s_offer_lock);
-    if(s_clip_stopping||!s_remote_offer_origin||!s_remote_offer_generation||current!=s_last_change){
-        pthread_mutex_unlock(&s_offer_lock);return 0;
-    }
-    if(s_pending_paste_request){pthread_mutex_unlock(&s_offer_lock);return 1;}
-    if(++s_offer_request_seq==0||s_offer_request_seq>0x7fffffffu)s_offer_request_seq=1;
-    id=HOP_XFER_PASTE_BATCH_FLAG|s_offer_request_seq;
-    origin=s_remote_offer_origin;generation=s_remote_offer_generation;
-    s_pending_paste_request=id;s_pending_paste_change=current;
-    pthread_mutex_unlock(&s_offer_lock);
-    int sent=hop_clip_paste_request_encode(p,id,origin,generation,(uint64_t)current) &&
-             net_send(HOP_MSG_CLIP_PASTE_REQUEST,p,sizeof(p));
-    if(!sent) {
-        pthread_mutex_lock(&s_offer_lock);
-        if(s_pending_paste_request==id){s_pending_paste_request=0;s_pending_paste_change=0;}
-        pthread_mutex_unlock(&s_offer_lock);
-        hop_log(HOP_LOG_WARN,"clip: paste request %u could not be sent",id);
-    } else hop_log(HOP_LOG_INFO,"clip: cross-device paste requested (%u)",id);
-    return 1;
-}
-void clipboard_on_paste_failed(const uint8_t *p,uint32_t len) {
-    uint32_t id=0;uint8_t reason=0;
-    if(!hop_clip_paste_failed_decode(p,len,&id,&reason))return;
-    pthread_mutex_lock(&s_offer_lock);
-    if(s_pending_paste_request==id){s_pending_paste_request=0;s_pending_paste_change=0;}
-    pthread_mutex_unlock(&s_offer_lock);
-    hop_log(HOP_LOG_WARN,"clip: remote paste request %u failed (reason %u)",id,(unsigned)reason);
-}
-static void clip_paste_worker(void *arg) {
-    clip_paste_work *w=(clip_paste_work*)arg;
-    int ok=xfer_submit_paths_for_paste((const char *const *)w->paths,w->count,w->request_id,w->offer_id);
-    if(!ok)clip_send_paste_failed(w->request_id,
-        xfer_connected()?HOP_CLIP_PASTE_FAIL_SOURCE_IO:HOP_CLIP_PASTE_FAIL_TRANSFER);
-    for(int i=0;i<w->count;++i)free(w->paths[i]);
-    free(w->paths);free(w);
-}
-void clipboard_on_paste_request(const uint8_t *p,uint32_t len) {
-    hop_clip_paste_request_msg m;
-    if(!hop_clip_paste_request_decode(p,len,&m))return;
-    if(m.origin!=clip_local_device()){clip_send_paste_failed(m.request_id,HOP_CLIP_PASTE_FAIL_STALE);return;}
-    clip_paste_work *w=(clip_paste_work*)calloc(1,sizeof(*w));
-    if(!w){clip_send_paste_failed(m.request_id,HOP_CLIP_PASTE_FAIL_BUSY);return;}
-    pthread_mutex_lock(&s_offer_lock);
-    if(s_clip_stopping||s_paste_scan_active||!s_paste_group){
-        pthread_mutex_unlock(&s_offer_lock);free(w);
-        clip_send_paste_failed(m.request_id,HOP_CLIP_PASTE_FAIL_BUSY);return;
-    }
-    for(unsigned i=0;i<32;++i)if(s_seen_paste_requests[i]==m.request_id){
-        pthread_mutex_unlock(&s_offer_lock);free(w);return;
-    }
-    if(m.generation!=s_local_offer_generation||s_local_offer_count<=0){
-        pthread_mutex_unlock(&s_offer_lock);free(w);
-        clip_send_paste_failed(m.request_id,HOP_CLIP_PASTE_FAIL_STALE);return;
-    }
-    w->count=s_local_offer_count;w->request_id=m.request_id;w->offer_id=m.generation;
-    w->paths=(char**)calloc((size_t)w->count,sizeof(char*));
-    if(w->paths)for(int i=0;i<w->count;++i)w->paths[i]=strdup(s_local_offer_paths[i]);
-    int copy_ok=w->paths!=NULL;
-    if(copy_ok)for(int i=0;i<w->count;++i)if(!w->paths[i])copy_ok=0;
-    if(!copy_ok){
-        pthread_mutex_unlock(&s_offer_lock);
-        if(w->paths){for(int i=0;i<w->count;++i)free(w->paths[i]);free(w->paths);}
-        free(w);clip_send_paste_failed(m.request_id,HOP_CLIP_PASTE_FAIL_BUSY);return;
-    }
-    s_seen_paste_requests[s_seen_paste_next++%32]=m.request_id;
-    s_paste_scan_active=1;dispatch_group_enter(s_paste_group);
-    pthread_mutex_unlock(&s_offer_lock);
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
-        clip_paste_worker(w);
-        pthread_mutex_lock(&s_offer_lock);s_paste_scan_active=0;pthread_mutex_unlock(&s_offer_lock);
-        dispatch_group_leave(s_paste_group);
-    });
-}
-void clipboard_complete_remote_paste(uint32_t batch,const char *const *paths,int n,int success) {
-    NSInteger expected;
-    pthread_mutex_lock(&s_offer_lock);
-    if(s_clip_stopping){s_pending_paste_request=0;s_pending_paste_change=0;pthread_mutex_unlock(&s_offer_lock);return;}
-    if(s_pending_paste_request!=batch){pthread_mutex_unlock(&s_offer_lock);return;}
-    expected=s_pending_paste_change;
-    if(!success){s_pending_paste_request=0;s_pending_paste_change=0;}
-    pthread_mutex_unlock(&s_offer_lock);
-    if(!success){hop_log(HOP_LOG_WARN,"clip: paste transfer %u incomplete; pasteboard unchanged",batch);return;}
-    if(!paths||n<=0){pthread_mutex_lock(&s_offer_lock);s_pending_paste_request=0;s_pending_paste_change=0;pthread_mutex_unlock(&s_offer_lock);return;}
-    NSMutableArray<NSURL *> *urls=[NSMutableArray arrayWithCapacity:(NSUInteger)n];
-    for(int i=0;i<n;++i){
-        NSString *path=[NSString stringWithUTF8String:paths[i]];
-        if(path)[urls addObject:[NSURL fileURLWithPath:path]];
-    }
-    if([urls count]==0){pthread_mutex_lock(&s_offer_lock);s_pending_paste_request=0;s_pending_paste_change=0;pthread_mutex_unlock(&s_offer_lock);return;}
-    NSArray *snapshot=[urls copy];
-    dispatch_async(dispatch_get_main_queue(),^{
-        apply_objects_retry(snapshot,@"paths-paste",0,expected);
-    });
-}
+#include "clipboard_paste.inc"

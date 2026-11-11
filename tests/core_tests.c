@@ -10,6 +10,8 @@
 #include "xfer_tracking.h"
 #include "xfer_rate.h"
 #include "xfer_ack_window.h"
+#include "xfer_buffer_pool.h"
+#include "xfer_rx_queue.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -648,13 +650,18 @@ static void test_xfer_global_budget(void) {
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==2&&snap.entries==3&&snap.pending_bytes==701);
     CHECK(snap.jobs_high_water==2&&snap.entries_high_water==3);
-    hop_xfer_budget_release(&a);
-    hop_xfer_budget_release(&a);
+    uint64_t released_before=snap.released_reservations;
+    CHECK(hop_xfer_budget_release(&a));
     hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.released_reservations==released_before+1);
+    CHECK(hop_xfer_budget_release(&a)); /* A repeated return is an empty no-op. */
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.released_reservations==released_before+1);
     CHECK(snap.jobs==1&&snap.entries==1&&snap.pending_bytes==1);
-    hop_xfer_budget_release(&b);
+    CHECK(hop_xfer_budget_release(&b));
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0);
+    CHECK(snap.released_reservations==released_before+2);
     CHECK(hop_xfer_budget_reserve_job(&a));
     CHECK(hop_xfer_budget_reserve_image(&a,500));
     CHECK(!hop_xfer_budget_reserve_image(&a,501));
@@ -842,6 +849,65 @@ static void test_xfer_ack_window(void) {
     CHECK(hop_xfer_ack_window_count(&window)==0);
 }
 
+static void test_xfer_buffer_pool(void) {
+    hop_xfer_buffer_pool pool;
+    hop_xfer_buffer_pool_init(&pool);
+
+    /* A later larger idle slot must win over an earlier undersized slot. */
+    pool.slots[0].data = (uint8_t *)malloc(8);
+    pool.slots[0].capacity = 8;
+    pool.slots[1].data = (uint8_t *)malloc(64);
+    pool.slots[1].capacity = 64;
+    pool.capacity = 72;
+    CHECK(pool.slots[0].data != NULL && pool.slots[1].data != NULL);
+    int slot = -1;
+    uint8_t *data = NULL;
+    CHECK(hop_xfer_buffer_pool_acquire_locked(&pool, 32, &slot, &data) == 1);
+    CHECK(slot == 1 && data == pool.slots[1].data && pool.capacity == 72);
+    hop_xfer_buffer_pool_release_locked(&pool, slot);
+    CHECK(!pool.slots[1].in_use);
+    hop_xfer_buffer_pool_dispose(&pool);
+    CHECK(pool.capacity == 0);
+
+    /* Growth replaces retained idle storage and remains inside the pool cap. */
+    hop_xfer_buffer_pool_init(&pool);
+    slot = -1; data = NULL;
+    CHECK(hop_xfer_buffer_pool_acquire_locked(&pool, 128, &slot, &data) == 1);
+    CHECK(slot >= 0 && data != NULL && pool.capacity == 128);
+    hop_xfer_buffer_pool_release_locked(&pool, slot);
+    hop_xfer_buffer_pool_dispose(&pool);
+    hop_xfer_budget_snapshot snapshot;
+    hop_xfer_budget_get_snapshot(&snapshot);
+    CHECK(snapshot.rx_pool_bytes == 0);
+}
+
+static void test_xfer_rx_queue(void) {
+    hop_xfer_rx_queue q;
+    hop_xfer_rx_queue_init(&q, 2, 100);
+    CHECK(hop_xfer_rx_queue_can_push(&q, 60));
+    CHECK(hop_xfer_rx_queue_reserve(&q, 60));
+    CHECK(!hop_xfer_rx_queue_can_push(&q, 50));
+    CHECK(hop_xfer_rx_queue_commit_reserved(&q));
+    CHECK(q.queued_slots == 1 && q.reserved_slots == 0 && q.queued_bytes == 60);
+    CHECK(hop_xfer_rx_queue_dequeue(&q));
+    CHECK(!hop_xfer_rx_queue_dequeue(&q)); /* single writer; no second in-flight task */
+    CHECK(q.queued_slots == 0 && q.busy_slots == 1);
+    CHECK(hop_xfer_rx_queue_can_push(&q, 40)); /* slot available, bytes still account for active write */
+    CHECK(hop_xfer_rx_queue_push(&q, 40));
+    CHECK(!hop_xfer_rx_queue_can_push(&q, 1)); /* slot cap reached by busy + queued */
+    hop_xfer_rx_queue_complete(&q, 60);
+    CHECK(q.busy_slots == 0 && q.queued_bytes == 40);
+    CHECK(hop_xfer_rx_queue_dequeue(&q));
+    hop_xfer_rx_queue_complete(&q, 40);
+    CHECK(hop_xfer_rx_queue_drained(&q));
+    CHECK(q.queued_bytes == 0);
+
+    CHECK(hop_xfer_rx_queue_reserve(&q, 75));
+    hop_xfer_rx_queue_rollback(&q, 75);
+    CHECK(hop_xfer_rx_queue_drained(&q));
+    CHECK(q.queued_bytes == 0);
+}
+
 static void test_xfer_rate_limiter(void) {
     hop_xfer_rate_limiter rate;
     hop_xfer_rate_init(&rate,1000,100,2000,100,0);
@@ -852,6 +918,17 @@ static void test_xfer_rate_limiter(void) {
     CHECK(hop_xfer_rate_wait_ns(&rate,100,50000000ull)==50000000ull);
     CHECK(hop_xfer_rate_wait_ns(&rate,50,100000000ull)==0);
     CHECK(hop_xfer_rate_wait_ns(&rate,101,100000000ull)==UINT64_MAX);
+
+    hop_xfer_rate_init_from_config(&rate,8,1024,0);
+    CHECK(rate.min_rate_bytes_per_sec==4ull*HOP_XFER_RATE_MIB_BYTES);
+    CHECK(rate.max_rate_bytes_per_sec==16ull*HOP_XFER_RATE_MIB_BYTES);
+    CHECK(rate.current_rate_bytes_per_sec==16ull*HOP_XFER_RATE_MIB_BYTES);
+    hop_xfer_rate_init_from_config(&rate,9000,1024,0);
+    CHECK(rate.max_rate_bytes_per_sec==4096ull*HOP_XFER_RATE_MIB_BYTES);
+    CHECK(rate.current_rate_bytes_per_sec==64ull*HOP_XFER_RATE_MIB_BYTES);
+    CHECK(hop_xfer_rate_queue_pressure_permille(7ull*1024ull*1024ull,0)==875);
+    CHECK(hop_xfer_rate_queue_pressure_permille(0,6)==750);
+    CHECK(hop_xfer_rate_queue_pressure_permille(UINT64_MAX,UINT32_MAX)==1000);
 
     hop_xfer_rate_init(&rate,1000,100,2000,100,0);
     hop_xfer_rate_note_send_time(&rate,100,1000);
@@ -1040,12 +1117,15 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     CHECK(hop_xfer_task_reconcile(&audit) && !audit.mismatches && audit.task_count==2);
     CHECK(audit.jobs==1 && audit.entries==2 && audit.pending_bytes==500 && audit.image_bytes==656);
     CHECK(audit.rx_queue_slots==1 && audit.rx_queue_bytes==128 && audit.image_temp_bytes==256);
+    uint64_t task_releases_before=snap.released_reservations;
     CHECK(!hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));
     CHECK(hop_xfer_task_release_rx_buffer(&a,128));
     CHECK(!hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));
     CHECK(hop_xfer_task_release_image_temp(&a,256));
     CHECK(hop_xfer_task_finish(&a,HOP_XFER_TASK_COMPLETED));
     CHECK(!hop_xfer_task_finish(&a,HOP_XFER_TASK_CANCELLED));
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.released_reservations==task_releases_before+1);
     CHECK(!hop_xfer_task_set_state(&a,HOP_XFER_TASK_ACTIVE));
     CHECK(!hop_xfer_task_bind_session(&a,session));
     CHECK(!hop_xfer_task_set_kind(&a,HOP_TASK_KIND_IMAGE));
@@ -1061,12 +1141,14 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     CHECK(hop_xfer_task_set_state(&moved,HOP_XFER_TASK_ACTIVE));
     CHECK(hop_xfer_task_finish(&moved,HOP_XFER_TASK_CANCELLED));
     hop_xfer_task_dispose(&a);
+    hop_xfer_task_dispose(&a); /* Disposing the emptied handle is a no-op. */
     hop_xfer_task_dispose(&b);
     hop_xfer_task_dispose(&moved);
     CHECK(!hop_xfer_task_get_snapshot(b_id,&bs));
     CHECK(hop_xfer_task_list(NULL,0,&total)==0 && total==0);
     hop_xfer_budget_get_snapshot(&snap);
     CHECK(snap.jobs==0&&snap.entries==0&&snap.pending_bytes==0&&snap.image_bytes==0);
+    CHECK(snap.released_reservations==task_releases_before+2);
     CHECK(hop_xfer_task_reconcile(&audit) && !audit.mismatches && audit.task_count==0);
     /* A rogue reservation is visible as a discrepancy, never silently repaired. */
     hop_xfer_reservation_handle rogue={0};
@@ -1074,6 +1156,30 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     CHECK(hop_xfer_task_reconcile(&audit) && (audit.mismatches&HOP_TASK_AUDIT_USAGE));
     hop_xfer_budget_release(&rogue);
     CHECK(hop_xfer_task_reconcile(&audit) && !audit.mismatches);
+    /* A corrupted active handle must remain owned when its counters cannot
+     * be subtracted from the global ledger. Never zero it and lose the claim. */
+    hop_xfer_reservation_handle inconsistent;
+    memset(&inconsistent,0,sizeof(inconsistent));
+    CHECK(hop_xfer_budget_reservation_init(&inconsistent,1004));
+    CHECK(hop_xfer_budget_reserve_job(&inconsistent));
+    hop_xfer_budget_get_snapshot(&snap);
+    uint64_t errors_before=snap.accounting_errors;
+    uint64_t releases_before=snap.released_reservations;
+    inconsistent.jobs=2; /* Simulate a damaged local claim against one global Job. */
+    CHECK(!hop_xfer_budget_release(&inconsistent));
+    CHECK(inconsistent.active && inconsistent.jobs==2);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.accounting_errors==errors_before+1 && snap.jobs==1);
+    /* Failed return must preserve the exact claim so its owner can repair and retry. */
+    inconsistent.jobs=1;
+    CHECK(hop_xfer_budget_release(&inconsistent));
+    CHECK(!inconsistent.active && !inconsistent.jobs);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(!snap.jobs && snap.released_reservations==releases_before+1);
+    CHECK(hop_xfer_budget_release(&inconsistent)); /* Idempotent after the one successful return. */
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.released_reservations==releases_before+1);
+
     hop_xfer_budget_limits defaults={16u,32768u,8ull*1024ull*1024ull*1024ull,256ull*1024ull*1024ull,256ull*1024ull*1024ull,8u,8ull*1024ull*1024ull,512ull*1024ull*1024ull};
     CHECK(hop_xfer_budget_set_limits_for_test(&defaults));
 }
@@ -1120,6 +1226,11 @@ static void test_xfer_task_cancel_isolation_and_completion(void) {
     CHECK(!hop_xfer_task_request_cancel(internal.id));
     CHECK(hop_xfer_task_request_cancel(send.id)); CHECK(hop_xfer_task_request_cancel(send.id));
     CHECK(hop_xfer_task_cancel_requested(send.id) && !hop_xfer_task_cancel_requested(receive.id));
+    /* Cancellation is also an admission barrier for every new resource class. */
+    CHECK(!hop_xfer_task_reserve_job(&send));
+    CHECK(!hop_xfer_task_reserve_entry(&send, 16));
+    CHECK(!hop_xfer_task_reserve_image(&send, 16));
+    CHECK(!hop_xfer_task_reserve_rx_buffer(&send, 16));
     CHECK(!hop_xfer_task_begin_completion(&send)); CHECK(hop_xfer_task_begin_completion(&receive));
     CHECK(!hop_xfer_task_request_cancel(receive.id));
     CHECK(hop_xfer_task_get_snapshot(receive.id,&snap) && snap.completing && !snap.cancel_requested);
@@ -1473,6 +1584,8 @@ int main(void) {
     RUN_TEST(test_update_manifest_validation);
     RUN_TEST(test_xfer_global_budget);
     RUN_TEST(test_xfer_ack_window);
+    RUN_TEST(test_xfer_buffer_pool);
+    RUN_TEST(test_xfer_rx_queue);
     RUN_TEST(test_xfer_rate_limiter);
     RUN_TEST(test_xfer_tracking_stage_timing);
     RUN_TEST(test_xfer_tracking_duplex_snapshot);

@@ -3,31 +3,59 @@
 #include "xfer_rate.h"
 #include <assert.h>
 #include <string.h>
+#include <stdlib.h>
 #include <stdio.h>
+#include <limits.h>
 #include "xfer_tracking.h"
 #include "xfer_task.h"
+#include "xfer_sender_context.h"
+#include "xfer_sender_context_adapter.h"
+#include "xfer_sender_chunk.h"
+#include "xfer_rx_receipt.h"
+#include "xfer_rx_lifecycle.h"
+#include "xfer_rx_services.h"
+#include "xfer_rx_context.h"
+#include "xfer_rx_batch_state.h"
 #define SD_BOTH 2
 #define SHUT_RDWR 2
 #define INVALID_SOCKET -1
 typedef int SOCKET;
-static struct {int client,sock,lock,slock;hop_session_id session;hop_xfer_rate_limiter rate;} s_x;
-static struct {int active;uint32_t batch,dead_batch;uint8_t dead_reason;hop_xfer_task task;} s_rx;
-static hop_session_id s_rx_session;
-static struct {int valid;} s_done_receipt;
+static struct {int client,sock,lock,slock;unsigned long epoch;uint32_t chunk;hop_session_id session;hop_xfer_rate_limiter rate;} s_x;
+typedef struct {
+    int *state_lock;
+    int *session_lock;
+    int *tx_lock;
+    int *queue_lock;
+    int *client;
+    int *sock;
+    hop_session_id *session;
+    unsigned long *epoch;
+} sender_platform_context;
+static sender_platform_context s_sender_platform;
+static hop_xfer_sender_context s_sender_context;
+static xfer_rx_context s_rx;
+static hop_xfer_rx_done_receipt s_done_receipt;
+static hop_xfer_rx_lifecycle s_rx_lifecycle;
 static struct {int marker;} s_send_status,s_receive_status;
-static int s_status_lock,resets,closes,discarded,paste_cancelled;
-static void rx_reset(void){s_rx.active=0;resets++;}
-static void rx_close_file(void){closes++;}
-static void rx_discard_dir(void){assert(closes>0);discarded++;}
-static void rx_terminate(uint32_t batch,uint8_t reason,int notify){(void)batch;(void)reason;assert(!notify);s_rx.active=0;}
+static int resets,closes,discarded,paste_cancelled;
+void hop_xfer_rx_reset_batch_state(void *context);
+static void fixture_close_file(void *context){(void)context;closes++;}
+static int fixture_discard_dir(void *context){(void)context;assert(closes>0);discarded++;return 1;}
 static int test_begin_completion(const hop_xfer_task *t){(void)t;return 1;}
 static int test_cancel_requested(hop_xfer_task_id t){(void)t;return 0;}
 #define hop_xfer_task_begin_completion test_begin_completion
 #define hop_xfer_task_cancel_requested test_cancel_requested
 static void finish_paste(uint32_t b,const void*p,int n,int ok){(void)b;(void)p;(void)n;assert(!ok);paste_cancelled++;}
+static void fixture_cancel_clipboard(void *context,uint32_t batch){(void)context;finish_paste(batch,NULL,0,0);}
+static void fixture_status_reset(void *context){(void)context;s_receive_status.marker=0;resets++;}
 #define clip_complete_remote_paste finish_paste
 #define clipboard_complete_remote_paste finish_paste
-typedef struct {hop_session_id session;int next_i,ok;} xf_job;
+typedef struct {
+    hop_session_id session;
+    int next_i,ok;
+    hop_xfer_sender_context sender_context;
+    hop_xfer_task task;
+} xf_job;
 typedef xf_job xfer_job;
 #define AcquireSRWLockExclusive(p) ((void)(p))
 #define ReleaseSRWLockExclusive(p) ((void)(p))
@@ -37,13 +65,22 @@ static uint8_t captured[512];static size_t captured_len;static int delivered,clo
 #define pthread_mutex_lock(p) ((void)(p))
 #define pthread_mutex_unlock(p) ((void)(p))
 static int s_txlock;
+static unsigned long s_send_epoch;
 static uint64_t rate_now_ns(void){return 0;}
-static int rate_wait_for_chunk(uint32_t bytes){(void)bytes;return 1;}
+static uint64_t fixture_context_now_ns(void *user){(void)user;return rate_now_ns();}
+static int fixture_context_wait_ns(void *user,uint64_t ns){(void)user;(void)ns;return 1;}
+static int fixture_context_is_stopping(void *user){(void)user;return 0;}
+typedef struct {int stopping;uint64_t waited_ns;} fixture_sender_wait;
+static int fixture_sender_is_stopping(void *user){
+    return ((fixture_sender_wait *)user)->stopping;
+}
+static int fixture_sender_wait_ns(void *user,uint64_t duration_ns){
+    fixture_sender_wait *state=(fixture_sender_wait *)user;
+    state->waited_ns+=duration_ns;
+    return !state->stopping;
+}
 static void rate_feedback(uint64_t ack_rtt_us){(void)ack_rtt_us;}
-static int send_session_current(int fd){return fd==7 && hop_session_matches(&s_x.session);}
 static int send_all(int fd,const void *p,size_t n){assert(fd==7);assert(captured_len+n<=sizeof(captured));memcpy(captured+captured_len,p,n);captured_len+=n;return 1;}
-static void status_stage_time(int d,uint32_t batch,int stage,uint64_t ns){(void)d;(void)batch;(void)stage;(void)ns;}
-static void status_chunk_timed(int d,uint32_t batch,uint32_t id,uint64_t off,uint32_t len,uint64_t rd,uint64_t crc,uint64_t send,uint64_t rx){(void)d;(void)batch;(void)id;(void)off;(void)len;(void)rd;(void)crc;(void)send;(void)rx;}
 static int shutdown(int fd,int how){(void)fd;(void)how;closed++;return 0;}
 static void xfer_kick(void){closed++;}
 static void on_data_msg(void *user,uint8_t type,const uint8_t *p,uint32_t len){(void)user;(void)type;(void)p;(void)len;delivered++;}
@@ -51,21 +88,45 @@ static void on_data_msg(void *user,uint8_t type,const uint8_t *p,uint32_t len){(
 static int not_busy(void){return 0;}
 @FUNCTIONS@
 int main(void){
- s_x.session.bytes[0]=1;s_x.client=s_x.sock=7;hop_session_publish(&s_x.session);
- s_rx.dead_batch=42;s_receive_status.marker=9;rx_bind_session(&s_x.session);
- assert(resets==1 && !s_rx.dead_batch && !s_receive_status.marker);
- s_rx.active=1;s_rx.batch=HOP_XFER_PASTE_BATCH_FLAG|42;s_rx.dead_batch=42;rx_bind_session(&s_x.session);
- assert(resets==1 && closes==1 && !discarded && !paste_cancelled && s_rx.dead_batch==42);
- hop_session_id next={{2}};rx_bind_session(&next);assert(resets==2 && !s_rx.dead_batch && discarded==1 && paste_cancelled==1);
- rx_bind_session(&s_x.session);s_rx.batch=42;s_rx.active=1;
- rx_expire_stale_session();assert(s_rx.active && discarded==1);
+ s_rx.lifecycle=&s_rx_lifecycle;s_rx.done_receipt=&s_done_receipt;s_rx.services.context=&s_rx;
+ s_rx.services.close_file=fixture_close_file;s_rx.services.discard_staging_directory=fixture_discard_dir;
+s_rx.services.cancel_clipboard=fixture_cancel_clipboard;s_rx.services.status_reset=fixture_status_reset;
+ s_x.session.bytes[0]=1;s_x.client=s_x.sock=7;s_x.epoch=3;s_x.chunk=2;
+  hop_xfer_rate_init(&s_x.rate,1000,1000,1000,2,0);hop_session_publish(&s_x.session);
+ s_sender_platform.state_lock=&s_x.lock;s_sender_platform.session_lock=&s_x.slock;
+ s_sender_platform.tx_lock=&s_txlock;s_sender_platform.queue_lock=&s_x.lock;
+ s_sender_platform.client=&s_x.client;s_sender_platform.sock=&s_x.sock;
+ s_sender_platform.session=&s_x.session;s_sender_platform.epoch=&s_x.epoch;
+ s_sender_context.user=&s_sender_platform;
+ s_sender_context.session_current=sender_context_session_current;
+ s_sender_context.snapshot_session=sender_context_snapshot_session;
+  s_sender_context.now_ns=fixture_context_now_ns;s_sender_context.wait_ns=fixture_context_wait_ns;
+  s_sender_context.is_stopping=fixture_context_is_stopping;
+  s_sender_context.write_frame=sender_context_write_frame;
+ hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle,42,HOP_ABORT_CANCEL);s_receive_status.marker=9;rx_bind_session(&s_x.session);
+ assert(resets==1 && !hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,42,NULL) && !s_receive_status.marker);
+ assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,HOP_XFER_PASTE_BATCH_FLAG|42));hop_xfer_rx_lifecycle_mark_dead(&s_rx_lifecycle,42,HOP_ABORT_DISK);rx_bind_session(&s_x.session);
+ assert(resets==1 && closes==1 && !discarded && !paste_cancelled && hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,42,NULL));
+ hop_session_id next={{2}};rx_bind_session(&next);assert(resets==2 && !hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,42,NULL) && discarded==1 && paste_cancelled==1);
+ rx_bind_session(&s_x.session);assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,42));
+ rx_expire_stale_session();assert(s_rx.batch_state.active && discarded==1);
  hop_session_clear(&s_x.session);rx_expire_stale_session();
- assert(!s_rx.active && discarded==2 && paste_cancelled==1);
+ assert(!s_rx.batch_state.active && discarded==2 && paste_cancelled==1);
  rx_expire_stale_session();assert(discarded==2);
- hop_session_publish(&s_x.session);rx_bind_session(&s_x.session);s_rx.batch=42;s_rx.active=1;
+ hop_session_publish(&s_x.session);rx_bind_session(&s_x.session);assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,42));
  xf_job job={0};job.session=next;job.next_i=3;job.ok=3;s_send_status.marker=9;
- job_bind_session(&job, &s_x.session);assert(!job.next_i && !job.ok && !s_send_status.marker);
- job.next_i=2;job.ok=2;job_bind_session(&job, &s_x.session);assert(job.next_i==2 && job.ok==2);
+ fixture_sender_wait wait_state={0};
+ job.sender_context.user=&wait_state;
+ job.sender_context.is_stopping=fixture_sender_is_stopping;
+ job.sender_context.wait_ns=fixture_sender_wait_ns;
+ assert(!sender_commit_is_stopping(&job));
+ assert(sender_commit_wait_ms(&job,17));
+ assert(wait_state.waited_ns==17000000ull);
+ wait_state.stopping=1;
+ assert(sender_commit_is_stopping(&job));
+ assert(!sender_commit_wait_ms(&job,1));
+ wait_state.stopping=0;
+ /* Session rebinding and checkpoint reset are covered by the shared Worker tests. */
  uint8_t end[9]={0};hop_put_be32(end,3);
  assert(send_small(7,HOP_MSG_FILE_END,end,sizeof(end),42));
  assert(captured_len==HOP_HEADER_SIZE+HOP_DATA_PREFIX+sizeof(end));
@@ -73,17 +134,17 @@ int main(void){
  const uint8_t *body;uint32_t batch,n;
  assert(hop_data_unwrap(HOP_MSG_FILE_END,captured+HOP_HEADER_SIZE,(uint32_t)captured_len-HOP_HEADER_SIZE,&s_x.session,&batch,&body,&n));
  assert(batch==42 && n==sizeof(end) && !memcmp(body,end,n));
- s_rx.active=1;s_rx.batch=43;
+ assert(hop_xfer_rx_batch_state_end(&s_rx.batch_state,42));assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,43));
  on_data_frame(NULL,HOP_MSG_FILE_END,captured+HOP_HEADER_SIZE,(uint32_t)captured_len-HOP_HEADER_SIZE);
  assert(delivered==0 && !closed); /* old END cannot finalize the new batch */
- s_rx.batch=42;on_data_frame(NULL,HOP_MSG_FILE_END,captured+HOP_HEADER_SIZE,(uint32_t)captured_len-HOP_HEADER_SIZE);
+ assert(hop_xfer_rx_batch_state_end(&s_rx.batch_state,43));assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,42));on_data_frame(NULL,HOP_MSG_FILE_END,captured+HOP_HEADER_SIZE,(uint32_t)captured_len-HOP_HEADER_SIZE);
  assert(delivered==1 && !closed);
  captured_len=0;uint8_t tx[CHUNK_HDR+2],pixels[2]={4,5};
- assert(send_chunk(7,tx,42,3,9,pixels,2,123,0,0));
+ assert(send_chunk(&s_sender_context,7,tx,42,3,9,pixels,2,123,0,0));
  assert(captured_len==CHUNK_HDR+2 && hop_get_be32(captured+1)==40+2);
  assert(hop_data_unwrap(HOP_MSG_FILE_CHUNK,captured+5,(uint32_t)captured_len-5,&s_x.session,&batch,&body,&n));
  assert(batch==42 && n==22 && hop_get_be32(body)==3 && hop_get_be64(body+4)==9 && !memcmp(body+20,pixels,2));
- s_rx.batch=43;on_data_frame(NULL,HOP_MSG_FILE_CHUNK,captured+5,(uint32_t)captured_len-5);assert(delivered==1);
+ assert(hop_xfer_rx_batch_state_end(&s_rx.batch_state,42));assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,43));on_data_frame(NULL,HOP_MSG_FILE_CHUNK,captured+5,(uint32_t)captured_len-5);assert(delivered==1);
  captured[5]^=2;on_data_frame(NULL,HOP_MSG_FILE_CHUNK,captured+5,(uint32_t)captured_len-5);assert(closed==1 && delivered==1);
  captured[5]^=2;hop_session_clear(&s_x.session);
  on_data_frame(NULL,HOP_MSG_FILE_CHUNK,captured+5,(uint32_t)captured_len-5);assert(closed==2);

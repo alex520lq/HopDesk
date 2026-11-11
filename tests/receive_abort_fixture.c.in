@@ -1,11 +1,22 @@
-#define wq_error_set(v) (s_wq.err=(v))
-#define wq_error_get() (s_wq.err)
 /* Generated with verbatim production receive cases/functions by test-regressions.py.
  * OS/network/filesystem doubles isolate lifecycle, not real desktop integration. */
 #include "hop.h"
 #include "xfer_tracking.h"
 #include "xfer_budget.h"
 #include "xfer_task.h"
+#include "xfer_rx_receipt.h"
+#include "xfer_rx_lifecycle.h"
+#include "xfer_rx_batch_rules.h"
+#include "xfer_rx_batch_state.h"
+#include "xfer_rx_dispatch.h"
+#include "xfer_rx_ack_handler.h"
+#include "xfer_rx_entry_reservations.h"
+#include "xfer_rx_file_state.h"
+#include "xfer_rx_image_state.h"
+#include "xfer_rx_image_buffer.h"
+#include "xfer_sender_queue.h"
+#include "xfer_sender_active_job.h"
+#include "xfer_rx_services.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -23,6 +34,10 @@ uint64_t hop_wallclock_ms(void){return 1700000000000ull+fake_ms;}
 #define RX_WRITE 2
 #define AcquireSRWLockExclusive(p) ((void)(p))
 #define ReleaseSRWLockExclusive(p) ((void)(p))
+#define AcquireSRWLockShared(p) ((void)(p))
+#define ReleaseSRWLockShared(p) ((void)(p))
+#define pthread_rwlock_rdlock(p) ((void)(p))
+#define pthread_rwlock_unlock(p) ((void)(p))
 #define EnterCriticalSection(p) ((void)(p))
 #define LeaveCriticalSection(p) ((void)(p))
 #define pthread_mutex_lock(p) ((void)(p))
@@ -33,15 +48,16 @@ uint64_t hop_wallclock_ms(void){return 1700000000000ull+fake_ms;}
 #define SetEvent(p) ((void)(p))
 typedef unsigned long DWORD;
 typedef int SOCKET;
-static struct {int lock,slock,qlock,client,sock,cancel_rx,peer_ready;uint32_t cur_batch,abort_batch;uint8_t abort_reason;void*q_head;hop_session_id session;} s_x;
-static struct {int lock,cond,ev;} s_ack;
+static struct {int lock,slock,qlock,client,sock,cancel_rx,peer_ready,sync_initialized,shutting_down;hop_xfer_sender_active_job active_job;hop_xfer_sender_queue queue;hop_session_id session;} s_x;
+static int s_x_lifecycle_lock;
 static int s_status_lock;
 static uint64_t s_status_revision;
 static hop_xfer_tracking s_send_status,s_receive_status;
 static void *s_retry_paths[HOP_XFER_FILE_LIMIT];
 static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];static int s_history_count;
-static int saved,closed,closes,discarded,applied,fail_directory,fail_alloc,fail_send;
+static int saved,closed,closes,discarded,applied,fail_directory,fail_alloc,fail_send,fail_write,fail_writer_io,fail_discard;
 static int notified, done_acks, last_done_status;static uint8_t last_reason;
+static int file_acks,last_file_ack;
 static void history_save(void);
 static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t batch){(void)batch;
     (void)fd;
@@ -50,54 +66,120 @@ static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t ba
     assert(type==HOP_MSG_XFER_ABORT && n==6 && p[5]==HOP_ABORT_TO_SENDER);last_reason=p[4];notified++;return !fail_send;
 }
 typedef struct {int kind;uint64_t off;uint32_t len;uint8_t*data;} rx_task;
-static struct {int err;} s_wq;
 static void wq_drain(void){}
 static int wq_push(rx_task*t){if(t->kind==RX_CLOSE){closed=1;closes++;}else free(t->data);return 1;}
 static int wq_push_data(hop_xfer_task *owner,uint64_t off,const uint8_t *data,uint32_t len){
     (void)off;(void)data;
+    if(fail_write)return 0;
     if(!hop_xfer_task_reserve_rx_buffer(owner,len))return 0;
     return hop_xfer_task_release_rx_buffer(owner,len);
 }
 @RX_STATE@
-static hop_session_id s_rx_session = {{1}};
-static struct { int valid; hop_session_id session; hop_xfer_done_msg done; uint8_t status; } s_done_receipt;
+static void fixture_shutdown_data(void *context){(void)context;}
+static void fixture_send_abort(void *context,uint32_t batch,uint8_t reason);
+static void fixture_clear_cancel_request(void *context);
+static int fixture_create_staging_directory(void *context,const char *session_hex,uint32_t batch);
+static int fixture_discard_staging_directory(void *context);
+static void fixture_reset_file_error(void *context);
+static int fixture_open_file(void *context,const void *native_path);
+static int fixture_write_file_chunk(void *context,hop_xfer_task *task,uint64_t offset,const uint8_t *data,uint32_t length);
+static void fixture_close_file(void *context);
+static int fixture_file_error(void *context);
+static int fixture_add_top_path(void *context,const void *native_path);
+static void fixture_remove_top_path(void *context,const void *native_path);
+static void fixture_finish_clipboard(void *context,uint32_t batch,const void *image_data,uint32_t width,uint32_t height,uint32_t stride,int image_valid,const void *const *paths,int count,int allow_publish);
+static void fixture_cancel_clipboard(void *context,uint32_t batch);
+static uint64_t fixture_now_ns(void *context);
+static int fixture_status_begin(void *context,uint32_t batch,uint32_t files,uint64_t bytes,const char *name,int phase);
+static void fixture_status_end(void *context,uint32_t batch,int phase,const char *detail);
+static void fixture_status_add_file(void *context,uint32_t batch,uint32_t id,const char *path,uint64_t size,int directory);
+static void fixture_status_image(void *context,uint32_t batch,uint64_t size);
+static void fixture_status_stage(void *context,uint32_t batch,int stage,uint64_t elapsed_ns);
+static void fixture_status_chunk(void *context,uint32_t batch,uint32_t id,uint64_t offset,uint32_t length,uint64_t crc_ns,uint64_t receive_ns);
+static void fixture_status_file_phase(void *context,uint32_t batch,int index,int phase,uint32_t attempts);
+static void fixture_status_total(void *context,uint32_t total);
+static void fixture_status_reset(void *context);
+static void fixture_mark_sender_aborted(void *context,uint32_t batch,uint8_t reason){
+    (void)context;
+    (void)hop_xfer_sender_active_job_record_peer_abort(&s_x.active_job,batch,reason);
+}
+static hop_xfer_rx_lifecycle s_rx_lifecycle;
+static hop_xfer_rx_done_receipt s_done_receipt;
 static int ack_deliveries;static uint32_t ack_id;
 static void ack_deliver(uint32_t batch,uint32_t id,int status){(void)batch;(void)status;ack_deliveries++;ack_id=id;}
-static void history_save(void){assert(closed); if(s_receive_status.status.phase!=HOP_XFER_COMPLETED) assert(!s_rx.img && !s_rx.cur_path && !s_rx.tops && !s_rx.active); saved++;}
+static void fixture_send_file_ack(void *context,uint32_t batch,uint32_t id,int status){
+    (void)context;(void)batch;(void)id;file_acks++;last_file_ack=status;
+}
+static void fixture_send_done_ack(void *context,uint32_t batch,const uint8_t *payload,uint32_t length){
+    (void)context;
+    assert(length==5 && hop_get_be32(payload)==batch);
+    assert(send_small(-1,HOP_MSG_XFER_DONE_ACK,payload,length,batch));
+}
+static void fixture_deliver_ack(void *context,uint32_t batch,uint32_t id,int status){
+    (void)context;ack_deliver(batch,id,status);
+}
+static void fixture_configure_rx_context(void){
+    s_rx.services.context=&s_rx;
+    s_rx.lifecycle=&s_rx_lifecycle;
+    s_rx.done_receipt=&s_done_receipt;
+    s_rx.services.shutdown_data_channel=fixture_shutdown_data;
+    s_rx.services.mark_sender_aborted=fixture_mark_sender_aborted;
+    s_rx.services.send_abort=fixture_send_abort;
+    s_rx.services.clear_cancel_request=fixture_clear_cancel_request;
+    s_rx.services.create_staging_directory=fixture_create_staging_directory;
+    s_rx.services.discard_staging_directory=fixture_discard_staging_directory;
+    s_rx.services.send_file_ack=fixture_send_file_ack;
+    s_rx.services.send_done_ack=fixture_send_done_ack;
+    s_rx.services.deliver_ack=fixture_deliver_ack;
+    s_rx.services.reset_file_error=fixture_reset_file_error;
+    s_rx.services.open_file=fixture_open_file;
+    s_rx.services.write_file_chunk=fixture_write_file_chunk;
+    s_rx.services.close_file=fixture_close_file;
+    s_rx.services.file_error=fixture_file_error;
+    s_rx.services.add_top_path=fixture_add_top_path;
+    s_rx.services.remove_top_path=fixture_remove_top_path;
+    s_rx.services.finish_clipboard=fixture_finish_clipboard;
+    s_rx.services.cancel_clipboard=fixture_cancel_clipboard;
+    s_rx.services.now_ns=fixture_now_ns;
+    s_rx.services.status_begin=fixture_status_begin;
+    s_rx.services.status_end=fixture_status_end;
+    s_rx.services.status_add_received_file=fixture_status_add_file;
+    s_rx.services.status_image=fixture_status_image;
+    s_rx.services.status_stage_time=fixture_status_stage;
+    s_rx.services.status_chunk_received=fixture_status_chunk;
+    s_rx.services.status_file_phase=fixture_status_file_phase;
+    s_rx.services.status_set_files_total=fixture_status_total;
+    s_rx.services.status_reset=fixture_status_reset;
+}
+static void history_save(void){assert(closed); if(s_receive_status.status.phase!=HOP_XFER_COMPLETED) assert(!s_rx.image_buffer.data && !s_rx.cur_path && !s_rx.tops && !s_rx.batch_state.active); saved++;}
 #ifdef FIXTURE_WINDOWS
 #define XFER_RX_ROOT L"HopDesk"
 #define ERROR_ALREADY_EXISTS 183
-static DWORD GetTempPathW(DWORD n,wchar_t*p){(void)n;wcscpy(p,L"tmp\\");return 4;}
-static int ensure_dirs(wchar_t*p){(void)p;return !fail_directory;}
-static int create_directory_if_missing(const wchar_t*p){(void)p;return !fail_directory;}
 #define ERROR_FILE_NOT_FOUND 2
 #define ERROR_PATH_NOT_FOUND 3
-static int DeleteFileW(const wchar_t*p){(void)p;return 1;}
-static DWORD GetLastError(void){return 5;}
-static DWORD GetLongPathNameW(const wchar_t*p,wchar_t*q,DWORD n){(void)p;(void)q;(void)n;return 0;}
 #else
-static int unlink(const char*p){(void)p;return 0;}
-static const char*temp_root(void){return "/tmp";}
-static int mkdir_p(const char*p){(void)p;return fail_directory?-1:0;}
 #endif
 @WIRE_SEND@
 @STATUS_FUNCTIONS@
-@CLOSE_FILE@
 static void checked_free(void*p){if(p)assert(closed);free(p);}
 #define free checked_free
 @CLEAR_STATE@
 #undef free
-@RESET_STATE@
-static void rx_discard_dir(void){assert(closed);discarded++;s_rx.dir[0]=0;}
-#ifdef FIXTURE_WINDOWS
+static int rx_discard_dir(xfer_rx_context *rx){
+    assert(closed);discarded++;
+    if(fail_discard)return 0;
+    if(rx){rx->dir[0]=0;rx->staging_cleanup_pending=0;}
+    return 1;
+}
+static int fixture_discard_staging_directory(void *context){
+    return rx_discard_dir((xfer_rx_context*)context);
+}
 static void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n,int success){
     (void)batch;(void)paths;(void)n;(void)success;
 }
-#else
 static void clipboard_complete_remote_paste(uint32_t batch,const char *const *paths,int n,int success){
     (void)batch;(void)paths;(void)n;(void)success;
 }
-#endif
 @TERMINATE@
 @BEGIN_BATCH@
 static void status_image(uint32_t batch,int d,uint64_t size){
@@ -117,25 +199,21 @@ static void apply_paths(const void*p,int n){(void)p;(void)n;applied++;}
 #define clipboard_apply_image apply_image
 #define clip_apply_remote_paths apply_paths
 #define clipboard_apply_paths apply_paths
-static void send_ack(int fd,uint32_t b,uint32_t id,int ack){(void)fd;(void)b;(void)id;(void)ack;assert(!"late FILE_END produced ACK");}
-#ifdef FIXTURE_WINDOWS
-static int rx_add_top(const wchar_t*p){(void)p;return 1;}
-#else
-static int rx_add_top(const char*p){(void)p;return 1;}
-#endif
 @FINISH_BATCH@
+@RX_SERVICE_CALLBACKS@
+@RX_WRITER_CALLBACKS@
 @CANCEL_LOCAL@
 @BIND_SESSION@
 static void rx_expire_stale_session(void){}
 @POLL_CANCEL@
 @BUSY@
-static void*try_realloc(void*p,size_t n){return fail_alloc?NULL:realloc(p,n);}
-#define realloc try_realloc
-static void dispatch(uint8_t type,const uint8_t*p,uint32_t len){switch(type){
-@RECEIVE_CASES@
-default:break;
-}}
-#undef realloc
+static int try_image_buffer_ensure(hop_xfer_rx_image_buffer *buffer,uint64_t expected){
+    return fail_alloc?0:hop_xfer_rx_image_buffer_ensure(buffer,expected);
+}
+#define hop_xfer_rx_image_buffer_ensure try_image_buffer_ensure
+@DISPATCH_HANDLERS@
+static void dispatch(uint8_t type,const uint8_t*p,uint32_t len){fixture_configure_rx_context();(void)hop_xfer_rx_dispatch_message(type,p,len,&s_rx_dispatch_handlers,&s_rx);}
+#undef hop_xfer_rx_image_buffer_ensure
 static void image_begin(uint32_t batch,uint32_t width){
     uint8_t p[20];hop_put_be32(p,batch);hop_put_be32(p+4,1);hop_put_be32(p+8,width);
     hop_put_be32(p+12,2);hop_put_be32(p+16,4);dispatch(HOP_MSG_IMAGE_BEGIN,p,sizeof(p));
@@ -155,9 +233,12 @@ static void seed_resources(void){
     closed=0;
 }
 static void assert_terminal(uint32_t batch,uint8_t reason,int before){
-    assert(!s_rx.active && !s_rx.batch && s_rx.dead_batch==batch && s_rx.dead_reason==reason);
-    assert(!s_rx.cur_path && !s_rx.img && !s_rx.tops && !s_rx.ntop && !s_rx.img_cap && !s_rx.img_expected);
-    assert(!s_rx.cur_is_image && !s_rx.cur_id && !s_rx.cur_size && !s_rx.dir[0]);
+    uint8_t tombstone_reason=0;
+    assert(!s_rx.batch_state.active && !s_rx.batch_state.batch &&
+           hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,batch,&tombstone_reason) &&
+           tombstone_reason==reason);
+    assert(!s_rx.cur_path && !s_rx.image_buffer.data && !s_rx.tops && !s_rx.ntop && !s_rx.image_buffer.capacity && !s_rx.image_state.expected && !s_rx.image_state.received);
+    assert(!s_rx.file_state.is_image && !s_rx.file_state.id && !s_rx.file_state.declared_size && !s_rx.dir[0]);
     assert(!s_rx.task.initialized);
     hop_xfer_budget_snapshot budget_snapshot;
     hop_xfer_budget_get_snapshot(&budget_snapshot);
@@ -169,6 +250,13 @@ static void assert_terminal(uint32_t batch,uint8_t reason,int before){
     assert(s_send_status.status.active); /* receiving ABORT cannot end outgoing state */
 }
 int main(void){
+    s_x.sync_initialized=1;
+    (void)&status_begin; (void)&status_end; (void)&clip_complete_remote_paste; (void)&clipboard_complete_remote_paste;
+    (void)&status_image; (void)&rate_now_ns; (void)&status_chunk_timed;
+    (void)&status_file_phase; (void)&apply_image; (void)&apply_paths;
+    hop_xfer_rx_lifecycle_init(&s_rx_lifecycle);
+    hop_session_id initial_session={{1}};
+    (void)hop_xfer_rx_lifecycle_bind_session(&s_rx_lifecycle,&initial_session);
     hop_xfer_tracking_begin(&s_send_status,999,HOP_XFER_DIR_SEND,1,0,"out",HOP_XFER_SENDING);
     for(int scenario=0;scenario<9;scenario++){
         uint32_t batch=100u+(uint32_t)scenario*2u;int before=saved;
@@ -177,7 +265,7 @@ int main(void){
         /* Allocate an actual partial image before CRC, overlap and bounds failures. */
         if(scenario==1 || scenario==3 || scenario==4){
             chunk(1,0,0);
-            assert(s_rx.img && s_rx.img_cap==s_rx.img_expected);
+            assert(s_rx.image_buffer.data && s_rx.image_buffer.capacity==s_rx.image_state.expected);
         }
         uint8_t reason=HOP_ABORT_TOO_LARGE;fail_send=1; /* failed wire send must still clean up */
         switch(scenario){
@@ -201,23 +289,35 @@ int main(void){
         s_x.cancel_rx=1;
         image_begin(batch,1); /* tombstone survives a newer active receive */
         assert(s_x.cancel_rx==1); /* stale BEGIN must not consume the newer cancellation */
-        assert(s_rx.active && s_rx.batch==batch+1 && s_rx.cur_path && saved==before+1);
-        peer_abort(batch,reason);late_done(batch);assert(s_rx.active && s_rx.batch==batch+1);
+        assert(s_rx.batch_state.active && s_rx.batch_state.batch==batch+1 && s_rx.cur_path && saved==before+1);
+        peer_abort(batch,reason);late_done(batch);assert(s_rx.batch_state.active && s_rx.batch_state.batch==batch+1);
         rx_cancel_local();assert_terminal(batch+1,HOP_ABORT_CANCEL,before+1);
         peer_abort(batch+1,HOP_ABORT_CANCEL);rx_cancel_local();assert(saved==before+2);
     }
+    /* A failed staging delete must preserve the native path and retry state. */
+    int cleanup_before=saved;image_begin(301,1);seed_resources();
+#ifdef FIXTURE_WINDOWS
+    wcscpy(s_rx.dir,L"tmp\\HopDesk\\pending");
+#else
+    strcpy(s_rx.dir,"/tmp/HopDesk/pending");
+#endif
+    fail_discard=1;peer_abort(301,HOP_ABORT_DISK);fail_discard=0;
+    assert(!s_rx.batch_state.active && s_rx.dir[0] && s_rx.staging_cleanup_pending);
+    assert(fixture_discard_staging_directory(&s_rx));
+    assert(!s_rx.dir[0] && !s_rx.staging_cleanup_pending);
+    assert_terminal(301,HOP_ABORT_DISK,cleanup_before);
     /* Setup errors now start and terminate a tracked batch, including its tombstone. */
     int before=saved;fail_directory=1;image_begin(200,1);fail_directory=0;
     assert_terminal(200,HOP_ABORT_DISK,before);
     /* Peer-triggered cleanup must not echo another ABORT or duplicate history. */
     before=saved;image_begin(201,1);seed_resources();int notices=notified;
     /* Both directions use batch 201: a sender-target ABORT must not touch RX. */
-    s_x.cur_batch=201; s_x.abort_batch=0;
+    assert(hop_xfer_sender_active_job_begin(&s_x.active_job,201,20101));
     peer_abort_target(201,HOP_ABORT_CANCEL,HOP_ABORT_TO_SENDER);
-    assert(s_x.abort_batch==201 && s_x.abort_reason==HOP_ABORT_CANCEL && s_rx.active && s_rx.batch==201 && saved==before);
-    s_x.abort_batch=0;
+    assert(s_x.active_job.abort_batch==201 && s_x.active_job.abort_reason==HOP_ABORT_CANCEL && s_rx.batch_state.active && s_rx.batch_state.batch==201 && saved==before);
+    hop_xfer_sender_active_job_reset_peer_abort(&s_x.active_job);
     peer_abort(201,HOP_ABORT_CRC);
-    assert(s_x.abort_batch==0);assert_terminal(201,HOP_ABORT_CRC,before);assert(notified==notices);
+    assert(s_x.active_job.abort_batch==0);assert_terminal(201,HOP_ABORT_CRC,before);assert(notified==notices);
     peer_abort(201,HOP_ABORT_CRC);assert(saved==before+1);
     /* An accepted per-ID cancellation wins against a concurrent DONE. */
     before=saved; image_begin(202,1); seed_resources();
@@ -226,8 +326,8 @@ int main(void){
     assert(applied==0);
     /* A same-session data outage is bounded; reconnect resets the grace timer. */
     before=saved; image_begin(203,1); seed_resources();s_x.cancel_rx=0;s_x.peer_ready=0;
-    rx_poll_cancel();fake_ms+=HOP_XFER_RX_DISCONNECT_BUDGET_MS-3;rx_poll_cancel();assert(s_rx.active);
-    s_x.peer_ready=1;rx_poll_cancel();s_x.peer_ready=0;rx_poll_cancel();assert(s_rx.active);
+    rx_poll_cancel();fake_ms+=HOP_XFER_RX_DISCONNECT_BUDGET_MS-3;rx_poll_cancel();assert(s_rx.batch_state.active);
+    s_x.peer_ready=1;rx_poll_cancel();s_x.peer_ready=0;rx_poll_cancel();assert(s_rx.batch_state.active);
     fake_ms+=HOP_XFER_RX_DISCONNECT_BUDGET_MS;rx_poll_cancel();
     assert_terminal(203,HOP_ABORT_TIMEOUT,before);
     assert(!s_rx.task.initialized); /* reservation returned on timeout */
@@ -235,10 +335,36 @@ int main(void){
     before=saved;image_begin(204,1);seed_resources();assert(hop_xfer_task_request_cancel(s_rx.task.id));
     notices=notified; /* the socket may already be bound to the next session */
     hop_session_id next_session={{2}};rx_bind_session(&next_session);
-    assert(!s_rx.active && !s_rx.task.initialized && saved==before+1);
+    assert(!s_rx.batch_state.active && !s_rx.task.initialized && saved==before+1);
     assert(s_history[0].batch==204 && s_history[0].phase==HOP_XFER_CANCELLED);
     assert(notified==notices); /* never send old-session ABORT to a new peer */
     assert(s_send_status.status.active); /* replacement cannot cancel the other direction */
+    /* Writer queue rejection must fail only this file and must not advance
+     * its accepted offset/CRC; FILE_END then reports DISK even if peer CRC matches. */
+    assert(hop_xfer_task_init_classified(&s_rx.task,0,0,206,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_FILES));
+    assert(hop_xfer_task_reserve_job(&s_rx.task));
+    assert(hop_xfer_task_set_state(&s_rx.task,HOP_XFER_TASK_ACTIVE));
+    assert(hop_xfer_rx_batch_state_begin(&s_rx.batch_state,206));
+    static const uint8_t file_path[]="writer-failure.bin";
+    assert(hop_xfer_rx_file_state_prepare_entry(&s_rx.file_state,1,4,0,file_path,sizeof(file_path)-1));
+    fail_write=1;chunk(1,0,0);fail_write=0;
+    assert(s_rx.file_state.failure==HOP_FILE_ACK_DISK && s_rx.file_state.received==0);
+    hop_xfer_rx_file_end_result writer_result=hop_xfer_rx_file_state_evaluate_end(
+        &s_rx.file_state,HOP_FILE_OK,0,0);
+    assert(writer_result.ack_status==HOP_FILE_ACK_DISK &&
+           writer_result.reason==HOP_RX_FILE_END_STORED_FAILURE);
+    assert(hop_xfer_rx_file_state_prepare_entry(&s_rx.file_state,2,4,0,file_path,sizeof(file_path)-1));
+    fail_writer_io=1;
+    writer_result=hop_xfer_rx_file_state_evaluate_end(&s_rx.file_state,HOP_FILE_OK,
+        s_rx.services.file_error(s_rx.services.context),0);
+    fail_writer_io=0;
+    assert(writer_result.ack_status==HOP_FILE_ACK_DISK &&
+           writer_result.reason==HOP_RX_FILE_END_WRITER_ERROR);
+    hop_xfer_task_finish(&s_rx.task,HOP_XFER_TASK_FAILED);
+    hop_xfer_rx_reset_batch_state(&s_rx);
+    hop_xfer_budget_snapshot writer_budget;hop_xfer_budget_get_snapshot(&writer_budget);
+    assert(writer_budget.jobs==0 && writer_budget.pending_bytes==0 && writer_budget.entries==0);
+
     /* A FILE_ACK may not impersonate the dedicated completion slot. */
     uint8_t fake_ack[9]={0};hop_put_be32(fake_ack,205);hop_put_be32(fake_ack+4,HOP_DONE_ACK_SLOT);
     dispatch(HOP_MSG_FILE_ACK,fake_ack,9);assert(ack_deliveries==0);
@@ -249,16 +375,17 @@ int main(void){
     assert(ack_deliveries==2 && ack_id==HOP_DONE_ACK_SLOT);
     /* Lost ACK can be retried without re-applying the image or duplicating history. */
     int old_applied=applied, old_acks=done_acks;before=saved;
-    image_begin(205,1);chunk(1,0,0);chunk(1,4,0);assert(s_rx.img_len==s_rx.img_expected);
-    late_done(205);assert(!s_rx.active && applied==old_applied+1 && saved==before+1);
+    image_begin(205,1);chunk(1,0,0);chunk(1,4,0);assert(s_rx.image_state.received==s_rx.image_state.expected);
+    late_done(205);assert(!s_rx.batch_state.active && applied==old_applied+1 && saved==before+1);
     assert(done_acks==old_acks+1 && last_done_status==HOP_DONE_ACK_COMPLETE);
     late_done(205);assert(applied==old_applied+1 && saved==before+1 && done_acks==old_acks+2);
     uint8_t altered[20]={0};hop_put_be32(altered,205);hop_put_be32(altered+8,1);
     dispatch(HOP_MSG_XFER_DONE,altered,20);assert(done_acks==old_acks+2);
-    image_begin(205,1);assert(!s_rx.active); /* no reuse within same session */
+    image_begin(205,1);assert(!s_rx.batch_state.active); /* no reuse within same session */
     hop_session_id new_session={{3}};rx_bind_session(&new_session);
     late_done(205);assert(done_acks==old_acks+2); /* old receipt never crosses session */
-    s_x.cur_batch=0; s_send_status.status.active=0;assert(!xfer_busy()); /* sender retry window is no longer active */
+    assert(hop_xfer_sender_active_job_clear_if_matches(&s_x.active_job,201,20101));
+    s_send_status.status.active=0;assert(!xfer_busy()); /* sender retry window is no longer active */
     puts("PASS: production receive ABORT lifecycle, early bounds errors, busy reset, tombstones and once-only history");
     return 0;
 }

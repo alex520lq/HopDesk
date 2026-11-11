@@ -126,7 +126,10 @@ int hop_xfer_task_reconcile(hop_xfer_task_audit *out) {
     for (task_record *r=s_tasks; r; r=r->next) {
         hop_xfer_reservation_handle *h=&r->reservation;
         ++out->task_count;
-        if (h->task_id!=r->id || !h->handle_id || !r->owner || (h->active ? h->jobs!=1 : h->jobs!=0))
+        int has_resources = h->jobs || h->entries || h->pending_bytes || h->image_bytes ||
+            h->rx_queue_slots || h->rx_queue_bytes || h->image_temp_bytes;
+        if (h->task_id!=r->id || !h->handle_id || !r->owner ||
+            (h->active ? h->jobs!=1 : has_resources))
             out->mismatches |= HOP_TASK_AUDIT_OWNER;
         if (terminal(r->state) && (h->active || h->jobs || h->entries || h->pending_bytes ||
             h->image_bytes || h->image_temp_bytes || h->rx_queue_slots || h->rx_queue_bytes))
@@ -278,10 +281,13 @@ int hop_xfer_task_set_state(hop_xfer_task *task, hop_xfer_task_state state) {
     }
     UNLOCK(); return ok;
 }
+/* New reservations are rejected as soon as cancellation or terminal
+ * completion wins. Releases remain legal so queued/in-flight writer commands
+ * can return their exact reservations while termination drains the queue. */
 #define RESERVE_WRAPPER(name,fn) \
-int name(hop_xfer_task *task) { LOCK(); task_record *r=owned(task); int ok=r && !terminal(r->state) && fn(&r->reservation); UNLOCK(); return ok; }
+int name(hop_xfer_task *task) { LOCK(); task_record *r=owned(task); int ok=r && !terminal(r->state) && !r->cancel_requested && !r->completing && fn(&r->reservation); UNLOCK(); return ok; }
 #define BYTES_WRAPPER(name,fn,live) \
-int name(hop_xfer_task *task, uint64_t bytes) { LOCK(); task_record *r=owned(task); int ok=r && (!(live) || !terminal(r->state)) && fn(&r->reservation,bytes); UNLOCK(); return ok; }
+int name(hop_xfer_task *task, uint64_t bytes) { LOCK(); task_record *r=owned(task); int ok=r && (!(live) || (!terminal(r->state) && !r->cancel_requested && !r->completing)) && fn(&r->reservation,bytes); UNLOCK(); return ok; }
 RESERVE_WRAPPER(hop_xfer_task_reserve_job,hop_xfer_budget_reserve_job)
 BYTES_WRAPPER(hop_xfer_task_reserve_entry,hop_xfer_budget_reserve_entry,1)
 BYTES_WRAPPER(hop_xfer_task_reserve_image,hop_xfer_budget_reserve_image,1)
@@ -299,7 +305,7 @@ static int finish(task_record *r, hop_xfer_task_state state,
                   hop_xfer_task_snapshot *fired) {
     if (!r || !terminal(state) || terminal(r->state) || r->reservation.rx_queue_slots ||
         r->reservation.rx_queue_bytes || r->reservation.image_temp_bytes) return 0;
-    hop_xfer_budget_release(&r->reservation);
+    if (!hop_xfer_budget_release(&r->reservation)) return 0;
     r->state=state;
     if (r->direction==HOP_XFER_DIR_SEND || r->direction==HOP_XFER_DIR_RECEIVE) {
         r->finished_at=hop_wallclock_ms();
@@ -326,6 +332,11 @@ void hop_xfer_task_dispose(hop_xfer_task *task) {
     LOCK();
     task_record *r=owned(task);
     if (!r || (!terminal(r->state) && !finish(r,HOP_XFER_TASK_INTERRUPTED,&fired))) { UNLOCK(); return; }
+    /* Do not free the Task record while any Reservation accounting remains. */
+    if (r->reservation.active || r->reservation.jobs || r->reservation.entries ||
+        r->reservation.pending_bytes || r->reservation.image_bytes ||
+        r->reservation.rx_queue_slots || r->reservation.rx_queue_bytes ||
+        r->reservation.image_temp_bytes) { UNLOCK(); return; }
     task_record **p=&s_tasks; while (*p && *p!=r) p=&(*p)->next;
     if (*p) {
         task_record **h=&s_task_index[r->id % HOP_TASK_INDEX_BUCKETS];

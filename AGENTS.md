@@ -83,6 +83,18 @@ HopDesk 同时维护 Windows 和 macOS 实现，以及共享 C 核心。修改�
 - 不得为了让测试通过而削弱认证、长度/路径校验、CRC、会话隔离或资源上限。
 - 不得将仅有 mock、stub、源码提取测试的结果描述为真实双机端到端验证。
 
+### 5.1 长期架构方向：原生平台 + 共享 C Core（强制）
+
+HopDesk 的目标不是“两个平台各自实现全部业务”，也不是“所有东西都塞进 Core”，而是 **共享 C Core/Application + Windows/macOS 原生 Adapter/UI**。开始或执行架构重构的 AI 助手必须同时阅读 `docs/ARCHITECTURE_REFACTOR_PLAN.md` 第 1.3 节，并按其中的职责边界和验收要求工作。
+
+- **保留原生技术路线。** 默认继续使用共享 C 核心、Windows C + Win32、macOS C/Objective-C + Cocoa/系统 API。不得自行迁移到 Qt、Flutter、Electron、React Native 或其他大型跨平台框架/运行时；不得以重写语言或引入大型运行时来代替模块化。技术栈变化必须先取得用户明确批准，并以双平台功能原型和同场景资源实测证明合理。
+- **共享业务，不统一 OS API。** 协议、状态机、Task/Budget/Reservation、ACK/checkpoint、重试/速率/队列策略及平台无关的 Sender/Receiver/Clipboard/Connection/Input 决策，应优先由同一份 Core/Application 实现。Win32、Winsock、POSIX、Cocoa、NSPasteboard、CGEvent、系统文件句柄、线程/锁/Event/Condition Variable、QoS 和原生 UI 留在各自 Adapter。
+- **Adapter 应薄而明确。** 平台层负责调用原生 API、资源创建/关闭、同步/调度及必要的平台语义转换；不得重复实现一份共享业务状态机。通过窄 API、opaque handle、显式 Context/Services 注入依赖；不得新增长期 include 拼接边界、暴露整块平台全局状态或隐式捕获其他模块的锁/线程状态。
+- **不机械抽象。** 不做一对一系统 API 包装，不为了代码行数或共享率制造虚假通用层。真实 OS 语义差异必须留在 Adapter 并写明原因；只统一确实相同的业务语义。
+- **性能与轻量交付是硬约束。** 不引入大型附加运行时或无必要依赖；不得悄悄降低 `docs/architecture.md` 中的资源目标。新增依赖必须说明链接/打包方式、运行时成本和替代方案。没有同场景实测数据，不得宣称内存、CPU、启动或包体积更优。
+- **每个切片先分析、后改动。** 先检查 Core 是否已有可复用规则，比较两端对应实现并区分业务重复与 OS 差异；随后说明本次边界变化、所有权/失败语义和双平台测试计划。完成后回答：共享业务实现是否增加、平台重复是否减少、Adapter 是否更薄、资源目标是否保持。
+- **结构性拆文件不等于架构完成。** 仅移动文件、拆分 `.inc`、增加转发接口、增加模块数量或让 CI 通过，都不足以证明重构成功。应以独立生产编译单元、明确依赖、单一状态所有者、共享规则、生产路径测试和可追溯性能数据验收。
+
 ## 6. 测试与合并门槛
 
 每轮迭代根据改动范围执行适用测试，并在 PR 描述中记录结果：

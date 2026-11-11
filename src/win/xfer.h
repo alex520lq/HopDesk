@@ -24,7 +24,7 @@
 int  xfer_init(HWND hwnd, const hop_config *cfg);
 void xfer_kick(void);
 int  xfer_listening(void);
-void xfer_shutdown(void);
+int  xfer_shutdown(void);
 
 /* 数据通道是否已连接 */
 int  xfer_connected(void);

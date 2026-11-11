@@ -271,13 +271,22 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
                                  0, 0, 0, 0, 0, HWND_MESSAGE, NULL, inst, NULL);
 
     ui_init(&g_app);
-    g_app.net = net_server_start(g_app.hwnd, &g_app.cfg);
-    if (!g_app.net || !xfer_init(g_app.hwnd, &g_app.cfg)) {
-        hop_log(HOP_LOG_ERROR, "network worker initialization failed");
-        if (g_app.net) net_server_stop(g_app.net);
+    /* Start the data channel before the control server: every control callback
+     * (including disconnect -> xfer_kick) must see a live transfer subsystem. */
+    if (!xfer_init(g_app.hwnd, &g_app.cfg)) {
+        hop_log(HOP_LOG_ERROR, "transfer worker initialization failed");
+        while (!xfer_shutdown()) Sleep(100); /* fail closed; retain owners until settled */
         ui_shutdown(&g_app);
         DestroyWindow(g_app.hwnd);
-        return 1; /* supervisor may restart; do not call failed subsystem locks */
+        return 1;
+    }
+    g_app.net = net_server_start(g_app.hwnd, &g_app.cfg);
+    if (!g_app.net) {
+        hop_log(HOP_LOG_ERROR, "control network worker initialization failed");
+        while (!xfer_shutdown()) Sleep(100);
+        ui_shutdown(&g_app);
+        DestroyWindow(g_app.hwnd);
+        return 1;
     }
     clip_init(g_app.hwnd);
     if(g_app.cfg.role==HOP_ROLE_SERVER){capture_init(&g_app);kbd_init(&g_app);}
@@ -297,9 +306,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     win_inject_reset();
     kbd_shutdown();
     capture_shutdown();
-    clip_shutdown(g_app.hwnd);
-    xfer_shutdown();
-    if (g_app.net) net_server_stop(g_app.net);
+    while (!clip_shutdown(g_app.hwnd)) Sleep(100); /* retain unresolved image Task owners */
+    /* Stop/join control callbacks before destroying transfer locks: on_link()
+     * can call xfer_kick after a disconnect. */
+    if (g_app.net) { net_server_stop(g_app.net); g_app.net = NULL; }
+    while (!xfer_shutdown()) Sleep(100); /* do not exit with a live owner/Reservation */
     ui_shutdown(&g_app);
     hop_log(HOP_LOG_INFO, "stopped");
     /* 正常退出时也释放互斥量，别指望"反正进程要退了" —— 万一有别的

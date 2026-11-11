@@ -947,14 +947,17 @@ int main(void){
         receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         protocol_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
-        entry=extract(sender,'sender_engine_send_entry')
+        engine_adapter=(ROOT/'src/core/xfer_sender_engine_adapter.c').read_text(encoding='utf-8')
+        ack_wait_core=(ROOT/'src/core/xfer_sender_ack_wait.c').read_text(encoding='utf-8')
+        entry=extract(engine_adapter,'adapter_send_entry')
         assert 'hop_xfer_sender_send_file_entry' in entry
-        assert 'call->tx + CHUNK_HDR' in entry
+        assert 'ops->tx_buffer + ops->chunk_header_size' in entry
         assert 'malloc(blen)' not in entry
         job=extract(sender,'run_job')
-        assert 'hop_xfer_sender_run_files' in job
+        assert 'hop_xfer_sender_engine_adapter_run(&ops)' in job
+        assert 'hop_xfer_sender_run_files' not in job
+        assert 'hop_xfer_sender_run_image' not in job
         assert 'window_item' not in job
-        assert 'hop_xfer_sender_run_image' in job
         engine=(ROOT/'src/core/xfer_sender_engine.c').read_text(encoding='utf-8')
         assert 'int acknowledged;' in engine
         assert 'HOP_XFER_SENDER_SEND_PENDING' in engine
@@ -966,21 +969,19 @@ int main(void){
         kick=engine.index('ops->request_reconnect(ops->user)',timeout)
         net_down=engine.index('return HOP_XFER_SENDER_JOB_NET_DOWN;',kick)
         assert timeout < unregister < kick < net_down
-        reconnect=extract(sender,'sender_engine_request_reconnect')
-        assert 'call->job->sender_context' in reconnect
-        assert 'context->request_reconnect' in reconnect
-        assert 'xfer_kick();' not in reconnect
+        reconnect=extract(sender,'sender_context_request_reconnect')
+        assert '*ctx->peer_ready = 0' in reconnect and 'shutdown(' in reconnect
+        assert 'context->request_reconnect' in engine_adapter
         kick=extract(sender,'xfer_kick')
         assert 'sender_context_request_reconnect(&s_sender_platform)' in kick
-        assert 'sender_engine_wait_ack' in sender
+        assert 'adapter_wait_ack' in engine_adapter
         assert 'static hop_xfer_ack_coordinator *s_ack' not in sender
         assert 'hop_xfer_ack_coordinator_' not in sender
         assert 'hop_xfer_sender_ack_adapter_create' in sender
         assert 'hop_xfer_sender_ack_adapter_register' in sender
-        ack_wait_body=extract(sender,'ack_wait')
-        assert 'context->ack_wait_take(context->ack_user' in ack_wait_body
-        peer_abort_body=extract(sender,'sender_engine_peer_aborted')
-        assert ': peer_aborted(batch)' not in peer_abort_body
+        assert 'context->ack_wait_take(context->ack_user' in ack_wait_core
+        peer_abort_body=extract(sender,'sender_context_peer_aborted')
+        assert '*ctx->abort_batch == batch' in peer_abort_body
         ack_deliver_body=extract(sender,'ack_deliver')
         assert 's_sender_context.ack_deliver(s_sender_context.ack_user' in ack_deliver_body
         platform_xfer=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
@@ -988,9 +989,9 @@ int main(void){
         assert 'sender_context_ack_create()' in platform_xfer
         assert 'sender_context_ack_destroy()' in platform_xfer
         assert 'sender_context_wake_ack()' in platform_xfer
-        assert 'sender_engine_send_entry' in sender
-        assert 'sender_engine_send_image_begin' in sender
-        assert 'sender_engine_send_image_chunk' in sender
+        assert 'adapter_send_entry' in engine_adapter
+        assert 'image_send_begin' in engine_adapter
+        assert 'image_send_chunk' in engine_adapter
         assert 'hop_xfer_sender_run_image' in engine
         assert 'hop_crc32(0, pixels + offset, length)' in engine
         assert 'hop_xfer_sender_send_file_entry' in engine

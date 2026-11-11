@@ -499,6 +499,16 @@ static int send_done_with_context(const hop_xfer_sender_context *context,
 #define JOB_COMMIT_UNKNOWN 4 /* receiver outcome is unknown */
 #define JOB_COMMIT_REJECTED 5 /* receiver explicitly rejected completion */
 
+static int send_done(SOCKET c, uint32_t batch, uint32_t ok,
+                      uint32_t total) {
+    uint8_t dp[20];
+    hop_put_be32(dp, batch);
+    hop_put_be32(dp + 4, ok);
+    hop_put_be32(dp + 8, total);
+    hop_put_be64(dp + 12, 0);
+    return send_small(c, HOP_MSG_XFER_DONE, dp, sizeof(dp), batch);
+}
+
 /* Re-send only DONE, never file contents, while the same control session
  * survives. Receiver caches its last receipt and never reapplies effects. */
 static uint64_t sender_commit_now_ms(void *user) {

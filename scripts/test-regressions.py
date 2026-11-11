@@ -1846,6 +1846,7 @@ static void hop_xfer_sender_context_status_end(
     assert(context);
     status_end_calls[task_slot(context->task_id)]++;
 }
+'''
     drain_main=r"""
 int main(void) {
     owner_lock_init();

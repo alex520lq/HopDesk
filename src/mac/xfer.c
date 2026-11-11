@@ -72,106 +72,31 @@ _Static_assert(HOP_TASK_SESSION_BYTES == HOP_SESSION_BYTES, "task and protocol s
 #include <string.h>
 #include <time.h>
 #include <stdatomic.h>
+#include "xfer_sender_internal.h"
 
 
 /* ---------------- 条目 / 作业 ---------------- */
 
-typedef enum {
-    XFER_JOB_OWNER_SUBMITTER = 0,
-    XFER_JOB_OWNER_QUEUE,
-    XFER_JOB_OWNER_WORKER,
-    XFER_JOB_OWNER_SHUTDOWN,
-    XFER_JOB_OWNER_RELEASING,
-    XFER_JOB_OWNER_RELEASED
-} xfer_job_owner;
-
-typedef struct xf_job {
-    struct xf_job *next;
-    xfer_job_owner owner;
-    hop_session_id session;
-    uint32_t  batch;
-    int       is_image;
-    hop_xfer_task task;
-    hop_xfer_task_state pending_finish_state;
-    int pending_finish_valid;
-    int pending_status_end;
-    int pending_status_phase;
-    char pending_status_detail[96];
-    hop_xfer_sender_context sender_context;
-    intptr_t  commit_socket;
-    uint64_t  commit_epoch;
-    int       n;
-    xf_entry *e;
-    uint8_t  *pixels;
-    int image_payload_released;
-    int       w, h, stride;
-
-    /* ---- 重试状态 ----
-     * 只有一个游标，没有 per-entry 状态数组：next_i 之前的条目都已确认送达，
-     * next_i 之后都还没发。失败就从 next_i 原地重来，不需要记账。 */
-    int       next_i;         /* 下一条待发条目 */
-    int       ok;             /* 已收到 ACK_OK 的条目数 */
-    int       attempt;        /* 连接级（作业级）已重试次数 */
-    uint64_t  retry_at;       /* 毫秒时间戳，早于它不发送 */
-    uint64_t  give_up_at;     /* 断线重连预算的截止时刻，0 = 未开始计时 */
-    uint64_t  scan_ns;        /* source enumeration duration, recorded on first visible attempt */
-} xf_job;
-
 /* ---------------- 状态 ---------------- */
 
-static struct {
-    int              sock;
-    hop_session_id   session;
-    unsigned long    epoch;
-    int              peer_ready;     /* 数据通道版本与 token 握手通过 */
-    pthread_mutex_t  slock;          /* 保护 sock */
-    pthread_mutex_t  qlock;          /* 保护作业队列 */
-    pthread_cond_t   qcond;
-    _Atomic int      stop;
-    hop_xfer_sender_queue queue;
-    uint32_t         batch_seq;
-    uint32_t         chunk;
-    hop_xfer_rate_limiter rate; /* sender thread only */
-    hop_mac_sender_threads sender_threads;
-    int sync_initialized;
-    int shutting_down; /* protected by s_x_lifecycle_lock */
-    xf_job *shutdown_jobs; /* Jobs retained until Task disposal succeeds */
-
-    /* Shared active-job/peer-ABORT policy; protected by s_x.qlock. */
-    hop_xfer_sender_active_job active_job;
-    uint32_t         cancel_batch;
-    volatile int    cancel_rx;
-} s_x;
+hop_mac_xfer_state s_x;
 
 /* Active submitters hold the read side through scanning and queue admission.
  * Shutdown holds the write side until every owned resource is settled. */
-static pthread_rwlock_t s_x_lifecycle_lock = PTHREAD_RWLOCK_INITIALIZER;
+pthread_rwlock_t s_x_lifecycle_lock = PTHREAD_RWLOCK_INITIALIZER;
 
 /* ---------------- 小工具 ---------------- */
 
 /* 发送互斥：send_thread 和接收线程（出错时回 ABORT）会同时往同一个
  * socket 写。一次 send_all 内部可能分多次 write，两线程交错就会把
  * 帧字节搅在一起 —— 锁的粒度必须是"整帧"，不是"单次 write"。 */
-static pthread_mutex_t s_txlock = PTHREAD_MUTEX_INITIALIZER;
-static _Thread_local unsigned long s_send_epoch;
-typedef struct {
-    pthread_mutex_t *session_lock;
-    pthread_mutex_t *queue_lock;
-    pthread_mutex_t *tx_lock;
-    int *sock;
-    int *peer_ready;
-    void *ack_adapter;
-    hop_session_id *session;
-    unsigned long *epoch;
-    _Atomic int *stop;
-    uint32_t *abort_batch;
-    uint32_t *cancel_batch;
-} sender_platform_context;
-static sender_platform_context s_sender_platform;
-static hop_xfer_sender_context s_sender_context;
+pthread_mutex_t s_txlock = PTHREAD_MUTEX_INITIALIZER;
+_Thread_local unsigned long s_send_epoch;
+sender_platform_context s_sender_platform;
+hop_xfer_sender_context s_sender_context;
 
-static pthread_mutex_t s_status_lock = PTHREAD_MUTEX_INITIALIZER;
-static hop_xfer_tracking s_send_status, s_receive_status;
+pthread_mutex_t s_status_lock = PTHREAD_MUTEX_INITIALIZER;
+hop_xfer_tracking s_send_status, s_receive_status;
 static uint64_t s_status_revision;
 static char *s_retry_paths[HOP_XFER_FILE_LIMIT];
 static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];
@@ -279,7 +204,7 @@ static int status_begin(uint32_t batch,int direction,uint32_t files,uint64_t byt
     pthread_mutex_unlock(&s_status_lock);
     return created;
 }
-static void status_chunk_timed(int direction,uint32_t batch,uint32_t id,uint64_t off,uint32_t n,
+void status_chunk_timed(int direction,uint32_t batch,uint32_t id,uint64_t off,uint32_t n,
         uint64_t read_ns,uint64_t crc_ns,uint64_t send_ns,uint64_t receive_ns) {
     pthread_mutex_lock(&s_status_lock);
     hop_xfer_tracking *t=status_for(direction);
@@ -290,17 +215,17 @@ static void status_chunk_timed(int direction,uint32_t batch,uint32_t id,uint64_t
     hop_xfer_tracking_add_time(t,batch,HOP_XFER_TIME_RECEIVE,receive_ns);
     pthread_mutex_unlock(&s_status_lock);
 }
-static void status_stage_time(int direction,uint32_t batch,int stage,uint64_t elapsed_ns) {
+void status_stage_time(int direction,uint32_t batch,int stage,uint64_t elapsed_ns) {
     pthread_mutex_lock(&s_status_lock);
     hop_xfer_tracking_add_time(status_for(direction),batch,stage,elapsed_ns);
     pthread_mutex_unlock(&s_status_lock);
 }
-static void status_file_phase(int direction,uint32_t batch,int index,int phase,uint32_t attempts) {
+void status_file_phase(int direction,uint32_t batch,int index,int phase,uint32_t attempts) {
     pthread_mutex_lock(&s_status_lock);
     hop_xfer_tracking_phase(status_for(direction),batch,index,phase,attempts);
     pthread_mutex_unlock(&s_status_lock);
 }
-static void status_end(int direction,uint32_t batch,int phase,const char *detail) {
+void status_end(int direction,uint32_t batch,int phase,const char *detail) {
     int changed=0;
     uint64_t timing[HOP_XFER_TIME_COUNT]={0};
     pthread_mutex_lock(&s_status_lock);
@@ -361,14 +286,14 @@ static void status_add_received_file(uint32_t batch,uint32_t id,const char *path
         snprintf(s_receive_status.status.name,sizeof(s_receive_status.status.name),"%s",path);
     pthread_mutex_unlock(&s_status_lock);
 }
-static void job_bind_session(xf_job *j, const hop_session_id *current) {
+void job_bind_session(xf_job *j, const hop_session_id *current) {
     if (!hop_session_id_valid(current) || hop_session_id_equal(&j->session,current)) return;
     j->session=*current; j->next_i=0; j->ok=0;
     pthread_mutex_lock(&s_status_lock);
     memset(&s_send_status,0,sizeof(s_send_status));
     pthread_mutex_unlock(&s_status_lock);
 }
-static void status_start_job(const xf_job *j) {
+void status_start_job(const xf_job *j) {
     uint64_t total_bytes=0;
     for(int i=0;i<j->n;i++)total_bytes+=j->e[i].size;
     if(j->is_image)total_bytes=(uint64_t)j->stride*j->h;
@@ -449,7 +374,7 @@ static int send_all(int fd, const void *buf, size_t len) {
     return 1;
 }
 
-static int sender_context_session_current(void *user, intptr_t socket_handle,
+int sender_context_session_current(void *user, intptr_t socket_handle,
                                           uint64_t epoch) {
     sender_platform_context *ctx = (sender_platform_context *)user;
     if (!ctx || !ctx->session_lock || !ctx->sock || !ctx->epoch || !ctx->session)
@@ -462,7 +387,7 @@ static int sender_context_session_current(void *user, intptr_t socket_handle,
     return current;
 }
 
-static int sender_context_write_frame(void *user, intptr_t socket_handle,
+int sender_context_write_frame(void *user, intptr_t socket_handle,
                                       uint64_t epoch,
                                       const hop_xfer_sender_frame_part *parts,
                                       size_t part_count) {
@@ -501,7 +426,7 @@ static int sender_context_snapshot_session(void *user, int fd,
     return current;
 }
 
-static int send_small_with_context(const hop_xfer_sender_context *context,
+int send_small_with_context(const hop_xfer_sender_context *context,
                                      int fd, uint8_t type, const uint8_t *p,
                                      uint32_t len, uint32_t batch) {
     if (!context) context = &s_sender_context;
@@ -532,7 +457,7 @@ static int send_small_with_context(const hop_xfer_sender_context *context,
     return ok;
 }
 
-static int send_small(int fd, uint8_t type, const uint8_t *p,
+int send_small(int fd, uint8_t type, const uint8_t *p,
                       uint32_t len, uint32_t batch) {
     return send_small_with_context(&s_sender_context, fd, type, p, len, batch);
 }
@@ -540,7 +465,7 @@ static int send_small(int fd, uint8_t type, const uint8_t *p,
 /* 每块之后让一次 CPU。传输是后台工作，键鼠才是前台 ——
  * 真正起作用的保障是 send_thread 里的 QOS_CLASS_UTILITY，
  * 这里让一次是给同优先级的其他工作减压。 */
-static void yield_cpu(void) { sched_yield(); }
+void yield_cpu(void) { sched_yield(); }
 
 
 
@@ -572,16 +497,6 @@ static const char *temp_root(void) {
  * 数据直接读进发送缓冲的 CHUNK_HDR 处，省掉一次内存拷贝。
  * 每块带 CRC32：TCP 的 16 位校验和配合网卡 offload 有可能漏检，
  * GB 级传输漏检一次就是静默损坏。 */
-#define CHUNK_HDR (25u + HOP_DATA_PREFIX)   /* 5 帧头 + 4 id + 8 off + 4 len + 4 crc */
-
-#define XFER_RATE_MIN_MIB       4ull
-#define XFER_RATE_INITIAL_MIB   64ull
-#define XFER_RATE_MIB_BYTES     (1024ull * 1024ull)
-
-#include "xfer_sender_protocol.inc"
-
-#include "xfer_sender_worker.inc"
-
 /* Receiver and disk writer share this translation unit and its private state. */
 #include "xfer_receive.inc"
 
@@ -815,4 +730,3 @@ int xfer_cancel_task(hop_xfer_task_id id) {
     return requested;
 }
 
-#include "xfer_submit.inc"

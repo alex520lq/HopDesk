@@ -56,59 +56,19 @@
 #include <limits.h>
 #include <io.h>
 #include <time.h>
+#include "xfer_sender_internal.h"
 
 #define XFER_RX_ROOT      L"HopDesk"
 
 /* ---------------- 条目 / 作业 ---------------- */
 
-typedef enum {
-    XFER_JOB_OWNER_SUBMITTER = 0,
-    XFER_JOB_OWNER_QUEUE,
-    XFER_JOB_OWNER_WORKER,
-    XFER_JOB_OWNER_SHUTDOWN,
-    XFER_JOB_OWNER_RELEASING,
-    XFER_JOB_OWNER_RELEASED
-} xfer_job_owner;
-
-typedef struct xfer_job {
-    struct xfer_job *next;
-    xfer_job_owner owner;
-    hop_session_id session;
-    uint32_t    batch;
-    int         is_image;
-    hop_xfer_task task;
-    hop_xfer_task_state pending_finish_state;
-    int pending_finish_valid;
-    int pending_status_end;
-    int pending_status_phase;
-    char pending_status_detail[96];
-    hop_xfer_sender_context sender_context;
-    intptr_t    commit_socket;
-    uint64_t    commit_epoch;
-    int         n;              /* JOB_FILES 的条目数 */
-    xfer_entry *e;
-    uint8_t    *pixels;         /* JOB_IMAGE */
-    int         image_payload_released;
-    int         w, h, stride;
-
-    /* ---- 重试状态 ----
-     * 只有一个游标，没有 per-entry 状态数组：next_i 之前的条目都已确认送达，
-     * next_i 之后都还没发。失败就从 next_i 原地重来，不需要记账。 */
-    int         next_i;         /* 下一条待发条目 */
-    int         ok;             /* 已收到 ACK_OK 的条目数 */
-    int         attempt;        /* 连接级（作业级）已重试次数 */
-    uint64_t    retry_at;       /* 毫秒时间戳，早于它不发送 */
-    uint64_t    give_up_at;     /* 断线重连预算的截止时刻，0 = 未开始计时 */
-    uint64_t    scan_ns;        /* source enumeration duration, recorded on first visible attempt */
-} xfer_job;
-
 /* ---------------- 全局状态 ---------------- */
 
-static SRWLOCK s_status_lock = SRWLOCK_INIT;
+SRWLOCK s_status_lock = SRWLOCK_INIT;
 /* Submission holds the shared side for its entire scan/queue transaction.
  * Shutdown takes the exclusive side before stopping threads or destroying locks. */
-static SRWLOCK s_x_lifecycle_lock = SRWLOCK_INIT;
-static hop_xfer_tracking s_send_status, s_receive_status;
+SRWLOCK s_x_lifecycle_lock = SRWLOCK_INIT;
+hop_xfer_tracking s_send_status, s_receive_status;
 static uint64_t s_status_revision;
 static wchar_t *s_retry_paths[HOP_XFER_FILE_LIMIT];
 static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];
@@ -215,7 +175,7 @@ static int status_begin(uint32_t batch,int direction,uint32_t files,uint64_t byt
     ReleaseSRWLockExclusive(&s_status_lock);
     return created;
 }
-static void status_chunk_timed(int direction,uint32_t batch,uint32_t id,uint64_t off,uint32_t n,
+void status_chunk_timed(int direction,uint32_t batch,uint32_t id,uint64_t off,uint32_t n,
         uint64_t read_ns,uint64_t crc_ns,uint64_t send_ns,uint64_t receive_ns) {
     AcquireSRWLockExclusive(&s_status_lock);
     hop_xfer_tracking *t=status_for(direction);
@@ -226,17 +186,17 @@ static void status_chunk_timed(int direction,uint32_t batch,uint32_t id,uint64_t
     hop_xfer_tracking_add_time(t,batch,HOP_XFER_TIME_RECEIVE,receive_ns);
     ReleaseSRWLockExclusive(&s_status_lock);
 }
-static void status_stage_time(int direction,uint32_t batch,int stage,uint64_t elapsed_ns) {
+void status_stage_time(int direction,uint32_t batch,int stage,uint64_t elapsed_ns) {
     AcquireSRWLockExclusive(&s_status_lock);
     hop_xfer_tracking_add_time(status_for(direction),batch,stage,elapsed_ns);
     ReleaseSRWLockExclusive(&s_status_lock);
 }
-static void status_file_phase(int direction,uint32_t batch,int index,int phase,uint32_t attempts) {
+void status_file_phase(int direction,uint32_t batch,int index,int phase,uint32_t attempts) {
     AcquireSRWLockExclusive(&s_status_lock);
     hop_xfer_tracking_phase(status_for(direction),batch,index,phase,attempts);
     ReleaseSRWLockExclusive(&s_status_lock);
 }
-static void status_end(int direction,uint32_t batch,int phase,const char *detail) {
+void status_end(int direction,uint32_t batch,int phase,const char *detail) {
     int changed=0;
     uint64_t timing[HOP_XFER_TIME_COUNT]={0};
     AcquireSRWLockExclusive(&s_status_lock);
@@ -297,14 +257,14 @@ static void status_add_received_file(uint32_t batch,uint32_t id,const char *path
         snprintf(s_receive_status.status.name,sizeof(s_receive_status.status.name),"%s",path);
     ReleaseSRWLockExclusive(&s_status_lock);
 }
-static void job_bind_session(xfer_job *j, const hop_session_id *current) {
+void job_bind_session(xfer_job *j, const hop_session_id *current) {
     if (!hop_session_id_valid(current) || hop_session_id_equal(&j->session,current)) return;
     j->session=*current; j->next_i=0; j->ok=0;
     AcquireSRWLockExclusive(&s_status_lock);
     memset(&s_send_status,0,sizeof(s_send_status));
     ReleaseSRWLockExclusive(&s_status_lock);
 }
-static void status_start_job(const xfer_job *j) {
+void status_start_job(const xfer_job *j) {
     uint64_t total_bytes=0;
     for(int i=0;i<j->n;i++)total_bytes+=j->e[i].size;
     if(j->is_image)total_bytes=(uint64_t)j->stride*j->h;
@@ -346,33 +306,7 @@ int xfer_get_history(hop_xfer_history_entry *out,int capacity) {
     return n;
 }
 
-static struct {
-    HWND             hwnd;
-    hop_config       cfg;
-    SOCKET           listen_s;
-    SOCKET           client;
-    volatile LONG    listening;
-    hop_session_id   session;
-    unsigned long    epoch;
-    int              peer_ready;    /* 数据通道版本与 token 握手通过 */
-    CRITICAL_SECTION lock;      /* 保护 client + 作业队列 + 取消标记 */
-    HANDLE           stop;
-    HANDLE           q_evt;
-    HANDLE           rate_timer; /* high-resolution pacing wait; sender thread only */
-    hop_win_sender_threads sender_threads;
-    hop_xfer_sender_queue queue;
-    int              sync_initialized;
-    int              shutting_down; /* protected by s_x_lifecycle_lock */
-    xfer_job        *shutdown_jobs; /* Jobs retained until Task disposal succeeds */
-    uint32_t         batch_seq;
-    uint32_t         chunk;     /* 实际分块字节数 */
-    hop_xfer_rate_limiter rate; /* sender thread only */
-
-    /* Shared active-job/peer-ABORT policy; protected by s_x.lock. */
-    hop_xfer_sender_active_job active_job;
-    uint32_t         cancel_batch;
-    volatile LONG   cancel_rx;
-} s_x;
+hop_win_xfer_state s_x;
 
 void xfer_get_status_pair(hop_xfer_status_pair *out) {
     if (!out) return;
@@ -403,29 +337,14 @@ void xfer_get_budget_snapshot(hop_xfer_budget_snapshot *out) {
 /* 发送互斥：send_thread 和接收线程（出错时回 ABORT）会同时往同一个
  * socket 写。一次 send_all 内部可能分多次 send，两线程交错就会把
  * 帧字节搅在一起 —— 锁的粒度必须是"整帧"，不是"单次 send"。 */
-static CRITICAL_SECTION s_txlock;
+CRITICAL_SECTION s_txlock;
 #ifdef _MSC_VER
-static __declspec(thread) unsigned long s_send_epoch;
+__declspec(thread) unsigned long s_send_epoch;
 #else
-static __thread unsigned long s_send_epoch;
+__thread unsigned long s_send_epoch;
 #endif
-typedef struct {
-    CRITICAL_SECTION *state_lock;
-    CRITICAL_SECTION *tx_lock;
-    SOCKET *client;
-    int *peer_ready;
-    void *ack_adapter;
-    hop_session_id *session;
-    unsigned long *epoch;
-    HANDLE *stop;
-    HANDLE *rate_timer;
-    uint32_t *abort_batch;
-    uint32_t *cancel_batch;
-} sender_platform_context;
-
-static sender_platform_context s_sender_platform;
-static hop_xfer_sender_context s_sender_context;
-
+sender_platform_context s_sender_platform;
+hop_xfer_sender_context s_sender_context;
 
 static int send_all(SOCKET c, const char *p, int len) {
     while (len > 0) {
@@ -442,7 +361,7 @@ static int send_all(SOCKET c, const char *p, int len) {
     return 1;
 }
 
-static int sender_context_session_current(void *user, intptr_t socket_handle,
+int sender_context_session_current(void *user, intptr_t socket_handle,
                                           uint64_t epoch) {
     sender_platform_context *ctx = (sender_platform_context *)user;
     if (!ctx || !ctx->state_lock || !ctx->client || !ctx->epoch || !ctx->session)
@@ -455,7 +374,7 @@ static int sender_context_session_current(void *user, intptr_t socket_handle,
     return current;
 }
 
-static int sender_context_write_frame(void *user, intptr_t socket_handle,
+int sender_context_write_frame(void *user, intptr_t socket_handle,
                                       uint64_t epoch,
                                       const hop_xfer_sender_frame_part *parts,
                                       size_t part_count) {
@@ -497,10 +416,10 @@ static int sender_context_snapshot_session(void *user, SOCKET sock,
 /* 每块之后让一次 CPU。传输是后台工作，键鼠才是前台 ——
  * 真正起作用的保障是 send_thread 里的 BELOW_NORMAL 优先级（输入线程
  * 是 NORMAL，会直接抢占）；这里让一次是给同优先级的其他工作减压。 */
-static void yield_cpu(void) { Sleep(0); }
+void yield_cpu(void) { Sleep(0); }
 
 /* 小帧：头 + 载荷两次 send。载荷都在 1 KB 级别，不值得拼缓冲。 */
-static int send_small_with_context(const hop_xfer_sender_context *context,
+int send_small_with_context(const hop_xfer_sender_context *context,
                                      SOCKET c, uint8_t type, const uint8_t *p,
                                      uint32_t len, uint32_t batch) {
     if (!context) context = &s_sender_context;
@@ -531,7 +450,7 @@ static int send_small_with_context(const hop_xfer_sender_context *context,
     return ok;
 }
 
-static int send_small(SOCKET c, uint8_t type, const uint8_t *p,
+int send_small(SOCKET c, uint8_t type, const uint8_t *p,
                       uint32_t len, uint32_t batch) {
     return send_small_with_context(&s_sender_context, c, type, p, len, batch);
 }
@@ -540,16 +459,6 @@ static int send_small(SOCKET c, uint8_t type, const uint8_t *p,
  * 数据直接读进发送缓冲的 CHUNK_HDR 处，省掉一次内存拷贝。
  * 每块带 CRC32：TCP 的 16 位校验和配合网卡 offload 有可能漏检，
  * GB 级传输漏检一次就是静默损坏。 */
-#define CHUNK_HDR (25u + HOP_DATA_PREFIX)   /* 5 帧头 + 4 id + 8 off + 4 len + 4 crc */
-
-#define XFER_RATE_MIN_MIB       4ull
-#define XFER_RATE_INITIAL_MIB   64ull
-#define XFER_RATE_MIB_BYTES     (1024ull * 1024ull)
-
-#include "xfer_sender_protocol.inc"
-
-#include "xfer_sender_worker.inc"
-
 /* Receiver and disk writer share this translation unit and its private state. */
 #include "xfer_receive.inc"
 
@@ -776,4 +685,3 @@ int xfer_cancel_task(hop_xfer_task_id id) {
     return requested;
 }
 
-#include "xfer_submit.inc"

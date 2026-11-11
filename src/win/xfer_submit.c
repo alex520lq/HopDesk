@@ -1,3 +1,11 @@
+#include <winsock2.h>
+#include "xfer_sender_internal.h"
+#include "../core/update_state.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+
 static int scanner_reserve_entry(void *context, uint64_t bytes) {
     return hop_xfer_task_reserve_entry((hop_xfer_task *)context, bytes);
 }
@@ -19,38 +27,40 @@ static void scanner_watchdog_end(void *context, int ticket) {
     hop_watchdog_end(ticket);
 }
 
-/* Keep the read lock through source scanning and queue admission. Shutdown's
- * write lock waits for all accepted submitters and rejects every later one. */
+/* Keep the read lock from before source scanning until queue admission or
+ * rollback. Shutdown's write lock therefore closes admission and waits for
+ * every in-flight submitter before destroying Task/queue state. */
 static int sender_submit_enter(void) {
-    pthread_rwlock_rdlock(&s_x_lifecycle_lock);
+    AcquireSRWLockShared(&s_x_lifecycle_lock);
     if (!s_x.sync_initialized || s_x.shutting_down) {
-        pthread_rwlock_unlock(&s_x_lifecycle_lock);
+        ReleaseSRWLockShared(&s_x_lifecycle_lock);
         return 0;
     }
     return 1;
 }
 static void sender_submit_leave(void) {
-    pthread_rwlock_unlock(&s_x_lifecycle_lock);
+    ReleaseSRWLockShared(&s_x_lifecycle_lock);
 }
 
-static int submit(xf_job *j) {
+static int submit(xfer_job *j) {
     if (!j) return 0;
     j->sender_context = s_sender_context;
-    int duplicate = 0;
-    pthread_mutex_lock(&s_x.qlock);
+    int ok = 0, duplicate = 0;
+    EnterCriticalSection(&s_x.lock);
     if (hop_xfer_sender_active_job_matches(&s_x.active_job,j->batch) ||
         hop_xfer_sender_queue_contains_batch(&s_x.queue, &s_sender_queue_ops, j->batch))
         duplicate = 1;
-    int queued = !duplicate && !s_x.shutting_down &&
-        !sender_context_is_stopping(&s_sender_platform) &&
-        hop_xfer_sender_queue_push_back(&s_x.queue, &s_sender_queue_ops, j);
-    if (queued) j->owner=XFER_JOB_OWNER_QUEUE;
-    if (queued) pthread_cond_signal(&s_x.qcond);
-    pthread_mutex_unlock(&s_x.qlock);
-    return queued;
+    if (!duplicate && !s_x.shutting_down && !sender_context_is_stopping(&s_sender_platform) &&
+        s_x.client != INVALID_SOCKET && s_x.peer_ready) {
+        ok = hop_xfer_sender_queue_push_back(&s_x.queue, &s_sender_queue_ops, j);
+        if (ok) j->owner=XFER_JOB_OWNER_QUEUE;
+    }
+    LeaveCriticalSection(&s_x.lock);
+    if (ok) SetEvent(s_x.q_evt);
+    return ok;
 }
 
-static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requested_batch, uint64_t offer_id) {
+static int xfer_submit_paths_impl(const wchar_t *const *paths, int n, uint32_t requested_batch, uint64_t offer_id) {
     if (!paths || n <= 0) return 0;
     if (requested_batch && !(requested_batch & HOP_XFER_PASTE_BATCH_FLAG)) return 0;
     if (!xfer_platform_connected_locked()) {
@@ -59,7 +69,7 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
     }
 
     uint32_t batch = requested_batch;
-    if (!batch) { do { batch = __sync_add_and_fetch(&s_x.batch_seq, 1); } while (!batch); }
+    if (!batch) { do { batch = InterlockedIncrement((LONG *)&s_x.batch_seq); } while (!batch); }
 
     elist l;
     hop_xfer_task task;
@@ -103,7 +113,7 @@ static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requ
         return 0;
     }
 
-    xf_job *job = (xf_job *)calloc(1, sizeof(*job));
+    xfer_job *job = (xfer_job *)calloc(1, sizeof(*job));
     if (!job) {
         hop_xfer_task_finish(&task, HOP_XFER_TASK_FAILED);
         elist_free(&l);
@@ -175,7 +185,7 @@ static int xfer_submit_image_impl(const uint8_t *bgra, uint8_t *owned, int w, in
     }
 
     uint32_t batch;
-    do { batch = __sync_add_and_fetch(&s_x.batch_seq, 1); } while (!batch);
+    do { batch = InterlockedIncrement((LONG *)&s_x.batch_seq); } while (!batch);
     hop_xfer_task task;
     memset(&task,0,sizeof(task));
     if(!hop_xfer_task_init_classified(&task,0,0,batch,HOP_XFER_DIR_SEND,HOP_TASK_KIND_IMAGE)){
@@ -201,7 +211,7 @@ static int xfer_submit_image_impl(const uint8_t *bgra, uint8_t *owned, int w, in
         return 0;
     }
 
-    xf_job *job=(xf_job*)calloc(1,sizeof(*job));
+    xfer_job *job=(xfer_job*)calloc(1,sizeof(*job));
     if(!job){
         if(owned)free(owned);
         hop_xfer_task_finish(&task,HOP_XFER_TASK_FAILED);
@@ -242,13 +252,20 @@ static int xfer_submit_image_impl(const uint8_t *bgra, uint8_t *owned, int w, in
 }
 
 void xfer_kick(void) {
-    pthread_rwlock_rdlock(&s_x_lifecycle_lock);
+    AcquireSRWLockShared(&s_x_lifecycle_lock);
     if (s_x.sync_initialized && !s_x.shutting_down)
         sender_context_request_reconnect(&s_sender_platform);
-    pthread_rwlock_unlock(&s_x_lifecycle_lock);
+    ReleaseSRWLockShared(&s_x_lifecycle_lock);
+}
+int xfer_listening(void) {
+    AcquireSRWLockShared(&s_x_lifecycle_lock);
+    int listening = s_x.sync_initialized && !s_x.shutting_down &&
+        InterlockedCompareExchange(&s_x.listening, 0, 0) != 0;
+    ReleaseSRWLockShared(&s_x_lifecycle_lock);
+    return listening;
 }
 
-int xfer_submit_paths(const char *const *paths, int n) {
+int xfer_submit_paths(const wchar_t *const *paths, int n) {
     if (!sender_submit_enter()) return 0;
     if (!hop_update_work_enter()) { sender_submit_leave(); return 0; }
     int result = xfer_submit_paths_impl(paths, n, 0, 0);
@@ -257,7 +274,7 @@ int xfer_submit_paths(const char *const *paths, int n) {
     return result;
 }
 
-int xfer_submit_paths_for_paste(const char *const *paths, int n, uint32_t request_id, uint64_t offer_id) {
+int xfer_submit_paths_for_paste(const wchar_t *const *paths, int n, uint32_t request_id, uint64_t offer_id) {
     if (!(request_id & HOP_XFER_PASTE_BATCH_FLAG) || !sender_submit_enter()) return 0;
     if (!hop_update_work_enter()) { sender_submit_leave(); return 0; }
     int result = xfer_submit_paths_impl(paths, n, request_id, offer_id);

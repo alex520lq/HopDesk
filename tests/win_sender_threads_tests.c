@@ -32,7 +32,22 @@ int main(void) {
     assert(hop_win_sender_threads_join(&threads, 0, &joined));
     assert(joined);
 
-    /* A timeout must preserve both handles for a later successful Join. */
+    /* A successful per-thread Join must be retained when its peer times out.
+     * The next Shutdown attempt may only join/close the still-live handle. */
+    HANDLE partial_gate=CreateEventW(NULL,TRUE,FALSE,NULL);
+    assert(partial_gate!=NULL);
+    assert(hop_win_sender_threads_start(&threads,count_thread,blocked_thread,partial_gate));
+    assert(WaitForSingleObject(threads.listener_thread,5000)==WAIT_OBJECT_0);
+    assert(!hop_win_sender_threads_join(&threads,0,&joined));
+    assert(!joined);
+    assert(threads.listener_thread==NULL&&threads.sender_thread!=NULL);
+    SetEvent(partial_gate);
+    assert(hop_win_sender_threads_join(&threads,5000,&joined));
+    assert(joined);
+    assert(threads.listener_thread==NULL&&threads.sender_thread==NULL);
+    CloseHandle(partial_gate);
+
+    /* If both workers time out, both native handles remain available to retry. */
     HANDLE gate=CreateEventW(NULL,TRUE,FALSE,NULL);
     assert(gate!=NULL);
     assert(hop_win_sender_threads_start(&threads,blocked_thread,blocked_thread,gate));

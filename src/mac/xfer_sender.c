@@ -1262,7 +1262,7 @@ static hop_xfer_sender_worker_action sender_worker_finish_job(
     state.total_count=(int)hop_xfer_job_total(job->is_image,job->n);
     state.result=(hop_xfer_sender_job_result)result;
     state.completion_path=completion_path;state.peer_cancelled=peer_cancelled;
-    hop_xfer_sender_worker_runtime_ops ops;
+    hop_xfer_sender_worker_ops ops;
     memset(&ops,0,sizeof(ops));
     ops.user=&call;ops.max_attempts=HOP_XFER_JOB_RETRY_MAX;
     ops.reconnect_budget_ms=HOP_XFER_RECONNECT_BUDGET_MS;

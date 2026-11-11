@@ -1126,8 +1126,11 @@ int main(void){
         assert 'void ack_deliver(' in ack_platform
         assert 'sender_context_ack_destroy' in ack_platform
         protocol_source=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        ack_wait_header=(ROOT/'src/core/xfer_sender_ack_wait.h').read_text(encoding='utf-8')
         for macro in ['XFER_ACK_TIMEOUT','XFER_SEND_DEAD','XFER_LOCAL_IO','XFER_CANCELLED','XFER_PEER_ABORT','XFER_ACK_PENDING']:
-            assert protocol_source.count(f'#define {macro} ') == 1
+            assert f'#define {macro} ' not in protocol_source
+        for result in ['HOP_XFER_SENDER_ACK_WAIT_TIMEOUT','HOP_XFER_SENDER_ACK_WAIT_SEND_DEAD','HOP_XFER_SENDER_ACK_WAIT_LOCAL_IO','HOP_XFER_SENDER_ACK_WAIT_CANCELLED','HOP_XFER_SENDER_ACK_WAIT_PEER_ABORT']:
+            assert result in ack_wait_header
         assert 'static int ack_register(' not in protocol_source
         assert 'static int send_done(' not in protocol_source
         thread=extract(sender,'send_thread')

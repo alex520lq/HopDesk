@@ -517,7 +517,7 @@ int main(void){
 
     for platform in ['win','mac']:
         rx_sources='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
-        source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
+        source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         source=source.replace('#include "xfer_receive.inc"', rx_sources)
         common=r'''
 #include "hop.h"
@@ -658,7 +658,7 @@ int main(void){
 }
 '''
         if platform=='win': common='#define FIXTURE_WINDOWS 1\n'+common
-        sender_source=(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
+        sender_source=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         core_finish_source=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         run('image_'+platform,common+extract(sender_source,'send_done')+'\n'+extract(core_finish_source,'hop_xfer_rx_reset_batch_state')+'\n'+extract(core_finish_source,'rx_release_terminal_resources')+'\n'+extract(core_finish_source,'rx_abort_clear_state')+'\n'+extract(core_finish_source,'hop_xfer_rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_protocol_adapter.c','src/core/xfer_rx_dispatch.c'],threads=True)
     # Run the actual per-platform state wrappers, not only a reimplemented model.
@@ -763,17 +763,20 @@ int main(void){
 
     for platform in ['win','mac']:
         transport=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
-        worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
-        submission=(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
-        assert '#include "xfer_sender_worker.inc"' in transport
-        assert '#include "xfer_sender_protocol.inc"' in transport
-        assert '#include "xfer_submit.inc"' in transport
+        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        submission=(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
+        assert '#include "xfer_sender_internal.h"' in transport
+        assert 'xfer_sender_protocol.inc' not in transport
+        assert 'xfer_sender_worker.inc' not in transport
+        assert 'xfer_submit.inc' not in transport
+        assert '#include "xfer_sender_internal.h"' in worker
+        assert '#include "xfer_sender_internal.h"' in submission
         assert 'static void' in worker and 'send_thread' in worker
         scheduler=(ROOT/'src/core/xfer_sender_scheduler.c').read_text(encoding='utf-8')
         assert 'hop_xfer_sender_queue_take_cancelled' in scheduler and 'hop_xfer_sender_queue_take_head' in scheduler
         assert 'hop_xfer_sender_scheduler_wait_next' in worker
         assert 'queue_unlink' not in worker
-        protocol=(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
+        protocol=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         assert 'sender_engine_send_entry' in protocol and 'send_done_result' in protocol and 'run_job' in protocol
         assert 'ack_wait' in protocol and 'rate_feedback' in protocol
         assert 'xfer_submit_paths_impl' in submission and 'xfer_submit_image_impl' in submission
@@ -797,7 +800,7 @@ int main(void){
 
     # Exact production case bodies + lifecycle helpers; only OS I/O is doubled.
     for platform in ['win','mac']:
-        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
         receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
         assert 's_ack' not in receiver
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
@@ -889,11 +892,11 @@ int main(void){
     run('inject_release',fixture,['src/core/keymap.c'])
 
     for platform in ['win','mac']:
-        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
         receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         fixture=(ROOT/'tests/session_transport_fixture.c.in').read_text(encoding='utf-8')
-        context_protocol=(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
+        context_protocol=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         assert 's_sender_context.user = &s_sender_platform' in context_protocol
         for callback in ['sender_context_is_stopping','sender_context_is_batch_cancelled','sender_context_peer_aborted','sender_context_wait_ns']:
             assert 's_x.' not in extract(context_protocol,callback)
@@ -924,7 +927,7 @@ int main(void){
     # An unconfirmed ACK must force a fresh data channel before the same
     # batch/file ID is reused; the unresolved file remains the resume point.
     for platform in ['mac','win']:
-        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
         receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         protocol_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
@@ -1080,7 +1083,7 @@ int main(void){
     assert 'HOP_XFER_SENDER_COMMIT_ACK_TIMEOUT' in commit_core
     assert 'HOP_XFER_SENDER_COMMIT_ACK_SEND_DEAD' in commit_core
     for platform in ['win','mac']:
-        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
         commit=extract(sender,'send_done_result')
         assert 'hop_xfer_sender_run_commit' in commit
         assert 'ops.user = (void *)job' in commit
@@ -1092,7 +1095,7 @@ int main(void){
         assert 'job->sender_context.wait_ns' in commit_wait
         assert 'sender_context_is_stopping(NULL)' not in commit_stop
         thread=extract(sender,'send_thread')
-        worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
+        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         flow_core=(ROOT/'src/core/xfer_sender_worker_flow.c').read_text(encoding='utf-8')
         assert 'sender_worker_finish_job(' in thread
         assert 'hop_xfer_sender_worker_finish_job' in worker
@@ -1107,7 +1110,7 @@ int main(void){
 
         # Shutdown is an ownership transfer, not a best-effort queue cleanup.
         lifecycle=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
-        submit=(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
+        submit=(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
         shutdown=extract(lifecycle,'xfer_shutdown')
         shutdown_drain=extract(worker,'sender_shutdown_drain_jobs')
         job_free=extract(worker,'job_free')
@@ -1203,7 +1206,7 @@ int main(void){
             assert startup.index('xfer_init(') < startup.index('net_loop_run(')
             assert startup.index('clipboard_shutdown(') < startup.index('net_loop_shutdown(') < startup.rindex('xfer_shutdown()')
             assert 'while (!xfer_shutdown()) usleep(100000)' in startup
-        protocol=(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
+        protocol=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         assert 'send_chunk(&call->job->sender_context' in protocol
         assert 'send_small_with_context(&call->job->sender_context' in protocol
         assert 'hop_xfer_sender_context_status_file_phase(call ? &call->job->sender_context' in protocol
@@ -1385,7 +1388,7 @@ int main(void){
     # discard destination/version context and may overwrite the peer clipboard.
     retry_fixture=(ROOT/'tests/retry_guard_fixture.c.in').read_text(encoding='utf-8')
     for platform in ['win','mac']:
-        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
+        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
         fixture=retry_fixture.replace('@RETRY@',extract(sender,'xfer_retry_file'))
         if platform=='win':fixture='#define FIXTURE_WINDOWS 1\n'+fixture
         run('retry_guard_'+platform,fixture,[])
@@ -1448,8 +1451,8 @@ int main(void){
     assert 'r->jobs > s_used.jobs' in budget_release
     assert 'return 0;' in budget_release
     for platform in ['win','mac']:
-        worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
-        submission=(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
+        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        submission=(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
         send_thread=extract(worker,'send_thread')
         clear_active=extract(worker,'sender_worker_clear_active_job')
         dispose_job=extract(worker,'sender_worker_dispose_job')
@@ -1487,7 +1490,7 @@ int main(void){
             assert entry.index(lifecycle_read) < entry.index('s_x.sync_initialized')
         connected_guard=extract(transport,'xfer_platform_connected_locked')
         assert 's_x.sync_initialized' in connected_guard and 's_x.shutting_down' in connected_guard
-        submit=(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
+        submit=(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
         kick=extract(submit,'xfer_kick')
         assert lifecycle_read in kick and lifecycle_unlock in kick
         assert kick.index(lifecycle_read) < kick.index('s_x.sync_initialized')
@@ -1496,7 +1499,7 @@ int main(void){
             assert lifecycle_read in listening and lifecycle_unlock in listening
             assert listening.index(lifecycle_read) < listening.index('s_x.sync_initialized')
         receive=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
-        protocol=(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
+        protocol=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         assert '#include "../core/xfer_sender_active_job.h"' in transport
         assert 'hop_xfer_sender_active_job active_job' in transport
         assert 'hop_xfer_sender_active_job_cancel_target' in transport
@@ -1540,7 +1543,7 @@ int main(void){
     # Execute the exact production owner-claim/defer helpers on the host
     # platform. Two concurrent claimants must produce exactly one releaser.
     owner_platform='win' if os.name=='nt' else 'mac'
-    owner_worker=(ROOT/f'src/{owner_platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
+    owner_worker=(ROOT/f'src/{owner_platform}/xfer_sender.c').read_text(encoding='utf-8')
     owner_claim=extract(owner_worker,'job_claim_for_release')
     owner_defer=extract(owner_worker,'job_defer_to_shutdown')
     owner_prefix=r'''
@@ -1665,7 +1668,7 @@ int main(void) {
     worker_flow_core=(ROOT/'src/core/xfer_sender_worker_flow.c').read_text(encoding='utf-8')
     assert 'hop_xfer_sender_plan_retry' in worker_flow_core
     for platform in ['win','mac']:
-        worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
+        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         assert 'hop_xfer_sender_worker_finish_job' in worker
         assert 'hop_xfer_sender_plan_retry' not in worker
 
@@ -1682,7 +1685,7 @@ int main(void) {
     assert 'Cancelled by receiver' in lifecycle_tests
     assert 'hop_xfer_sender_get_terminal_decision' in worker_flow_core
     for platform in ['win','mac']:
-        worker=(ROOT/f'src/{platform}/xfer_sender_worker.inc').read_text(encoding='utf-8')
+        worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         assert 'hop_xfer_sender_worker_finish_job' in worker
         assert 'hop_xfer_sender_get_terminal_decision' not in worker
 

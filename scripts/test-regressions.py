@@ -1539,7 +1539,7 @@ int main(void){
         receive=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
         protocol=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         internal=(ROOT/f'src/{platform}/xfer_sender_internal.h').read_text(encoding='utf-8')
-        assert '#include "../core/xfer_sender_active_job.h"' in transport
+        assert '#include "../core/xfer_sender_active_job.h"' in internal
         assert 'hop_xfer_sender_active_job active_job' in internal
         assert 'hop_xfer_sender_active_job_cancel_target' in transport
         assert 'hop_xfer_sender_active_job_is_active' in transport

@@ -7,9 +7,7 @@
 
 #include "app.h"
 #include "xfer.h"
-#include "xfer_sender_threads.h"
 #include "../core/hop.h"
-#include "xfer_scanner.h"
 #include "xfer_rx_fs.h"
 #include "../core/xfer_rx_receipt.h"
 #include "../core/xfer_rx_lifecycle.h"
@@ -29,21 +27,9 @@
 #include "xfer_writer_queue.h"
 #include "../core/xfer_rx_queue.h"
 #include "../core/update_state.h"
-#include "../core/xfer_tracking.h"
 #include "../core/xfer_budget.h"
 #include "../core/xfer_task.h"
 #include "../core/xfer_task_history.h"
-#include "../core/xfer_rate.h"
-#include "../core/xfer_sender_context.h"
-#include "../core/xfer_sender_engine.h"
-#include "../core/xfer_sender_queue.h"
-#include "../core/xfer_sender_active_job.h"
-#include "../core/xfer_sender_scheduler.h"
-#include "../core/xfer_sender_retry.h"
-#include "../core/xfer_sender_lifecycle.h"
-#include "../core/xfer_sender_worker_flow.h"
-#include "../core/xfer_ack_window.h"
-#include "../core/xfer_buffer_pool.h"
 
 #if HOP_TASK_SESSION_BYTES != HOP_SESSION_BYTES
 #error Task and protocol session sizes differ

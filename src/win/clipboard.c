@@ -17,6 +17,7 @@
 #include "app.h"
 #include "xfer.h"
 #include "../core/xfer_task.h"
+#include "../core/xfer_clipboard_txn.h"
 
 #include <shellapi.h>
 #include <stdio.h>
@@ -52,21 +53,22 @@ static clip_image_task_owner *s_pending_image_tasks;
 
 static DWORD s_last_sequence;
 static SRWLOCK s_offer_lock = SRWLOCK_INIT;
+static hop_clipboard_txn s_clip_txn;
 static wchar_t *s_local_offer_paths[HOP_CLIP_OFFER_MAX_ITEMS];
 static int s_local_offer_count;
-static uint64_t s_local_offer_generation;
-static uint64_t s_local_offer_sequence;
-static uint32_t s_offer_request_seq;
-static uint32_t s_remote_offer_origin;
-static uint64_t s_remote_offer_generation;
-static uint32_t s_pending_paste_request;
-static DWORD s_pending_paste_sequence;
-static uint32_t s_seen_paste_requests[32];
-static unsigned s_seen_paste_next;
+#define s_local_offer_generation (s_clip_txn.local_offer_generation)
+#define s_local_offer_sequence (s_clip_txn.local_offer_sequence)
+#define s_offer_request_seq (s_clip_txn.request_sequence)
+#define s_remote_offer_origin (s_clip_txn.remote_offer_origin)
+#define s_remote_offer_generation (s_clip_txn.remote_offer_generation)
+#define s_pending_paste_request (s_clip_txn.pending_request_id)
+#define s_pending_paste_sequence (s_clip_txn.pending_clipboard_version)
+#define s_seen_paste_requests (s_clip_txn.seen_requests)
+#define s_seen_paste_next (s_clip_txn.seen_next)
+#define s_paste_scan_active (s_clip_txn.paste_scan_active)
+#define s_clip_stopping (s_clip_txn.stopping)
 static int s_pending_clear_remote;
-static int s_paste_scan_active;
-static int s_clip_stopping;
-static HANDLE s_paste_workers_done;
+static HANDLE s_paste_workers_done;static HANDLE s_paste_workers_done;
 
 #include "clipboard_offer.inc"
 
@@ -176,7 +178,7 @@ static int open_retry(HWND hwnd) {
 }
 
 void clip_init(HWND hwnd) {
-    s_clip_stopping=0;s_paste_scan_active=0;
+    hop_clipboard_txn_init(&s_clip_txn);hop_clipboard_txn_set_stopping(&s_clip_txn,0);
     if(s_paste_workers_done)CloseHandle(s_paste_workers_done);
     s_paste_workers_done=CreateEventW(NULL,TRUE,TRUE,NULL);
     s_last_sequence = GetClipboardSequenceNumber();
@@ -187,7 +189,7 @@ void clip_init(HWND hwnd) {
 }
 
 int clip_shutdown(HWND hwnd) {
-    AcquireSRWLockExclusive(&s_offer_lock);s_clip_stopping=1;ReleaseSRWLockExclusive(&s_offer_lock);
+    AcquireSRWLockExclusive(&s_offer_lock);hop_clipboard_txn_set_stopping(&s_clip_txn,1);ReleaseSRWLockExclusive(&s_offer_lock);
     if(s_paste_workers_done)WaitForSingleObject(s_paste_workers_done,INFINITE);
     RemoveClipboardFormatListener(hwnd);
     if (s_image_thread) { WaitForSingleObject(s_image_thread, INFINITE); CloseHandle(s_image_thread); s_image_thread = NULL; }

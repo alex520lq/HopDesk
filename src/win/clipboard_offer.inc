@@ -4,18 +4,15 @@ static uint32_t clip_local_device(void) {
 static void clip_send_offer_clear(uint32_t origin,uint64_t generation);
 static void clip_clear_remote_offer_local(void) {
     AcquireSRWLockExclusive(&s_offer_lock);
-    s_remote_offer_origin = 0; s_remote_offer_generation = 0;
-    s_pending_paste_request = 0; s_pending_paste_sequence = 0;
+    (void)hop_clipboard_txn_clear_remote_offer(&s_clip_txn);
     ReleaseSRWLockExclusive(&s_offer_lock);
 }
 static void clip_invalidate_remote_offer(int notify_peer) {
-    uint32_t origin=0; uint64_t generation=0;
+    hop_clipboard_offer_key old;
     AcquireSRWLockExclusive(&s_offer_lock);
-    origin=s_remote_offer_origin; generation=s_remote_offer_generation;
-    s_remote_offer_origin=0; s_remote_offer_generation=0;
-    s_pending_paste_request=0; s_pending_paste_sequence=0;
+    old=hop_clipboard_txn_clear_remote_offer(&s_clip_txn);
     ReleaseSRWLockExclusive(&s_offer_lock);
-    if(notify_peer&&origin&&generation)clip_send_offer_clear(origin,generation);
+    if(notify_peer&&old.origin&&old.generation)clip_send_offer_clear(old.origin,old.generation);
 }
 static void clip_send_offer_clear(uint32_t origin, uint64_t generation) {
     uint8_t p[HOP_CLIP_OFFER_CLEAR_BYTES];
@@ -26,12 +23,12 @@ static void clip_send_offer_clear(uint32_t origin, uint64_t generation) {
 static void clip_clear_local_offer(int notify_peer) {
     uint64_t generation;
     AcquireSRWLockExclusive(&s_offer_lock);
-    generation = s_local_offer_generation;
-    for (int i=0;i<s_local_offer_count;++i) free(s_local_offer_paths[i]);
+    generation=hop_clipboard_txn_clear_local_offer(&s_clip_txn);
+    for(int i=0;i<s_local_offer_count;++i)free(s_local_offer_paths[i]);
     memset(s_local_offer_paths,0,sizeof(s_local_offer_paths));
-    s_local_offer_count = 0; s_local_offer_generation = 0;
+    s_local_offer_count=0;
     ReleaseSRWLockExclusive(&s_offer_lock);
-    if (notify_peer && generation) clip_send_offer_clear(clip_local_device(), generation);
+    if(notify_peer&&generation)clip_send_offer_clear(clip_local_device(),generation);
 }
 static int clip_offer_names(const wchar_t *const *paths, int count, char **names) {
     if (!paths || !names || count <= 0 || count > (int)HOP_CLIP_OFFER_MAX_ITEMS) return 0;
@@ -79,11 +76,9 @@ static int clip_publish_local_offer(const wchar_t *const *paths, int count) {
     clip_invalidate_remote_offer(1);
     clip_clear_local_offer(1);
     AcquireSRWLockExclusive(&s_offer_lock);
-    uint64_t generation = ++s_local_offer_sequence;
-    if (!generation) generation = ++s_local_offer_sequence;
-    s_local_offer_generation = generation;
+    uint64_t generation = hop_clipboard_txn_publish_local_offer(&s_clip_txn);
     for(int i=0;i<count;++i) s_local_offer_paths[i]=copies[i];
-    s_local_offer_count=count; s_local_offer_generation=generation;
+    s_local_offer_count=count;
     ReleaseSRWLockExclusive(&s_offer_lock);
     if (!clip_send_offer(paths,count,clip_local_device(),generation))
         hop_log(HOP_LOG_WARN,"clip: file offer stored locally; peer will be updated on reconnect");

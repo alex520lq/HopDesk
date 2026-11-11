@@ -2251,4 +2251,26 @@ int main(void) {
             name+' must not place the multi-megabyte tracking object on the stack'
         )
 
+
+    # Clipboard Offer/Paste transaction policy has one shared Core owner.
+    clip_txn=(ROOT/'src/core/xfer_clipboard_txn.c').read_text(encoding='utf-8')
+    clip_txn_header=(ROOT/'src/core/xfer_clipboard_txn.h').read_text(encoding='utf-8')
+    for api in ['hop_clipboard_txn_publish_local_offer','hop_clipboard_txn_clear_remote_offer',
+                'hop_clipboard_txn_begin_paste','hop_clipboard_txn_accept_request',
+                'hop_clipboard_txn_complete_paste','hop_clipboard_txn_finish_paste_worker']:
+        assert api in clip_txn and api in clip_txn_header
+    assert 'HOP_CLIPBOARD_TXN_SEEN_REQUESTS' in clip_txn_header
+    for platform,main_name in [('win','clipboard.c'),('mac','clipboard.m')]:
+        main=(ROOT/f'src/{platform}/{main_name}').read_text(encoding='utf-8')
+        offer=(ROOT/f'src/{platform}/clipboard_offer.inc').read_text(encoding='utf-8')
+        paste=(ROOT/f'src/{platform}/clipboard_paste.inc').read_text(encoding='utf-8')
+        assert 'xfer_clipboard_txn.h' in main
+        assert 'hop_clipboard_txn_publish_local_offer' in offer
+        assert 'hop_clipboard_txn_set_remote_offer' in paste
+        assert 'hop_clipboard_txn_begin_paste' in paste
+        assert 'hop_clipboard_txn_accept_request' in paste
+        assert 'hop_clipboard_txn_complete_paste' in paste
+        assert 's_seen_paste_requests' not in paste
+        assert 's_offer_request_seq' not in paste
+
     print('All targeted regressions passed.',flush=True)

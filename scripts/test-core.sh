@@ -238,3 +238,7 @@ clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-
   "$ROOT/tests/xfer_sender_ack_adapter_tests.c" "$ROOT/src/core/xfer_sender_ack_adapter.c" \
   "$ROOT/src/mac/xfer_ack_coordinator.c" "$ROOT/src/core/xfer_ack_window.c"
 "$BUILD/hopdesk-sender-ack-adapter-tests"
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I "$ROOT/src/core" -o "$BUILD/hopdesk-clipboard-txn-tests" \
+  "$ROOT/tests/xfer_clipboard_txn_tests.c" "$ROOT/src/core/xfer_clipboard_txn.c"
+"$BUILD/hopdesk-clipboard-txn-tests"

@@ -1945,6 +1945,7 @@ int main(void) {
 #include <stdio.h>
 #include <string.h>
 #define HOP_LOG_ERROR 1
+#define HOP_LOG_WARN 2
 static int join_failures=1, drain_failures=1, writer_failures=1, audit_failures=1;
 static unsigned join_calls, drain_calls, reset_calls, writer_calls, audit_calls;
 static unsigned wake_calls, ack_destroy_calls, history_close_calls;

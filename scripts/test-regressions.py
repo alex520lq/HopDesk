@@ -1139,6 +1139,7 @@ int main(void){
         worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
         worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
         flow_core=(ROOT/'src/core/xfer_sender_worker_flow.c').read_text(encoding='utf-8')
+        job_lifecycle_core=(ROOT/'src/core/xfer_sender_job_lifecycle.c').read_text(encoding='utf-8')
         assert 'worker.finish_job=sender_worker_finish_job_adapter' in thread
         assert 'sender_worker_finish_job(' in worker
         assert 'hop_xfer_sender_worker_finish_job' in worker
@@ -1149,7 +1150,7 @@ int main(void){
         assert 'hop_xfer_sender_context_status_start_job(v.context,job)' in worker_core
         assert 'ops->status_end' in flow_core
         assert 'hop_xfer_sender_context_status_end(&j->sender_context' not in thread
-        assert 'hop_xfer_sender_context_status_end(' in worker
+        assert 'hop_xfer_sender_context_status_end(' in job_lifecycle_core
         assert ' status_start_job(' not in thread and ' status_end(' not in thread
 
         # Shutdown is an ownership transfer, not a best-effort queue cleanup.
@@ -1161,7 +1162,7 @@ int main(void){
         defer_job=extract(worker,'sender_job_defer_to_shutdown')
         release_job_resources=extract(ROOT/'src/core/xfer_sender_job_lifecycle.c','release_resources')
         finish_callback=extract(worker,'sender_worker_task_finish')
-        core_release=(ROOT/'src/core/xfer_sender_job_lifecycle.c').read_text(encoding='utf-8')
+        core_release=job_lifecycle_core
         requeue=extract(worker,'sender_worker_requeue_front')
         submit_enter=extract(submit,'sender_submit_enter')
         assert 'XFER_JOB_OWNER_WORKER' in worker and 'XFER_JOB_OWNER_SUBMITTER' in submit

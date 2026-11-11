@@ -1470,6 +1470,31 @@ int main(void){
         transport=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
         init=extract(transport,'xfer_init')
         assert init.index('if (s_x.sync_initialized)') < init.index('memset(&s_x')
+        connected=extract(transport,'xfer_connected')
+        busy=extract(transport,'xfer_busy')
+        cancel=extract(transport,'xfer_cancel')
+        cancel_task=extract(transport,'xfer_cancel_task')
+        if platform=='win':
+            lifecycle_read='AcquireSRWLockShared(&s_x_lifecycle_lock)'
+            lifecycle_unlock='ReleaseSRWLockShared(&s_x_lifecycle_lock)'
+        else:
+            lifecycle_read='pthread_rwlock_rdlock(&s_x_lifecycle_lock)'
+            lifecycle_unlock='pthread_rwlock_unlock(&s_x_lifecycle_lock)'
+        assert lifecycle_read in connected and lifecycle_unlock in connected
+        assert connected.index(lifecycle_read) < connected.index('xfer_platform_connected_locked')
+        for entry in (busy,cancel,cancel_task):
+            assert lifecycle_read in entry and lifecycle_unlock in entry
+            assert entry.index(lifecycle_read) < entry.index('s_x.sync_initialized')
+        connected_guard=extract(transport,'xfer_platform_connected_locked')
+        assert 's_x.sync_initialized' in connected_guard and 's_x.shutting_down' in connected_guard
+        submit=(ROOT/f'src/{platform}/xfer_submit.inc').read_text(encoding='utf-8')
+        kick=extract(submit,'xfer_kick')
+        assert lifecycle_read in kick and lifecycle_unlock in kick
+        assert kick.index(lifecycle_read) < kick.index('s_x.sync_initialized')
+        if platform=='win':
+            listening=extract(submit,'xfer_listening')
+            assert lifecycle_read in listening and lifecycle_unlock in listening
+            assert listening.index(lifecycle_read) < listening.index('s_x.sync_initialized')
         receive=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
         protocol=(ROOT/f'src/{platform}/xfer_sender_protocol.inc').read_text(encoding='utf-8')
         assert '#include "../core/xfer_sender_active_job.h"' in transport

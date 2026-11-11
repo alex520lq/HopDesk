@@ -55,7 +55,7 @@ static int submit(xfer_job *j) {
 static int xfer_submit_paths_impl(const wchar_t *const *paths, int n, uint32_t requested_batch, uint64_t offer_id) {
     if (!paths || n <= 0) return 0;
     if (requested_batch && !(requested_batch & HOP_XFER_PASTE_BATCH_FLAG)) return 0;
-    if (!xfer_connected()) {
+    if (!xfer_platform_connected_locked()) {
         hop_log(HOP_LOG_WARN, "xfer: data channel not connected, drop %d path(s)", n);
         return 0;
     }
@@ -170,7 +170,7 @@ static int xfer_submit_image_impl(const uint8_t *bgra, uint8_t *owned, int w, in
         release_image_source_reservation(source_task, source_reserved_bytes);
         return 0;
     }
-    if(total64>(uint64_t)SIZE_MAX||!xfer_connected()){
+    if(total64>(uint64_t)SIZE_MAX||!xfer_platform_connected_locked()){
         if(owned)free(owned);
         release_image_source_reservation(source_task, source_reserved_bytes);
         return 0;
@@ -244,9 +244,18 @@ static int xfer_submit_image_impl(const uint8_t *bgra, uint8_t *owned, int w, in
 }
 
 void xfer_kick(void) {
-    sender_context_request_reconnect(&s_sender_platform);
+    AcquireSRWLockShared(&s_x_lifecycle_lock);
+    if (s_x.sync_initialized && !s_x.shutting_down)
+        sender_context_request_reconnect(&s_sender_platform);
+    ReleaseSRWLockShared(&s_x_lifecycle_lock);
 }
-int xfer_listening(void) { return InterlockedCompareExchange(&s_x.listening, 0, 0) != 0; }
+int xfer_listening(void) {
+    AcquireSRWLockShared(&s_x_lifecycle_lock);
+    int listening = s_x.sync_initialized && !s_x.shutting_down &&
+        InterlockedCompareExchange(&s_x.listening, 0, 0) != 0;
+    ReleaseSRWLockShared(&s_x_lifecycle_lock);
+    return listening;
+}
 
 int xfer_submit_paths(const wchar_t *const *paths, int n) {
     if (!sender_submit_enter()) return 0;

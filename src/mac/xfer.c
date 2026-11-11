@@ -594,8 +594,6 @@ int xfer_init(const hop_config *cfg) {
         hop_log(HOP_LOG_WARN, "xfer: Init rejected while previous instance still owns Shutdown state");
         return 0;
     }
-    history_load();
-    task_history_store_open();
     memset(&s_x, 0, sizeof(s_x));
     hop_xfer_sender_queue_init(&s_x.queue);
     sender_context_init();
@@ -611,10 +609,28 @@ int xfer_init(const hop_config *cfg) {
             (double)s_x.rate.current_rate_bytes_per_sec / XFER_RATE_MIB_BYTES,
             (double)s_x.rate.max_rate_bytes_per_sec / XFER_RATE_MIB_BYTES);
 
-    pthread_mutex_init(&s_x.slock, NULL);
-    pthread_mutex_init(&s_x.qlock, NULL);
-    pthread_cond_init(&s_x.qcond, NULL);
+    if (pthread_mutex_init(&s_x.slock, NULL) != 0) {
+        pthread_rwlock_unlock(&s_x_lifecycle_lock);
+        hop_log(HOP_LOG_ERROR, "xfer: session mutex initialization failed");
+        return 0;
+    }
+    if (pthread_mutex_init(&s_x.qlock, NULL) != 0) {
+        pthread_mutex_destroy(&s_x.slock);
+        pthread_rwlock_unlock(&s_x_lifecycle_lock);
+        hop_log(HOP_LOG_ERROR, "xfer: queue mutex initialization failed");
+        return 0;
+    }
+    if (pthread_cond_init(&s_x.qcond, NULL) != 0) {
+        pthread_mutex_destroy(&s_x.qlock);
+        pthread_mutex_destroy(&s_x.slock);
+        pthread_rwlock_unlock(&s_x_lifecycle_lock);
+        hop_log(HOP_LOG_ERROR, "xfer: queue condition initialization failed");
+        return 0;
+    }
     s_x.sync_initialized = 1;
+    history_load();
+    task_history_store_open();
+
     if (!sender_context_ack_create()) {
         hop_log(HOP_LOG_ERROR, "xfer: ACK coordinator initialization failed");
         pthread_rwlock_unlock(&s_x_lifecycle_lock);
@@ -727,52 +743,76 @@ int xfer_shutdown(void) {
     return 1;
 }
 
-int xfer_connected(void) {
-    int c;
+/* Caller holds s_x_lifecycle_lock in read mode. */
+int xfer_platform_connected_locked(void) {
+    if (!s_x.sync_initialized || s_x.shutting_down) return 0;
     pthread_mutex_lock(&s_x.slock);
-    c = (s_x.sock >= 0 && s_x.peer_ready);
+    int connected = (s_x.sock >= 0 && s_x.peer_ready);
     pthread_mutex_unlock(&s_x.slock);
-    return c;
+    return connected;
+}
+
+int xfer_connected(void) {
+    pthread_rwlock_rdlock(&s_x_lifecycle_lock);
+    int connected = xfer_platform_connected_locked();
+    pthread_rwlock_unlock(&s_x_lifecycle_lock);
+    return connected;
 }
 
 /* 有没有正在进行的传输？菜单项据此决定是否可点。 */
 int xfer_busy(void) {
-    int b;
+    pthread_rwlock_rdlock(&s_x_lifecycle_lock);
+    if (!s_x.sync_initialized) {
+        pthread_rwlock_unlock(&s_x_lifecycle_lock);
+        return 0;
+    }
     pthread_mutex_lock(&s_x.qlock);
-    b = (hop_xfer_sender_active_job_is_active(&s_x.active_job) ||
-         !hop_xfer_sender_queue_empty(&s_x.queue));
+    int busy = (hop_xfer_sender_active_job_is_active(&s_x.active_job) ||
+                !hop_xfer_sender_queue_empty(&s_x.queue));
     pthread_mutex_unlock(&s_x.qlock);
     pthread_mutex_lock(&s_status_lock);
     /* Include a sender between dequeue/completion and retry requeue. */
-    b=b||s_send_status.status.active||s_receive_status.status.active;
+    busy = busy || s_send_status.status.active || s_receive_status.status.active;
     pthread_mutex_unlock(&s_status_lock);
-    return b;
+    pthread_rwlock_unlock(&s_x_lifecycle_lock);
+    return busy;
 }
 
-/* 用户取消。两件事一起做，因为"取消"不分方向：
- *   - 发：标记在发的批次，发送线程每块之后就会看到
- *   - 收：置个标志，conn 线程在两帧之间处理（s_rx 只归它所有）
- * 已经排队但还没开始发的批次也一并取消。 */
+/* The lifecycle read lock prevents racing destroyed queue/ACK synchronization. */
 void xfer_cancel(void) {
+    pthread_rwlock_rdlock(&s_x_lifecycle_lock);
+    if (!s_x.sync_initialized) {
+        pthread_rwlock_unlock(&s_x_lifecycle_lock);
+        return;
+    }
     pthread_mutex_lock(&s_x.qlock);
     uint32_t queued_batch = !hop_xfer_sender_queue_empty(&s_x.queue)
         ? ((xf_job *)s_x.queue.head)->batch : 0;
     s_x.cancel_batch = hop_xfer_sender_active_job_cancel_target(
         &s_x.active_job, queued_batch);
     __sync_lock_test_and_set(&s_x.cancel_rx, 1);
-    pthread_cond_signal(&s_x.qcond);      /* 唤醒发送线程，别让它等满 200 ms */
+    pthread_cond_signal(&s_x.qcond);
     pthread_mutex_unlock(&s_x.qlock);
-
     sender_context_wake_ack();
-
+    pthread_rwlock_unlock(&s_x_lifecycle_lock);
     hop_log(HOP_LOG_INFO, "xfer: cancel requested");
 }
 
 int xfer_cancel_task(hop_xfer_task_id id) {
-    if (!hop_xfer_task_request_cancel(id)) return 0;
-    pthread_mutex_lock(&s_x.qlock); pthread_cond_signal(&s_x.qcond); pthread_mutex_unlock(&s_x.qlock);
-    sender_context_wake_ack();
-    return 1;
+    pthread_rwlock_rdlock(&s_x_lifecycle_lock);
+    if (!s_x.sync_initialized) {
+        pthread_rwlock_unlock(&s_x_lifecycle_lock);
+        return 0;
+    }
+    int requested = hop_xfer_task_request_cancel(id);
+    if (requested) {
+        pthread_mutex_lock(&s_x.qlock);
+        pthread_cond_signal(&s_x.qcond);
+        pthread_mutex_unlock(&s_x.qlock);
+        sender_context_wake_ack();
+    }
+    pthread_rwlock_unlock(&s_x_lifecycle_lock);
+    return requested;
 }
 
 #include "xfer_submit.inc"

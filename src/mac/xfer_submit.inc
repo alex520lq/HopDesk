@@ -53,7 +53,7 @@ static int submit(xf_job *j) {
 static int xfer_submit_paths_impl(const char *const *paths, int n, uint32_t requested_batch, uint64_t offer_id) {
     if (!paths || n <= 0) return 0;
     if (requested_batch && !(requested_batch & HOP_XFER_PASTE_BATCH_FLAG)) return 0;
-    if (!xfer_connected()) {
+    if (!xfer_platform_connected_locked()) {
         hop_log(HOP_LOG_WARN, "xfer: data channel not connected, drop %d path(s)", n);
         return 0;
     }
@@ -168,7 +168,7 @@ static int xfer_submit_image_impl(const uint8_t *bgra, uint8_t *owned, int w, in
         release_image_source_reservation(source_task, source_reserved_bytes);
         return 0;
     }
-    if(total64>(uint64_t)SIZE_MAX||!xfer_connected()){
+    if(total64>(uint64_t)SIZE_MAX||!xfer_platform_connected_locked()){
         if(owned)free(owned);
         release_image_source_reservation(source_task, source_reserved_bytes);
         return 0;
@@ -242,7 +242,10 @@ static int xfer_submit_image_impl(const uint8_t *bgra, uint8_t *owned, int w, in
 }
 
 void xfer_kick(void) {
-    sender_context_request_reconnect(&s_sender_platform);
+    pthread_rwlock_rdlock(&s_x_lifecycle_lock);
+    if (s_x.sync_initialized && !s_x.shutting_down)
+        sender_context_request_reconnect(&s_sender_platform);
+    pthread_rwlock_unlock(&s_x_lifecycle_lock);
 }
 
 int xfer_submit_paths(const char *const *paths, int n) {

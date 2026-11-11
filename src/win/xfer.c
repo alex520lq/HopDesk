@@ -702,34 +702,52 @@ int xfer_shutdown(void) {
     return 1;
 }
 
-int xfer_connected(void) {
-    int c;
+/* Caller holds s_x_lifecycle_lock in shared mode. This helper never
+ * touches a native lock after Shutdown has destroyed it. */
+int xfer_platform_connected_locked(void) {
+    if (!s_x.sync_initialized || s_x.shutting_down) return 0;
+    int connected;
     EnterCriticalSection(&s_x.lock);
-    c = (s_x.client != INVALID_SOCKET && s_x.peer_ready);
+    connected = (s_x.client != INVALID_SOCKET && s_x.peer_ready);
     LeaveCriticalSection(&s_x.lock);
-    return c;
+    return connected;
+}
+
+int xfer_connected(void) {
+    AcquireSRWLockShared(&s_x_lifecycle_lock);
+    int connected = xfer_platform_connected_locked();
+    ReleaseSRWLockShared(&s_x_lifecycle_lock);
+    return connected;
 }
 
 /* 有没有正在进行的传输？菜单项据此决定是否可点。 */
 int xfer_busy(void) {
-    int b;
+    AcquireSRWLockShared(&s_x_lifecycle_lock);
+    if (!s_x.sync_initialized) {
+        ReleaseSRWLockShared(&s_x_lifecycle_lock);
+        return 0;
+    }
+    int busy;
     EnterCriticalSection(&s_x.lock);
-    b = (hop_xfer_sender_active_job_is_active(&s_x.active_job) ||
-         !hop_xfer_sender_queue_empty(&s_x.queue));
+    busy = (hop_xfer_sender_active_job_is_active(&s_x.active_job) ||
+            !hop_xfer_sender_queue_empty(&s_x.queue));
     LeaveCriticalSection(&s_x.lock);
     AcquireSRWLockExclusive(&s_status_lock);
     /* Include a sender between dequeue/completion and retry requeue. */
-    b=b||s_send_status.status.active||s_receive_status.status.active;
+    busy = busy || s_send_status.status.active || s_receive_status.status.active;
     ReleaseSRWLockExclusive(&s_status_lock);
-    return b;
+    ReleaseSRWLockShared(&s_x_lifecycle_lock);
+    return busy;
 }
 
-/* 用户取消。两件事一起做，因为"取消"不分方向：
- *   - 发：标记在发的批次，发送线程每块之后就会看到
- *   - 收：置个标志，listen 线程在两帧之间处理（s_rx 只归它所有）
- * 已经排队但还没开始发的批次也一并取消 —— 用户点了取消，
- * 不该还有一队文件在后面等着发出去。 */
+/* 用户取消。两件事一起做，因为"取消"不分方向。
+ * The lifecycle read lock prevents racing destroyed queue/ACK synchronization. */
 void xfer_cancel(void) {
+    AcquireSRWLockShared(&s_x_lifecycle_lock);
+    if (!s_x.sync_initialized) {
+        ReleaseSRWLockShared(&s_x_lifecycle_lock);
+        return;
+    }
     EnterCriticalSection(&s_x.lock);
     uint32_t queued_batch = !hop_xfer_sender_queue_empty(&s_x.queue)
         ? ((xfer_job *)s_x.queue.head)->batch : 0;
@@ -737,16 +755,25 @@ void xfer_cancel(void) {
         &s_x.active_job, queued_batch);
     s_x.cancel_rx = 1;
     LeaveCriticalSection(&s_x.lock);
-    SetEvent(s_x.q_evt);      /* 唤醒发送线程，别让它等满 200 ms */
-    sender_context_wake_ack(); /* 唤醒可能正卡在等 ACK 的发送线程 */
+    if (s_x.q_evt) SetEvent(s_x.q_evt);
+    sender_context_wake_ack();
+    ReleaseSRWLockShared(&s_x_lifecycle_lock);
     hop_log(HOP_LOG_INFO, "xfer: cancel requested");
 }
 
 int xfer_cancel_task(hop_xfer_task_id id) {
-    if (!hop_xfer_task_request_cancel(id)) return 0;
-    SetEvent(s_x.q_evt);
-    sender_context_wake_ack();
-    return 1;
+    AcquireSRWLockShared(&s_x_lifecycle_lock);
+    if (!s_x.sync_initialized) {
+        ReleaseSRWLockShared(&s_x_lifecycle_lock);
+        return 0;
+    }
+    int requested = hop_xfer_task_request_cancel(id);
+    if (requested) {
+        if (s_x.q_evt) SetEvent(s_x.q_evt);
+        sender_context_wake_ack();
+    }
+    ReleaseSRWLockShared(&s_x_lifecycle_lock);
+    return requested;
 }
 
 #include "xfer_submit.inc"

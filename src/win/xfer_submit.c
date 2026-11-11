@@ -259,7 +259,9 @@ static int xfer_submit_image_impl(const uint8_t *bgra, uint8_t *owned, int w, in
 }
 
 void xfer_kick(void) {
-    AcquireSRWLockShared(&s_x_lifecycle_lock);
+    /* Called from Receiver when update admission is closed. Never block behind
+     * Shutdown's writer lock: Shutdown joins that same Receiver thread. */
+    if (!TryAcquireSRWLockShared(&s_x_lifecycle_lock)) return;
     if (s_x.sync_initialized && !s_x.shutting_down)
         sender_context_request_reconnect(&s_sender_platform);
     ReleaseSRWLockShared(&s_x_lifecycle_lock);

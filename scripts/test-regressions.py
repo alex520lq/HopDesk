@@ -1537,8 +1537,10 @@ int main(void){
         assert 's_x.sync_initialized' in connected_guard and 's_x.shutting_down' in connected_guard
         submit=(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
         kick=extract(submit,'xfer_kick')
-        assert lifecycle_read in kick and lifecycle_unlock in kick
-        assert kick.index(lifecycle_read) < kick.index('s_x.sync_initialized')
+        kick_try='TryAcquireSRWLockShared(&s_x_lifecycle_lock)' if platform=='win' else 'pthread_rwlock_tryrdlock(&s_x_lifecycle_lock)'
+        assert kick_try in kick and lifecycle_unlock in kick
+        assert kick.index(kick_try) < kick.index('s_x.sync_initialized') < kick.index(lifecycle_unlock)
+        assert 'if (!TryAcquireSRWLockShared' in kick if platform=='win' else 'if (pthread_rwlock_tryrdlock' in kick
         if platform=='win':
             listening=extract(submit,'xfer_listening')
             assert lifecycle_read in listening and lifecycle_unlock in listening

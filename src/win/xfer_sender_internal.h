@@ -14,6 +14,7 @@
 #include "../core/xfer_sender_engine_adapter.h"
 #include "../core/xfer_sender_queue.h"
 #include "../core/xfer_sender_active_job.h"
+#include "../core/xfer_sender_worker.h"
 #define CHUNK_HDR (25u + HOP_DATA_PREFIX)
 typedef enum {
     XFER_JOB_OWNER_SUBMITTER = 0,
@@ -76,6 +77,11 @@ uint64_t rate_now_ns(void);
 int sender_context_is_stopping(void *);
 void sender_context_request_reconnect(void *);
 int job_free(xfer_job *,xfer_job_owner);
+uint64_t now_ms(void);
+int run_job(SOCKET,uint8_t *,xfer_job *);
+void send_abort_msg_with_context(const hop_xfer_sender_context *,SOCKET,uint32_t,uint8_t,uint8_t);
+hop_xfer_sender_worker_action sender_worker_finish_job(xfer_job *,SOCKET,int,int,int);
+
 void sender_context_init(void);
 int sender_context_ack_create(void);
 void sender_context_ack_destroy(void);

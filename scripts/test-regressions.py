@@ -786,8 +786,15 @@ int main(void){
         assert 'rate_init_from_config' not in protocol and 'rate_queue_pressure_permille' not in protocol
         assert 'XFER_RATE_MIN_MIB' not in (ROOT/f'src/{platform}/xfer_sender_internal.h').read_text(encoding='utf-8')
         assert 'HOP_XFER_RATE_MIB_BYTES' in rate_header
-        assert 'sender_engine_send_entry' in protocol and 'send_done_result' in protocol and 'run_job' in protocol
-        assert 'ack_wait' in protocol and 'rate_feedback' in protocol
+        engine_adapter=(ROOT/'src/core/xfer_sender_engine_adapter.c').read_text(encoding='utf-8')
+        ack_wait_core=(ROOT/'src/core/xfer_sender_ack_wait.c').read_text(encoding='utf-8')
+        chunk_core=(ROOT/'src/core/xfer_sender_chunk.c').read_text(encoding='utf-8')
+        assert 'adapter_send_entry' in engine_adapter and 'adapter_wait_ack' in engine_adapter
+        assert 'hop_xfer_sender_engine_adapter_run(&ops)' in protocol
+        assert 'send_done_result' in protocol and 'run_job' in protocol
+        assert 'hop_xfer_sender_ack_wait(' in ack_wait_core and 'hop_xfer_sender_ack_wait(' in engine_adapter
+        assert 'hop_xfer_sender_send_chunk(' in chunk_core and 'hop_xfer_sender_send_chunk(&ops' in protocol
+        assert 'rate_feedback' in protocol and 'rate_feedback' in engine_adapter
         assert 'xfer_submit_paths_impl' in submission and 'xfer_submit_image_impl' in submission
 
         scanner=(ROOT/f'src/{platform}/xfer_scanner.c').read_text(encoding='utf-8')

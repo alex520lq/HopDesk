@@ -250,31 +250,6 @@ static int send_chunk(const hop_xfer_sender_context *context,
 
 static uint64_t now_ms(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000L); }
 
-int sender_context_ack_create(void) {
-    if (s_sender_platform.ack_adapter) return 0;
-    hop_xfer_sender_ack_adapter *adapter =
-        hop_xfer_sender_ack_adapter_create(sender_context_now_ns, NULL);
-    if (!adapter) return 0;
-    s_sender_platform.ack_adapter = adapter;
-    s_sender_context.ack_user = adapter;
-    return 1;
-}
-void sender_context_ack_destroy(void) {
-    hop_xfer_sender_ack_adapter_destroy(
-        (hop_xfer_sender_ack_adapter *)s_sender_platform.ack_adapter);
-    s_sender_platform.ack_adapter = NULL;
-    s_sender_context.ack_user = NULL;
-}
-void sender_context_wake_ack(void) {
-    if (s_sender_context.ack_wake && s_sender_context.ack_user)
-        s_sender_context.ack_wake(s_sender_context.ack_user);
-}
-void ack_deliver(uint32_t batch, uint32_t id, int status) {
-    if (s_sender_context.ack_user && s_sender_context.ack_deliver)
-        (void)s_sender_context.ack_deliver(s_sender_context.ack_user,
-                                           batch, id, status);
-}
-
 /* run_job 的结局 */
 #define JOB_DONE        0   /* 全部条目都有结论了（可能部分失败），该送 DONE */
 #define JOB_NET_DOWN    1   /* 链路断了，整批退回队列等重连 */

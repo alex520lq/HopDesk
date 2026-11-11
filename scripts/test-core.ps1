@@ -255,6 +255,43 @@ if ($LASTEXITCODE -ne 0) { throw "Sender context contract compilation failed ($L
 & $senderContext
 if ($LASTEXITCODE -ne 0) { throw "Sender context contract tests failed ($LASTEXITCODE)" }
 
+$senderAckWait = Join-Path $build 'hopdesk-sender-ack-wait-tests.exe'
+$senderAckWaitSources = @(
+    (Join-Path $root 'tests/xfer_sender_ack_wait_tests.c'),
+    (Join-Path $root 'src/core/xfer_sender_ack_wait.c'),
+    (Join-Path $root 'src/core/xfer_sender_context_adapter.c')
+)
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$senderAckWait @senderAckWaitSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $senderAckWait @senderAckWaitSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Sender ACK wait test compilation failed ($LASTEXITCODE)" }
+& $senderAckWait
+if ($LASTEXITCODE -ne 0) { throw "Sender ACK wait tests failed ($LASTEXITCODE)" }
+
+$senderChunk = Join-Path $build 'hopdesk-sender-chunk-tests.exe'
+$senderChunkSources = @(
+    (Join-Path $root 'tests/xfer_sender_chunk_tests.c'),
+    (Join-Path $root 'src/core/xfer_sender_chunk.c'),
+    (Join-Path $root 'src/core/xfer_sender_context_adapter.c'),
+    (Join-Path $root 'src/core/xfer_rate.c'),
+    (Join-Path $root 'src/core/xfer_budget.c'),
+    (Join-Path $root 'src/core/protocol.c'),
+    (Join-Path $root 'src/core/session.c'),
+    (Join-Path $root 'src/core/clock.c'),
+    (Join-Path $root 'src/core/watchdog.c'),
+    (Join-Path $root 'src/core/crc32.c')
+)
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /O2 /W4 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I $inc /Fe:$senderChunk @senderChunkSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $senderChunk @senderChunkSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Sender chunk test compilation failed ($LASTEXITCODE)" }
+& $senderChunk
+if ($LASTEXITCODE -ne 0) { throw "Sender chunk tests failed ($LASTEXITCODE)" }
+
 $senderQueue = Join-Path $build 'hopdesk-sender-queue-tests.exe'
 $senderQueueSources = @(
     (Join-Path $root 'tests/xfer_sender_queue_tests.c'),
@@ -393,6 +430,28 @@ if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
 if ($LASTEXITCODE -ne 0) { throw "Sender engine test compilation failed ($LASTEXITCODE)" }
 & $senderEngine
 if ($LASTEXITCODE -ne 0) { throw "Sender engine tests failed ($LASTEXITCODE)" }
+
+$senderEngineAdapter = Join-Path $build 'hopdesk-sender-engine-adapter-tests.exe'
+$senderEngineAdapterSources = @(
+    (Join-Path $root 'tests/xfer_sender_engine_adapter_tests.c'),
+    (Join-Path $root 'src/core/xfer_sender_engine_adapter.c'),
+    (Join-Path $root 'src/core/xfer_sender_ack_wait.c'),
+    (Join-Path $root 'src/core/xfer_sender_context_adapter.c'),
+    (Join-Path $root 'src/core/xfer_sender_engine.c'),
+    (Join-Path $root 'src/core/xfer_tracking.c'),
+    (Join-Path $root 'src/core/xfer_ack_window.c'),
+    (Join-Path $root 'src/core/xfer_validate.c'),
+    (Join-Path $root 'src/core/protocol.c'),
+    (Join-Path $root 'src/core/crc32.c')
+)
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /O2 /W4 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I $inc /Fe:$senderEngineAdapter @senderEngineAdapterSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $senderEngineAdapter @senderEngineAdapterSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Sender engine adapter test compilation failed ($LASTEXITCODE)" }
+& $senderEngineAdapter
+if ($LASTEXITCODE -ne 0) { throw "Sender engine adapter tests failed ($LASTEXITCODE)" }
 
 $senderImage = Join-Path $build 'hopdesk-sender-image-tests.exe'
 $senderImageSources = @(

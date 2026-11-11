@@ -379,3 +379,23 @@ No physical two-device or weak-network acceptance is claimed by the unit/CI test
 - Added portable tests for callback argument forwarding, cancellation composition, exact session bytes, Task lifecycle, status telemetry and optional observability. Wired the adapter into Windows/macOS Core tests, session-transport fixtures and the Windows HA fixture.
 - **Validation: pending exact-head Windows MSVC and macOS Apple Clang Actions run.**
 - Next: split the remaining large Sender protocol adapter fragments into independently compiled platform modules, beginning with transport/ACK and DONE commit adapters. Keep all socket/session state and native synchronization behind explicit context callbacks.
+
+
+## 31. Shared Sender ACK wait and invalid-view cleanup (2026-11-11)
+
+- Added `src/core/xfer_sender_ack_wait.[ch]` as the single ACK wait state machine used by per-file ACK and batch DONE_ACK on both platforms. It owns deadline checks, ACK delivery/receive-time expiry, cancellation, peer ABORT, connection/epoch validation, unregister-on-exit and RTT conversion.
+- The adapter takes a polling policy rather than embedding OS waits: Windows retains a remaining-deadline wait bounded below `MAXDWORD`; macOS retains its 100 ms polling slice. Native ACK coordinator locks and event/condition waits remain behind the existing context adapter.
+- Removed the duplicated `ack_wait` implementations from Windows and macOS. Both file ACK and DONE_ACK paths now call the shared helper.
+- Fixed the Worker invalid-View path: if the partial view exposes a Task ID, the Worker clears only the matching Active Job marker before releasing the worker-owned Job. A regression test injects an invalid view and verifies marker cleanup and exactly one release.
+- Removed the session-transport fixture's stale extraction/call of the deleted `job_bind_session` helper. Session rebinding and checkpoint reset are now exercised by the production-linked shared Worker tests; the fixture continues to test the real platform session snapshot and wire path.
+- Added standalone ACK-wait tests for deadline expiry, fixed/dynamic wait slices, ACK RTT, late ACK, cancellation, peer ABORT, dead connection and invalid contracts.
+- Validation: pending exact-head Windows MSVC and macOS Apple Clang Actions run.
+
+## 32. Shared Sender chunk transport and engine adapter (2026-11-11)
+
+- Added `src/core/xfer_sender_chunk.[ch]` to own FILE_CHUNK pacing, token-bucket admission, protocol header/prefix construction, scatter/gather frame parts, serialized frame write, send-time feedback cadence and chunk-stage telemetry. Platform code now supplies only the live rate limiter, socket handle and existing feedback callback.
+- Added `src/core/xfer_sender_engine_adapter.[ch]` to build the file/image engine callback tables and centralize context forwarding, ACK result mapping, retry delay, wait/reconnect, status/logging, image begin/end payloads and file-entry adaptation.
+- Windows and macOS retain only platform-owned entry accessors, native file open/read/close, socket send, rate feedback and CPU-yield callbacks. Their `run_job` functions now provide a compact adapter contract instead of separately assembling the file and image state machines.
+- Added production-linked chunk tests for owned/external data buffers, exact frame decoding, token-bucket waiting, burst rejection, stale session and telemetry; added adapter tests for file and image jobs.
+- Wired the new Core tests into macOS and Windows Core test scripts and the Windows HA link target. App build scripts already include all Core C files automatically.
+- Validation: pending exact-head Windows MSVC and macOS Apple Clang Actions run.

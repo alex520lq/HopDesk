@@ -426,3 +426,14 @@ CI follow-up:
 - Run #1614 exposed a Windows return-code macro accidentally removed with the obsolete DONE wrapper block; the code now returns the shared HOP_XFER_SENDER_JOB_NET_DOWN enum directly.
 - Run #1619 confirmed both native application builds compile, including the new platform adapters. Its portable regression phase then exposed stale source-extraction fixtures that still expected the deleted send_done wrapper and looked for moved commit callbacks in xfer_sender.c. The fixture now builds its DONE test frame locally and extracts the commit callbacks from xfer_sender_commit_adapter.c.
 - A fresh full Windows/macOS Actions run is required for the updated head; neither failed run is counted as acceptance.
+
+
+## 34. Worker runtime platform Adapter extraction (2026-11-11)
+
+- Moved the platform Worker runtime integration out of `xfer_sender.c` into independently compiled `xfer_sender_worker_adapter.c` on Windows and macOS.
+- The new modules own native scheduler locking/waiting/claim callbacks, Job View projection, connection/status snapshots, active-job cancellation handoff, platform ABORT send adaptation, and the native `send_thread` entrypoint.
+- Shared queue selection, deadline/reconnect scheduling, Worker Job lifecycle flow, and terminal policy remain in `src/core/xfer_sender_scheduler.c`, `xfer_sender_worker.c`, and `xfer_sender_worker_flow.c` respectively. No second retry or terminal state machine was introduced.
+- `xfer_sender.c` retains protocol/job execution and Job resource ownership; only the small set of functions required by the platform Worker adapter are exposed through `xfer_sender_internal.h`. Platform-specific lock/event/condition/QoS behavior remains native.
+- Windows HA source linkage and source-contract regression checks now include the new Worker adapter and assert that `send_thread` no longer lives in `xfer_sender.c`.
+- CI validation for this extraction is pending on Actions Run #1633 (head `becc2437af5a54f95492b271ed4c0b3b1ba14141`). Run #1631 found the macOS adapter needed `<errno.h>` for `ETIMEDOUT`; that include was added before the latest run. Earlier run #1632 compiled the macOS app after this correction, but was superseded before full test completion.
+- Real two-device disconnect/cancel/reconnect and long-duration transfer validation remains outstanding.

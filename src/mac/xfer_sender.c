@@ -663,8 +663,7 @@ static void sender_worker_task_finish(void *user,hop_xfer_task_state state) {
     job->pending_finish_state=state;
     job->pending_finish_valid=1;
     job->pending_status_end=1;
-    if(job_release_task_resources(job))
-        hop_xfer_sender_context_task_finish(&job->sender_context,&job->task,state);
+    /* Shared Job finalizer releases payload/Reservation before finishing Task. */
 }
 static void sender_worker_status_end(void *user,uint32_t batch,int phase,const char *detail) {
     sender_worker_call *call=(sender_worker_call *)user;

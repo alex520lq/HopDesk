@@ -239,13 +239,6 @@ static int send_chunk(const hop_xfer_sender_context *context,
  * 最多允许 4 个文件等待接收端落盘 ACK。数据帧仍然串行写入同一 TCP
  * stream；ACK 由接收端 writer 异步返回，按 batch/id 独立归位。 */
 
-/* 返回值：>=0 是接收端 ACK 的 status；负数是本地/链路层面的失败 */
-#define XFER_ACK_TIMEOUT  HOP_XFER_SENDER_ACK_WAIT_TIMEOUT
-#define XFER_SEND_DEAD    HOP_XFER_SENDER_ACK_WAIT_SEND_DEAD
-#define XFER_LOCAL_IO     HOP_XFER_SENDER_ACK_WAIT_LOCAL_IO
-#define XFER_CANCELLED    HOP_XFER_SENDER_ACK_WAIT_CANCELLED
-#define XFER_PEER_ABORT   HOP_XFER_SENDER_ACK_WAIT_PEER_ABORT
-#define XFER_ACK_PENDING  (-6)
 #define SENDER_ACK_POLL_INTERVAL_MS 100u
 
 static uint64_t now_ms(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000L); }

@@ -1175,6 +1175,8 @@ int main(void){
         scheduler=(ROOT/'src/core/xfer_sender_scheduler.c').read_text(encoding='utf-8')
         scheduler_header=(ROOT/'src/core/xfer_sender_scheduler.h').read_text(encoding='utf-8')
         send_thread=extract(worker,'send_thread')
+        assert 'sender_worker_clear_active_job(expired)' in send_thread
+        assert 'memset(&s_x.active_job,0,sizeof(s_x.active_job))' in shutdown_drain
         begin_pass=extract(worker,'sender_scheduler_begin_pass')
         wait_adapter=extract(worker,'sender_scheduler_wait_locked')
         clear_active=extract(worker,'sender_worker_clear_active_job')
@@ -1503,6 +1505,8 @@ int main(void){
         assert job_free.index('job_claim_for_release') < job_free.index('job_release_task_resources')
         assert job_free.index(owner_lock) < job_free.index('j->owner = XFER_JOB_OWNER_RELEASED')
         assert requeue_front.index(owner_lock) < requeue_front.index('call->job->owner')
+        assert 'hop_xfer_sender_active_job_clear_if_matches' in requeue_front
+        assert requeue_front.index('hop_xfer_sender_active_job_clear_if_matches') < requeue_front.index('call->job->owner')
         assert 'call->job=NULL' in dispose_job
         transport=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
         init=extract(transport,'xfer_init')

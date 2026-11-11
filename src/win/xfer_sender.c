@@ -1176,7 +1176,11 @@ static int sender_worker_requeue_front(void *user) {
     int queued=call->job->owner==XFER_JOB_OWNER_WORKER &&
         !sender_worker_is_stopping(call) &&
         hop_xfer_sender_queue_push_front(&s_x.queue,&s_sender_queue_ops,call->job);
-    if(queued)call->job->owner=XFER_JOB_OWNER_QUEUE;
+    if (queued) {
+        (void)hop_xfer_sender_active_job_clear_if_matches(
+            &s_x.active_job,call->job->batch,call->job->task.id);
+        call->job->owner=XFER_JOB_OWNER_QUEUE;
+    }
     LeaveCriticalSection(&s_x.lock);
     return queued;
 }
@@ -1302,6 +1306,9 @@ static hop_xfer_sender_worker_action sender_worker_finish_job(
 }
 int sender_shutdown_drain_jobs(void) {
     EnterCriticalSection(&s_x.lock);
+    /* No worker remains. Clear any active identity left by an interrupted
+     * retry before Shutdown becomes the sole owner of every queued Job. */
+    memset(&s_x.active_job,0,sizeof(s_x.active_job));
     xfer_job *queued=(xfer_job *)hop_xfer_sender_queue_detach_all(&s_x.queue);
     if (queued) {
         xfer_job *tail=queued;
@@ -1450,6 +1457,7 @@ DWORD WINAPI send_thread(LPVOID arg) {
                          sizeof(expired->pending_status_detail),"%s",
                          "Transfer stopped while queued");
             }
+            sender_worker_clear_active_job(expired);
             (void)job_free(expired,XFER_JOB_OWNER_WORKER);
             continue;
         }

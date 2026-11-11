@@ -1159,7 +1159,12 @@ static int sender_worker_requeue_front(void *user) {
     int queued=call->job->owner==XFER_JOB_OWNER_WORKER &&
         !sender_worker_is_stopping(call) &&
         hop_xfer_sender_queue_push_front(&s_x.queue,&s_sender_queue_ops,call->job);
-    if(queued){call->job->owner=XFER_JOB_OWNER_QUEUE;pthread_cond_signal(&s_x.qcond);}
+    if (queued) {
+        (void)hop_xfer_sender_active_job_clear_if_matches(
+            &s_x.active_job,call->job->batch,call->job->task.id);
+        call->job->owner=XFER_JOB_OWNER_QUEUE;
+        pthread_cond_signal(&s_x.qcond);
+    }
     pthread_mutex_unlock(&s_x.qlock);
     return queued;
 }
@@ -1285,6 +1290,9 @@ static hop_xfer_sender_worker_action sender_worker_finish_job(
 }
 int sender_shutdown_drain_jobs(void) {
     pthread_mutex_lock(&s_x.qlock);
+    /* No worker remains. Clear any active identity left by an interrupted
+     * retry before Shutdown becomes the sole owner of every queued Job. */
+    memset(&s_x.active_job,0,sizeof(s_x.active_job));
     xf_job *queued=(xf_job *)hop_xfer_sender_queue_detach_all(&s_x.queue);
     if (queued) {
         xf_job *tail=queued;
@@ -1445,6 +1453,7 @@ void *send_thread(void *arg) {
                          sizeof(expired->pending_status_detail),"%s",
                          "Transfer stopped while queued");
             }
+            sender_worker_clear_active_job(expired);
             (void)job_free(expired,XFER_JOB_OWNER_WORKER);
             continue;
         }

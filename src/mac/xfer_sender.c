@@ -526,7 +526,6 @@ typedef struct {
     xf_job *job;
 } sender_file_engine_call;
 
-static void sender_engine_log(void *user, int level, const char *message);
 
 static int sender_engine_file_open(void *user, const void *platform_entry,
                                    intptr_t *file_handle, uint32_t *system_error) {
@@ -565,276 +564,152 @@ static void sender_engine_file_close(void *user, intptr_t file_handle) {
     close((int)file_handle);
 }
 
-static int sender_engine_file_send_message(void *user, uint8_t type,
-                                           const uint8_t *payload,
-                                           uint32_t length, uint32_t batch) {
-    sender_file_engine_call *call = (sender_file_engine_call *)user;
-    return send_small_with_context(&call->job->sender_context,
-                                   call->fd, type, payload, length, batch);
-}
 
-static int sender_engine_file_send_chunk(void *user, uint32_t batch,
-                                         uint32_t id, uint64_t offset,
-                                         const uint8_t *data, uint32_t length,
-                                         uint32_t crc, uint64_t read_ns,
-                                         uint64_t crc_ns) {
-    sender_file_engine_call *call = (sender_file_engine_call *)user;
-    return send_chunk(&call->job->sender_context, call->fd,
-                      call->tx, batch, id, offset, data, length,
-                      crc, read_ns, crc_ns);
-}
 
-static int sender_engine_file_ack_register(void *user, uint32_t batch, uint32_t id) {
+
+
+
+
+
+
+
+
+
+
+static const void *sender_engine_entry_at(void *user, int index) {
     sender_file_engine_call *call = (sender_file_engine_call *)user;
-    return call && call->job && ack_register(&call->job->sender_context, batch, id);
+    return call && index >= 0 && index < call->job->n ? &call->job->e[index] : NULL;
 }
-static int sender_engine_file_ack_mark_sent(void *user, uint32_t batch, uint32_t id) {
+static const char *sender_engine_entry_path(void *user, const void *entry) {
+    (void)user;
+    return entry ? ((const xf_entry *)entry)->rel : NULL;
+}
+static const char *sender_engine_entry_name(void *user, const void *entry) {
+    (void)user;
+    return entry ? ((const xf_entry *)entry)->name : NULL;
+}
+static uint64_t sender_engine_entry_size(void *user, const void *entry) {
+    (void)user;
+    return entry ? ((const xf_entry *)entry)->size : 0;
+}
+static uint64_t sender_engine_entry_mtime(void *user, const void *entry) {
+    (void)user;
+    return entry ? ((const xf_entry *)entry)->mtime : 0;
+}
+static uint32_t sender_engine_entry_flags(void *user, const void *entry) {
+    (void)user;
+    return entry ? (uint32_t)((const xf_entry *)entry)->flags : 0;
+}
+static int sender_engine_send_message(void *user, intptr_t socket_handle,
+                                      uint8_t type, const uint8_t *payload,
+                                      uint32_t length, uint32_t batch) {
     sender_file_engine_call *call = (sender_file_engine_call *)user;
-    return call && call->job && ack_mark_sent(&call->job->sender_context, batch, id);
+    return call && call->job && send_small_with_context(
+        &call->job->sender_context, (int)socket_handle,
+        type, payload, length, batch);
 }
-static int sender_engine_file_ack_set_deadline(void *user, uint32_t batch,
-                                                uint32_t id, uint64_t deadline_ns) {
+static int sender_engine_send_chunk(void *user, intptr_t socket_handle,
+                                    uint8_t *tx_buffer, uint32_t batch,
+                                    uint32_t id, uint64_t offset,
+                                    const uint8_t *data, uint32_t length,
+                                    uint32_t crc, uint64_t read_ns,
+                                    uint64_t crc_ns) {
     sender_file_engine_call *call = (sender_file_engine_call *)user;
-    return call && call->job && ack_set_deadline(&call->job->sender_context, batch, id, deadline_ns);
+    return call && call->job && send_chunk(&call->job->sender_context,
+        (int)socket_handle, tx_buffer,
+        batch, id, offset, data, length, crc, read_ns, crc_ns);
 }
-static void sender_engine_file_ack_unregister(void *user, uint32_t batch, uint32_t id) {
-    sender_file_engine_call *call = (sender_file_engine_call *)user;
-    if (call && call->job) ack_unregister(&call->job->sender_context, batch, id);
-}
-static uint64_t sender_engine_file_now_ns(void *user) {
-    sender_file_engine_call *call = (sender_file_engine_call *)user;
-    return call && call->job->sender_context.now_ns
-        ? call->job->sender_context.now_ns(call->job->sender_context.user)
-        : rate_now_ns();
-}
-static void sender_engine_file_status_stage_time(void *user, uint32_t batch,
-                                                  int stage, uint64_t elapsed_ns) {
-    sender_file_engine_call *call = (sender_file_engine_call *)user;
-    hop_xfer_sender_context_status_stage_time(call ? &call->job->sender_context : NULL,
-                             batch, stage, elapsed_ns);
-}
-static void sender_engine_file_yield(void *user) {
+static void sender_engine_yield_cpu(void *user) {
     (void)user;
     yield_cpu();
 }
 
-static const void *sender_engine_entry_at(void *user, int index) {
-    sender_file_engine_call *call = (sender_file_engine_call *)user;
-    return index >= 0 && index < call->job->n ? &call->job->e[index] : NULL;
-}
 
 static const char *sender_engine_entry_path(void *user, const void *entry) {
     (void)user;
     return entry ? ((const xf_entry *)entry)->rel : NULL;
 }
 
-static int sender_engine_cancel_requested(void *user, uint32_t batch) {
-    sender_file_engine_call *call = (sender_file_engine_call *)user;
-    return call && hop_xfer_sender_context_job_cancel_requested(
-        &call->job->sender_context, batch, call->job->task.id);
-}
 
-static int sender_engine_peer_aborted(void *user, uint32_t batch) {
-    sender_file_engine_call *call = (sender_file_engine_call *)user;
-    return call && call->job && call->job->sender_context.peer_aborted
-        ? call->job->sender_context.peer_aborted(
-              call->job->sender_context.user, batch)
-        : 0;
-}
 
-static hop_xfer_sender_send_result sender_engine_send_entry(
-    void *user, uint32_t batch, uint32_t id, const void *entry,
-    uint64_t *ack_deadline_ns) {
-    sender_file_engine_call *call = (sender_file_engine_call *)user;
-    const xf_entry *native = (const xf_entry *)entry;
-    hop_xfer_sender_file_entry view = {
-        entry, native->name, native->rel, native->size,
-        native->mtime, (uint32_t)native->flags
-    };
-    hop_xfer_sender_file_ops ops;
-    memset(&ops, 0, sizeof(ops));
-    ops.user = call;
-    ops.cancel_requested = sender_engine_cancel_requested;
-    ops.peer_aborted = sender_engine_peer_aborted;
-    ops.open_file = sender_engine_file_open;
-    ops.read_file = sender_engine_file_read;
-    ops.close_file = sender_engine_file_close;
-    ops.send_message = sender_engine_file_send_message;
-    ops.send_chunk = sender_engine_file_send_chunk;
-    ops.ack_register = sender_engine_file_ack_register;
-    ops.ack_mark_sent = sender_engine_file_ack_mark_sent;
-    ops.ack_set_deadline = sender_engine_file_ack_set_deadline;
-    ops.ack_unregister = sender_engine_file_ack_unregister;
-    ops.now_ns = sender_engine_file_now_ns;
-    ops.status_stage_time = sender_engine_file_status_stage_time;
-    ops.yield_cpu = sender_engine_file_yield;
-    ops.log_message = sender_engine_log;
-    return hop_xfer_sender_send_file_entry(
-        &ops, batch, id, &view, call->tx + CHUNK_HDR, s_x.chunk,
-        call->tx + CHUNK_HDR, s_x.chunk,
-        (uint64_t)HOP_XFER_ACK_TIMEOUT_MS * 1000000ull,
-        HOP_FILE_FLAG_DIR, HOP_FILE_OK, HOP_FILE_IO_ERROR,
-        HOP_MSG_FILE_BEGIN, HOP_MSG_FILE_END, ack_deadline_ns);
-}
 
-static hop_xfer_sender_ack_result sender_engine_wait_ack(
-    void *user, uint32_t batch, uint32_t id, uint64_t deadline_ns,
-    uint64_t *rtt_us) {
-    sender_file_engine_call *call = (sender_file_engine_call *)user;
-    if (!call || !call->job) return HOP_XFER_SENDER_ACK_LOCAL_FAILURE;
-    int result = hop_xfer_sender_ack_wait(&call->job->sender_context,
-        (intptr_t)call->fd, s_send_epoch, batch,
-        call->job->task.id, id, deadline_ns,
-        SENDER_ACK_POLL_INTERVAL_MS, rtt_us);
-    if (result == HOP_FILE_ACK_OK) return HOP_XFER_SENDER_ACK_OK;
-    if (result == HOP_FILE_ACK_BADPATH) return HOP_XFER_SENDER_ACK_BADPATH;
-    if (result == HOP_XFER_SENDER_ACK_WAIT_TIMEOUT) return HOP_XFER_SENDER_ACK_TIMEOUT;
-    if (result == HOP_XFER_SENDER_ACK_WAIT_SEND_DEAD) return HOP_XFER_SENDER_ACK_SEND_DEAD;
-    if (result == HOP_XFER_SENDER_ACK_WAIT_PEER_ABORT) return HOP_XFER_SENDER_ACK_PEER_ABORT;
-    if (result == HOP_XFER_SENDER_ACK_WAIT_CANCELLED) return HOP_XFER_SENDER_ACK_CANCELLED;
-    return result >= 0 ? HOP_XFER_SENDER_ACK_OTHER_REMOTE
-                       : HOP_XFER_SENDER_ACK_LOCAL_FAILURE;
-}
 
-static void sender_engine_unregister_batch(void *user, uint32_t batch) {
-    sender_file_engine_call *call = (sender_file_engine_call *)user;
-    if (call && call->job) ack_unregister_batch(&call->job->sender_context, batch);
-}
+
+
+
+
+
 
 static void sender_engine_rate_feedback(void *user, uint64_t rtt_us) {
     (void)user;
     rate_feedback(rtt_us);
 }
 
-static void sender_engine_status_file_phase(void *user, uint32_t batch,
-                                             int index, int phase,
-                                             uint32_t attempts) {
-    sender_file_engine_call *call = (sender_file_engine_call *)user;
-    hop_xfer_sender_context_status_file_phase(call ? &call->job->sender_context : NULL,
-                             batch, index, phase, attempts);
-}
 
-static unsigned sender_engine_retry_delay_ms(void *user, unsigned attempt) {
-    (void)user;
-    return hop_xfer_file_retry_delay_ms((int)attempt);
-}
 
-static int sender_engine_wait_ms(void *user, unsigned duration_ms) {
-    sender_file_engine_call *call = (sender_file_engine_call *)user;
-    const hop_xfer_sender_context *context = call ? &call->job->sender_context : NULL;
-    return context && context->wait_ns &&
-           context->wait_ns(context->user, (uint64_t)duration_ms * 1000000ull);
-}
 
-static void sender_engine_request_reconnect(void *user) {
-    sender_file_engine_call *call = (sender_file_engine_call *)user;
-    const hop_xfer_sender_context *context = call && call->job
-        ? &call->job->sender_context : NULL;
-    if (context && context->request_reconnect)
-        context->request_reconnect(context->user);
-}
 
-static void sender_engine_log(void *user, int level, const char *message) {
-    sender_file_engine_call *call = (sender_file_engine_call *)user;
-    hop_xfer_sender_context_logf(call ? &call->job->sender_context : NULL, level, "%s",
-                message ? message : "");
-}
 
-static uint64_t sender_engine_now_ns(void *user) {
-    sender_file_engine_call *call = (sender_file_engine_call *)user;
-    return call && call->job->sender_context.now_ns
-        ? call->job->sender_context.now_ns(call->job->sender_context.user)
-        : rate_now_ns();
-}
 
-static int sender_engine_send_image_begin(void *user, uint32_t batch,
-                                          uint32_t width, uint32_t height,
-                                          uint32_t stride) {
-    sender_file_engine_call *call = (sender_file_engine_call *)user;
-    uint8_t payload[20];
-    hop_put_be32(payload, batch);
-    hop_put_be32(payload + 4, 1);
-    hop_put_be32(payload + 8, width);
-    hop_put_be32(payload + 12, height);
-    hop_put_be32(payload + 16, stride);
-    return send_small_with_context(&call->job->sender_context, call->fd,
-                                   HOP_MSG_IMAGE_BEGIN, payload,
-                                   sizeof(payload), batch);
-}
 
-static int sender_engine_send_image_chunk(void *user, uint32_t batch,
-                                          uint32_t id, uint64_t offset,
-                                          const uint8_t *data, uint32_t length,
-                                          uint32_t crc, uint64_t crc_ns) {
-    sender_file_engine_call *call = (sender_file_engine_call *)user;
-    return send_chunk(&call->job->sender_context, call->fd,
-                      call->tx, batch, id, offset, data,
-                      length, crc, 0, crc_ns);
-}
 
-static int sender_engine_send_image_end(void *user, uint32_t batch,
-                                        uint32_t id, uint8_t status,
-                                        uint32_t file_crc) {
-    sender_file_engine_call *call = (sender_file_engine_call *)user;
-    uint8_t payload[9];
-    hop_put_be32(payload, id);
-    payload[4] = status;
-    hop_put_be32(payload + 5, file_crc);
-    return send_small_with_context(&call->job->sender_context, call->fd,
-                                   HOP_MSG_FILE_END, payload,
-                                   sizeof(payload), batch);
-}
 
-static void sender_engine_yield(void *user) {
-    (void)user;
-    yield_cpu();
-}
+
+
+
+
+
+
+
+
+
+
 
 static int run_job(int fd, uint8_t *tx, xf_job *j) {
-    ack_unregister_batch(&j->sender_context, j->batch);
-    if (hop_xfer_sender_context_job_cancel_requested(&j->sender_context, j->batch, j->task.id))
-        return JOB_CANCELLED;
-    if (j->sender_context.peer_aborted &&
-        j->sender_context.peer_aborted(j->sender_context.user, j->batch))
-        return JOB_PEER_ABORT;
+    if (!j) return JOB_NET_DOWN;
     sender_file_engine_call call = {fd, tx, j};
-    if (j->is_image) {
-        hop_xfer_sender_image_ops image_ops;
-        memset(&image_ops, 0, sizeof(image_ops));
-        image_ops.user = &call;
-        image_ops.cancel_requested = sender_engine_cancel_requested;
-        image_ops.peer_aborted = sender_engine_peer_aborted;
-        image_ops.now_ns = sender_engine_now_ns;
-        image_ops.send_image_begin = sender_engine_send_image_begin;
-        image_ops.send_image_chunk = sender_engine_send_image_chunk;
-        image_ops.send_image_end = sender_engine_send_image_end;
-        image_ops.yield_cpu = sender_engine_yield;
-        image_ops.rate_feedback = sender_engine_rate_feedback;
-        image_ops.status_file_phase = sender_engine_status_file_phase;
-        return hop_xfer_sender_run_image(&image_ops, j->batch, j->pixels,
-                                         (uint32_t)j->w, (uint32_t)j->h,
-                                         (uint32_t)j->stride, s_x.chunk,
-                                         HOP_FILE_OK, j->n, &j->next_i,
-                                         &j->ok);
-    }
-    hop_xfer_sender_engine_ops ops;
+    hop_xfer_sender_engine_adapter_ops ops;
     memset(&ops, 0, sizeof(ops));
     ops.user = &call;
-    ops.cancel_requested = sender_engine_cancel_requested;
-    ops.peer_aborted = sender_engine_peer_aborted;
+    ops.context = &j->sender_context;
+    ops.socket_handle = (intptr_t)fd;
+    ops.connection_epoch = s_send_epoch;
+    ops.batch = j->batch;
+    ops.task_id = j->task.id;
+    ops.is_image = j->is_image;
+    ops.entry_count = j->n;
+    ops.next_index = &j->next_i;
+    ops.ok_count = &j->ok;
+    ops.image_pixels = j->pixels;
+    ops.image_width = (uint32_t)j->w;
+    ops.image_height = (uint32_t)j->h;
+    ops.image_stride = (uint32_t)j->stride;
+    ops.tx_buffer = tx;
+    ops.chunk_size = s_x.chunk;
+    ops.chunk_header_size = CHUNK_HDR;
+    ops.ack_timeout_ns = (uint64_t)HOP_XFER_ACK_TIMEOUT_MS * 1000000ull;
+    ops.ack_poll_interval_ms = SENDER_ACK_POLL_INTERVAL_MS;
+    ops.max_attempts = HOP_XFER_FILE_RETRY_MAX;
+    ops.directory_flag = HOP_FILE_FLAG_DIR;
+    ops.file_ok_status = HOP_FILE_OK;
+    ops.file_io_error_status = HOP_FILE_IO_ERROR;
+    ops.file_begin_message = HOP_MSG_FILE_BEGIN;
+    ops.file_end_message = HOP_MSG_FILE_END;
+    ops.image_begin_message = HOP_MSG_IMAGE_BEGIN;
     ops.entry_at = sender_engine_entry_at;
+    ops.entry_name = sender_engine_entry_name;
     ops.entry_path = sender_engine_entry_path;
-    ops.send_entry = sender_engine_send_entry;
-    ops.wait_ack = sender_engine_wait_ack;
-    ops.unregister_batch = sender_engine_unregister_batch;
+    ops.entry_size = sender_engine_entry_size;
+    ops.entry_mtime = sender_engine_entry_mtime;
+    ops.entry_flags = sender_engine_entry_flags;
+    ops.open_file = sender_engine_file_open;
+    ops.read_file = sender_engine_file_read;
+    ops.close_file = sender_engine_file_close;
+    ops.send_message = sender_engine_send_message;
+    ops.send_chunk = sender_engine_send_chunk;
+    ops.yield_cpu = sender_engine_yield_cpu;
     ops.rate_feedback = sender_engine_rate_feedback;
-    ops.status_file_phase = sender_engine_status_file_phase;
-    ops.retry_delay_ms = sender_engine_retry_delay_ms;
-    ops.wait_ms = sender_engine_wait_ms;
-    ops.request_reconnect = sender_engine_request_reconnect;
-    ops.log_message = sender_engine_log;
-    return hop_xfer_sender_run_files(&ops, j->batch, j->n, &j->next_i,
-                                     &j->ok, HOP_XFER_FILE_RETRY_MAX);
+    return hop_xfer_sender_engine_adapter_run(&ops);
 }
 
 /* Platform node accessors; queue ordering/removal policy lives in Core. */

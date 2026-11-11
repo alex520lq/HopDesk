@@ -11,6 +11,7 @@
 #include "../core/xfer_sender_context.h"
 #include "../core/xfer_sender_ack_wait.h"
 #include "../core/xfer_sender_chunk.h"
+#include "../core/xfer_sender_engine_adapter.h"
 #include "../core/xfer_sender_queue.h"
 #include "../core/xfer_sender_active_job.h"
 #define CHUNK_HDR (25u + HOP_DATA_PREFIX)

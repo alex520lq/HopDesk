@@ -791,7 +791,7 @@ int main(void){
         chunk_core=(ROOT/'src/core/xfer_sender_chunk.c').read_text(encoding='utf-8')
         assert 'adapter_send_entry' in engine_adapter and 'adapter_wait_ack' in engine_adapter
         assert 'hop_xfer_sender_engine_adapter_run(&ops)' in protocol
-        assert 'send_done_result' in protocol and 'run_job' in protocol
+        assert 'sender_commit_adapter_run' in protocol and 'run_job' in protocol
         assert 'hop_xfer_sender_ack_wait(' in ack_wait_core and 'hop_xfer_sender_ack_wait(' in engine_adapter
         assert 'hop_xfer_sender_send_chunk(' in chunk_core and 'hop_xfer_sender_send_chunk(&ops' in protocol
         assert 'rate_feedback' in protocol and 'rate_feedback' in engine_adapter
@@ -1103,13 +1103,14 @@ int main(void){
     assert 'HOP_XFER_SENDER_COMMIT_ACK_SEND_DEAD' in commit_core
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
-        commit=extract(sender,'send_done_result')
+        commit_adapter=(ROOT/f'src/{platform}/xfer_sender_commit_adapter.c').read_text(encoding='utf-8')
+        commit=extract(commit_adapter,'sender_commit_adapter_run')
         assert 'hop_xfer_sender_run_commit' in commit
         assert 'ops.user = (void *)job' in commit
-        assert 'sender_commit_current_connection' in sender
-        assert 'sender_commit_wait_ack' in sender
-        commit_stop=extract(sender,'sender_commit_is_stopping')
-        commit_wait=extract(sender,'sender_commit_wait_ms')
+        assert 'sender_commit_current_connection' in commit_adapter
+        assert 'sender_commit_wait_ack' in commit_adapter
+        commit_stop=extract(commit_adapter,'sender_commit_is_stopping')
+        commit_wait=extract(commit_adapter,'sender_commit_wait_ms')
         assert 'job->sender_context.is_stopping' in commit_stop
         assert 'job->sender_context.wait_ns' in commit_wait
         assert 'sender_context_is_stopping(NULL)' not in commit_stop
@@ -1301,16 +1302,18 @@ int main(void){
         assert 'hop_xfer_sender_engine_adapter_run(&ops)' in protocol
         assert 'hop_xfer_sender_run_files' not in protocol
         assert 'hop_xfer_sender_run_image' not in protocol
-        commit_wait_ack=extract(protocol,'sender_commit_wait_ack')
+        commit_adapter=(ROOT/f'src/{platform}/xfer_sender_commit_adapter.c').read_text(encoding='utf-8')
+        commit_wait_ack=extract(commit_adapter,'sender_commit_wait_ack')
         assert 'job->commit_socket' in commit_wait_ack
         assert 'job->commit_epoch' in commit_wait_ack
         assert 'hop_xfer_sender_ack_wait' in commit_wait_ack
-        commit_send=extract(protocol,'sender_commit_send_done')
-        assert 'send_done_with_context(&job->sender_context' in commit_send
+        commit_send=extract(commit_adapter,'sender_commit_send_done')
+        assert 'send_small_with_context(&job->sender_context' in commit_send
+        assert 'HOP_MSG_XFER_DONE' in commit_send
         abort_send=extract(protocol,'send_abort_msg_with_context')
         assert 'send_small_with_context(context' in abort_send
         assert 'send_abort_msg_with_context(&call->job->sender_context' in worker
-        assert 'send_done_result(' in worker
+        assert 'sender_commit_adapter_run(' in worker
         assert 'hop_xfer_sender_get_terminal_decision' not in thread and 'completion_path' in flow_core
 
     # Test exact Windows task-list selection and action logic with UI doubles.

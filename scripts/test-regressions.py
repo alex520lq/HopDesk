@@ -1570,17 +1570,23 @@ int main(void){
         clear_active=extract(worker,'sender_worker_clear_active_job')
         dispose_job=extract(worker,'sender_worker_dispose_job')
         job_free=extract(worker,'job_free')
-        job_claim=extract(worker,'job_claim_for_release')
-        job_defer=extract(worker,'job_defer_to_shutdown')
+        job_claim=extract(worker,'sender_job_claim_release')
+        job_defer=extract(worker,'sender_job_defer_to_shutdown')
+        mark_released=extract(worker,'sender_job_mark_released')
+        job_lifecycle_core=(ROOT/'src/core/xfer_sender_job_lifecycle.c').read_text(encoding='utf-8')
         requeue_front=extract(worker,'sender_worker_requeue_front')
         owner_lock='EnterCriticalSection(&s_x.lock)' if platform=='win' else 'pthread_mutex_lock(&s_x.qlock)'
         assert owner_lock in job_claim
         assert 'j->owner = XFER_JOB_OWNER_RELEASING' in job_claim
         assert owner_lock in job_defer
         assert 'j->owner == XFER_JOB_OWNER_RELEASING' in job_defer
-        assert 'job_claim_for_release(j, expected_owner)' in job_free
-        assert job_free.index('job_claim_for_release') < job_free.index('job_release_task_resources')
-        assert job_free.index(owner_lock) < job_free.index('j->owner = XFER_JOB_OWNER_RELEASED')
+        assert owner_lock in mark_released and 'j->owner = XFER_JOB_OWNER_RELEASED' in mark_released
+        assert 'hop_xfer_sender_job_release(' in job_free
+        assert 'job_claim_for_release' not in job_free and 'job_release_task_resources' not in job_free
+        assert job_lifecycle_core.index('o->claim') < job_lifecycle_core.index('release_resources(v)')
+        assert job_lifecycle_core.index('release_resources(v)') < job_lifecycle_core.index('hop_xfer_sender_context_task_dispose')
+        assert job_lifecycle_core.index('hop_xfer_sender_context_task_dispose') < job_lifecycle_core.index('o->mark_released')
+        assert job_lifecycle_core.index('o->mark_released') < job_lifecycle_core.index('o->free_storage')
         assert requeue_front.index(owner_lock) < requeue_front.index('call->job->owner')
         assert 'hop_xfer_sender_active_job_clear_if_matches' in requeue_front
         assert requeue_front.index('hop_xfer_sender_active_job_clear_if_matches') < requeue_front.index('call->job->owner=XFER_JOB_OWNER_QUEUE')

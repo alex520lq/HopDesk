@@ -568,6 +568,24 @@ int xfer_init(const hop_config *cfg) {
 }
 
 static int xfer_shutdown_task_audit(void) {
+    /* The manager audit can only see registered Task records. Also verify the
+     * platform owners themselves are empty before synchronization is destroyed. */
+    pthread_mutex_lock(&s_x.qlock)
+    int sender_clean = hop_xfer_sender_queue_empty(&s_x.queue) &&
+        s_x.shutdown_jobs == NULL &&
+        !hop_xfer_sender_active_job_is_active(&s_x.active_job);
+    pthread_mutex_unlock(&s_x.qlock)
+    int receiver_clean = s_wq == NULL && s_rx.writer == NULL &&
+        !s_rx.task.initialized && !s_rx.task.id &&
+        !s_rx.batch_state.active && !s_rx.cur_path &&
+        !s_rx.image_buffer.data && !s_rx.tops && s_rx.ntop == 0;
+    if (!sender_clean || !receiver_clean) {
+        hop_log(HOP_LOG_ERROR,
+                "xfer: shutdown owner audit failed (sender_clean=%d receiver_clean=%d)",
+                sender_clean, receiver_clean);
+        return 0;
+    }
+
     hop_xfer_task_audit audit;
     if (!hop_xfer_task_reconcile(&audit)) {
         hop_log(HOP_LOG_ERROR, "xfer: Task/Reservation shutdown audit unavailable");
@@ -591,7 +609,6 @@ static int xfer_shutdown_task_audit(void) {
     }
     return 1;
 }
-
 int xfer_shutdown(void) {
     /* Writer admission lock waits for all in-flight scans/submitters. Keep it
      * held until shared locks, queue, Task history and ACK state are destroyed. */

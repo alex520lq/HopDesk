@@ -1213,6 +1213,13 @@ int main(void){
         shutdown_audit=extract(lifecycle,'xfer_shutdown_task_audit')
         assert 'hop_xfer_task_reconcile' in shutdown_audit
         assert 'audit.ledger.accounting_errors' in shutdown_audit
+        assert 'hop_xfer_sender_queue_empty(&s_x.queue)' in shutdown_audit
+        assert 's_x.shutdown_jobs == NULL' in shutdown_audit
+        assert 'hop_xfer_sender_active_job_is_active(&s_x.active_job)' in shutdown_audit
+        assert 's_wq == NULL && s_rx.writer == NULL' in shutdown_audit
+        assert '!s_rx.task.initialized && !s_rx.task.id' in shutdown_audit
+        assert '!s_rx.batch_state.active' in shutdown_audit
+        assert '!s_rx.image_buffer.data && !s_rx.tops && s_rx.ntop == 0' in shutdown_audit
         assert 'HOP_XFER_SENDER_JOB_SHUTDOWN' in flow_core
         assert 'ops->is_stopping' in flow_core
         if platform=='mac':

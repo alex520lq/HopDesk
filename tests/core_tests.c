@@ -1150,14 +1150,24 @@ static void test_xfer_task_identity_and_lifecycle(void) {
     hop_xfer_reservation_handle inconsistent;
     memset(&inconsistent,0,sizeof(inconsistent));
     CHECK(hop_xfer_budget_reservation_init(&inconsistent,1004));
-    inconsistent.active=1;
-    inconsistent.jobs=1; /* No matching global Job reservation exists. */
+    CHECK(hop_xfer_budget_reserve_job(&inconsistent));
     hop_xfer_budget_get_snapshot(&snap);
     uint64_t errors_before=snap.accounting_errors;
+    uint64_t releases_before=snap.released_reservations;
+    inconsistent.jobs=2; /* Simulate a damaged local claim against one global Job. */
     CHECK(!hop_xfer_budget_release(&inconsistent));
-    CHECK(inconsistent.active && inconsistent.jobs==1);
+    CHECK(inconsistent.active && inconsistent.jobs==2);
     hop_xfer_budget_get_snapshot(&snap);
-    CHECK(snap.accounting_errors==errors_before+1);
+    CHECK(snap.accounting_errors==errors_before+1 && snap.jobs==1);
+    /* Failed return must preserve the exact claim so its owner can repair and retry. */
+    inconsistent.jobs=1;
+    CHECK(hop_xfer_budget_release(&inconsistent));
+    CHECK(!inconsistent.active && !inconsistent.jobs);
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(!snap.jobs && snap.released_reservations==releases_before+1);
+    CHECK(hop_xfer_budget_release(&inconsistent)); /* Idempotent after the one successful return. */
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.released_reservations==releases_before+1);
 
     hop_xfer_budget_limits defaults={16u,32768u,8ull*1024ull*1024ull*1024ull,256ull*1024ull*1024ull,256ull*1024ull*1024ull,8u,8ull*1024ull*1024ull,512ull*1024ull*1024ull};
     CHECK(hop_xfer_budget_set_limits_for_test(&defaults));

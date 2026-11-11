@@ -232,6 +232,7 @@ void sender_context_init(void) {
     s_sender_context.ack_deliver = hop_xfer_sender_ack_adapter_deliver;
     s_sender_context.ack_wake = hop_xfer_sender_ack_adapter_wake;
     s_sender_context.session_current = sender_context_session_current;
+    s_sender_context.snapshot_session = sender_context_snapshot_session;
     s_sender_context.write_frame = sender_context_write_frame;
     s_sender_context.task_bind_session = sender_context_task_bind_session;
     s_sender_context.task_set_state = sender_context_task_set_state;

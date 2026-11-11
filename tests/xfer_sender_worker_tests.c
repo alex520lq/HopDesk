@@ -13,6 +13,7 @@ struct fixture {
     hop_xfer_sender_queue queue;int locked,peer,stopping,worker_stop,stop_after_wait,connected;
     hop_session_id session;intptr_t socket;uint64_t epoch;int cancelled,activate,status_visible;
     unsigned claims,snapshots,resets,starts,binds,state_sets,aborts,clears,releases,runs,finishes;
+    int invalid_view;
 };
 static void hop_log(hop_log_level l,const char *f,...){(void)l;(void)f;}
 int hop_session_id_valid(const hop_session_id *s){if(!s)return 0;for(size_t i=0;i<HOP_SESSION_BYTES;i++)if(s->bytes[i])return 1;return 0;}
@@ -34,10 +35,17 @@ static int cb(void *u,uint32_t b){(void)b;return ((fixture *)u)->cancelled;}
 static int bind(void *u,const hop_xfer_task *t,const uint8_t *s){fixture *f=u;assert(t&&s);f->binds++;return 1;}
 static int setstate(void *u,hop_xfer_task *t,int s){fixture *f=u;assert(t&&s==HOP_XFER_TASK_ACTIVE);f->state_sets++;return f->activate;}
 static void start(void *u,const void *j){fixture *f=u;assert(j);f->starts++;}
-static int view(void *u,void *p,hop_xfer_sender_worker_job_view *v){(void)u;job *j=p;if(!j||!v)return 0;
-    v->platform_job=j;v->context=&j->context;v->task=&j->task;v->session=&j->session;v->next_index=&j->next_index;v->ok_count=&j->ok;
-    v->pending_finish_state=&j->finish_state;v->pending_finish_valid=&j->finish_valid;v->pending_status_end=&j->status_end;
-    v->pending_status_phase=&j->status_phase;v->pending_status_detail=j->detail;v->pending_status_detail_capacity=sizeof(j->detail);v->batch=j->batch;return 1;}
+static int view(void *u,void *p,hop_xfer_sender_worker_job_view *v){
+    fixture *f=(fixture *)u;job *j=(job *)p;if(!j||!v)return 0;
+    v->platform_job=j;v->context=&j->context;v->task=&j->task;v->session=&j->session;
+    v->next_index=&j->next_index;v->ok_count=&j->ok;
+    v->pending_finish_state=&j->finish_state;v->pending_finish_valid=&j->finish_valid;
+    v->pending_status_end=&j->status_end;v->pending_status_phase=&j->status_phase;
+    v->pending_status_detail=j->detail;v->pending_status_detail_capacity=sizeof(j->detail);
+    v->batch=j->batch;
+    if(f->invalid_view){v->context=NULL;return 1;}
+    return 1;
+}
 static int stopping(void *u){return ((fixture *)u)->worker_stop;}
 static int snap(void *u,intptr_t *s,uint64_t *e,hop_session_id *id,int *c){fixture *f=u;f->snapshots++;*s=f->socket;*e=f->epoch;*id=f->session;*c=f->connected;return 1;}
 static int show(void *u,uint32_t b){(void)b;return ((fixture *)u)->status_visible;}
@@ -74,8 +82,11 @@ static void test_old_session_no_abort(void){fixture f;job j;init(&f,&j);j.cancel
 static void test_stop_after_selection(void){fixture f;job j;init(&f,&j);f.worker_stop=1;hop_xfer_sender_worker_runtime_ops o=makeops(&f);
     assert(hop_xfer_sender_worker_run(&o)==HOP_XFER_SENDER_WORKER_RUN_STOPPED);
     assert(f.claims==1&&f.clears==1&&f.releases==1&&!f.state_sets&&!f.runs&&!f.finishes);}
+static void test_invalid_view_clears_active(void){fixture f;job j;init(&f,&j);f.invalid_view=1;hop_xfer_sender_worker_runtime_ops o=makeops(&f);
+    assert(hop_xfer_sender_worker_run(&o)==HOP_XFER_SENDER_WORKER_RUN_STOPPED);
+    assert(f.claims==1&&f.clears==1&&f.releases==1&&!f.runs&&!f.finishes);}
 static void test_activation_failure(void){fixture f;job j;init(&f,&j);f.activate=0;hop_xfer_sender_worker_runtime_ops o=makeops(&f);
     assert(hop_xfer_sender_worker_run(&o)==HOP_XFER_SENDER_WORKER_RUN_STOPPED);
     assert(f.state_sets==1&&f.clears==1&&f.releases==1&&j.finish_valid&&j.finish_state==HOP_XFER_TASK_FAILED&&!j.status_end&&!f.runs);}
-int main(void){test_ready();test_expired_cancel();test_old_session_no_abort();test_stop_after_selection();test_activation_failure();
+int main(void){test_ready();test_expired_cancel();test_old_session_no_abort();test_stop_after_selection();test_invalid_view_clears_active();test_activation_failure();
     puts("PASS: shared Sender Worker orchestration, session binding, cancellation, expiry and release");return 0;}

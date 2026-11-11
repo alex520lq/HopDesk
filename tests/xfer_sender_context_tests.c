@@ -43,6 +43,11 @@ static int fake_session_current(void *user, intptr_t socket_handle, uint64_t epo
     (void)user;
     return socket_handle != (intptr_t)-1 && epoch != 0;
 }
+static int fake_snapshot_session(void *user, intptr_t socket_handle,
+                                 uint8_t session[HOP_TASK_SESSION_BYTES], uint64_t *epoch) {
+    (void)user;if(socket_handle==(intptr_t)-1||!session||!epoch)return 0;
+    memset(session,0,HOP_TASK_SESSION_BYTES);session[0]=42;*epoch=3;return 1;
+}
 static int fake_write_frame(void *user, intptr_t socket_handle, uint64_t epoch,
                             const hop_xfer_sender_frame_part *parts,
                             size_t part_count) {
@@ -176,6 +181,7 @@ static hop_xfer_sender_context make_context(fake_sender *f) {
     ctx.wait_ns = fake_wait;
     ctx.is_stopping = fake_stopping;
     ctx.session_current = fake_session_current;
+    ctx.snapshot_session = fake_snapshot_session;
     ctx.write_frame = fake_write_frame;
     ctx.is_cancelled = fake_cancelled;
     ctx.is_batch_cancelled = fake_batch_cancelled;
@@ -233,6 +239,8 @@ int main(void) {
     assert(!ctx.is_stopping(ctx.user));
     assert(ctx.session_current(ctx.user, 7, 3));
     assert(!ctx.session_current(ctx.user, (intptr_t)-1, 3));
+    uint8_t snap[HOP_TASK_SESSION_BYTES]={0};uint64_t snap_epoch=0;
+    assert(ctx.snapshot_session(ctx.user,7,snap,&snap_epoch));assert(snap[0]==42&&snap_epoch==3);
     const uint8_t header[] = {1, 2, 3};
     const uint8_t prefix[] = {4, 5};
     const uint8_t payload[] = {6, 7, 8, 9};
@@ -305,6 +313,7 @@ int main(void) {
     REQUIRE_INVALID(wait_ns);
     REQUIRE_INVALID(is_stopping);
     REQUIRE_INVALID(session_current);
+    REQUIRE_INVALID(snapshot_session);
     REQUIRE_INVALID(write_frame);
     REQUIRE_INVALID(is_cancelled);
     REQUIRE_INVALID(is_batch_cancelled);

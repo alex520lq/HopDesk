@@ -882,3 +882,78 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 更新 Windows HA 编译源列表与源码回归：生产 fixture 现在从新 Worker Adapter 读取 `send_thread`，并断言平台主文件不再定义该入口。
 - CI 纠错：Run #1631 的 Windows 应用构建通过；macOS 构建发现 Worker Adapter 缺少 `<errno.h>`，导致 `ETIMEDOUT` 未声明，已补齐 include。后续提交 supersede 了中间运行。**最终验证：GitHub Actions Run #1635（ID `43037203168`，tested head `07ecf5fbea98477ad67efd2d2a0f58900e6d13fb`）Windows MSVC 与 macOS Apple Clang 全流程 PASS**：应用构建、portable Core/regression、文件传输协议、TCP loopback、Windows native role/reconnect、macOS control/listener loopback、updater/bundle 检查及双平台打包。PR 流程按预期跳过 Release 发布。
 - 真实双设备断线、取消、重连及长时间传输仍未执行，不得用 CI loopback 代替。
+
+
+
+## 12. 新的重构执行协议（最高优先级，后续 Agent 必须遵守）
+
+> 本节自 2026-11-11 起作为所有后续架构重构 Agent 的强制工作协议。若本文件早期章节、历史实施记录或旧切片计划与本节冲突，以本节为准。目标是减少碎片提交：先在本地完成一个完整架构问题，再形成一个完整提交。
+
+### 12.1 核心原则：一个问题 = 一个完整重构提交
+
+- 一个提交必须解决一个可独立描述、可独立验收的架构问题，而不是只新增一个接口、搬移一个函数、增加一个 Adapter 或修复一条测试。
+- 同一问题所需的 Core、Windows Adapter、macOS Adapter、调用方迁移、测试、构建配置、文档和旧代码删除，应在同一工作区内完成，最终组成一个逻辑完整的提交。
+- 禁止把一个问题人为拆成连续的“接口先行 / 平台 A / 平台 B / 调用方迁移 / 清理包装 / 补测试”等多个提交。只有确实独立、可单独交付和回滚的问题，才允许形成不同提交。
+- 禁止为追求提交数量、文件数量或表面代码行数而重构。每次必须减少真实的职责耦合、重复业务规则或隐式依赖。
+- 不把多个无关架构问题塞进一个提交。一个提交只围绕一个问题，但允许为完整解决该问题修改多个目录和文件。
+
+### 12.2 强制执行流程
+
+1. **确认基线**：同步并检查 main 最新 HEAD、工作区状态、活动分支、PR 和未合并提交。不得假设上一轮的 SHA 仍是最新。
+2. **完整审计问题**：同时阅读 Windows/macOS 对应实现、共享 Core、所有调用方、构建清单、测试和文档。追踪完整调用链、状态所有者、线程归属、锁顺序、资源创建/释放、失败回滚、取消/重连/关闭路径。不能只依据文件名或局部片段设计抽象。
+3. **写清目标边界**：在动代码前明确本问题的现状、根因、目标职责、Core/Adapter 边界、资源 Owner、不变量、明确不做事项和验收测试。优先复用已有 Core，不得重复创建相同状态机或泛化框架。
+4. **本地完整实施**：必须在可用的本地 Git 工作树中修改文件。先完成共享规则和两端 Adapter 的整体迁移，再删除旧实现、重复宏、废弃包装和过渡代码。不要用 GitHub Contents API 对文件逐个写入来冒充本地重构。
+5. **本地自审**：检查完整 diff、依赖方向、平台类型泄漏、重复状态/Owner、无效 Adapter、未使用函数/宏、错误处理、并发竞态、内存和性能回归。检查新模块确实进入生产构建，而不只是测试目标。
+6. **本地验证**：运行受影响的单元测试、生产链接测试、协议/集成测试、Windows 原生构建和 macOS 原生构建。对取消、断线、重连、迟到消息、关闭和资源释放做针对性回归。未执行的实机测试必须明确标记为未验证，不得推断通过。
+7. **一次形成提交**：所有实现和验证通过后，审查最终 diff，再用 Git Tree 组织该问题涉及的完整文件变更，创建一个 commit。提交信息应描述问题和结果，例如 refactor(clipboard): unify transaction lifecycle。不得在实现未完成时先提交脚手架或半成品。
+8. **推送与远程验证**：推送该提交，检查精确 SHA 对应的 Windows/macOS CI。CI 失败时在同一问题、同一分支修复；不要为每个小修复制造独立提交。最终报告提交 SHA、变更范围、测试命令、CI 结果和未验证风险。
+9. **结束后再选下一问题**：当前问题达到验收标准后才开始下一项。保持一个活动重构分支和一个开发 PR；不直接提交 main，不擅自合并 PR。
+
+### 12.3 Git / 工作树纪律
+
+- 必须有本地 Git 工作树，先 git status、git fetch 并核对远端 HEAD；工作树必须干净或明确保留用户已有改动。
+- 每个完整问题使用一个专用工作分支；同一时间只允许一个活动重构分支和一个开发 PR。不得覆盖、重置或删除用户未合并工作。
+- Git Tree 是最终提交的组织方式，不是绕过本地开发、编译和测试的替代品。先在本地完成并验证，再根据本地最终文件状态创建 Tree/Commit。
+- 只有确认分支所有提交均已进入 main、没有开放 PR、没有独有提交、没有用户未完成工作后，才可删除已合并的旧分支。无法确认时保留并报告，不得猜测。
+- 不 force-push，不重写共享历史，不删除 main，不擅自合并 PR。
+- 若当前执行环境无法访问本地工作树或无法运行所需构建，必须停止代码实施并如实报告阻塞；可以继续做源码审计和方案设计，但不得声称“本地重构完成”“本地测试通过”或“已按 Git Tree 完成提交”。
+
+### 12.4 每个问题的完成定义
+
+一个问题只有同时满足以下条件才算完成：
+
+- 业务规则只有一个明确 Owner；平台 Adapter 只处理原生能力，不重复业务决策。
+- 两个平台都已迁移到目标边界；不存在只迁移一端的半成品。
+- 旧实现、重复状态机、无用包装和过渡代码已删除，或有明确、可验证的暂留原因。
+- 共享 Core 被两端生产目标实际编译和链接。
+- 测试覆盖正常路径、失败回滚、取消、断线/重连、关闭和关键竞态（按问题适用范围选择）。
+- Windows/macOS 构建与相关 CI 通过；物理双设备和长时间运行测试单独注明真实执行状态。
+- 最终只有一个围绕该问题的完整提交，提交可审查、可回滚、可解释。
+
+### 12.5 Clipboard 完整重构：当前唯一执行问题
+
+**目标**：统一跨平台剪贴板 Offer / Request / Paste 事务生命周期与业务决策；保留 Windows/macOS 原生剪贴板 API、图片解码/编码、文件路径表示和平台线程机制。
+
+**初步审计范围（必须重新核对最新本地源码，不可仅依赖此列表）**：
+
+- Windows：src/win/clipboard.c、clipboard_offer.inc、clipboard_paste.inc 及相关头文件、调用方。
+- macOS：src/mac/clipboard.m、clipboard_offer.inc、clipboard_paste.inc 及相关头文件、调用方。
+- 共享协议/Core：src/core 中 Clipboard codec、generation、transaction、task/budget 相关模块。
+- 测试：两端 Clipboard/Offer/Paste/图片预算/重试/取消/迟到消息测试，以及生产链接目标。
+- 构建：Windows 和 macOS app/test 的源文件清单及平台依赖。
+
+**审计必须回答**：
+
+1. Offer 的创建、替换、清除、generation 递增、断线清理由谁拥有？
+2. Request ID、重复请求、超时、迟到响应和失败回执是否两端各自维护？
+3. Paste transaction 从请求、等待、执行、完成、失败、取消到断线清理的状态机是否重复？
+4. 图片和文件粘贴的 Task、Reservation、内存预算、重试、回调和资源释放分别由谁拥有？
+5. Windows Clipboard Sequence Number 与 macOS NSPasteboard changeCount 的平台差异，哪些是 Adapter 细节，哪些需要进入共享决策输入？
+6. 平台主线程要求、后台 Worker、回调迟到、窗口/连接关闭时的生命周期是否安全？
+7. 当前 Core 是否已有可复用规则；若无，最小共享接口是什么？避免重复造轮子。
+
+**目标结构**：共享 Clipboard Transaction Core 负责纯业务状态和决策（Offer/Request/Paste 状态、ID/generation 校验、去重、终结原因、迟到事件拒绝）；平台 Adapter 负责原生剪贴板读写、序列号/changeCount 采样、图片转换、路径桥接、线程调度和系统回调。平台差异必须显式表达，不得用大量布尔参数或无意义通用回调掩盖。
+
+**验收**：两端生产构建使用同一套事务规则；覆盖 Offer 替换/清除、重复/过期/迟到 Request、成功/失败 Paste、取消/断线、图片预算与重试、Task/Reservation exactly-once 释放；删除两端重复的事务状态机和旧包装；Windows/macOS 原生构建与相关测试通过。完成前不得开始 Connection、Input 或 UI 重构。
+
+**当前状态**：仅完成远程源码初步盘点，尚未完成本地完整调用链审计；不得标记为已实施或已验证。

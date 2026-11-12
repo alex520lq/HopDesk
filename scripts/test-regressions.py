@@ -541,15 +541,34 @@ int main(void){
     assert 'if (!rx->batch_state.active) return; /* late data after termination */' in shared_rx_handlers
     assert 'if (hop_xfer_task_cancel_requested(rx->task.id))' in shared_rx_handlers
     clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
+    win_clip=(ROOT/'src/win/clipboard.c').read_text(encoding='utf-8')
     assert 'send_image_data_async(imageType, cc, previous_change)' in clip
     assert 'budget_deferred = 1' in clip
     assert 's_last_change = previous_change' in clip
     assert 'image budget released; same clipboard version will be retried' in clip
+    async_image=extract(clip,'send_image_data_async')
+    assert async_image.count('return finished?0:-1;') == 2
+    assert 'return cleanup_ok?0:-1;' in async_image
+    assert 'int task_finished=image_work_task_finish(owner, success);' in async_image
+    assert 'if (budget_deferred && task_finished)' in async_image
+    assert 'int scheduled=send_image_data_async(imageType, cc, previous_change);' in clip
+    assert 'if (scheduled==0)' in clip
     # Intrinsically oversized decoded images are permanent failures, while
     # contention for a feasible allocation remains retryable.
     image_send=extract(clip,'send_image')
-    assert image_send.index('image_conversion_fits_budget(') < image_send.index('budget_deferred = 1')
+    assert image_send.index('hop_xfer_budget_image_conversion_fits(') < image_send.index('budget_deferred = 1')
     assert 'statusbar_notify_image_limit()' in image_send
+    win_worker=extract(win_clip,'image_worker')
+    win_dib=extract(win_clip,'send_dib')
+    win_admission=extract(win_clip,'image_snapshot_prepare')
+    assert 'hop_xfer_budget_image_conversion_fits((uint64_t)bytes,0,&budget.limits)' in win_admission
+    assert 'snapshot_ready=0;' in win_worker
+    assert 'if (result != -1 && image_snapshot_should_copy(snapshot_ready))' in win_worker
+    assert win_worker.index('snapshot_ready=0;') < win_worker.index('if (result != -1 && image_snapshot_should_copy(snapshot_ready))')
+    assert 'return retryable?0:-1' in win_dib
+    assert 'if(prepared!=1){result=prepared;snapshot_ready=0;}' in win_worker
+    assert win_worker.index('image_work_task_finish(image_task_owner, result > 0)') < win_worker.index('image_worker_should_retry(result,task_finished,')
+    assert 'image_worker_should_retry(result,task_finished,' in win_worker
     image_limits_preamble=r'''
 #include "xfer_budget.h"
 #include <assert.h>
@@ -558,17 +577,72 @@ int main(void){
     image_limits_main=r'''
 int main(void){
     hop_xfer_budget_limits limits={0};limits.max_image_bytes=100;limits.max_image_temp_bytes=80;
-    assert(image_conversion_fits_budget(20,60,&limits));
-    assert(!image_conversion_fits_budget(20,61,&limits));
+    assert(hop_xfer_budget_image_conversion_fits(20,60,&limits));
+    assert(!hop_xfer_budget_image_conversion_fits(20,61,&limits));
     limits.max_image_temp_bytes=200;
-    assert(image_conversion_fits_budget(20,80,&limits));
-    assert(!image_conversion_fits_budget(20,81,&limits));
-    assert(!image_conversion_fits_budget(UINT64_MAX,1,&limits));
-    assert(!image_conversion_fits_budget(1,1,NULL));
-    puts("PASS: intrinsic image budget rejects permanent oversize, retains feasible retries");return 0;
+    assert(hop_xfer_budget_image_conversion_fits(20,80,&limits));
+    assert(!hop_xfer_budget_image_conversion_fits(20,81,&limits));
+    assert(!hop_xfer_budget_image_conversion_fits(UINT64_MAX,1,&limits));
+    assert(!hop_xfer_budget_image_conversion_fits(1,1,NULL));
+    puts("PASS: shared image budget classifier separates permanent oversize from temporary contention");return 0;
 }
 '''
-    run('image_budget_permanent',image_limits_preamble+extract(clip,'image_conversion_fits_budget')+image_limits_main)
+    run('image_budget_permanent',image_limits_preamble+image_limits_main,['src/core/xfer_budget.c'],threads=True)
+
+    win_image_preamble=r'''
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "xfer_task.h"
+#include "xfer_budget.h"
+typedef struct clip_image_task_owner { struct clip_image_task_owner *next; hop_xfer_task task; } clip_image_task_owner;
+static volatile int s_image_task_seq;
+static clip_image_task_owner *s_pending_image_tasks;
+uint64_t hop_wallclock_ms(void){return 1;}
+#define InterlockedIncrement(p) (++(*(p)))
+#define hop_log(...) ((void)0)
+'''
+    win_image_main=r'''
+int main(void){
+    hop_xfer_budget_snapshot limits;hop_xfer_budget_get_snapshot(&limits);
+    hop_xfer_budget_limits configured=limits.limits;
+    configured.max_jobs=2;configured.max_image_bytes=64;configured.max_single_image_bytes=64;configured.max_image_temp_bytes=64;
+    assert(hop_xfer_budget_set_limits_for_test(&configured));
+    hop_xfer_reservation_handle pressure={0};
+    assert(hop_xfer_budget_reservation_init(&pressure,9001));
+    assert(hop_xfer_budget_reserve_job(&pressure));
+    assert(hop_xfer_budget_reserve_image_temp(&pressure,64));
+    clip_image_task_owner *owner=NULL;
+    int first=image_snapshot_prepare(32,&owner);
+    assert(first==0 && owner); /* retryable input pressure, no snapshot allocation */
+    assert(!image_snapshot_should_copy(first));
+    assert(image_work_task_finish(owner,0)); /* release Task/job/temp before retry */
+    hop_xfer_budget_snapshot after_release;hop_xfer_budget_get_snapshot(&after_release);
+    assert(after_release.jobs==1 && after_release.image_temp_bytes==64);
+    assert(hop_xfer_budget_release_image_temp(&pressure,64));
+    assert(hop_xfer_budget_release(&pressure));
+    hop_xfer_budget_get_snapshot(&after_release);assert(after_release.jobs==0 && after_release.image_temp_bytes==0);
+    int same_sequence=123;
+    int second=image_snapshot_prepare(32,&owner);
+    assert(second==1 && owner && same_sequence==123);
+    assert(image_snapshot_should_copy(second));
+    assert(image_work_task_finish(owner,0));
+    int permanent=image_snapshot_prepare(65,&owner);
+    assert(permanent==-1 && !owner && !image_snapshot_should_copy(permanent));
+    assert(!image_worker_should_retry(permanent,1,1,0));
+    assert(image_worker_should_retry(0,1,1,0));
+    assert(image_worker_should_retry(-1,1,0,0));
+    assert(!image_worker_should_retry(1,1,1,0));
+    assert(!image_worker_should_retry(0,1,1,1));
+    assert(!s_pending_image_tasks);
+    puts("PASS: production Windows image admission defers without allocation, releases before same-version retry, and rejects permanent oversize");return 0;
+}
+'''
+    win_image_helpers='\n'.join(extract(win_clip,name) for name in ['image_work_task_begin','image_work_task_finish_attempt','image_work_task_finish','image_snapshot_prepare','image_snapshot_should_copy','image_worker_should_retry'])
+    run('win_image_snapshot_admission',win_image_preamble+win_image_helpers+win_image_main,
+        ['src/core/xfer_task.c','src/core/xfer_budget.c'],threads=True)
 
     for platform in ['win','mac']:
         rx_sources='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))

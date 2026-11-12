@@ -18,6 +18,7 @@
 #include "xfer.h"
 #include "../core/xfer_task.h"
 #include "../core/xfer_clipboard_txn.h"
+#include "../core/xfer_budget.h"
 
 #include <shellapi.h>
 #include <stdio.h>
@@ -315,6 +316,35 @@ static int image_work_task_begin(hop_xfer_task *task) {
            hop_xfer_task_reserve_job(task) &&
            hop_xfer_task_set_state(task, HOP_XFER_TASK_ACTIVE);
 }
+static int image_work_task_finish(clip_image_task_owner *owner, int success);
+
+/* Admission is shared by the worker and its production-path fixture. Return
+ * 1 when the input snapshot is reserved, 0 for retryable pressure, -1 when
+ * the image can never fit the configured ceilings or cleanup failed. */
+static int image_snapshot_prepare(size_t bytes, clip_image_task_owner **owner_out) {
+    if (!owner_out) return -1;
+    *owner_out=NULL;
+    hop_xfer_budget_snapshot budget;
+    hop_xfer_budget_get_snapshot(&budget);
+    if (!hop_xfer_budget_image_conversion_fits((uint64_t)bytes,0,&budget.limits)) return -1;
+
+    clip_image_task_owner *owner=(clip_image_task_owner*)calloc(1,sizeof(*owner));
+    if (!owner) return 0;
+    if (!image_work_task_begin(&owner->task))
+        return image_work_task_finish(owner,0)?0:-1;
+    *owner_out=owner;
+    if (!hop_xfer_task_reserve_image_temp(&owner->task,(uint64_t)bytes)) {
+        hop_log(HOP_LOG_WARN,"clip: DIB snapshot memory budget exhausted (task=%llu)",
+                (unsigned long long)owner->task.id);
+        return 0;
+    }
+    return 1;
+}
+static int image_snapshot_should_copy(int prepared) { return prepared==1; }
+static int image_worker_should_retry(int result, int task_finished,
+                                    int same_sequence, int stopping) {
+    return !stopping && ((result==0 && task_finished) || !same_sequence);
+}
 
 static int image_work_task_finish_attempt(clip_image_task_owner *owner, int success) {
     if (!owner) return 1;
@@ -395,8 +425,12 @@ static int send_dib(HANDLE h, DWORD sequence, hop_xfer_task *task) {
     }
     if (!task || !hop_xfer_task_reserve_image_temp(task, (uint64_t)total)) {
         GlobalUnlock(h);
+        hop_xfer_budget_snapshot budget;
+        hop_xfer_budget_get_snapshot(&budget);
+        uint64_t input=task?hop_xfer_task_image_temp_bytes(task):0;
+        int retryable=task && hop_xfer_budget_image_conversion_fits(input,(uint64_t)total,&budget.limits);
         hop_log(HOP_LOG_WARN, "clip: DIB conversion memory budget exhausted");
-        return -1;
+        return retryable?0:-1;
     }
 
     const uint8_t *src = (const uint8_t *)bi + (size_t)offset;
@@ -458,7 +492,7 @@ static DWORD WINAPI image_worker(LPVOID arg) {
     UINT format = CF_DIB;
     HGLOBAL copy = NULL;
     clip_image_task_owner *image_task_owner = NULL;
-    int opened = 0, result = 0;
+    int opened = 0, result = 0, snapshot_ready = 1;
     for (int i = 0; i < 6 && !opened; ++i) {
         opened = OpenClipboard(NULL) != 0;
         if (!opened) Sleep(15);
@@ -473,15 +507,10 @@ static DWORD WINAPI image_worker(LPVOID arg) {
             if (bytes >= (format == CF_DIB ? sizeof(BITMAPINFOHEADER) : sizeof(HOP_DROPFILES)) &&
                 bytes <= CLIP_IMG_MAX_BYTES) {
                 if (format == CF_DIB) {
-                    image_task_owner=(clip_image_task_owner*)calloc(1,sizeof(*image_task_owner));
-                    if (!image_task_owner || !image_work_task_begin(&image_task_owner->task)) result = -1;
-                    else if (!hop_xfer_task_reserve_image_temp(&image_task_owner->task, (uint64_t)bytes)) {
-                        hop_log(HOP_LOG_WARN, "clip: DIB snapshot memory budget exhausted (task=%llu)",
-                                (unsigned long long)image_task_owner->task.id);
-                        result = -1;
-                    }
+                    int prepared=image_snapshot_prepare((size_t)bytes,&image_task_owner);
+                    if(prepared!=1){result=prepared;snapshot_ready=0;}
                 }
-                if (result != -1) {
+                if (result != -1 && image_snapshot_should_copy(snapshot_ready)) {
                     copy = GlobalAlloc(GMEM_MOVEABLE, bytes);
                     void *from = GlobalLock(src);
                     void *to = copy ? GlobalLock(copy) : NULL;
@@ -502,11 +531,13 @@ static DWORD WINAPI image_worker(LPVOID arg) {
         } else result = send_dib(copy, sequence, image_task_owner ? &image_task_owner->task : NULL);
         GlobalFree(copy);
     }
-    if (image_task_owner)
-        (void)image_work_task_finish(image_task_owner, result > 0);
+    int task_finished=!image_task_owner || image_work_task_finish(image_task_owner, result > 0);
     InterlockedExchange(&s_image_busy, 0);
-    if (!result || GetClipboardSequenceNumber() != sequence)
+    AcquireSRWLockExclusive(&s_offer_lock);
+    if (image_worker_should_retry(result,task_finished,
+            GetClipboardSequenceNumber()==sequence,s_clip_stopping))
         PostMessageW(g_app.hwnd, WM_APP_CLIP, 0, 0);
+    ReleaseSRWLockExclusive(&s_offer_lock);
     return 0;
 }
 static void queue_image(void) {

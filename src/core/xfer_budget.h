@@ -23,6 +23,12 @@ typedef struct {
     uint64_t max_image_temp_bytes;
 } hop_xfer_budget_limits;
 
+/* True when an image's intrinsic input plus conversion footprint fits both
+ * configured image ceilings. Current usage is intentionally not considered. */
+int hop_xfer_budget_image_conversion_fits(uint64_t input_bytes,
+                                           uint64_t conversion_bytes,
+                                           const hop_xfer_budget_limits *limits);
+
 typedef struct {
     uint32_t jobs, entries, rx_queue_slots;
     uint64_t pending_bytes, image_bytes, rx_queue_bytes, rx_pool_bytes, image_temp_bytes;

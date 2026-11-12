@@ -23,6 +23,7 @@
 #include "xfer.h"
 #include "../core/xfer_task.h"
 #include "../core/xfer_clipboard_txn.h"
+#include "../core/xfer_budget.h"
 
 #include <stdlib.h>
 #include <limits.h>
@@ -123,28 +124,19 @@ static int image_work_retry_pending(void) {
     }
 }
 
-static image_work_task_owner *image_work_task_create(void) {
+static image_work_task_owner *image_work_task_create(int *cleanup_ok) {
+    if (cleanup_ok) *cleanup_ok=1;
     image_work_task_owner *owner=(image_work_task_owner *)calloc(1,sizeof(*owner));
     if (!owner) return NULL;
     hop_xfer_task *task=&owner->task;
     if (!hop_xfer_task_init_classified(task, 0, 0, image_work_transfer_id(), HOP_XFER_DIR_NONE, HOP_TASK_KIND_IMAGE_WORK) ||
         !hop_xfer_task_reserve_job(task) ||
         !hop_xfer_task_set_state(task, HOP_XFER_TASK_ACTIVE)) {
-        (void)image_work_task_finish(owner,0);
+        int finished=image_work_task_finish(owner,0);
+        if (cleanup_ok) *cleanup_ok=finished;
         return NULL;
     }
     return owner;
-}
-
-/* Check the task's intrinsic requirement, not the currently available
- * budget. If it exceeds a ceiling even with all other tasks idle, retrying
- * the same clipboard version can never succeed. */
-static int image_conversion_fits_budget(uint64_t input, uint64_t conversion,
-                                        const hop_xfer_budget_limits *limits) {
-    return limits && input <= limits->max_image_bytes &&
-        conversion <= limits->max_image_bytes - input &&
-        input <= limits->max_image_temp_bytes &&
-        conversion <= limits->max_image_temp_bytes - input;
 }
 
 /* NSImage -> 自上而下 BGRA。调用方在 NSImage 解码前预留转换额度；
@@ -181,7 +173,7 @@ static BOOL send_image(NSImage *img, NSInteger expected_change, hop_xfer_task *t
         return NO;
     }
     uint64_t input_reserved = image_temp - *conversion_reserved;
-    if (!image_conversion_fits_budget(input_reserved, conversion_bytes, &budget.limits)) {
+    if (!hop_xfer_budget_image_conversion_fits(input_reserved, conversion_bytes, &budget.limits)) {
         hop_log(HOP_LOG_WARN, "clip: image conversion exceeds the memory budget; copy a smaller image");
         if ([[NSPasteboard generalPasteboard] changeCount] == expected_change)
             statusbar_notify_image_limit();
@@ -254,29 +246,38 @@ cleanup:
 /* Pasteboard image materialization, decoding and BGRA conversion all run on
  * one utility worker. Reserve a bounded upper estimate before dataForType so
  * the main queue never materializes a full image NSData snapshot. */
-static BOOL send_image_data_async(NSPasteboardType imageType, NSInteger expected_change, NSInteger previous_change) {
-    if (!imageType) return NO;
-    image_work_task_owner *owner = image_work_task_create();
+/* 1 means work entered the group, 0 means cleanup completed and caller may
+ * roll back changeCount for retry, -1 means cleanup remains pending. */
+static int send_image_data_async(NSPasteboardType imageType, NSInteger expected_change, NSInteger previous_change) {
+    if (!imageType) return 0;
+    int cleanup_ok=1;
+    image_work_task_owner *owner = image_work_task_create(&cleanup_ok);
     if (!owner) {
-        hop_log(HOP_LOG_WARN, "clip: image conversion task budget exhausted; clipboard change will be retried");
-        return NO;
+        hop_log(HOP_LOG_WARN, cleanup_ok ?
+                "clip: image conversion task budget exhausted; clipboard change will be retried" :
+                "clip: image conversion Task cleanup pending; retry deferred until cleanup succeeds");
+        return cleanup_ok?0:-1;
     }
     hop_xfer_task *task=&owner->task;
     if (!hop_xfer_task_reserve_image_temp(task, CLIP_IMG_MAX_BYTES)) {
         hop_log(HOP_LOG_WARN, "clip: image input memory budget exhausted (task=%llu)",
                 (unsigned long long)task->id);
-        (void)image_work_task_finish(owner, 0);
-        hop_log(HOP_LOG_WARN, "clip: image input budget unavailable; clipboard change will be retried");
-        return NO;
+        int finished=image_work_task_finish(owner, 0);
+        hop_log(HOP_LOG_WARN, finished ?
+                "clip: image input budget unavailable; clipboard change will be retried" :
+                "clip: image input Task cleanup pending; retry deferred until cleanup succeeds");
+        return finished?0:-1;
     }
 
     dispatch_group_t group = nil;
     pthread_mutex_lock(&s_offer_lock);
     if (s_clip_stopping || s_image_work_active || !s_paste_group) {
         pthread_mutex_unlock(&s_offer_lock);
-        (void)image_work_task_finish(owner, 0);
-        hop_log(HOP_LOG_WARN, "clip: image conversion busy; snapshot deferred");
-        return NO;
+        int finished=image_work_task_finish(owner, 0);
+        hop_log(HOP_LOG_WARN, finished ?
+                "clip: image conversion busy; snapshot deferred" :
+                "clip: image conversion Task cleanup pending; retry deferred until cleanup succeeds");
+        return finished?0:-1;
     }
     s_image_work_active = 1;
     group = s_paste_group;
@@ -327,8 +328,8 @@ static BOOL send_image_data_async(NSPasteboardType imageType, NSInteger expected
         }
         /* Task finish runs after the autorelease pool drains, so NSData/NSImage
          * backing memory stays reserved until those objects have released it. */
-        (void)image_work_task_finish(owner, success);
-        if (budget_deferred) {
+        int task_finished=image_work_task_finish(owner, success);
+        if (budget_deferred && task_finished) {
             NSPasteboard *pb = [NSPasteboard generalPasteboard];
             pthread_mutex_lock(&s_offer_lock);
             if (!s_clip_stopping && s_last_change == expected_change &&
@@ -342,7 +343,7 @@ static BOOL send_image_data_async(NSPasteboardType imageType, NSInteger expected
         pthread_mutex_unlock(&s_offer_lock);
         dispatch_group_leave(group);
     });
-    return YES;
+    return 1;
 }
 
 static BOOL send_text(NSString *s) {
@@ -404,7 +405,8 @@ static void poll_pasteboard(void) {
                 return;
             }
             clip_clear_remote_offer_local(); clip_clear_local_offer(1);
-            if (!send_image_data_async(imageType, cc, previous_change)) {
+            int scheduled=send_image_data_async(imageType, cc, previous_change);
+            if (scheduled==0) {
                 pthread_mutex_lock(&s_offer_lock);
                 if (s_last_change == cc) s_last_change = previous_change;
                 pthread_mutex_unlock(&s_offer_lock);

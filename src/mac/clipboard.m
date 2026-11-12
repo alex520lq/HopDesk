@@ -59,7 +59,7 @@ static image_work_task_owner *s_pending_image_tasks;
 static char *s_local_offer_paths[HOP_CLIP_OFFER_MAX_ITEMS];
 static int s_local_offer_count;
 
-#include "clipboard_offer.inc"#include "clipboard_offer.inc"
+#include "clipboard_offer.inc"
 
 static uint32_t image_work_transfer_id(void) {
     uint32_t id = __sync_add_and_fetch(&s_image_work_seq, 1);
@@ -464,39 +464,58 @@ int clipboard_shutdown(void) {
 /* Retry transient pasteboard write failures, but never overwrite a newer local
  * clipboard change while waiting. expected_count guards delayed retries. */
 static void apply_objects_retry(NSArray *objects, NSString *kind,
-                                NSUInteger attempt, NSInteger expected_count) {
+                                NSUInteger attempt, NSInteger expected_count, uint32_t request_id) {
     if (![NSThread isMainThread]) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            apply_objects_retry(objects, kind, attempt, expected_count);
+            apply_objects_retry(objects, kind, attempt, expected_count, request_id);
         });
         return;
     }
 
     NSPasteboard *pb = [NSPasteboard generalPasteboard];
-    if (expected_count >= 0 && [pb changeCount] != expected_count) {
-        hop_log(HOP_LOG_INFO, "clip: %s apply retry cancelled; clipboard changed locally",
-                [kind UTF8String]);
-        if([kind isEqualToString:@"paths-paste"]) {
-            pthread_mutex_lock(&s_offer_lock); hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,0); pthread_mutex_unlock(&s_offer_lock);
-        }
+    if (!request_id && expected_count >= 0 && [pb changeCount] != expected_count) {
+        hop_log(HOP_LOG_INFO, "clip: %s apply retry cancelled; clipboard changed locally", [kind UTF8String]);
         return;
     }
 
+    if(request_id) {
+        pthread_mutex_lock(&s_offer_lock);
+        uint64_t txn_expected=0;
+        int exists=hop_clipboard_txn_get_staged_paste(&s_clip_txn,request_id,&txn_expected);
+        if (!exists) {
+            pthread_mutex_unlock(&s_offer_lock);
+            return;
+        }
+        if (txn_expected != (uint64_t)expected_count || [pb changeCount] != expected_count) {
+            if (txn_expected == (uint64_t)expected_count)
+                hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,request_id);
+            pthread_mutex_unlock(&s_offer_lock);
+            return;
+        }
+        [pb clearContents];
+        uint64_t cleared=(uint64_t)[pb changeCount];
+        s_last_change=(NSInteger)cleared;
+        (void)hop_clipboard_txn_update_pending_paste_version(&s_clip_txn,request_id,txn_expected,
+                                                              txn_expected,cleared);
+        BOOL ok=[pb writeObjects:objects];
+        uint64_t after_write=(uint64_t)[pb changeCount];
+        s_last_change=(NSInteger)after_write;
+        if(ok) {
+            ok=hop_clipboard_txn_finish_pending_paste_and_clear_offer(&s_clip_txn,request_id,cleared,cleared);
+        } else {
+            (void)hop_clipboard_txn_update_pending_paste_version(&s_clip_txn,request_id,cleared,cleared,after_write);
+        }
+        pthread_mutex_unlock(&s_offer_lock);
+        if(ok) { statusbar_notify_paste_ready(); hop_log(HOP_LOG_INFO,"clip: files ready; choose a target and paste again"); return; }
+        if(attempt<10) { NSInteger next=(NSInteger)after_write; dispatch_after(dispatch_time(DISPATCH_TIME_NOW,150ull*NSEC_PER_MSEC),dispatch_get_main_queue(),^{ apply_objects_retry(objects,kind,attempt+1,next,request_id); }); }
+        else { pthread_mutex_lock(&s_offer_lock); hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,request_id); pthread_mutex_unlock(&s_offer_lock); }
+        return;
+    }
     [pb clearContents];
     pthread_mutex_lock(&s_offer_lock); s_last_change = [pb changeCount]; pthread_mutex_unlock(&s_offer_lock); /* suppress the clear notification */
     BOOL ok = [pb writeObjects:objects];
     if (ok) {
         pthread_mutex_lock(&s_offer_lock); s_last_change = [pb changeCount]; pthread_mutex_unlock(&s_offer_lock);
-        if([kind isEqualToString:@"paths-paste"]) {
-            pthread_mutex_lock(&s_offer_lock);
-            (void)hop_clipboard_txn_clear_remote_offer(&s_clip_txn);
-            pthread_mutex_unlock(&s_offer_lock);
-            /* PID alone cannot prove the original Finder window or folder is
-             * unchanged. Keep the files on the pasteboard and ask the user to
-             * choose the target and paste again rather than injecting input. */
-            statusbar_notify_paste_ready();
-            hop_log(HOP_LOG_INFO,"clip: files ready; choose a target and paste again");
-        }
         hop_log(HOP_LOG_INFO, "clip: %s in; write succeeded on attempt %lu",
                 [kind UTF8String], (unsigned long)(attempt + 1));
         return;
@@ -508,10 +527,9 @@ static void apply_objects_retry(NSArray *objects, NSString *kind,
                 [kind UTF8String], (unsigned long)(attempt + 1));
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 150ull * NSEC_PER_MSEC),
                        dispatch_get_main_queue(), ^{
-            apply_objects_retry(objects, kind, attempt + 1, expected);
+            apply_objects_retry(objects, kind, attempt + 1, expected, 0);
         });
     } else {
-        if([kind isEqualToString:@"paths-paste"]) { pthread_mutex_lock(&s_offer_lock); hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,0); pthread_mutex_unlock(&s_offer_lock); }
         hop_log(HOP_LOG_ERROR, "clip: %s pasteboard write failed after retries",
                 [kind UTF8String]);
     }
@@ -525,7 +543,7 @@ void clipboard_apply(const char *utf8) {
     s = [NSString stringWithUTF8String:utf8];
     if (!s) return;
 
-    apply_objects_retry(@[ s ], @"text", 0, -1);
+    apply_objects_retry(@[ s ], @"text", 0, -1, 0);
 }
 
 /* 一批文件/目录落盘完毕：把顶层条目挂到剪贴板，Finder 里 Cmd+V 即复制 */
@@ -545,7 +563,7 @@ void clipboard_apply_paths(const char *const *paths, int n) {
         NSURL *u = [NSURL fileURLWithPath:p];
         if (u) [urls addObject:u];
     }
-    if ([urls count] > 0) apply_objects_retry(urls, @"paths", 0, -1);
+    if ([urls count] > 0) apply_objects_retry(urls, @"paths", 0, -1, 0);
 }
 
 /* 收到图片：裸 BGRA 自上而下 -> NSImage -> 剪贴板 */
@@ -573,7 +591,7 @@ void clipboard_apply_image(const uint8_t *bgra, int w, int h, int stride) {
                                                   size:NSMakeSize(w, h)];
         CGImageRelease(img);
 
-        apply_objects_retry(@[ ns ], @"image", 0, -1);
+        apply_objects_retry(@[ ns ], @"image", 0, -1, 0);
     });
 }
 

@@ -40,10 +40,20 @@ int main(void) {
         &id, &origin, &generation, &expected) == 1);
     assert(hop_clipboard_txn_complete_paste(&t, id, 125, 1, &same_expected));
     assert(same_expected == 125 && t.pending_request_id == id);
-    hop_clipboard_txn_cancel_pending_paste(&t, id + 1);
-    assert(t.pending_request_id == id);
-    hop_clipboard_txn_cancel_pending_paste(&t, id);
-    assert(!t.pending_request_id);
+    assert(!hop_clipboard_txn_complete_paste(&t, id, 125, 1, NULL)); /* duplicate staged completion is inert */
+    assert(t.pending_request_id == id && t.pending_clipboard_version == 125);
+    assert(hop_clipboard_txn_update_pending_paste_version(&t,id,125,125,126));
+    assert(!hop_clipboard_txn_update_pending_paste_version(&t,id,125,125,127));
+    assert(t.pending_clipboard_version == 126);
+    hop_clipboard_txn_set_remote_offer(&t, 23, 89); /* replacement invalidates the old identity */
+    assert(!hop_clipboard_txn_finish_pending_paste_and_clear_offer(&t,id,126,126));
+    assert(t.pending_request_id == 0 && t.remote_offer_origin == 23);
+    hop_clipboard_txn_set_remote_offer(&t,22,90);
+    assert(hop_clipboard_txn_begin_paste(&t,126,126,0x80000000u,&id,&origin,&generation,&expected)==1);
+    assert(hop_clipboard_txn_complete_paste(&t,id,126,1,NULL));
+    assert(hop_clipboard_txn_update_pending_paste_version(&t,id,126,126,127));
+    assert(hop_clipboard_txn_finish_pending_paste_and_clear_offer(&t,id,127,127));
+    assert(!t.pending_request_id && !t.remote_offer_origin);
 
     int snapshot_ok = 0;
     assert(hop_clipboard_txn_accept_request(&t, 900, local, 1, snapshot_paths, &snapshot_ok) ==

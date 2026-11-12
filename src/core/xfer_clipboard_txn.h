@@ -13,6 +13,7 @@ typedef struct {
     uint64_t remote_offer_generation;
     uint32_t pending_request_id;
     uint64_t pending_clipboard_version;
+    int pending_paste_staged;
     uint32_t seen_requests[HOP_CLIPBOARD_TXN_SEEN_REQUESTS];
     unsigned seen_next;
     int paste_scan_active;
@@ -50,6 +51,17 @@ int hop_clipboard_txn_complete_paste(hop_clipboard_txn *txn, uint32_t request_id
                                      uint64_t *expected_version);
 int hop_clipboard_txn_get_pending_paste(const hop_clipboard_txn *txn,
                                         uint32_t request_id, uint64_t *expected_version);
+int hop_clipboard_txn_get_staged_paste(const hop_clipboard_txn *txn, uint32_t request_id,
+                                       uint64_t *expected_version);
+/* Validate and finish a pending paste only when both identity and observed
+ * native clipboard version still match. */
+int hop_clipboard_txn_finish_pending_paste(hop_clipboard_txn *txn, uint32_t request_id,
+                                          uint64_t expected_version, uint64_t current_version);
+int hop_clipboard_txn_update_pending_paste_version(hop_clipboard_txn *txn, uint32_t request_id,
+                                                   uint64_t expected_version, uint64_t current_version,
+                                                   uint64_t new_version);
+int hop_clipboard_txn_finish_pending_paste_and_clear_offer(hop_clipboard_txn *txn, uint32_t request_id,
+                                                          uint64_t expected_version, uint64_t current_version);
 /* Under the same lock, snapshot the native paths before recording admission.
  * The callback must not reenter the transaction. A failed snapshot leaves it unchanged. */
 hop_clipboard_request_result hop_clipboard_txn_accept_request(

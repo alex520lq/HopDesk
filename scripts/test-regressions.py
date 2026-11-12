@@ -352,6 +352,7 @@ int main(void){
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include "xfer_clipboard_txn.h"
 typedef void *HGLOBAL;typedef unsigned UINT;typedef int HWND;typedef unsigned DWORD;
 #define IDT_CLIP_RETRY 1
 #define CF_HDROP 15
@@ -360,12 +361,19 @@ static struct {HWND hwnd;} g_app={1};
 static HGLOBAL s_pending_global;
 static UINT s_pending_format;
 static DWORD s_pending_sequence,s_remote_sequence,s_last_sequence;
-static int s_pending_clear_remote;
-static int can_open,fail_set,freed,clear_remote_calls,paste_notices;
+static uint32_t s_queued_paste_request;
+static int s_offer_lock; static hop_clipboard_txn s_clip_txn;
+#define s_clip_stopping (s_clip_txn.stopping)
+static void lock_acquire(int *lock){assert(!*lock);*lock=1;}
+static void lock_release(int *lock){assert(*lock);*lock=0;}
+#define AcquireSRWLockExclusive(lock) lock_acquire(lock)
+#define AcquireSRWLockShared(lock) lock_acquire(lock)
+#define ReleaseSRWLockExclusive(lock) lock_release(lock)
+#define ReleaseSRWLockShared(lock) lock_release(lock)
+static int can_open,fail_set,freed,paste_notices;
 static void ui_notify_paste_ready(void){paste_notices++;}
 static HGLOBAL clipboard;static DWORD sequence=1;
-static int apply_global_expected(UINT,HGLOBAL,DWORD,int,int);
-static void clip_clear_remote_offer_local(void){clear_remote_calls++;}
+static int apply_global_expected(UINT,HGLOBAL,DWORD,int,uint32_t);
 static int open_retry(HWND h){(void)h;return can_open;}
 static int EmptyClipboard(void){clipboard=NULL;sequence++;return 1;}
 static HGLOBAL SetClipboardData(UINT f,HGLOBAL h){(void)f;if(fail_set)return NULL;clipboard=h;sequence++;return h;}
@@ -377,6 +385,13 @@ static void KillTimer(HWND h,int i){(void)h;(void)i;}
 '''
     clip_main=r'''
 #define VALUE(n) ((void*)(uintptr_t)(n))
+static uint32_t stage_paste(DWORD version) {
+    uint32_t id=0,origin=0; uint64_t generation=0,expected=0;
+    hop_clipboard_txn_set_remote_offer(&s_clip_txn,22,version+10);
+    assert(hop_clipboard_txn_begin_paste(&s_clip_txn,version,version,0x80000000u,&id,&origin,&generation,&expected)==1);
+    assert(hop_clipboard_txn_complete_paste(&s_clip_txn,id,version,1,NULL));
+    return id;
+}
 int main(void){
     can_open=0;apply_global(1,VALUE(101));
     can_open=1;assert(apply_global(1,VALUE(202)));
@@ -392,20 +407,60 @@ int main(void){
     /* Completed cross-device paste must not notify until a busy clipboard is
      * successfully written; a subsequent user clipboard change cancels it. */
     can_open=0;DWORD expected=sequence;
-    clip_on_paste_message(VALUE(606),expected);
+    uint32_t old_id=stage_paste(expected);
+    clip_on_paste_message(VALUE(606),old_id);
     assert(s_pending_global==VALUE(606) && paste_notices==0);
     can_open=1;clip_retry_pending();
     assert(clipboard==VALUE(606) && !s_pending_global && paste_notices==1);
-    expected=sequence;clip_on_paste_message(VALUE(707),expected);
+    expected=sequence;uint32_t current_id=stage_paste(expected);
+    clip_on_paste_message(VALUE(707),current_id);
     assert(clipboard==VALUE(707) && paste_notices==2);
-    can_open=0;expected=sequence;clip_on_paste_message(VALUE(808),expected);
+    can_open=0;expected=sequence;uint32_t queued_id=stage_paste(expected);
+    clip_on_paste_message(VALUE(808),queued_id);
     assert(s_pending_global==VALUE(808));clipboard=VALUE(909);sequence++;
     can_open=1;clip_retry_pending();
     assert(clipboard==VALUE(909) && !s_pending_global && paste_notices==2);
+    /* B replaces A's queued paste. Replacing it must cancel A while retaining
+     * B's staged transaction and payload. */
+    can_open=0;expected=sequence;uint32_t a_id=stage_paste(expected);
+    clip_on_paste_message(VALUE(1001),a_id);
+    assert(s_pending_global==VALUE(1001));
+    hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,a_id);
+    uint32_t b_id=stage_paste(sequence);
+    can_open=1;clip_on_paste_message(VALUE(1002),b_id);
+    assert(clipboard==VALUE(1002) && !s_pending_global);
+    assert(!hop_clipboard_txn_get_staged_paste(&s_clip_txn,a_id,NULL));
+    assert(!hop_clipboard_txn_get_staged_paste(&s_clip_txn,b_id,NULL));
+    /* An ordinary clipboard write also replaces and cancels a queued paste. */
+    can_open=0;expected=sequence;uint32_t replaced_id=stage_paste(expected);
+    clip_on_paste_message(VALUE(1101),replaced_id);
+    assert(s_pending_global==VALUE(1101));
+    can_open=1;assert(apply_global(1,VALUE(1102)));
+    assert(clipboard==VALUE(1102) && !s_pending_global);
+    assert(!hop_clipboard_txn_get_staged_paste(&s_clip_txn,replaced_id,NULL));
+    /* A matching staged request whose native clipboard changed before the
+     * first message arrives must be canceled and its payload freed. */
+    expected=sequence;uint32_t stale_id=stage_paste(expected);
+    sequence++;
+    int before_free=freed;
+    clip_on_paste_message(VALUE(1201),stale_id);
+    assert(freed==before_free+1 && !s_pending_global);
+    assert(!hop_clipboard_txn_get_staged_paste(&s_clip_txn,stale_id,NULL));
+    /* A delayed A completion must not replace a same-version B already queued
+     * after A was superseded. */
+    can_open=0;expected=sequence;uint32_t late_a=stage_paste(expected);
+    hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,late_a);
+    uint32_t queued_b=stage_paste(expected);
+    clip_on_paste_message(VALUE(1302),queued_b);
+    assert(s_pending_global==VALUE(1302));
+    before_free=freed;
+    clip_on_paste_message(VALUE(1301),late_a);
+    assert(freed==before_free+1 && s_pending_global==VALUE(1302));
+    assert(hop_clipboard_txn_get_staged_paste(&s_clip_txn,queued_b,NULL));
     puts("PASS: production Windows retry waits for clipboard, notifies only on successful paste apply and preserves newer content");return 0;
 }
 '''
-    run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','apply_global_expected','apply_global','clip_retry_pending','clip_on_paste_message'])+clip_main)
+    run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','clip_staged_request_matches','clip_cancel_staged_if_match','discard_pending_replacing','apply_global_expected','apply_global','clip_retry_pending','clip_on_paste_message'])+clip_main,['src/core/xfer_clipboard_txn.c'])
     # A cross-device paste batch must never fall through to the ordinary clipboard writer.
     for platform in ['win','mac']:
         rx='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
@@ -416,7 +471,7 @@ int main(void){
             assert 'GetClipboardSequenceNumber()!=expected' in clip
             paste_message=extract(clip,'clip_on_paste_message')
             assert 'SendInput(' not in paste_message
-            assert 'apply_global_expected(CF_HDROP,h,expected_sequence,1,1)' in paste_message
+            assert 'apply_global_expected(CF_HDROP,h,(DWORD)expected,1,request_id)' in paste_message
         else:
             assert 'clipboard_complete_remote_paste(batch, (const char *const *)top_paths, top_count, 1)' in rx
             assert 'clipboard_complete_remote_paste(batch, NULL, 0, 0)' in rx

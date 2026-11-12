@@ -474,7 +474,7 @@ tests/
 | 阶段 2：接收端/Writer | 进行中 | `54496ab83eb5f3caa61a5b3f5a6b7379a461c56e` | 在既有共享 RX Queue accounting 与平台 Writer IO adapter 之上，将队列容量/预留/忙碌写入/排空测试拆为独立 `tests/xfer_rx_queue_tests.c` 目标，并接入 macOS/Windows 测试脚本。Writer thread、队列同步和 receiver lifecycle 仍未拆完；本切片新增 CI 尚待运行。 |
 | 阶段 3：Sender/Service | 待完成 | — | 待实施。 |
 | 阶段 4：共享 Transfer Domain | 待完成 | — | 待实施。 |
-| 阶段 5：Clipboard | 待完成 | — | 待实施。 |
+| 阶段 5：Clipboard | 进行中 | `2e4c68640c6f80a2edddb28a17b22d4b9bff9f15` | 入站 Paste Request 已由 Core 统一校验和登记，路径快照失败可重试；该提交的 Windows/macOS CI 通过。延迟写入的请求身份校验与双机实测仍待收口。 |
 | 阶段 6：Connection | 待完成 | — | 待实施。 |
 | 阶段 7：Input | 待完成 | — | 待实施。 |
 | 阶段 8：UI | 待完成 | — | 待实施。 |
@@ -956,7 +956,7 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 
 **验收**：两端生产构建使用同一套事务规则；覆盖 Offer 替换/清除、重复/过期/迟到 Request、成功/失败 Paste、取消/断线、图片预算与重试、Task/Reservation exactly-once 释放；删除两端重复的事务状态机和旧包装；Windows/macOS 原生构建与相关测试通过。完成前不得开始 Connection、Input 或 UI 重构。
 
-**当前状态**：仅完成远程源码初步盘点，尚未完成本地完整调用链审计；不得标记为已实施或已验证。
+**当前状态**：共享 Core 已接管 Offer 和入站 Paste Request 准入。[PR #14](https://github.com/alex520lq/HopDesk/pull/14) 的 `2e4c68640c6f80a2edddb28a17b22d4b9bff9f15` 已通过 [Windows/macOS CI](https://github.com/alex520lq/HopDesk/actions/runs/43135204144)。同一分支已实现延迟写入的请求身份校验。macOS 主队列和 Windows 窗口消息、定时器携带请求身份到写入点。共享事务回归覆盖重复完成、旧请求不能清除新 Offer，以及自身剪贴板版本推进。Windows 生产函数夹具覆盖锁重入、队列替换、原生剪贴板版本过期和旧回调隔离。macOS 原生构建、Core、定向回归、传输协议和网络测试均通过。延迟写入提交的双平台 CI 与实际双机粘贴、剪贴板争用和关闭竞态仍待验证。
 
 
 ### Clipboard 完整重构实现记录（2026-11-11，等待 CI）

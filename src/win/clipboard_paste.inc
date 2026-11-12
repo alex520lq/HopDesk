@@ -133,7 +133,7 @@ void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n
     int posted=0;
     if(h){
         AcquireSRWLockExclusive(&s_offer_lock);
-        if(!s_clip_stopping)posted=PostMessageW(g_app.hwnd,WM_APP_CLIP_PASTE,(WPARAM)expected,(LPARAM)h)!=0;
+        if(!s_clip_stopping)posted=PostMessageW(g_app.hwnd,WM_APP_CLIP_PASTE,(WPARAM)batch,(LPARAM)h)!=0;
         ReleaseSRWLockExclusive(&s_offer_lock);
     }
     if(!posted){
@@ -142,10 +142,15 @@ void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n
         hop_log(HOP_LOG_ERROR,"clip: could not stage completed paste %u",batch);
     }
 }
-void clip_on_paste_message(HGLOBAL h,DWORD expected_sequence) {
+void clip_on_paste_message(HGLOBAL h,uint32_t request_id) {
     /* A matching foreground HWND does not prove the folder or focused control
      * stayed the same. Never inject a delayed paste into an unknown target.
      * The immediate and queued-write paths notify only after the clipboard
      * actually contains the files, so the user can choose where to paste. */
-    (void)apply_global_expected(CF_HDROP,h,expected_sequence,1,1);
+    uint64_t expected=0;
+    AcquireSRWLockExclusive(&s_offer_lock);
+    int pending=hop_clipboard_txn_get_pending_paste(&s_clip_txn,request_id,&expected);
+    ReleaseSRWLockExclusive(&s_offer_lock);
+    if(!pending){if(h)GlobalFree(h);return;}
+    (void)apply_global_expected(CF_HDROP,h,(DWORD)expected,1,request_id);
 }

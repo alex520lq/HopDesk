@@ -11,7 +11,7 @@
 #define WM_APP_TRAY    (WM_APP + 3)
 #define WM_APP_STATE   (WM_APP + 4)   /* 状态变化，刷新 UI */
 #define WM_APP_CLIP (WM_APP + 5) /* format + owned HGLOBAL; 0 = retry */
-#define WM_APP_CLIP_PASTE (WM_APP + 6) /* wParam: expected clipboard sequence; lParam: owned CF_HDROP */
+#define WM_APP_CLIP_PASTE (WM_APP + 6) /* wParam: paste request ID; lParam: owned CF_HDROP */
 #define IDT_HOOK 5
 #define IDT_CLIP_RETRY 3              /* 剪贴板读写/发送延迟重试 */
 
@@ -72,7 +72,7 @@ void clip_on_remote_file_offer_clear(const uint8_t *p, uint32_t len);
 void clip_on_paste_request(const uint8_t *p, uint32_t len);
 void clip_on_paste_failed(const uint8_t *p, uint32_t len);
 int  clip_request_remote_paste(void);
-void clip_on_paste_message(HGLOBAL h, DWORD expected_sequence);
+void clip_on_paste_message(HGLOBAL h, uint32_t request_id);
 void clip_complete_remote_paste(uint32_t batch, const wchar_t *const *paths, int n, int success);
 void clip_apply_remote(const uint8_t *p, uint32_t len); /* 收到 CLIP_TEXT */
 /* 数据通道收完一批后回调：把落盘的顶层条目挂到剪贴板 */

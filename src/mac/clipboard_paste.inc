@@ -127,5 +127,5 @@ void clipboard_complete_remote_paste(uint32_t batch,const char *const *paths,int
     for(int i=0;i<n;++i){NSString *path=[NSString stringWithUTF8String:paths[i]];if(path)[urls addObject:[NSURL fileURLWithPath:path]];}
     if([urls count]==0){pthread_mutex_lock(&s_offer_lock);hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,batch);pthread_mutex_unlock(&s_offer_lock);return;}
     NSArray *snapshot=[urls copy];
-    dispatch_async(dispatch_get_main_queue(),^{apply_objects_retry(snapshot,@"paths-paste",0,(NSInteger)expected);});
+    dispatch_async(dispatch_get_main_queue(),^{apply_objects_retry(snapshot,@"paths-paste",0,(NSInteger)expected,batch);});
 }

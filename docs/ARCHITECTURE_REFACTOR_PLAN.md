@@ -1064,6 +1064,18 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 未纳入本切片：出站 Offer 发布的三段加锁序列（invalidate → clear → publish）仍是平台实现，因其并发顺序最敏感且缺乏实机基线，留待下一问题单独处理。
 
 
+### 2026-11-12：链路状态转移 Core 化（阶段 2 续，CI 待验）
+
+- 新增 `hop_clip_coord_link_state(txn, connected, local_offer_count)` 与两个动作 `HOP_CLIP_ACT_RESEND_LOCAL_OFFER` / `HOP_CLIP_ACT_FORGET_REMOTE_OFFER`。Core 决定三件事：stopping 时完全忽略转移；链路恢复且有已发布 generation 时按原 generation 重播；链路断开时只遗忘 peer 身份、保留本地身份供下次重连重播。
+- **修掉一处真实分歧**：macOS 的 `clipboard_on_link` 会先读 `stopping` 再决定是否重播，Windows 的 `clip_on_link` 完全没有这个检查——正在关闭的 Windows 剪贴板仍会在链路变化时发送。现在两端都走 Core，判断只有一份。Windows 的 `s_clip_stopping` 此前只用于粘贴路径和 `WM_APP_CLIP_PASTE`，本次才覆盖到链路。
+- 两端 `clip_on_link` 由「调用一个快照函数 / 调用一个清除函数」改为「一次 Core 决策 + 一次原生路径快照」，并把 `s_local_offer_count` 在锁内捕获，避免解锁后再读共享计数。
+- 删除 `clip_send_local_offer_snapshot` 与 `clip_clear_remote_offer_local`（各自唯一调用方都是 `clip_on_link`），以及随之变成死代码的 `s_local_offer_generation` 宏别名。
+- 重播取快照的锁由 Windows 的共享锁改为独占锁：Core 在断开分支要改事务状态，且这与其余所有 coord 调用点一致。剪贴板操作频率极低，争用影响可忽略。
+- 扩展 `tests/xfer_clipboard_coord_tests.c`：覆盖按原 generation 重播、空路径数组不重播、无 generation 不重播、断开只清 peer 身份、stopping 时两条分支都被忽略且 peer 身份保留、NULL 事务惰性。
+- `scripts/test-regressions.py` 增加断言：`hop_clip_coord_link_state` 必须出现在 `clipboard_paste.inc`，两个已删除的辅助函数不得再出现。
+- 本地验证：`bash scripts/build-mac.sh`、`hopdesk-clipboard-coord-tests`（ASan/UBSan）、`python3 scripts/test-regressions.py` 全部通过。
+- 未验证：Windows 原生构建与测试（仅 CI）、真实双机粘贴、链路抖动下的重播。
+
 ### 2026-11-12：出站 Offer 发布与身份退役收敛（阶段 2 续，CI 待验）
 
 - 新增 `hop_clip_coord_retire_offers`、`hop_clip_coord_consume_offers` 与 `hop_clip_coord_publish_local_offer`：在**一个临界区**内同时退役 peer 身份与本地身份，并返回 `hop_clip_retired_offers{remote, local_generation, notify}`。适配层在释放锁后执行 OFFER_CLEAR 与 OFFER 发送。

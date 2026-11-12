@@ -42,7 +42,6 @@ static pthread_mutex_t s_offer_lock = PTHREAD_MUTEX_INITIALIZER;
 static dispatch_group_t s_paste_group;
 static int s_image_work_active;
 static hop_clipboard_txn s_clip_txn;
-#define s_local_offer_generation (s_clip_txn.local_offer_generation)
 #define s_local_offer_sequence (s_clip_txn.local_offer_sequence)
 #define s_offer_request_seq (s_clip_txn.request_sequence)
 #define s_remote_offer_origin (s_clip_txn.remote_offer_origin)

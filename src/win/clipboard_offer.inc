@@ -1,13 +1,6 @@
 static uint32_t clip_local_device(void) {
     return g_app.cfg.role == HOP_ROLE_SERVER ? HOP_DEV_SERVER : HOP_DEV_CLIENT;
 }
-/* Link down: the peer's offer is unreachable, but our own offer survives so it
- * can be re-announced on reconnect. */
-static void clip_clear_remote_offer_local(void) {
-    AcquireSRWLockExclusive(&s_offer_lock);
-    (void)hop_clipboard_txn_clear_remote_offer(&s_clip_txn);
-    ReleaseSRWLockExclusive(&s_offer_lock);
-}
 static void clip_send_offer_clear(uint32_t origin, uint64_t generation) {
     uint8_t p[HOP_CLIP_OFFER_CLEAR_BYTES];
     if (!origin || !generation) return;
@@ -107,17 +100,4 @@ static int clip_publish_local_offer(const wchar_t *const *paths, int count) {
     else
         hop_log(HOP_LOG_INFO,"clip: file offer published (%d top-level item(s), no file data sent)",count);
     return 1;
-}
-static void clip_send_local_offer_snapshot(void) {
-    wchar_t *copies[HOP_CLIP_OFFER_MAX_ITEMS] = {0};
-    int count; uint64_t generation;
-    AcquireSRWLockShared(&s_offer_lock);
-    count=s_local_offer_count; generation=s_local_offer_generation;
-    for(int i=0;i<count;++i) if(s_local_offer_paths[i]) copies[i]=_wcsdup(s_local_offer_paths[i]);
-    ReleaseSRWLockShared(&s_offer_lock);
-    int valid=count>0;
-    for(int i=0;i<count;++i) if(!copies[i]) valid=0;
-    if(valid && !clip_send_offer((const wchar_t *const *)copies,count,clip_local_device(),generation))
-        hop_log(HOP_LOG_WARN,"clip: file offer resend failed");
-    for(int i=0;i<count;++i) free(copies[i]);
 }

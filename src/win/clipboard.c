@@ -59,7 +59,6 @@ static SRWLOCK s_offer_lock = SRWLOCK_INIT;
 static hop_clipboard_txn s_clip_txn;
 static wchar_t *s_local_offer_paths[HOP_CLIP_OFFER_MAX_ITEMS];
 static int s_local_offer_count;
-#define s_local_offer_generation (s_clip_txn.local_offer_generation)
 #define s_local_offer_sequence (s_clip_txn.local_offer_sequence)
 #define s_offer_request_seq (s_clip_txn.request_sequence)
 #define s_remote_offer_origin (s_clip_txn.remote_offer_origin)

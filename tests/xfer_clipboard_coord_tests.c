@@ -209,6 +209,48 @@ int main(void) {
     assert(hop_clip_coord_consume_offers(&t).notify == HOP_CLIP_NOTIFY_NONE);
     assert(hop_clip_coord_publish_local_offer(&t, &fresh).notify == HOP_CLIP_NOTIFY_NONE);
 
+    /* ---- link state transitions ---- */
+    /* Reconnect replays the stored offer at its existing generation, so the peer
+     * does not see a new offer identity for unchanged content. */
+    hop_clipboard_txn_init(&t);
+    local_gen = hop_clipboard_txn_publish_local_offer(&t);
+    out = hop_clip_coord_link_state(&t, 1, 2);
+    assert(out.action == HOP_CLIP_ACT_RESEND_LOCAL_OFFER);
+    assert(out.generation == local_gen);
+    assert(t.local_offer_generation == local_gen);
+
+    /* An empty stored path array has nothing to replay. */
+    assert(hop_clip_coord_link_state(&t, 1, 0).action == HOP_CLIP_ACT_NONE);
+
+    /* No published generation also means nothing to replay. */
+    hop_clipboard_txn_init(&t);
+    assert(hop_clip_coord_link_state(&t, 1, 3).action == HOP_CLIP_ACT_NONE);
+
+    /* Disconnect forgets the peer's offer but keeps ours for the next replay. */
+    hop_clipboard_txn_init(&t);
+    local_gen = hop_clipboard_txn_publish_local_offer(&t);
+    hop_clipboard_txn_set_remote_offer(&t, peer, 80);
+    out = hop_clip_coord_link_state(&t, 0, 1);
+    assert(out.action == HOP_CLIP_ACT_FORGET_REMOTE_OFFER);
+    assert(!t.remote_offer_origin && !t.remote_offer_generation);
+    assert(t.local_offer_generation == local_gen);
+    assert(hop_clip_coord_link_state(&t, 1, 1).action == HOP_CLIP_ACT_RESEND_LOCAL_OFFER);
+
+    /* A stopping clipboard ignores the transition entirely: no replay, and the
+     * peer identity is left alone because shutdown already handled it. */
+    hop_clipboard_txn_init(&t);
+    hop_clipboard_txn_publish_local_offer(&t);
+    hop_clipboard_txn_set_remote_offer(&t, peer, 81);
+    hop_clipboard_txn_set_stopping(&t, 1);
+    assert(hop_clip_coord_link_state(&t, 1, 1).action == HOP_CLIP_ACT_NONE);
+    assert(hop_clip_coord_link_state(&t, 0, 1).action == HOP_CLIP_ACT_NONE);
+    assert(t.remote_offer_origin == peer && t.remote_offer_generation == 81);
+    hop_clipboard_txn_set_stopping(&t, 0);
+
+    /* Null transaction is inert for link transitions too. */
+    assert(hop_clip_coord_link_state(NULL, 1, 5).action == HOP_CLIP_ACT_NONE);
+    assert(hop_clip_coord_link_state(NULL, 0, 5).action == HOP_CLIP_ACT_NONE);
+
     puts("PASS: clipboard orchestration decisions");
     return 0;
 }

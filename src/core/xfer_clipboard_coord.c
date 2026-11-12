@@ -117,6 +117,27 @@ hop_clip_outcome hop_clip_coord_complete_paste(hop_clipboard_txn *txn,
     return out;
 }
 
+hop_clip_outcome hop_clip_coord_link_state(hop_clipboard_txn *txn,
+    int connected, int local_offer_count) {
+    hop_clip_outcome out = outcome_none();
+    if (!txn) return out;
+    /* Shutdown retired clipboard state on purpose; a late link transition must
+     * not replay an offer or reach for the peer again. */
+    if (txn->stopping) return out;
+    if (connected) {
+        if (txn->local_offer_generation && local_offer_count > 0) {
+            out.action = HOP_CLIP_ACT_RESEND_LOCAL_OFFER;
+            out.generation = txn->local_offer_generation;
+        }
+        return out;
+    }
+    /* The peer's offer is unreachable now, but ours stays valid: the reconnect
+     * path replays it at the same generation. */
+    (void)hop_clipboard_txn_clear_remote_offer(txn);
+    out.action = HOP_CLIP_ACT_FORGET_REMOTE_OFFER;
+    return out;
+}
+
 static hop_clip_retired_offers retire_offers(hop_clipboard_txn *txn,
     hop_clip_notify notify) {
     hop_clip_retired_offers out;

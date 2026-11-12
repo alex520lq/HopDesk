@@ -4,10 +4,25 @@ static void clip_send_paste_failed(uint32_t request_id,uint8_t reason) {
     if(n)(void)net_send(HOP_MSG_CLIP_PASTE_FAILED,p,n);
 }
 void clipboard_on_link(int connected) {
-    pthread_mutex_lock(&s_offer_lock);int stopping=s_clip_stopping;pthread_mutex_unlock(&s_offer_lock);
-    if(stopping)return;
-    if(connected)clip_send_local_offer_snapshot();
-    else clip_clear_remote_offer_local();
+    char *copies[HOP_CLIP_OFFER_MAX_ITEMS]={0};
+    int count=0,valid=1;
+    uint64_t generation=0;
+    pthread_mutex_lock(&s_offer_lock);
+    hop_clip_outcome out=hop_clip_coord_link_state(&s_clip_txn,connected,s_local_offer_count);
+    if(out.action==HOP_CLIP_ACT_RESEND_LOCAL_OFFER){
+        count=s_local_offer_count;
+        generation=out.generation;
+        for(int i=0;i<count;++i)
+            if(s_local_offer_paths[i])copies[i]=strdup(s_local_offer_paths[i]);
+    }
+    pthread_mutex_unlock(&s_offer_lock);
+    if(out.action!=HOP_CLIP_ACT_RESEND_LOCAL_OFFER)return;
+    /* A partially duplicated snapshot would announce a shorter offer than the
+     * clipboard really holds, so a single failure cancels the replay. */
+    for(int i=0;i<count;++i)if(!copies[i])valid=0;
+    if(valid&&!clip_send_offer((const char *const *)copies,count,generation))
+        hop_log(HOP_LOG_WARN,"clip: file offer resend failed");
+    for(int i=0;i<count;++i)free(copies[i]);
 }
 void clipboard_on_remote_file_offer(const uint8_t *p,uint32_t len) {
     hop_clip_file_offer_msg m;

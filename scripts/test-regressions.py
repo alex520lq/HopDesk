@@ -2097,12 +2097,13 @@ int main(void) {
     for api in ['hop_clip_coord_remote_offer','hop_clip_coord_offer_clear',
                 'hop_clip_coord_paste_request','hop_clip_coord_begin_paste',
                 'hop_clip_coord_complete_paste','hop_clip_coord_retire_offers',
-                'hop_clip_coord_consume_offers','hop_clip_coord_publish_local_offer']:
+                'hop_clip_coord_consume_offers','hop_clip_coord_publish_local_offer',
+                'hop_clip_coord_link_state']:
         assert api in clip_coord and api in clip_coord_header
     for txn_api in ['hop_clipboard_txn_set_remote_offer','hop_clipboard_txn_begin_paste',
                     'hop_clipboard_txn_accept_request','hop_clipboard_txn_complete_paste',
                     'hop_clipboard_txn_clear_offer_if_match','hop_clipboard_txn_publish_local_offer',
-                    'hop_clipboard_txn_clear_local_offer']:
+                    'hop_clipboard_txn_clear_local_offer','hop_clipboard_txn_clear_remote_offer']:
         assert txn_api in clip_coord, txn_api+' must be driven by the shared coordinator'
 
     for platform,main_name in [('win','clipboard.c'),('mac','clipboard.m')]:
@@ -2124,6 +2125,11 @@ int main(void) {
         for adapter in (main,offer,paste):
             assert 'clip_clear_local_offer' not in adapter
             assert 'hop_clipboard_txn_clear_local_offer' not in adapter
+        # Link transitions are a Core decision too: replay, forget, or nothing.
+        assert 'hop_clip_coord_link_state' in paste
+        assert 'clip_send_local_offer_snapshot' not in offer
+        assert 'clip_clear_remote_offer_local' not in offer
+        assert 'clip_clear_remote_offer_local' not in paste
         for delegated in ['hop_clip_coord_remote_offer','hop_clip_coord_offer_clear',
                           'hop_clip_coord_begin_paste','hop_clip_coord_paste_request',
                           'hop_clip_coord_complete_paste']:

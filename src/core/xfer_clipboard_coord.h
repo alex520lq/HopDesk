@@ -31,7 +31,9 @@ typedef enum {
     HOP_CLIP_ACT_RESEND_PENDING,     /* request already pending: report success, send nothing */
     HOP_CLIP_ACT_CLEAR_LOCAL_OFFER,  /* drop the adapter path array; notify if cleared_generation */
     HOP_CLIP_ACT_APPLY_PASTE,        /* staged: apply at expected_version */
-    HOP_CLIP_ACT_CANCEL_PENDING      /* drop the pending paste without applying */
+    HOP_CLIP_ACT_CANCEL_PENDING,     /* drop the pending paste without applying */
+    HOP_CLIP_ACT_RESEND_LOCAL_OFFER, /* link up: re-announce the stored offer at generation */
+    HOP_CLIP_ACT_FORGET_REMOTE_OFFER /* link down: the peer's offer is unreachable */
 } hop_clip_action;
 
 typedef struct {
@@ -81,6 +83,18 @@ typedef enum {
     HOP_CLIP_NOTIFY_LOCAL_ONLY,  /* our local generation is dead, the peer's offer is not */
     HOP_CLIP_NOTIFY_BOTH         /* both identities are dead */
 } hop_clip_notify;
+
+/* Link state change. Core owns the rules: a stopping clipboard ignores the
+ * transition entirely; a live link re-announces the stored offer when one is
+ * complete; a dead link forgets the peer's offer but keeps our own so it can be
+ * replayed on the next reconnect.
+ *
+ * local_offer_count is the adapter's stored path count, read under the lock, so
+ * Core can tell "nothing to replay" from "replay generation N". macOS used to
+ * guard this with stopping and Windows did not, which let a shutting-down
+ * Windows clipboard still send on a link transition. */
+hop_clip_outcome hop_clip_coord_link_state(hop_clipboard_txn *txn,
+    int connected, int local_offer_count);
 
 /* Identities retired in one critical section, plus what the peer must be told.
  * The adapter owns the wire sends; this only decides what is retired. */

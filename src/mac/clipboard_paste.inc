@@ -11,46 +11,43 @@ void clipboard_on_link(int connected) {
 }
 void clipboard_on_remote_file_offer(const uint8_t *p,uint32_t len) {
     hop_clip_file_offer_msg m;
-    if(!hop_clip_file_offer_decode(p,len,&m)||m.origin==clip_local_device())return;
+    if(!hop_clip_file_offer_decode(p,len,&m))return;
     pthread_mutex_lock(&s_offer_lock);
-    int stopping=s_clip_stopping;
+    hop_clip_outcome out=hop_clip_coord_remote_offer(&s_clip_txn,clip_local_device(),m.origin,m.generation);
+    if(out.action==HOP_CLIP_ACT_CLEAR_LOCAL_OFFER)clip_drop_local_offer_paths();
     pthread_mutex_unlock(&s_offer_lock);
-    if(stopping)return;
-    clip_clear_local_offer(1);
-    pthread_mutex_lock(&s_offer_lock);
-    hop_clipboard_txn_set_remote_offer(&s_clip_txn,m.origin,m.generation);
-    pthread_mutex_unlock(&s_offer_lock);
-    hop_log(HOP_LOG_INFO,"clip: remote file offer received (%u item(s)); no data requested",m.count);
+    if(out.notify_peer)clip_send_offer_clear(clip_local_device(),out.cleared_generation);
+    if(out.action==HOP_CLIP_ACT_CLEAR_LOCAL_OFFER)
+        hop_log(HOP_LOG_INFO,"clip: remote file offer received (%u item(s)); no data requested",m.count);
 }
 void clipboard_on_remote_file_offer_clear(const uint8_t *p,uint32_t len) {
     uint32_t origin=0;uint64_t generation=0;
     if(!hop_clip_file_offer_clear_decode(p,len,&origin,&generation))return;
     pthread_mutex_lock(&s_offer_lock);
-    int match=hop_clipboard_txn_clear_offer_if_match(&s_clip_txn,clip_local_device(),origin,generation);
+    hop_clip_outcome out=hop_clip_coord_offer_clear(&s_clip_txn,clip_local_device(),origin,generation);
+    if(out.action==HOP_CLIP_ACT_CLEAR_LOCAL_OFFER)clip_drop_local_offer_paths();
     pthread_mutex_unlock(&s_offer_lock);
-    if(match==1)clip_clear_local_offer(0);
 }
 int clipboard_request_remote_paste(void) {
     __block NSInteger current=0;
     void (^read_paste_context)(void)=^{current=[[NSPasteboard generalPasteboard] changeCount];};
     if([NSThread isMainThread])read_paste_context();
     else dispatch_sync(dispatch_get_main_queue(),read_paste_context);
-    uint8_t p[HOP_CLIP_PASTE_REQUEST_BYTES];
-    uint32_t id=0,origin=0;uint64_t generation=0,expected=0;
     pthread_mutex_lock(&s_offer_lock);
-    int begin=hop_clipboard_txn_begin_paste(&s_clip_txn,(uint64_t)current,(uint64_t)s_last_change,
-        HOP_XFER_PASTE_BATCH_FLAG,&id,&origin,&generation,&expected);
+    hop_clip_outcome out=hop_clip_coord_begin_paste(&s_clip_txn,(uint64_t)current,(uint64_t)s_last_change,
+        HOP_XFER_PASTE_BATCH_FLAG);
     pthread_mutex_unlock(&s_offer_lock);
-    if(begin==0)return 0;
-    if(begin==2)return 1;
-    int sent=hop_clip_paste_request_encode(p,id,origin,generation,expected) &&
+    if(out.action==HOP_CLIP_ACT_NONE)return 0;
+    if(out.action==HOP_CLIP_ACT_RESEND_PENDING)return 1;
+    uint8_t p[HOP_CLIP_PASTE_REQUEST_BYTES];
+    int sent=hop_clip_paste_request_encode(p,out.request_id,out.origin,out.generation,out.expected_version) &&
              net_send(HOP_MSG_CLIP_PASTE_REQUEST,p,sizeof(p));
     if(!sent) {
         pthread_mutex_lock(&s_offer_lock);
-        hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,id);
+        hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,out.request_id);
         pthread_mutex_unlock(&s_offer_lock);
-        hop_log(HOP_LOG_WARN,"clip: paste request %u could not be sent",id);
-    } else hop_log(HOP_LOG_INFO,"clip: cross-device paste requested (%u)",id);
+        hop_log(HOP_LOG_WARN,"clip: paste request %u could not be sent",out.request_id);
+    } else hop_log(HOP_LOG_INFO,"clip: cross-device paste requested (%u)",out.request_id);
     return 1;
 }
 void clipboard_on_paste_failed(const uint8_t *p,uint32_t len) {
@@ -90,24 +87,21 @@ static void clip_paste_worker(void *arg) {
 void clipboard_on_paste_request(const uint8_t *p,uint32_t len) {
     hop_clip_paste_request_msg m;
     if(!hop_clip_paste_request_decode(p,len,&m))return;
-    if(m.origin!=clip_local_device()){clip_send_paste_failed(m.request_id,HOP_CLIP_PASTE_FAIL_STALE);return;}
     clip_paste_work *w=(clip_paste_work*)calloc(1,sizeof(*w));
     if(!w){clip_send_paste_failed(m.request_id,HOP_CLIP_PASTE_FAIL_BUSY);return;}
     w->request_id = m.request_id;
     w->offer_id = m.generation;
     pthread_mutex_lock(&s_offer_lock);
-    hop_clipboard_request_result decision = hop_clipboard_txn_accept_request(
-        &s_clip_txn, m.request_id, m.generation, s_paste_group != nil, clip_snapshot_paste_paths, w);
-    if (decision != HOP_CLIPBOARD_REQUEST_ACCEPTED) {
-        pthread_mutex_unlock(&s_offer_lock);
+    hop_clip_outcome out=hop_clip_coord_paste_request(&s_clip_txn,m.request_id,m.origin,m.generation,
+        clip_local_device(),s_paste_group != nil,clip_snapshot_paste_paths,w);
+    if(out.action==HOP_CLIP_ACT_SPAWN_PASTE_WORKER)dispatch_group_enter(s_paste_group);
+    pthread_mutex_unlock(&s_offer_lock);
+    if(out.action!=HOP_CLIP_ACT_SPAWN_PASTE_WORKER){
         clip_free_paste_work(w);
-        if (decision != HOP_CLIPBOARD_REQUEST_DUPLICATE)
-            clip_send_paste_failed(m.request_id, decision == HOP_CLIPBOARD_REQUEST_STALE
-                ? HOP_CLIP_PASTE_FAIL_STALE : HOP_CLIP_PASTE_FAIL_BUSY);
+        if(out.action==HOP_CLIP_ACT_SEND_PASTE_FAILED)
+            clip_send_paste_failed(out.request_id,out.fail_reason);
         return;
     }
-    dispatch_group_enter(s_paste_group);
-    pthread_mutex_unlock(&s_offer_lock);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
         clip_paste_worker(w);
         pthread_mutex_lock(&s_offer_lock);hop_clipboard_txn_finish_paste_worker(&s_clip_txn);pthread_mutex_unlock(&s_offer_lock);
@@ -117,11 +111,16 @@ void clipboard_on_paste_request(const uint8_t *p,uint32_t len) {
 void clipboard_complete_remote_paste(uint32_t batch,const char *const *paths,int n,int success) {
     uint64_t expected=0;
     pthread_mutex_lock(&s_offer_lock);
-    if(s_clip_stopping){hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,0);pthread_mutex_unlock(&s_offer_lock);return;}
-    int pending=hop_clipboard_txn_get_pending_paste(&s_clip_txn,batch,&expected);
-    int valid=pending&&hop_clipboard_txn_complete_paste(&s_clip_txn,batch,expected,success,NULL);
+    (void)hop_clipboard_txn_get_pending_paste(&s_clip_txn,batch,&expected);
+    hop_clip_outcome out=hop_clip_coord_complete_paste(&s_clip_txn,batch,expected,success);
+    if(out.action==HOP_CLIP_ACT_CANCEL_PENDING)hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,0);
     pthread_mutex_unlock(&s_offer_lock);
-    if(!valid){if(!success)hop_log(HOP_LOG_WARN,"clip: paste transfer %u incomplete; pasteboard unchanged",batch);return;}
+    if(out.action==HOP_CLIP_ACT_CANCEL_PENDING)return;
+    if(out.action!=HOP_CLIP_ACT_APPLY_PASTE){
+        if(!success)hop_log(HOP_LOG_WARN,"clip: paste transfer %u incomplete; pasteboard unchanged",batch);
+        return;
+    }
+    expected=out.expected_version;
     if(!paths||n<=0){pthread_mutex_lock(&s_offer_lock);hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,batch);pthread_mutex_unlock(&s_offer_lock);return;}
     NSMutableArray<NSURL *> *urls=[NSMutableArray arrayWithCapacity:(NSUInteger)n];
     for(int i=0;i<n;++i){NSString *path=[NSString stringWithUTF8String:paths[i]];if(path)[urls addObject:[NSURL fileURLWithPath:path]];}

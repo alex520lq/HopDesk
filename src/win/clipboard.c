@@ -18,6 +18,7 @@
 #include "xfer.h"
 #include "../core/xfer_task.h"
 #include "../core/xfer_clipboard_txn.h"
+#include "../core/xfer_clipboard_coord.h"
 #include "../core/xfer_budget.h"
 
 #include <shellapi.h>
@@ -68,7 +69,7 @@ static int s_local_offer_count;
 #define s_seen_paste_next (s_clip_txn.seen_next)
 #define s_paste_scan_active (s_clip_txn.paste_scan_active)
 #define s_clip_stopping (s_clip_txn.stopping)
-static HANDLE s_paste_workers_done;static HANDLE s_paste_workers_done;
+static HANDLE s_paste_workers_done;
 
 #include "clipboard_offer.inc"
 

@@ -2088,16 +2088,35 @@ int main(void) {
                 'hop_clipboard_txn_complete_paste','hop_clipboard_txn_finish_paste_worker']:
         assert api in clip_txn and api in clip_txn_header
     assert 'HOP_CLIPBOARD_TXN_SEEN_REQUESTS' in clip_txn_header
+
+    # Inbound Offer/Request orchestration has one shared decision owner. The
+    # adapters keep the platform lock and native state; they must not re-derive
+    # admission, identity or terminal-reason rules of their own.
+    clip_coord=(ROOT/'src/core/xfer_clipboard_coord.c').read_text(encoding='utf-8')
+    clip_coord_header=(ROOT/'src/core/xfer_clipboard_coord.h').read_text(encoding='utf-8')
+    for api in ['hop_clip_coord_remote_offer','hop_clip_coord_offer_clear',
+                'hop_clip_coord_paste_request','hop_clip_coord_begin_paste',
+                'hop_clip_coord_complete_paste']:
+        assert api in clip_coord and api in clip_coord_header
+    for txn_api in ['hop_clipboard_txn_set_remote_offer','hop_clipboard_txn_begin_paste',
+                    'hop_clipboard_txn_accept_request','hop_clipboard_txn_complete_paste',
+                    'hop_clipboard_txn_clear_offer_if_match']:
+        assert txn_api in clip_coord, txn_api+' must be driven by the shared coordinator'
+
     for platform,main_name in [('win','clipboard.c'),('mac','clipboard.m')]:
         main=(ROOT/f'src/{platform}/{main_name}').read_text(encoding='utf-8')
         offer=(ROOT/f'src/{platform}/clipboard_offer.inc').read_text(encoding='utf-8')
         paste=(ROOT/f'src/{platform}/clipboard_paste.inc').read_text(encoding='utf-8')
         assert 'xfer_clipboard_txn.h' in main
+        assert 'xfer_clipboard_coord.h' in main
         assert 'hop_clipboard_txn_publish_local_offer' in offer
-        assert 'hop_clipboard_txn_set_remote_offer' in paste
-        assert 'hop_clipboard_txn_begin_paste' in paste
-        assert 'hop_clipboard_txn_accept_request' in paste
-        assert 'hop_clipboard_txn_complete_paste' in paste
+        for delegated in ['hop_clip_coord_remote_offer','hop_clip_coord_offer_clear',
+                          'hop_clip_coord_begin_paste','hop_clip_coord_paste_request',
+                          'hop_clip_coord_complete_paste']:
+            assert delegated in paste, delegated+' must be delegated, not re-implemented'
+        for reimplemented in ['hop_clipboard_txn_set_remote_offer','hop_clipboard_txn_begin_paste',
+                              'hop_clipboard_txn_accept_request','hop_clipboard_txn_complete_paste']:
+            assert reimplemented not in paste, reimplemented+' must not appear in the adapter'
         assert 's_seen_paste_requests' not in paste
         assert 's_offer_request_seq' not in paste
 

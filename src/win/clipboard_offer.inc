@@ -20,13 +20,17 @@ static void clip_send_offer_clear(uint32_t origin, uint64_t generation) {
     hop_put_be32(p, origin); hop_put_be64(p + 4, generation);
     (void)net_server_send(g_app.net, HOP_MSG_CLIP_FILE_OFFER_CLEAR, p, sizeof(p));
 }
+/* Caller holds s_offer_lock. */
+static void clip_drop_local_offer_paths(void) {
+    for(int i=0;i<s_local_offer_count;++i)free(s_local_offer_paths[i]);
+    memset(s_local_offer_paths,0,sizeof(s_local_offer_paths));
+    s_local_offer_count=0;
+}
 static void clip_clear_local_offer(int notify_peer) {
     uint64_t generation;
     AcquireSRWLockExclusive(&s_offer_lock);
     generation=hop_clipboard_txn_clear_local_offer(&s_clip_txn);
-    for(int i=0;i<s_local_offer_count;++i)free(s_local_offer_paths[i]);
-    memset(s_local_offer_paths,0,sizeof(s_local_offer_paths));
-    s_local_offer_count=0;
+    clip_drop_local_offer_paths();
     ReleaseSRWLockExclusive(&s_offer_lock);
     if(notify_peer&&generation)clip_send_offer_clear(clip_local_device(),generation);
 }

@@ -23,6 +23,7 @@
 #include "xfer.h"
 #include "../core/xfer_task.h"
 #include "../core/xfer_clipboard_txn.h"
+#include "../core/xfer_clipboard_coord.h"
 #include "../core/xfer_budget.h"
 
 #include <stdlib.h>

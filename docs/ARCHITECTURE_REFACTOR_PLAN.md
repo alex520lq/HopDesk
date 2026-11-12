@@ -1047,3 +1047,18 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - **验收范围需要分层**：`docs/MANUAL_TEST_RUNBOOK.md` 是通用清单（APP-/INPUT-/CLIP- 编号），没有 Receiver 专项用例，也不回指本文件的实机记录；本文件 2026-11-12 记录包含真实双机 48 MiB / 1 GiB 双向传输、逐字节比对、取消与资源对账（基线 `1d346fa`）。二者需建立交叉引用并补齐 RX-* 用例，避免把“已实机验证”与“通用清单未填”混为一谈。
 - **分支状态**：远端仅存 `main`、`refactor/architecture-modularization`（`f239774`，已是 `origin/main` 祖先）、`refactor/clipboard-request-admission`（`b694992`）。`refactor/sender-job-lifecycle` 与 `refactor/architecture-next` 已删除。前者可在获得明确授权后删除，删除本身不丢失内容。
 - **本地 `main` 与 `origin/main` 分歧（新增，优先级高于文档陈旧）**：本地 `main` @ `9a41a9e` 领先 `origin/main` 4 个提交（`9a41a9e` / `e6f4b1a` / `b5172b7` / `6243312`），但 `git diff origin/main main` 为空，即树内容完全一致。成因是 PR #12 分支 tip `e6f4b1a` 已被 squash 合并为 `ae85b55`，本地又把它合并回 `main`，形成重复历史。这不影响构建，但会让后续 Agent 的 `main` 基线判断出错。修正需 `git reset --hard origin/main`，属 §4 / §12.3 禁止的破坏性操作，必须取得明确授权后才能执行。
+
+
+### 2026-11-12：Clipboard 入站编排决策 Core 化（阶段 2 续，CI 待验）
+
+- 新增 `src/core/xfer_clipboard_coord.[ch]`：把入站 FILE_OFFER、FILE_OFFER_CLEAR、PASTE_REQUEST、出站 PASTE_REQUEST 的起始判定、以及 Paste 完成判定收敛为纯决策函数，返回 `hop_clip_action` 供适配层执行。形态对齐 `xfer_rx_frame_gate`。
+- **不把 `lock/unlock` 注入 Core**：适配层持锁调用，Core 只改事务状态并返回动作；网络发送在适配层解锁后执行。Core 不出现任何 OS 类型、线程原语或原生路径表示。
+- Windows/macOS 的 `clipboard_paste.inc` 改为委托：`hop_clip_coord_remote_offer`、`hop_clip_coord_offer_clear`、`hop_clip_coord_begin_paste`、`hop_clip_coord_paste_request`、`hop_clip_coord_complete_paste`。两端不再各自维护 origin 校验、admission→失败原因映射和 stopping 分支。
+- **修复两端语义不对称**（此前只在 Windows 存在的防护，现在两端一致）：入站 Offer 在持锁状态下重新检查 `stopping`；Paste 完成后落地前检查 `stopping`。此前 macOS 只在锁外检查一次。
+- 新增锁内辅助 `clip_drop_local_offer_paths()`，`clip_clear_local_offer` 与三处入站路径共用，去掉重复的释放循环；同时删除 `src/win/clipboard.c` 中重复声明的 `static HANDLE s_paste_workers_done;`。
+- 新增 `tests/xfer_clipboard_coord_tests.c`（覆盖自身 origin 忽略、stopping 拒绝、Offer 匹配清除、admission 四种结果、begin 三态、完成版本守卫与停止取消），接入 `scripts/test-core.sh` 与 `scripts/test-core.ps1`。
+- `scripts/test-regressions.py` 改为断言适配层**委托**这五个决策入口，并反向断言 `hop_clipboard_txn_set_remote_offer` / `begin_paste` / `accept_request` / `complete_paste` 不再出现在 `clipboard_paste.inc`，防止后续重新长出重复实现。
+- 本地验证：`sh scripts/build-mac.sh`、`python3 scripts/test-regressions.py`（All targeted regressions passed）、`hopdesk-clipboard-txn-tests`、`hopdesk-clipboard-coord-tests`、`sh scripts/test-xfer-protocol.sh`、`sh scripts/test-network.sh` 全部通过。
+- `sh scripts/test-core.sh` 在 `scripts/test-updates.py` 的 `replace_fail` 用例中断；该失败已在干净 `origin/main`（`ee057d7`）的独立 worktree 上复现，属既有环境问题，与本切片无关，需单独处理。
+- 未验证：Windows 原生构建与测试（仅 CI）、真实双机粘贴、剪贴板争用、关闭竞态。不得以 CI 或单元测试替代物理双设备验收。
+- 未纳入本切片：出站 Offer 发布的三段加锁序列（invalidate → clear → publish）仍是平台实现，因其并发顺序最敏感且缺乏实机基线，留待下一问题单独处理。

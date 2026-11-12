@@ -287,7 +287,7 @@ tests/
 
 **目标**：首先解除 `xfer_receive.inc` 对发送端翻译单元静态状态的隐式依赖。
 
-当前进展：Windows/macOS writer queue 的 buffer pool 已抽取为共享 Core 模块；文件句柄和 open/write-at/close 文件操作已分别抽取到 `src/win/xfer_writer_io.c`、`src/mac/xfer_writer_io.c`。writer thread、队列同步、watchdog/status/task callback 仍留在 include 中，不能把阶段 2 标记为完成。
+当前进展：Windows/macOS writer queue 的 buffer pool 已抽取为共享 Core 模块；文件句柄和 open/write-at/close 文件操作已分别抽取到 `src/win/xfer_writer_io.c`、`src/mac/xfer_writer_io.c`；writer queue 与 worker 已分别成为 `src/win/xfer_writer_queue.c`、`src/mac/xfer_writer_queue.c`、`src/win/xfer_writer_worker.c`、`src/mac/xfer_writer_worker.c` 生产编译单元。接收帧的 HELLO/token、session 绑定和旧批次 CHUNK/END 过滤已收敛到共享 `src/core/xfer_rx_frame_gate.c`，两端 include 只保留原生 session 快照、socket 关闭和消息调度。socket listener/accept 线程、平台 service adapter 与 cancel/disconnect 轮询仍在 include 中，尚不能把阶段 2 标记为完成。
 
 顺序：
 1. 绘制 receiver include 的静态依赖表；明确接收状态、writer 状态和外部回调。
@@ -471,7 +471,7 @@ tests/
 | 基线核对 | 完成 | `68818b3f093af20385c3fba5785405eb4ac8d634` | 已核实 main HEAD、PR/分支状态；完成主要模块与函数簇审计附件。动态调用图、全量资源所有权追踪仍作为阶段 0 深度审计待办。 |
 | 阶段 0：深度审计 | 进行中 | `eaf8488b21c87201297aaf9edcdad2660bab76f2` | 已建立模块/函数簇和平台差异清单；仍需逐项追踪所有资源 owner、锁顺序、线程退出与回调迟到路径。PR 基线双平台 CI 已通过。 |
 | 阶段 1：构建与模块边界 | 进行中 | `6a994e691c844c60b3b15615f299633531283c13` | app 构建递归发现已完成；ACK Window、Transfer Tracking、RX Buffer Pool 已成为独立生产编译单元并接入两端测试。Core 平台 include 检查、显式 source manifest/重复源检查仍待完成。 |
-| 阶段 2：接收端/Writer | 进行中 | `54496ab83eb5f3caa61a5b3f5a6b7379a461c56e` | 在既有共享 RX Queue accounting 与平台 Writer IO adapter 之上，将队列容量/预留/忙碌写入/排空测试拆为独立 `tests/xfer_rx_queue_tests.c` 目标，并接入 macOS/Windows 测试脚本。Writer thread、队列同步和 receiver lifecycle 仍未拆完；本切片新增 CI 尚待运行。 |
+| 阶段 2：接收端/Writer | 进行中 | `9a210d4c44295222aa72436c4913b0fb6ba9d10f` | Writer queue/worker 已成为平台生产编译单元；共享 RX Queue accounting 与 Writer IO adapter 已接入两端测试。接收帧 HELLO/token、session 绑定和非当前批次 CHUNK/END 准入已抽到共享 `xfer_rx_frame_gate`。剩余：`xfer_receive.inc` 中的 socket listener/accept 线程、平台 service adapter、cancel/disconnect 轮询，以及最终删除 `.inc`。Run #1660 Windows/macOS CI PASS。 |
 | 阶段 3：Sender/Service | 待完成 | — | 待实施。 |
 | 阶段 4：共享 Transfer Domain | 待完成 | — | 待实施。 |
 | 阶段 5：Clipboard | 进行中 | `d7722d121892caf23d2707e019f8697886da786d` | Core 统一 Offer、入站 Request 准入、延迟写入身份校验与图片预算分类；暂时额度不足在释放后重试同一剪贴板版本，永久超限不重试。Windows/macOS CI 已通过；双机实测待验收。 |
@@ -978,6 +978,17 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 本地验证：`sh scripts/test-core.sh`、`python3 scripts/test-regressions.py`、`sh scripts/build-mac.sh`、`sh scripts/test-xfer-protocol.sh`、`sh scripts/test-network.sh` 通过。
 - CI 证据：GitHub Actions Run #1658（ID `43144273368`，head `d7722d121892caf23d2707e019f8697886da786d`）Windows MSVC 与 macOS 全流程 PASS：应用构建、Core/regression（含共享图片预算分类和 Windows 生产准入夹具）、文件传输协议、TCP loopback、Windows native role/reconnect、macOS control/listener loopback、更新检查与双平台打包。Release 发布按 PR 流程跳过。
 - 真实双机粘贴、剪贴板争用与关闭竞态仍未验证；不能以 CI 结果替代物理双设备验收。
+
+
+### 2026-11-12：Receiver 帧准入 Core 化（CI PASS）
+
+- 新增 `src/core/xfer_rx_frame_gate.[ch]`，由共享 Core 统一决定 HELLO/token 校验、当前 session 绑定、未知类型拒绝、以及非当前批次 CHUNK/END 的丢弃。
+- Windows/macOS `on_data_frame_checked` 不再各自复制 `hop_xfer_hello_bound` + `hop_data_unwrap` + batch 比较；平台 Adapter 仅负责在锁内快照 session、调度准入后的 body，并在拒绝时 shutdown socket / 清除 `peer_ready`。
+- `on_data_msg` 只保留“已握手”检查与 typed handler dispatch，不再拥有 HELLO 分支。
+- 新增 `tests/xfer_rx_frame_gate_tests.c` 覆盖合法/错误 token、过期/外键 session、截断帧、未知类型、当前批次 CHUNK/END dispatch、旧批次 DROP、BEGIN 新批次 dispatch 和内部 batch 不一致拒绝；macOS/Windows Core test 脚本、Windows HA target 与 session transport fixture 均已链接新模块。
+- 本地验证：`sh scripts/test-core.sh`、`python3 scripts/test-regressions.py`、`sh scripts/build-mac.sh`、`sh scripts/test-xfer-protocol.sh`、`sh scripts/test-network.sh`、`python3 scripts/test-mac-connection.py` 通过。
+- CI 证据：GitHub Actions Run #1660（ID `43164543458`，head `9a210d4c44295222aa72436c4913b0fb6ba9d10f`）Windows MSVC 与 macOS 全流程 PASS：应用构建、Core/regression、文件传输协议、TCP loopback、Windows native role/reconnect、macOS control/listener loopback、更新检查和双平台打包。Release 发布按 PR 流程跳过。
+- 真实双机接收、断线重连和迟到帧验收仍未执行；不能以 CI 结果替代物理双设备测试。
 
 
 ### 2026-11-11：Sender Job Lifecycle 完整收口（实现分支，CI 待验）

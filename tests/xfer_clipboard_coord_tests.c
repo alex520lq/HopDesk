@@ -150,6 +150,65 @@ int main(void) {
            HOP_CLIP_ACT_CANCEL_PENDING);
     hop_clipboard_txn_set_stopping(&t, 0);
 
+    /* ---- retiring and publishing the local identity ---- */
+    hop_clipboard_txn_init(&t);
+    local_gen = hop_clipboard_txn_publish_local_offer(&t);
+    hop_clipboard_txn_set_remote_offer(&t, peer, 70);
+    hop_clip_retired_offers retired = hop_clip_coord_retire_offers(&t);
+    assert(retired.remote.origin == peer && retired.remote.generation == 70);
+    assert(retired.local_generation == local_gen);
+    assert(!t.remote_offer_origin && !t.remote_offer_generation && !t.local_offer_generation);
+
+    /* Publishing retires both identities and hands back a fresh generation. */
+    hop_clipboard_txn_init(&t);
+    local_gen = hop_clipboard_txn_publish_local_offer(&t);
+    hop_clipboard_txn_set_remote_offer(&t, peer, 71);
+    uint64_t fresh = 0;
+    retired = hop_clip_coord_publish_local_offer(&t, &fresh);
+    assert(retired.remote.origin == peer && retired.remote.generation == 71);
+    assert(retired.local_generation == local_gen);
+    assert(fresh == local_gen + 1 && t.local_offer_generation == fresh);
+    assert(!t.remote_offer_origin);
+
+    /* Null transaction is inert and never writes a generation. */
+    assert(hop_clip_coord_retire_offers(NULL).local_generation == 0);
+    uint64_t untouched = 7;
+    assert(hop_clip_coord_publish_local_offer(NULL, &untouched).local_generation == 0);
+    assert(untouched == 0);
+    assert(hop_clip_coord_consume_offers(NULL).notify == HOP_CLIP_NOTIFY_NONE);
+
+    /* A clipboard change announces both identities to the peer. */
+    hop_clipboard_txn_init(&t);
+    local_gen = hop_clipboard_txn_publish_local_offer(&t);
+    hop_clipboard_txn_set_remote_offer(&t, peer, 72);
+    retired = hop_clip_coord_retire_offers(&t);
+    assert(retired.notify == HOP_CLIP_NOTIFY_BOTH);
+    assert(retired.remote.generation == 72 && retired.local_generation == local_gen);
+
+    /* Consuming a remote paste retires both but only announces our own
+     * generation: the peer still owns the offer it published. */
+    hop_clipboard_txn_init(&t);
+    local_gen = hop_clipboard_txn_publish_local_offer(&t);
+    hop_clipboard_txn_set_remote_offer(&t, peer, 73);
+    retired = hop_clip_coord_consume_offers(&t);
+    assert(retired.notify == HOP_CLIP_NOTIFY_LOCAL_ONLY);
+    assert(retired.remote.origin == peer && retired.remote.generation == 73);
+    assert(retired.local_generation == local_gen);
+    assert(!t.remote_offer_origin && !t.local_offer_generation);
+
+    /* Publishing also announces both, so the peer drops the offer it held. */
+    hop_clipboard_txn_init(&t);
+    hop_clipboard_txn_publish_local_offer(&t);
+    hop_clipboard_txn_set_remote_offer(&t, peer, 74);
+    retired = hop_clip_coord_publish_local_offer(&t, &fresh);
+    assert(retired.notify == HOP_CLIP_NOTIFY_BOTH);
+
+    /* Nothing live means nothing to announce, whichever intent is used. */
+    hop_clipboard_txn_init(&t);
+    assert(hop_clip_coord_retire_offers(&t).notify == HOP_CLIP_NOTIFY_NONE);
+    assert(hop_clip_coord_consume_offers(&t).notify == HOP_CLIP_NOTIFY_NONE);
+    assert(hop_clip_coord_publish_local_offer(&t, &fresh).notify == HOP_CLIP_NOTIFY_NONE);
+
     puts("PASS: clipboard orchestration decisions");
     return 0;
 }

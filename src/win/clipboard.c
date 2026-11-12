@@ -572,8 +572,7 @@ void clip_on_update(void) {
     if(s_remote_sequence && sequence==s_remote_sequence){s_last_sequence=sequence;return;}
     if(sequence!=s_last_sequence){
         s_last_sequence=sequence;
-        clip_invalidate_remote_offer(1);
-        clip_clear_local_offer(1);
+        clip_retire_offers();
     }
 
     if (IsClipboardFormatAvailable(CF_DIB) || IsClipboardFormatAvailable(CF_HDROP)) {
@@ -612,8 +611,7 @@ void clip_on_update(void) {
     }
 
     CloseClipboard();
-    clip_clear_local_offer(1);
-    clip_clear_remote_offer_local();
+    clip_consume_offers();
     hop_log(HOP_LOG_INFO, "clip: unsupported clipboard format, ignored");
 }
 
@@ -627,8 +625,7 @@ void clip_apply_remote(const uint8_t *p, uint32_t len) {
 
     if (len < 5) return;
     if (!hop_clip_should_apply_remote(hop_get_be32(p), (g_app.cfg.role==HOP_ROLE_SERVER?HOP_DEV_SERVER:HOP_DEV_CLIENT))) return; /* 自己发的，回环 */
-    clip_clear_local_offer(1);
-    clip_clear_remote_offer_local();
+    clip_consume_offers();
 
     u = (char *)malloc((size_t)(len - 3));           /* 文本 + NUL */
     if (!u) return;
@@ -688,8 +685,7 @@ void clip_apply_remote_paths(const wchar_t *const *paths,int n) {
 
 /* 收到图片：裸 BGRA 自上而下 -> CF_DIB（32 位，自下而上，BI_RGB） */
 void clip_apply_remote_image(const uint8_t *bgra, int w, int h, int stride) {
-    clip_clear_local_offer(1);
-    clip_clear_remote_offer_local();
+    clip_consume_offers();
     if (!bgra || w <= 0 || h <= 0 || w > INT_MAX / 4 || stride < w * 4) return;
 
     size_t out_stride = (size_t)w * 4;

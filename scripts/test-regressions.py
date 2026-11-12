@@ -2096,11 +2096,13 @@ int main(void) {
     clip_coord_header=(ROOT/'src/core/xfer_clipboard_coord.h').read_text(encoding='utf-8')
     for api in ['hop_clip_coord_remote_offer','hop_clip_coord_offer_clear',
                 'hop_clip_coord_paste_request','hop_clip_coord_begin_paste',
-                'hop_clip_coord_complete_paste']:
+                'hop_clip_coord_complete_paste','hop_clip_coord_retire_offers',
+                'hop_clip_coord_consume_offers','hop_clip_coord_publish_local_offer']:
         assert api in clip_coord and api in clip_coord_header
     for txn_api in ['hop_clipboard_txn_set_remote_offer','hop_clipboard_txn_begin_paste',
                     'hop_clipboard_txn_accept_request','hop_clipboard_txn_complete_paste',
-                    'hop_clipboard_txn_clear_offer_if_match']:
+                    'hop_clipboard_txn_clear_offer_if_match','hop_clipboard_txn_publish_local_offer',
+                    'hop_clipboard_txn_clear_local_offer']:
         assert txn_api in clip_coord, txn_api+' must be driven by the shared coordinator'
 
     for platform,main_name in [('win','clipboard.c'),('mac','clipboard.m')]:
@@ -2109,7 +2111,19 @@ int main(void) {
         paste=(ROOT/f'src/{platform}/clipboard_paste.inc').read_text(encoding='utf-8')
         assert 'xfer_clipboard_txn.h' in main
         assert 'xfer_clipboard_coord.h' in main
-        assert 'hop_clipboard_txn_publish_local_offer' in offer
+        # Publishing and retiring the local identity are delegated too.
+        assert 'hop_clip_coord_publish_local_offer' in offer
+        assert 'hop_clip_coord_retire_offers' in offer
+        assert 'hop_clip_coord_consume_offers' in offer
+        assert 'clip_retire_offers(' in main
+        assert 'clip_consume_offers(' in main
+        assert 'hop_clipboard_txn_publish_local_offer' not in offer
+        # Retiring both identities must stay one critical section with one
+        # announcement policy. The old split helper cleared the local identity
+        # on its own and let each call site re-pair it by hand.
+        for adapter in (main,offer,paste):
+            assert 'clip_clear_local_offer' not in adapter
+            assert 'hop_clipboard_txn_clear_local_offer' not in adapter
         for delegated in ['hop_clip_coord_remote_offer','hop_clip_coord_offer_clear',
                           'hop_clip_coord_begin_paste','hop_clip_coord_paste_request',
                           'hop_clip_coord_complete_paste']:

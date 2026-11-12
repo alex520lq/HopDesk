@@ -379,8 +379,7 @@ static void poll_pasteboard(void) {
         if(!unchanged)s_last_change=cc;
         pthread_mutex_unlock(&s_offer_lock);
         if(unchanged)return;
-        clip_invalidate_remote_offer(1);
-        clip_clear_local_offer(1);
+        clip_retire_offers();
 
         /* 文件优先：Finder 里 Cmd+C 一个文件，剪贴板上是 fileURL，
          * 只读字符串的话会"什么都不发生" */
@@ -405,7 +404,7 @@ static void poll_pasteboard(void) {
                 hop_log(HOP_LOG_INFO, "clip: image conversion already active; latest snapshot deferred");
                 return;
             }
-            clip_clear_remote_offer_local(); clip_clear_local_offer(1);
+            clip_consume_offers();
             int scheduled=send_image_data_async(imageType, cc, previous_change);
             if (scheduled==0) {
                 pthread_mutex_lock(&s_offer_lock);
@@ -420,7 +419,7 @@ static void poll_pasteboard(void) {
             const char *utf8 = [s UTF8String];
             uint32_t n = utf8 ? (uint32_t)strlen(utf8) : 0;
             if (n > 0 && n <= HOP_TEXT_MAX) {
-                clip_clear_remote_offer_local(); clip_clear_local_offer(1);
+                clip_consume_offers();
                 (void)send_text(s);
                 return;
             }
@@ -542,7 +541,7 @@ void clipboard_apply(const char *utf8) {
     NSString *s;
 
     if (!utf8 || !*utf8) return;
-    clip_clear_local_offer(1); clip_clear_remote_offer_local();
+    clip_consume_offers();
     s = [NSString stringWithUTF8String:utf8];
     if (!s) return;
 
@@ -552,7 +551,7 @@ void clipboard_apply(const char *utf8) {
 /* 一批文件/目录落盘完毕：把顶层条目挂到剪贴板，Finder 里 Cmd+V 即复制 */
 void clipboard_apply_paths(const char *const *paths, int n) {
     if (!paths || n <= 0) return;
-    clip_clear_local_offer(1); clip_clear_remote_offer_local();
+    clip_consume_offers();
 
     NSMutableArray<NSString *> *strs = [NSMutableArray arrayWithCapacity:(NSUInteger)n];
     for (int i = 0; i < n; ++i) {
@@ -571,7 +570,7 @@ void clipboard_apply_paths(const char *const *paths, int n) {
 
 /* 收到图片：裸 BGRA 自上而下 -> NSImage -> 剪贴板 */
 void clipboard_apply_image(const uint8_t *bgra, int w, int h, int stride) {
-    clip_clear_local_offer(1); clip_clear_remote_offer_local();
+    clip_consume_offers();
     if (!bgra || w <= 0 || h <= 0 || stride < w * 4) return;
 
     size_t bytes = (size_t)stride * (size_t)h;

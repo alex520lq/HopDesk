@@ -116,3 +116,40 @@ hop_clip_outcome hop_clip_coord_complete_paste(hop_clipboard_txn *txn,
     }
     return out;
 }
+
+static hop_clip_retired_offers retire_offers(hop_clipboard_txn *txn,
+    hop_clip_notify notify) {
+    hop_clip_retired_offers out;
+    memset(&out, 0, sizeof(out));
+    out.remote = hop_clipboard_txn_clear_remote_offer(txn);
+    out.local_generation = hop_clipboard_txn_clear_local_offer(txn);
+    /* Nothing was live, so there is nothing to announce. */
+    out.notify = (out.remote.generation || out.local_generation)
+        ? notify : HOP_CLIP_NOTIFY_NONE;
+    return out;
+}
+
+hop_clip_retired_offers hop_clip_coord_retire_offers(hop_clipboard_txn *txn) {
+    hop_clip_retired_offers out;
+    memset(&out, 0, sizeof(out));
+    if (!txn) return out;
+    return retire_offers(txn, HOP_CLIP_NOTIFY_BOTH);
+}
+
+hop_clip_retired_offers hop_clip_coord_consume_offers(hop_clipboard_txn *txn) {
+    hop_clip_retired_offers out;
+    memset(&out, 0, sizeof(out));
+    if (!txn) return out;
+    return retire_offers(txn, HOP_CLIP_NOTIFY_LOCAL_ONLY);
+}
+
+hop_clip_retired_offers hop_clip_coord_publish_local_offer(hop_clipboard_txn *txn,
+    uint64_t *new_generation) {
+    hop_clip_retired_offers out;
+    memset(&out, 0, sizeof(out));
+    if (new_generation) *new_generation = 0;
+    if (!txn) return out;
+    out = retire_offers(txn, HOP_CLIP_NOTIFY_BOTH);
+    if (new_generation) *new_generation = hop_clipboard_txn_publish_local_offer(txn);
+    return out;
+}

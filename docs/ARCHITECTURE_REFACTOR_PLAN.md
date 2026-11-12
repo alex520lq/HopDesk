@@ -1055,10 +1055,27 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - **不把 `lock/unlock` 注入 Core**：适配层持锁调用，Core 只改事务状态并返回动作；网络发送在适配层解锁后执行。Core 不出现任何 OS 类型、线程原语或原生路径表示。
 - Windows/macOS 的 `clipboard_paste.inc` 改为委托：`hop_clip_coord_remote_offer`、`hop_clip_coord_offer_clear`、`hop_clip_coord_begin_paste`、`hop_clip_coord_paste_request`、`hop_clip_coord_complete_paste`。两端不再各自维护 origin 校验、admission→失败原因映射和 stopping 分支。
 - **修复两端语义不对称**（此前只在 Windows 存在的防护，现在两端一致）：入站 Offer 在持锁状态下重新检查 `stopping`；Paste 完成后落地前检查 `stopping`。此前 macOS 只在锁外检查一次。
-- 新增锁内辅助 `clip_drop_local_offer_paths()`，`clip_clear_local_offer` 与三处入站路径共用，去掉重复的释放循环；同时删除 `src/win/clipboard.c` 中重复声明的 `static HANDLE s_paste_workers_done;`。
+- 新增锁内辅助 `clip_drop_local_offer_paths()`，由退役与发布路径共用，去掉重复的释放循环；同时删除 `src/win/clipboard.c` 中重复声明的 `static HANDLE s_paste_workers_done;`。（`clip_clear_local_offer` 在本阶段仍是独立辅助函数，后续切片随 9 处两步退役一并删除。）
 - 新增 `tests/xfer_clipboard_coord_tests.c`（覆盖自身 origin 忽略、stopping 拒绝、Offer 匹配清除、admission 四种结果、begin 三态、完成版本守卫与停止取消），接入 `scripts/test-core.sh` 与 `scripts/test-core.ps1`。
 - `scripts/test-regressions.py` 改为断言适配层**委托**这五个决策入口，并反向断言 `hop_clipboard_txn_set_remote_offer` / `begin_paste` / `accept_request` / `complete_paste` 不再出现在 `clipboard_paste.inc`，防止后续重新长出重复实现。
 - 本地验证：`sh scripts/build-mac.sh`、`python3 scripts/test-regressions.py`（All targeted regressions passed）、`hopdesk-clipboard-txn-tests`、`hopdesk-clipboard-coord-tests`、`sh scripts/test-xfer-protocol.sh`、`sh scripts/test-network.sh` 全部通过。
 - `sh scripts/test-core.sh` 在 `scripts/test-updates.py` 的 `replace_fail` 用例中断；该失败已在干净 `origin/main`（`ee057d7`）的独立 worktree 上复现，属既有环境问题，与本切片无关，需单独处理。
 - 未验证：Windows 原生构建与测试（仅 CI）、真实双机粘贴、剪贴板争用、关闭竞态。不得以 CI 或单元测试替代物理双设备验收。
 - 未纳入本切片：出站 Offer 发布的三段加锁序列（invalidate → clear → publish）仍是平台实现，因其并发顺序最敏感且缺乏实机基线，留待下一问题单独处理。
+
+
+### 2026-11-12：出站 Offer 发布与身份退役收敛（阶段 2 续，CI 待验）
+
+- 新增 `hop_clip_coord_retire_offers`、`hop_clip_coord_consume_offers` 与 `hop_clip_coord_publish_local_offer`：在**一个临界区**内同时退役 peer 身份与本地身份，并返回 `hop_clip_retired_offers{remote, local_generation, notify}`。适配层在释放锁后执行 OFFER_CLEAR 与 OFFER 发送。
+- **通知策略归 Core**：新增 `hop_clip_notify`。剪贴板被外部改动 → `HOP_CLIP_NOTIFY_BOTH`（`clip_retire_offers`）；我们自己写入剪贴板（应用远端粘贴、或发布无法描述的内容）→ `HOP_CLIP_NOTIFY_LOCAL_ONLY`（`clip_consume_offers`），因为 peer 仍然拥有它自己发布的 Offer，不能被通知丢弃。这条协议语义此前散落在两端各自的两步调用里，靠「先调哪个函数」隐式表达。
+- 两端 `clip_publish_local_offer` / `clip_publish_local_paths` 不再分三次加锁（invalidate → clear → publish），改为一次加锁完成退役与装载，消除「远端身份已清除、本地身份仍存活」的中间窗口。
+- 两端「本地剪贴板内容变化」路径（`clip_on_update` / `poll_pasteboard`）改用 `clip_retire_offers()`。
+- **9 处两步退役合并**：`clip_clear_remote_offer_local(); clip_clear_local_offer(1);` 在两端共 9 处（Windows 3 处、macOS 5 处主文件 + 2 处发布失败路径），每处都是两次独立加锁。全部改为单次加锁的 `clip_consume_offers()`，并删除 `clip_clear_local_offer`（已无调用方）与 `clip_invalidate_remote_offer`。
+- **保留 `clip_clear_remote_offer_local`**：它服务「链路断开 → 只遗忘 peer 的 Offer，本地 Offer 保留待重连重播」这一条独立规则，是单次事务调用而非多步编排，为它新增 Core 入口会变成 §1.3 禁止的虚假通用层。
+- **顺带修掉一处两端分歧**：发布失败时 Windows 的 `clip_offer_names` 失败路径会退役身份，而 `_wcsdup` 失败路径和 macOS 的 `strdup` 失败路径都不退役。现统一为两端失败即 `clip_consume_offers()`——剪贴板已换成无法描述的内容，旧 Offer 两侧都失效，留着会让 peer 粘贴到过期文件。
+- **Worker 生命周期结论（不新增抽象）**：两端已经只有一份业务状态——Core 的 `paste_scan_active` 负责准入互斥，平台侧仅保留各自的等待原语（Windows `s_paste_workers_done` 手动重置 Event / macOS `s_paste_group`）。二者在 spawn 前置位、在 `finish_paste_worker` 之后置完成、在 shutdown 阻塞等待，语义等价。把 Event 与 dispatch_group 强行统一会制造 §1.3 禁止的虚假通用层，因此本切片不动它。
+- 扩展 `tests/xfer_clipboard_coord_tests.c`：覆盖双身份退役、发布时返回旧身份并递增 generation、三种意图的通知策略、无身份可退役时降级为 `HOP_CLIP_NOTIFY_NONE`、以及 NULL 事务不写入 generation。
+- `scripts/test-regressions.py` 增加反向断言：`clip_clear_local_offer` 与 `hop_clipboard_txn_clear_local_offer` 不得再出现在两端适配层，`hop_clipboard_txn_publish_local_offer` 不得出现在 `clipboard_offer.inc`，防止两步退役重新长出来。
+- 本地验证：`bash scripts/build-mac.sh`、`hopdesk-clipboard-coord-tests`、`hopdesk-clipboard-txn-tests`（均带 ASan/UBSan）、`python3 scripts/test-regressions.py`（All targeted regressions passed）全部通过。`scripts/test-updates.py` 的 `replace_fail` 既有失败仍未修复，会在第 42 行中断 `test-core.sh`，导致脚本化路径永远跑不到 clipboard 用例；因此上述 clipboard 测试是手动编译直接运行的。
+- **已知未处理分歧**：`clipboard_on_link` 在 macOS 会先检查 `stopping` 再决定是否重播 Offer，Windows 的 `clip_on_link` 完全没有 stopping 概念。这是关机时序问题，不属于身份退役，留待单独问题处理，不在本切片静默修改。
+- 未验证：Windows 原生构建与测试（仅 CI）、真实双机粘贴、剪贴板争用、关闭竞态。

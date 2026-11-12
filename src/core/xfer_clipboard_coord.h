@@ -72,6 +72,40 @@ hop_clip_outcome hop_clip_coord_begin_paste(hop_clipboard_txn *txn,
 hop_clip_outcome hop_clip_coord_complete_paste(hop_clipboard_txn *txn,
     uint32_t request_id, uint64_t current_version, int success);
 
+/* Who must be told to drop an identity once the local clipboard is rewritten.
+ * This is protocol semantics, not a platform choice, so Core decides it: when
+ * we consume the peer's offer and write its content ourselves, the peer still
+ * owns that offer and must not be told to drop it. */
+typedef enum {
+    HOP_CLIP_NOTIFY_NONE = 0,    /* nothing to send */
+    HOP_CLIP_NOTIFY_LOCAL_ONLY,  /* our local generation is dead, the peer's offer is not */
+    HOP_CLIP_NOTIFY_BOTH         /* both identities are dead */
+} hop_clip_notify;
+
+/* Identities retired in one critical section, plus what the peer must be told.
+ * The adapter owns the wire sends; this only decides what is retired. */
+typedef struct {
+    hop_clipboard_offer_key remote;
+    uint64_t local_generation;
+    hop_clip_notify notify;
+} hop_clip_retired_offers;
+
+/* Under the adapter lock: the clipboard changed under us, so both identities are
+ * dead and the peer must drop both. Both platforms used to run this as two
+ * separately locked steps, which left a window where the peer identity was gone
+ * but the local one was still live. */
+hop_clip_retired_offers hop_clip_coord_retire_offers(hop_clipboard_txn *txn);
+
+/* Under the adapter lock: we are writing the clipboard ourselves (applying a
+ * remote paste, or a publish that cannot be described). Both identities are
+ * retired, but only our local one is announced: the peer still owns its offer. */
+hop_clip_retired_offers hop_clip_coord_consume_offers(hop_clipboard_txn *txn);
+
+/* Under the adapter lock: retire both identities, then publish a new local
+ * generation. The adapter installs its native paths before releasing the lock. */
+hop_clip_retired_offers hop_clip_coord_publish_local_offer(hop_clipboard_txn *txn,
+    uint64_t *new_generation);
+
 #ifdef __cplusplus
 }
 #endif

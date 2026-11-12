@@ -25,6 +25,8 @@ int  xfer_init(HWND hwnd, const hop_config *cfg);
 void xfer_kick(void);
 int  xfer_listening(void);
 int  xfer_shutdown(void);
+DWORD WINAPI xfer_data_listener_thread(LPVOID argument);
+DWORD WINAPI xfer_data_client_thread(LPVOID argument);
 
 /* 数据通道是否已连接 */
 int  xfer_connected(void);

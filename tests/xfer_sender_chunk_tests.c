@@ -16,7 +16,12 @@ typedef struct {
 } fixture;
 static int feedback_calls;
 static uint64_t now(void *u){return ((fixture *)u)->now_ns;}
-static int wait_ns(void *u,uint64_t ns){fixture *f=u;f->wait_calls++;f->now_ns+=ns;return 1;}
+static int wait_ns(void *u, uint64_t ns) {
+    fixture *f = u;
+    if (++f->wait_calls > 2) return 0;
+    f->now_ns += ns;
+    return 1;
+}
 static int stopping(void *u){(void)u;return 0;}
 static int snapshot(void *u,intptr_t socket,uint8_t session[HOP_TASK_SESSION_BYTES],uint64_t *epoch){
     fixture *f=u;if(!f->snapshot_ok||socket!=7||!session||!epoch)return 0;
@@ -70,10 +75,11 @@ static void test_external_buffer_and_feedback(void){
 }
 static void test_pacing_and_invalid_session(void){
     fixture f;init(&f);hop_xfer_sender_context c=make_context(&f);hop_xfer_rate_limiter rate;
-    hop_xfer_rate_init(&rate,1000,1000,1000,4,0);rate.tokens_bytes=0;
+    hop_xfer_rate_init(&rate,1000,1000,1000,4,0);rate.tokens_bytes=2;
     uint8_t tx[CHUNK_HEADER+4]={0};uint8_t *data=tx+CHUNK_HEADER;
     hop_xfer_sender_chunk_ops o={&c,&rate,7,tx,sizeof(tx),feedback};
-    assert(hop_xfer_sender_send_chunk(&o,1,1,0,data,4,0,0,0));assert(f.wait_calls>0);
+    assert(hop_xfer_sender_send_chunk(&o,1,1,0,data,4,0,0,0));
+    assert(f.wait_calls == 1 && f.now_ns == 2000000);
     f.snapshot_ok=0;assert(!hop_xfer_sender_send_chunk(&o,1,1,0,data,4,0,0,0));
     assert(f.stage_calls>=3);
 }

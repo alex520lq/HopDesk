@@ -20,6 +20,7 @@ void xfer_kick(void);
 int  xfer_shutdown(void);
 
 int  xfer_connected(void);
+void *xfer_data_connection_thread(void *argument);
 
 /* 有没有正在传或排队的批次（菜单项据此决定是否可点） */
 int  xfer_busy(void);

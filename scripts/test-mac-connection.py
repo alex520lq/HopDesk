@@ -34,13 +34,13 @@ def run(work, name, source, extra=()):
 control = ((ROOT / 'src/mac/net_client.c').read_text(encoding='utf-8') + '\n' +
            (ROOT / 'src/mac/net_client_protocol.inc').read_text(encoding='utf-8') + '\n' +
            (ROOT / 'src/mac/net_client_transport.inc').read_text(encoding='utf-8'))
-data = (ROOT / 'src/mac/xfer_receive.c').read_text(encoding='utf-8')
+data = (ROOT / 'src/mac/xfer.c').read_text(encoding='utf-8')
 with tempfile.TemporaryDirectory(prefix='hopdesk-mac-tcp-') as directory:
     work = pathlib.Path(directory)
     fixture = (ROOT / 'tests/mac_listener_fixture.c.in').read_text(encoding='utf-8')
     fixture = fixture.replace('@CONTROL_ACCEPT@', extract(control, 'accept_control'))
     fixture = fixture.replace('@DATA_ACCEPT@', extract(data, 'accept_data'))
-    assert 'if (!hop_session_matches(&session)) { close(s); continue; }' in extract(data, 'xfer_receive_connection_thread')
+    assert 'if (!hop_session_matches(&session)) { close(s); continue; }' in extract(data, 'xfer_data_connection_thread')
     run(work, 'mac_listeners', fixture)
 
     actual = re.sub(r'^#include[^\n]*\n', '', control, flags=re.M)

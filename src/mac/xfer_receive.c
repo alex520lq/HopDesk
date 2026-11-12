@@ -1,15 +1,14 @@
 /* =====================================================================
  *  HopDesk - macOS 数据通道接收端
  *
- *  Receiver-owned production unit: writer queue integration, wire dispatch,
- *  data connection thread, cancel/disconnect polling and staging state.
- *  Shared sender state is reached only through xfer_sender_internal.h.
+ *  Receiver-owned production unit: writer queue integration, protocol dispatch,
+ *  cancellation policy and staging state. Native data transport belongs to xfer.c.
  * ===================================================================== */
-#include "mac_app.h"
 #include "xfer.h"
+#include "mac_app.h"
 #include "xfer_rx_fs.h"
 #include "xfer_writer_queue.h"
-#include "xfer_sender_internal.h"
+#include "../core/xfer_tracking.h"
 #include "xfer_receive.h"
 #include "../core/hop.h"
 #include "../core/xfer_rx_receipt.h"
@@ -33,15 +32,8 @@
 #include "../core/xfer_budget.h"
 #include "../core/xfer_task.h"
 
-#include <arpa/inet.h>
 #include <errno.h>
-#include <netinet/in.h>
-#include <sched.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
 
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,10 +47,16 @@
  * 这就是显式背压：内存上界 = RX_Q_SLOTS × chunk，不随传输时长增长。
  * 文件描述符由写线程独占，避免"网络线程关文件、写线程还在写"的竞态。
  */
+static volatile int s_receive_cancel_requested;
 static hop_writer_queue *s_wq;
 static xfer_rx_context s_rx;
 static int rx_discard_dir(xfer_rx_context *rx);
 static void rx_reset(xfer_rx_context *rx);
+static void rx_context_configure(void);
+static hop_xfer_rx_lifecycle s_rx_lifecycle;
+static int s_rx_initialized;
+static hop_xfer_rx_protocol_adapter s_rx_protocol_adapter;
+static hop_xfer_rx_done_receipt s_done_receipt;
 
 static int wq_reserve_task_rx(void *context, void *owner, uint32_t bytes) {
     (void)context;
@@ -141,12 +139,19 @@ static int wq_stop(void) {
 /* The data thread is joined before stop. Keep its Task and staging state
  * alive until the writer has released its reservations and closed the file. */
 int xfer_receive_start(void) {
-    return wq_start();
+    if (s_rx_initialized) return wq_start();
+    hop_xfer_rx_lifecycle_init(&s_rx_lifecycle);
+    hop_xfer_rx_done_receipt_clear(&s_done_receipt);
+    if (!wq_start()) return 0;
+    rx_context_configure();
+    s_rx_initialized = 1;
+    return 1;
 }
 
 int xfer_receive_stop(void) {
     if (!wq_stop()) return 0;
     rx_reset(&s_rx);
+    s_rx_initialized = 0;
     return 1;
 }
 
@@ -180,10 +185,7 @@ static const char *temp_root(void) {
 
 static void rx_context_shutdown_data(void *context) {
     (void)context;
-    pthread_mutex_lock(&s_x.slock);
-    int active = s_x.sock;
-    pthread_mutex_unlock(&s_x.slock);
-    if (active >= 0) shutdown(active, SHUT_RDWR);
+    xfer_data_connection_shutdown();
 }
 
 static int rx_context_discard_staging_directory(void *context) {
@@ -192,7 +194,7 @@ static int rx_context_discard_staging_directory(void *context) {
 
 static void rx_context_clear_cancel_request(void *context) {
     (void)context;
-    __sync_lock_test_and_set(&s_x.cancel_rx, 0);
+    __sync_lock_test_and_set(&s_receive_cancel_requested, 0);
 }
 
 static int rx_context_create_staging_directory(void *context, const char *session_hex, uint32_t batch) {
@@ -216,34 +218,23 @@ static int rx_context_create_staging_directory(void *context, const char *sessio
 
 static void rx_context_send_abort(void *context, uint32_t batch, uint8_t reason) {
     (void)context;
-    send_abort(batch, reason);
+    xfer_data_send_abort(batch, reason);
 }
 
 static void rx_context_mark_sender_aborted(void *context, uint32_t batch, uint8_t reason) {
     (void)context;
-    pthread_mutex_lock(&s_x.qlock);
-    (void)hop_xfer_sender_active_job_record_peer_abort(
-        &s_x.active_job,batch,(uint8_t)reason);
-    pthread_mutex_unlock(&s_x.qlock);
-    sender_context_wake_ack();
+    xfer_data_record_peer_abort(batch, reason);
 }
 
 static void rx_context_send_file_ack(void *context, uint32_t batch, uint32_t id, int status) {
     (void)context;
-    pthread_mutex_lock(&s_x.slock);
-    int active = s_x.sock;
-    pthread_mutex_unlock(&s_x.slock);
-    if (active >= 0) send_ack(active, batch, id, (uint8_t)status);
+    xfer_data_send_file_ack(batch, id, status);
 }
 
 static void rx_context_send_done_ack(void *context, uint32_t batch,
                                     const uint8_t *payload, uint32_t length) {
     (void)context;
-    pthread_mutex_lock(&s_x.slock);
-    int active = s_x.sock;
-    pthread_mutex_unlock(&s_x.slock);
-    if (active >= 0)
-        (void)send_small(active, HOP_MSG_XFER_DONE_ACK, payload, length, batch);
+    xfer_data_send_done_ack(batch, payload, length);
 }
 
 static void rx_context_deliver_ack(void *context, uint32_t batch, uint32_t id, int status) {
@@ -277,7 +268,6 @@ static void rx_reset(xfer_rx_context *rx) {
 
 /* Receiver-owned lifecycle boundary. Only a data reconnect in the SAME control
  * session may retain ACKs/tombstones; a new control session starts cleanly. */
-static hop_xfer_rx_lifecycle s_rx_lifecycle;
 /* One FIFO sender batch can be awaiting DONE_ACK per session. This is only
  * wire idempotency metadata, not another task or reservation owner. */
 static hop_xfer_rx_done_receipt s_done_receipt;
@@ -436,16 +426,12 @@ static void rx_context_status_file_phase(void *context, uint32_t batch, int inde
 }
 static void rx_context_status_set_files_total(void *context, uint32_t total) {
     (void)context;
-    pthread_mutex_lock(&s_status_lock);
-    s_receive_status.status.files_total = total;
-    pthread_mutex_unlock(&s_status_lock);
+    status_receive_set_total(total);
 }
 
 static void rx_context_status_reset(void *context) {
     (void)context;
-    pthread_mutex_lock(&s_status_lock);
-    memset(&s_receive_status, 0, sizeof(s_receive_status));
-    pthread_mutex_unlock(&s_status_lock);
+    status_receive_reset();
 }
 
 static void rx_context_configure(void) {
@@ -485,6 +471,8 @@ static void rx_context_configure(void) {
     s_rx.services.status_file_phase = rx_context_status_file_phase;
     s_rx.services.status_set_files_total = rx_context_status_set_files_total;
     s_rx.services.status_reset = rx_context_status_reset;
+    (void)hop_xfer_rx_protocol_adapter_init(&s_rx_protocol_adapter,
+        &hop_xfer_rx_platform_dispatch_handlers, &s_rx);
 }
 static int rx_discard_dir(xfer_rx_context *rx);
 static void rx_bind_session(const hop_session_id *session) {
@@ -557,91 +545,23 @@ static void rx_remove_top(xfer_rx_context *rx, const char *p) {
 
 
 
-static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
-    (void)user;
-
-    pthread_mutex_lock(&s_x.slock);
-    int ready = s_x.peer_ready;
-    int active_sock = s_x.sock;
-    pthread_mutex_unlock(&s_x.slock);
-    if (!ready) {
-        hop_log(HOP_LOG_WARN, "xfer: frame received before handshake; closing peer");
-        if (active_sock >= 0) shutdown(active_sock, SHUT_RDWR);
-        return;
-    }
-
-    static hop_xfer_rx_protocol_adapter adapter;
-    rx_context_configure();
-    hop_xfer_rx_protocol_adapter_init(&adapter, &hop_xfer_rx_platform_dispatch_handlers, &s_rx);
-    (void)hop_xfer_rx_protocol_adapter_dispatch(&adapter, type, p, len);
-}
-
-/* ---------------- 连接 ---------------- */
-
-static int do_connect(void) {
-    const char *host = g_mac.cfg.peer_host;
-    if(!host[0])return -1;
-    uint16_t port = g_mac.cfg.data_port ? g_mac.cfg.data_port : HOP_DATA_PORT;
-
-    return net_connect_timeout(host, port, HOP_CONNECT_TIMEOUT_MS);
-}
-
-/* Transport gate: typed handlers only see frames bound to this control session.
- * Old batch CHUNK/END are ignored, never applied to the next active file.
- * HELLO/session/batch admission lives in shared Core; this adapter only
- * snapshots native session state and closes the socket on rejection. */
-static void on_data_frame_checked(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
+hop_rx_frame_action xfer_receive_process_frame(const hop_session_id *session,
+    const char *token, int authenticated, uint8_t type,
+    const uint8_t *payload, uint32_t length) {
     hop_rx_frame_gate_input input;
+    input.expected_session = session ? *session : (hop_session_id){0};
     input.active_batch = s_rx.batch_state.active ? s_rx.batch_state.batch : 0;
-    pthread_mutex_lock(&s_x.slock);
-    input.expected_session = s_x.session;
-    pthread_mutex_unlock(&s_x.slock);
-
     hop_rx_frame_gate_result gate =
-        hop_xfer_rx_gate_frame(&input, g_mac.cfg.token, type, p, len);
-    switch (gate.action) {
-        case HOP_RX_FRAME_HELLO_ACCEPT:
-            pthread_mutex_lock(&s_x.slock);
-            s_x.peer_ready = 1;
-            pthread_mutex_unlock(&s_x.slock);
-            hop_log(HOP_LOG_INFO,
-                    g_mac.cfg.token[0] ? "xfer: authenticated peer data channel (v%u)" :
-                                         "xfer: peer data channel ready (v%u)",
-                    (unsigned)HOP_XFER_PROTO_VER);
-            return;
-        case HOP_RX_FRAME_HELLO_REJECT: {
-            hop_log(HOP_LOG_ERROR,
-                    "xfer: peer handshake rejected (protocol/token mismatch)");
-            pthread_mutex_lock(&s_x.slock);
-            int active_sock = s_x.sock;
-            s_x.peer_ready = 0;
-            pthread_mutex_unlock(&s_x.slock);
-            if (active_sock >= 0) shutdown(active_sock, SHUT_RDWR);
-            return;
-        }
-        case HOP_RX_FRAME_REJECT_PEER:
-            pthread_mutex_lock(&s_x.slock);
-            if (s_x.sock != -1) shutdown(s_x.sock, SHUT_RDWR);
-            pthread_mutex_unlock(&s_x.slock);
-            return;
-        case HOP_RX_FRAME_DISPATCH:
-            on_data_msg(user, type, gate.body, gate.body_length);
-            return;
-        case HOP_RX_FRAME_DROP:
-        default:
-            return;
+        hop_xfer_rx_gate_frame(&input, token, type, payload, length);
+    if (gate.action == HOP_RX_FRAME_DISPATCH) {
+        if (!authenticated) return HOP_RX_FRAME_REJECT_PEER;
+        static hop_xfer_rx_protocol_adapter adapter;
+        hop_xfer_rx_protocol_adapter_init(&adapter,
+            &hop_xfer_rx_platform_dispatch_handlers, &s_rx);
+        (void)hop_xfer_rx_protocol_adapter_dispatch(&adapter, type,
+                                                    gate.body, gate.body_length);
     }
-}
-
-static void on_data_frame(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
-    if (!hop_update_receive_enter()) {
-        xfer_kick();
-        return;
-    }
-    int guard = hop_watchdog_begin("data receive frame", 60000);
-    on_data_frame_checked(user,type,p,len);
-    hop_watchdog_end(guard);
-    hop_update_work_leave();
+    return gate.action;
 }
 
 /* 用户在本端取消接收：通知对端、删掉半成品、立墓碑。
@@ -652,157 +572,22 @@ static void rx_cancel_local(void) {
     hop_xfer_rx_terminate_batch(&s_rx,batch,HOP_ABORT_CANCEL,1);
     hop_log(HOP_LOG_INFO, "xfer: batch %u cancelled locally", batch);
 }
-static void rx_poll_cancel(void) {
+void xfer_receive_cancel_request(void) {
+    __sync_lock_test_and_set(&s_receive_cancel_requested, 1);
+}
+
+void xfer_receive_bind_session(const hop_session_id *session) {
+    if (session) rx_bind_session(session);
+}
+
+void xfer_receive_disconnected(void) { rx_close_file(&s_rx); }
+
+void xfer_receive_poll_cancel(int connected) {
     rx_expire_stale_session();
-    if (__sync_lock_test_and_set(&s_x.cancel_rx, 0) || (s_rx.batch_state.active && hop_xfer_task_cancel_requested(s_rx.task.id))) rx_cancel_local();
-    pthread_mutex_lock(&s_x.slock); int connected=s_x.peer_ready; pthread_mutex_unlock(&s_x.slock);
+    int requested = __sync_lock_test_and_set(&s_receive_cancel_requested, 0);
+    if (requested || (s_rx.batch_state.active && hop_xfer_task_cancel_requested(s_rx.task.id))) rx_cancel_local();
     if (s_rx.batch_state.active && hop_xfer_task_rx_disconnect_expired(&s_rx.task,connected,hop_monotonic_ms(),HOP_XFER_RX_DISCONNECT_BUDGET_MS)) {
         hop_log(HOP_LOG_WARN,"xfer: receive batch %u expired while disconnected",s_rx.batch_state.batch);
         hop_xfer_rx_terminate_batch(&s_rx,s_rx.batch_state.batch,HOP_ABORT_TIMEOUT,0);
     }
 }
-
-static int s_data_listener=-1;
-static int accept_data(const hop_session_id *expected){
-    if(s_data_listener<0){
-        s_data_listener=socket(AF_INET,SOCK_STREAM,0);if(s_data_listener<0)return -1;
-        int yes=1;setsockopt(s_data_listener,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(yes));
-        struct sockaddr_in a;memset(&a,0,sizeof(a));a.sin_family=AF_INET;a.sin_port=htons(g_mac.cfg.data_port);a.sin_addr.s_addr=htonl(INADDR_ANY);
-        if(bind(s_data_listener,(struct sockaddr*)&a,sizeof(a))||listen(s_data_listener,8)){
-            hop_log(HOP_LOG_WARN,"xfer: data port %u unavailable (errno=%d)",(unsigned)g_mac.cfg.data_port,errno);
-            close(s_data_listener);s_data_listener=-1;return -1;
-        }
-        hop_log(HOP_LOG_INFO,"xfer: listening on data port %u",(unsigned)g_mac.cfg.data_port);
-    }
-    while(!s_x.stop && hop_session_matches(expected)){
-        rx_poll_cancel();
-        fd_set rd;FD_ZERO(&rd);FD_SET(s_data_listener,&rd);struct timeval tv={0,200000};
-        int n=select(s_data_listener+1,&rd,NULL,NULL,&tv);
-        if(n>0){
-            int peer=accept(s_data_listener,NULL,NULL);
-            if(peer>=0){int yes=1;if(setsockopt(peer,SOL_SOCKET,SO_NOSIGPIPE,&yes,sizeof(yes))){close(peer);return -1;}}
-            return peer;
-        }
-        if(n<0&&errno!=EINTR){close(s_data_listener);s_data_listener=-1;return -1;}
-    }
-    return -1;
-}
-void *xfer_receive_connection_thread(void *arg) {
-    (void)arg;
-    hop_decoder *dec = hop_decoder_new(NULL, on_data_frame);
-    if (!dec) return NULL;
-
-    int backoff = 1;
-    while (!s_x.stop) {
-        rx_poll_cancel();
-        hop_session_id session;
-        if (!hop_session_current(&session)) { usleep(200000); continue; }
-        int s = g_mac.cfg.role==HOP_ROLE_SERVER?accept_data(&session):do_connect();
-        if (s < 0) {
-            if (!hop_session_matches(&session)) continue;
-            if (g_mac.cfg.role==HOP_ROLE_CLIENT && g_mac.cfg.peer_host[0])
-                hop_log(HOP_LOG_WARN,"xfer: TCP data connection failed: host=%s port=%u; check data port and firewall",
-                        g_mac.cfg.peer_host,(unsigned)g_mac.cfg.data_port);
-            /* 退避要能被 stop 打断 —— 否则退出时要等满 10 秒 */
-            for (int i = 0; i < backoff * 10 && !s_x.stop; ++i) {
-                rx_poll_cancel();
-                usleep(100 * 1000);
-            }
-            backoff = backoff < 10 ? backoff * 2 : 10;
-            continue;
-        }
-        if (!hop_session_matches(&session)) { close(s); continue; }
-        backoff = 1;
-
-        int bufsz = 4 * 1024 * 1024;
-        setsockopt(s, SOL_SOCKET, SO_RCVBUF, &bufsz, sizeof(bufsz));
-        setsockopt(s, SOL_SOCKET, SO_SNDBUF, &bufsz, sizeof(bufsz));
-
-        /* 数据通道空闲时间最长：不开 keepalive，链路中间设备丢掉空闲
-         * 连接表项后这条 socket 就变黑洞 —— 对端发来的字节永远到不了，
-         * 而本端 read 一直 EAGAIN，连"断开"都感知不到。 */
-        net_set_keepalive(s);
-
-        /* 发送超时：ABORT 是从接收线程发的，如果发送线程正卡在 write 里
-         * （对端窗口满），接收线程拿不到发送锁就会跟着卡死 —— 那是死锁。
-         * 给个上限，卡住就当作传输失败，别把整个通道拖死。
-         * 256 KB 块在 100 Mbps 链路上只要 20 ms，5 秒是极宽的余量。 */
-        struct timeval sndto;
-        sndto.tv_sec = 5;
-        sndto.tv_usec = 0;
-        setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &sndto, sizeof(sndto));
-
-        /* 接收超时不是错误处理，是给取消请求开一条唤醒通道：
-         * 对端暂停发送时 read 会一直阻塞，而 s_rx 只归本线程所有，
-         * 取消就只能干等 —— 用户点了"取消"，界面 30 秒没反应。
-         * 200 ms 醒一次，代价是空闲时每秒 5 次空转，可以忽略。 */
-        struct timeval rxto;
-        rxto.tv_sec = 0;
-        rxto.tv_usec = 200 * 1000;
-        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &rxto, sizeof(rxto));
-
-        pthread_mutex_lock(&s_x.slock);
-        s_x.sock = s;
-        s_x.session = session;
-        ++s_x.epoch;
-        s_x.peer_ready = 0;
-        pthread_mutex_unlock(&s_x.slock);
-
-        pthread_mutex_lock(&s_x.qlock);
-        hop_xfer_sender_active_job_reset_peer_abort(&s_x.active_job); /* 新会话，清除上一轮 ABORT */
-        pthread_mutex_unlock(&s_x.qlock);
-
-        hop_decoder_reset(dec);
-        rx_bind_session(&session);
-
-        uint8_t hello[2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES];
-        uint32_t hello_len = hop_xfer_hello_encode(hello, g_mac.cfg.token, &session);
-        if (!hello_len || !send_small(s, HOP_MSG_XFER_HELLO, hello, hello_len, 0)) {
-            shutdown(s, SHUT_RDWR);
-        }
-        hop_log(HOP_LOG_INFO, "xfer: data channel connected; waiting for peer authentication");
-
-        uint64_t started = hop_monotonic_ms();
-        char buf[65536];
-        while (!s_x.stop && hop_session_matches(&session)) {
-            pthread_mutex_lock(&s_x.slock);
-            int authenticated = s_x.peer_ready;
-            pthread_mutex_unlock(&s_x.slock);
-            if (!authenticated && hop_handshake_expired(hop_monotonic_ms(), started)) break;
-            ssize_t r = read(s, buf, sizeof(buf));
-
-            if (r < 0) {
-                if (errno == EINTR) continue;
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    /* 不是断线，只是这 200 ms 没数据：借这次醒来处理取消请求 */
-                    rx_poll_cancel();
-                    continue;
-                }
-                break;
-            }
-            if (r == 0) break;                 /* 对端正常关闭 */
-
-            if (!hop_decoder_feed(dec, (const uint8_t *)buf, (uint32_t)r)) break;
-            rx_poll_cancel();
-        }
-
-        pthread_mutex_lock(&s_x.slock);
-        s_x.sock = -1;
-        ++s_x.epoch;
-        s_x.peer_ready = 0;
-        pthread_mutex_unlock(&s_x.slock);
-        shutdown(s, SHUT_RDWR);
-        pthread_mutex_lock(&s_txlock);
-        close(s);
-        pthread_mutex_unlock(&s_txlock);
-        /* 只关文件，不清批次：发送端会带着同一个 batch 号回来，
-         * 从断点条目继续发。这里清掉就变成"从头重传整批"了。 */
-        rx_close_file(&s_rx);
-        if (!s_x.stop) hop_log(HOP_LOG_WARN, "xfer: data channel closed");
-    }
-
-    if(s_data_listener>=0){close(s_data_listener);s_data_listener=-1;}
-    hop_decoder_free(dec);
-    return NULL;
-}
-

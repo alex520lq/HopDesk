@@ -1,19 +1,14 @@
 /* =====================================================================
  *  HopDesk - Windows 数据通道接收端
  *
- *  Receiver-owned production unit: writer queue integration, wire dispatch,
- *  data listener/client threads, cancel/disconnect polling and staging state.
- *  Shared sender state is reached only through xfer_sender_internal.h.
+ *  Receiver-owned production unit: writer queue integration, protocol dispatch,
+ *  cancellation policy and staging state. Native data transport belongs to xfer.c.
  * ===================================================================== */
-/* winsock2 必须在 windows.h 之前 */
-#include <winsock2.h>
-#include <ws2tcpip.h>
-
-#include "app.h"
 #include "xfer.h"
+#include "app.h"
 #include "xfer_rx_fs.h"
 #include "xfer_writer_queue.h"
-#include "xfer_sender_internal.h"
+#include "../core/xfer_tracking.h"
 #include "xfer_receive.h"
 #include "../core/hop.h"
 #include "../core/xfer_rx_receipt.h"
@@ -53,10 +48,16 @@
  * 这就是显式背压：内存上界 = RX_Q_SLOTS × chunk，不随传输时长增长。
  * 文件句柄由写线程独占，避免"网络线程关文件、写线程还在写"的竞态。
  */
+static volatile LONG s_receive_cancel_requested;
 static hop_writer_queue *s_wq;
 static xfer_rx_context s_rx;
 static int rx_discard_dir(xfer_rx_context *rx);
 static void rx_reset(xfer_rx_context *rx);
+static void rx_context_configure(void);
+static hop_xfer_rx_lifecycle s_rx_lifecycle;
+static int s_rx_initialized;
+static hop_xfer_rx_protocol_adapter s_rx_protocol_adapter;
+static hop_xfer_rx_done_receipt s_done_receipt;
 
 static int wq_reserve_task_rx(void *context, void *owner, uint32_t bytes) {
     (void)context;
@@ -139,12 +140,19 @@ static int wq_stop(void) {
 /* The data thread is joined before stop. Keep its Task and staging state
  * alive until the writer has released its reservations and closed the file. */
 int xfer_receive_start(void) {
-    return wq_start();
+    if (s_rx_initialized) return wq_start();
+    hop_xfer_rx_lifecycle_init(&s_rx_lifecycle);
+    hop_xfer_rx_done_receipt_clear(&s_done_receipt);
+    if (!wq_start()) return 0;
+    rx_context_configure();
+    s_rx_initialized = 1;
+    return 1;
 }
 
 int xfer_receive_stop(void) {
     if (!wq_stop()) return 0;
     rx_reset(&s_rx);
+    s_rx_initialized = 0;
     return 1;
 }
 
@@ -163,10 +171,7 @@ int xfer_receive_owner_clean(void) {
 
 static void rx_context_shutdown_data(void *context) {
     (void)context;
-    EnterCriticalSection(&s_x.lock);
-    SOCKET active = s_x.client;
-    LeaveCriticalSection(&s_x.lock);
-    if (active != INVALID_SOCKET) shutdown(active, SD_BOTH);
+    xfer_data_connection_shutdown();
 }
 
 static int rx_context_discard_staging_directory(void *context) {
@@ -175,7 +180,7 @@ static int rx_context_discard_staging_directory(void *context) {
 
 static void rx_context_clear_cancel_request(void *context) {
     (void)context;
-    InterlockedExchange(&s_x.cancel_rx, 0);
+    InterlockedExchange(&s_receive_cancel_requested, 0);
 }
 
 static int rx_context_create_staging_directory(void *context, const char *session_hex, uint32_t batch) {
@@ -220,34 +225,23 @@ static int rx_context_create_staging_directory(void *context, const char *sessio
 
 static void rx_context_send_abort(void *context, uint32_t batch, uint8_t reason) {
     (void)context;
-    send_abort_msg(s_x.client, batch, reason, HOP_ABORT_TO_SENDER);
+    xfer_data_send_abort(batch, reason);
 }
 
 static void rx_context_mark_sender_aborted(void *context, uint32_t batch, uint8_t reason) {
     (void)context;
-    EnterCriticalSection(&s_x.lock);
-    (void)hop_xfer_sender_active_job_record_peer_abort(
-        &s_x.active_job,batch,(uint8_t)reason);
-    LeaveCriticalSection(&s_x.lock);
-    sender_context_wake_ack();
+    xfer_data_record_peer_abort(batch, reason);
 }
 
 static void rx_context_send_file_ack(void *context, uint32_t batch, uint32_t id, int status) {
     (void)context;
-    EnterCriticalSection(&s_x.lock);
-    SOCKET active = s_x.client;
-    LeaveCriticalSection(&s_x.lock);
-    if (active != INVALID_SOCKET) (void)send_ack(active, batch, id, (uint8_t)status);
+    xfer_data_send_file_ack(batch, id, status);
 }
 
 static void rx_context_send_done_ack(void *context, uint32_t batch,
                                     const uint8_t *payload, uint32_t length) {
     (void)context;
-    EnterCriticalSection(&s_x.lock);
-    SOCKET active = s_x.client;
-    LeaveCriticalSection(&s_x.lock);
-    if (active != INVALID_SOCKET)
-        (void)send_small(active, HOP_MSG_XFER_DONE_ACK, payload, length, batch);
+    xfer_data_send_done_ack(batch, payload, length);
 }
 
 static void rx_context_deliver_ack(void *context, uint32_t batch, uint32_t id, int status) {
@@ -279,7 +273,6 @@ static void rx_reset(xfer_rx_context *rx) {
 
 /* Receiver-owned lifecycle boundary. Only a data reconnect in the SAME control
  * session may retain ACKs/tombstones; a new control session starts cleanly. */
-static hop_xfer_rx_lifecycle s_rx_lifecycle;
 /* One FIFO sender batch can be awaiting DONE_ACK per session. This is only
  * wire idempotency metadata, not another task or reservation owner. */
 static hop_xfer_rx_done_receipt s_done_receipt;
@@ -447,16 +440,12 @@ static void rx_context_status_file_phase(void *context, uint32_t batch, int inde
 }
 static void rx_context_status_set_files_total(void *context, uint32_t total) {
     (void)context;
-    AcquireSRWLockExclusive(&s_status_lock);
-    s_receive_status.status.files_total = total;
-    ReleaseSRWLockExclusive(&s_status_lock);
+    status_receive_set_total(total);
 }
 
 static void rx_context_status_reset(void *context) {
     (void)context;
-    AcquireSRWLockExclusive(&s_status_lock);
-    memset(&s_receive_status, 0, sizeof(s_receive_status));
-    ReleaseSRWLockExclusive(&s_status_lock);
+    status_receive_reset();
 }
 
 static void rx_context_configure(void) {
@@ -496,6 +485,8 @@ static void rx_context_configure(void) {
     s_rx.services.status_file_phase = rx_context_status_file_phase;
     s_rx.services.status_set_files_total = rx_context_status_set_files_total;
     s_rx.services.status_reset = rx_context_status_reset;
+    (void)hop_xfer_rx_protocol_adapter_init(&s_rx_protocol_adapter,
+        &hop_xfer_rx_platform_dispatch_handlers, &s_rx);
 }
 static int rx_discard_dir(xfer_rx_context *rx);
 static void rx_bind_session(const hop_session_id *session) {
@@ -579,81 +570,23 @@ static void rx_remove_top(xfer_rx_context *rx, const wchar_t *p) {
 
 
 
-static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
-    (void)user;
-
-    EnterCriticalSection(&s_x.lock);
-    int ready = s_x.peer_ready;
-    SOCKET active = s_x.client;
-    LeaveCriticalSection(&s_x.lock);
-    if (!ready) {
-        hop_log(HOP_LOG_WARN, "xfer: frame received before handshake; closing peer");
-        if (active != INVALID_SOCKET) shutdown(active, SD_BOTH);
-        return;
-    }
-
-    static hop_xfer_rx_protocol_adapter adapter;
-    rx_context_configure();
-    hop_xfer_rx_protocol_adapter_init(&adapter, &hop_xfer_rx_platform_dispatch_handlers, &s_rx);
-    (void)hop_xfer_rx_protocol_adapter_dispatch(&adapter, type, p, len);
-}
-
-/* Transport gate: typed handlers only see frames bound to this control session.
- * Old batch CHUNK/END are ignored, never applied to the next active file.
- * HELLO/session/batch admission lives in shared Core; this adapter only
- * snapshots native session state and closes the socket on rejection. */
-static void on_data_frame_checked(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
+hop_rx_frame_action xfer_receive_process_frame(const hop_session_id *session,
+    const char *token, int authenticated, uint8_t type,
+    const uint8_t *payload, uint32_t length) {
     hop_rx_frame_gate_input input;
+    input.expected_session = session ? *session : (hop_session_id){0};
     input.active_batch = s_rx.batch_state.active ? s_rx.batch_state.batch : 0;
-    EnterCriticalSection(&s_x.lock);
-    input.expected_session = s_x.session;
-    LeaveCriticalSection(&s_x.lock);
-
     hop_rx_frame_gate_result gate =
-        hop_xfer_rx_gate_frame(&input, s_x.cfg.token, type, p, len);
-    switch (gate.action) {
-        case HOP_RX_FRAME_HELLO_ACCEPT:
-            EnterCriticalSection(&s_x.lock);
-            s_x.peer_ready = 1;
-            LeaveCriticalSection(&s_x.lock);
-            hop_log(HOP_LOG_INFO,
-                    s_x.cfg.token[0] ? "xfer: authenticated peer data channel (v%u)" :
-                                       "xfer: peer data channel ready (v%u)",
-                    (unsigned)HOP_XFER_PROTO_VER);
-            return;
-        case HOP_RX_FRAME_HELLO_REJECT: {
-            hop_log(HOP_LOG_ERROR,
-                    "xfer: peer handshake rejected (protocol/token mismatch)");
-            EnterCriticalSection(&s_x.lock);
-            SOCKET active = s_x.client;
-            s_x.peer_ready = 0;
-            LeaveCriticalSection(&s_x.lock);
-            if (active != INVALID_SOCKET) shutdown(active, SD_BOTH);
-            return;
-        }
-        case HOP_RX_FRAME_REJECT_PEER:
-            EnterCriticalSection(&s_x.lock);
-            if (s_x.client != INVALID_SOCKET) shutdown(s_x.client, SD_BOTH);
-            LeaveCriticalSection(&s_x.lock);
-            return;
-        case HOP_RX_FRAME_DISPATCH:
-            on_data_msg(user, type, gate.body, gate.body_length);
-            return;
-        case HOP_RX_FRAME_DROP:
-        default:
-            return;
+        hop_xfer_rx_gate_frame(&input, token, type, payload, length);
+    if (gate.action == HOP_RX_FRAME_DISPATCH) {
+        if (!authenticated) return HOP_RX_FRAME_REJECT_PEER;
+        static hop_xfer_rx_protocol_adapter adapter;
+        hop_xfer_rx_protocol_adapter_init(&adapter,
+            &hop_xfer_rx_platform_dispatch_handlers, &s_rx);
+        (void)hop_xfer_rx_protocol_adapter_dispatch(&adapter, type,
+                                                    gate.body, gate.body_length);
     }
-}
-
-static void on_data_frame(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
-    if (!hop_update_receive_enter()) {
-        xfer_kick();
-        return;
-    }
-    int guard = hop_watchdog_begin("data receive frame", 60000);
-    on_data_frame_checked(user,type,p,len);
-    hop_watchdog_end(guard);
-    hop_update_work_leave();
+    return gate.action;
 }
 
 /* 用户在本端取消接收：通知对端、删掉半成品、立墓碑。
@@ -664,192 +597,22 @@ static void rx_cancel_local(void) {
     hop_xfer_rx_terminate_batch(&s_rx,batch,HOP_ABORT_CANCEL,1);
     hop_log(HOP_LOG_INFO, "xfer: batch %u cancelled locally", batch);
 }
-static void rx_poll_cancel(void) {
+void xfer_receive_cancel_request(void) {
+    InterlockedExchange(&s_receive_cancel_requested, 1);
+}
+
+void xfer_receive_bind_session(const hop_session_id *session) {
+    if (session) rx_bind_session(session);
+}
+
+void xfer_receive_disconnected(void) { rx_close_file(&s_rx); }
+
+void xfer_receive_poll_cancel(int connected) {
     rx_expire_stale_session();
-    if (InterlockedExchange(&s_x.cancel_rx, 0) || (s_rx.batch_state.active && hop_xfer_task_cancel_requested(s_rx.task.id))) rx_cancel_local();
-    EnterCriticalSection(&s_x.lock); int connected=s_x.peer_ready; LeaveCriticalSection(&s_x.lock);
+    int requested = InterlockedExchange(&s_receive_cancel_requested, 0);
+    if (requested || (s_rx.batch_state.active && hop_xfer_task_cancel_requested(s_rx.task.id))) rx_cancel_local();
     if (s_rx.batch_state.active && hop_xfer_task_rx_disconnect_expired(&s_rx.task,connected,hop_monotonic_ms(),HOP_XFER_RX_DISCONNECT_BUDGET_MS)) {
         hop_log(HOP_LOG_WARN,"xfer: receive batch %u expired while disconnected",s_rx.batch_state.batch);
         hop_xfer_rx_terminate_batch(&s_rx,s_rx.batch_state.batch,HOP_ABORT_TIMEOUT,0);
     }
-}
-
-/* A pending handshake is incremental, separate from the active stream. A slow
- * unauthenticated client cannot stop the current peer from receiving data. */
-static SOCKET data_listener(void) {
-    SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (sock == INVALID_SOCKET) return sock;
-    BOOL yes = TRUE;
-    setsockopt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (char *)&yes, sizeof(yes));
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr)); addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY); addr.sin_port = htons(s_x.cfg.data_port);
-    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) || listen(sock, 8)) {
-        hop_log(HOP_LOG_WARN, "xfer: port %u unavailable (%d), retrying", s_x.cfg.data_port, WSAGetLastError());
-        closesocket(sock); return INVALID_SOCKET;
-    }
-    return sock;
-}
-static void retire_data_socket(SOCKET sock) {
-    if (sock == INVALID_SOCKET) return;
-    EnterCriticalSection(&s_x.lock);
-    if (s_x.client == sock) {
-        s_x.client = INVALID_SOCKET; s_x.peer_ready = 0; ++s_x.epoch;
-    }
-    shutdown(sock, SD_BOTH);
-    LeaveCriticalSection(&s_x.lock);
-    EnterCriticalSection(&s_txlock);
-    closesocket(sock);
-    LeaveCriticalSection(&s_txlock);
-}
-DWORD WINAPI xfer_receive_listener_thread(LPVOID arg) {
-    (void)arg;
-    hop_decoder *dec = hop_decoder_new(NULL, on_data_frame);
-    if (!dec) return 1;
-    SOCKET active = INVALID_SOCKET, pending = INVALID_SOCKET;
-    uint8_t hello[HOP_HEADER_SIZE + 2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES];
-    uint32_t have = 0, need = HOP_HEADER_SIZE;
-    uint64_t started = 0, retry_at = 0;
-    while (WaitForSingleObject(s_x.stop, 0) != WAIT_OBJECT_0) {
-        uint64_t now = hop_monotonic_ms();
-        if (active != INVALID_SOCKET && !hop_session_matches(&s_x.session)) {
-            retire_data_socket(active); active = INVALID_SOCKET; rx_close_file(&s_rx);
-        }
-        if (s_x.listen_s == INVALID_SOCKET && now >= retry_at) {
-            s_x.listen_s = data_listener(); retry_at = now + 2000;
-            InterlockedExchange(&s_x.listening, s_x.listen_s != INVALID_SOCKET);
-        }
-        if (pending != INVALID_SOCKET && hop_handshake_expired(now, started)) {
-            closesocket(pending); pending = INVALID_SOCKET;
-        }
-        rx_poll_cancel();
-        fd_set rd; FD_ZERO(&rd);
-        if (s_x.listen_s != INVALID_SOCKET) FD_SET(s_x.listen_s, &rd);
-        if (active != INVALID_SOCKET) FD_SET(active, &rd);
-        if (pending != INVALID_SOCKET) FD_SET(pending, &rd);
-        if (!rd.fd_count) { WaitForSingleObject(s_x.stop, 200); continue; }
-        struct timeval tv = {0, 200000};
-        int ready = select(0, &rd, NULL, NULL, &tv);
-        if (ready == SOCKET_ERROR) {
-            retire_data_socket(active); active = INVALID_SOCKET;
-            if (pending != INVALID_SOCKET) closesocket(pending);
-            pending = INVALID_SOCKET;
-            if (s_x.listen_s != INVALID_SOCKET) closesocket(s_x.listen_s);
-            s_x.listen_s = INVALID_SOCKET; InterlockedExchange(&s_x.listening, 0);
-            continue;
-        }
-        if (!ready) continue;
-        /* Process active input first, then reset its decoder on replacement. */
-        if (active != INVALID_SOCKET && FD_ISSET(active, &rd)) {
-            uint8_t buf[65536];
-            int n = recv(active, (char *)buf, sizeof(buf), 0);
-            if (n <= 0 || !hop_decoder_feed(dec, buf, (uint32_t)n)) {
-                retire_data_socket(active); active = INVALID_SOCKET; rx_close_file(&s_rx);
-                hop_log(HOP_LOG_WARN, "xfer: data channel closed");
-            }
-        }
-        if (pending != INVALID_SOCKET && FD_ISSET(pending, &rd)) {
-            int n = recv(pending, (char *)hello + have, (int)(need - have), 0);
-            int bad = n <= 0;
-            if (!bad) have += (uint32_t)n;
-            if (!bad && have == HOP_HEADER_SIZE && need == HOP_HEADER_SIZE) {
-                uint32_t len = hop_get_be32(hello + 1);
-                if (hello[0] != HOP_MSG_XFER_HELLO || len < 2 + HOP_SESSION_BYTES || len > 2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES) bad = 1;
-                else need += len;
-            }
-            if (!bad && have == need) {
-                hop_session_id session;
-                bad = !hop_session_current(&session) ||
-                      !hop_xfer_hello_bound(hello + HOP_HEADER_SIZE, need - HOP_HEADER_SIZE, s_x.cfg.token, &session);
-                if (bad) hop_log(HOP_LOG_WARN,"xfer: data handshake rejected: protocol, token or control session mismatch");
-                if (!bad) {
-                    uint8_t reply[2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES];
-                    uint32_t reply_len = hop_xfer_hello_encode(reply, s_x.cfg.token, &session);
-                    uint8_t header[HOP_HEADER_SIZE];
-                    hop_encode_header(header, HOP_MSG_XFER_HELLO, reply_len);
-                    bad = !xfer_send_all(pending, (const char *)header, sizeof(header)) ||
-                          !xfer_send_all(pending, (const char *)reply, (int)reply_len);
-                }
-                if (!bad) {
-                    hop_log(HOP_LOG_INFO, active == INVALID_SOCKET ? "xfer: authenticated data channel" :
-                            "xfer: replacing stale data connection");
-                    retire_data_socket(active);
-                    rx_bind_session(&session); hop_decoder_reset(dec);
-                    active = pending; pending = INVALID_SOCKET;
-                    EnterCriticalSection(&s_x.lock);
-                    s_x.session = session;
-                    s_x.client = active; s_x.peer_ready = 1; ++s_x.epoch;
-                    hop_xfer_sender_active_job_reset_peer_abort(&s_x.active_job);
-                    LeaveCriticalSection(&s_x.lock);
-                }
-            }
-            if (bad) { closesocket(pending); pending = INVALID_SOCKET; }
-        }
-        if (s_x.listen_s != INVALID_SOCKET && FD_ISSET(s_x.listen_s, &rd)) {
-            SOCKET sock = accept(s_x.listen_s, NULL, NULL);
-            if (sock != INVALID_SOCKET) {
-                /* Only authenticated active peers are protected from replacement. */
-                if (pending != INVALID_SOCKET) closesocket(pending);
-                {
-                    pending = sock; have = 0; need = HOP_HEADER_SIZE; started = hop_monotonic_ms();
-                    DWORD snd = 3000, rcv = 200;
-                    int bufsz = 4 * 1024 * 1024;
-                    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&snd, sizeof(snd));
-                    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&rcv, sizeof(rcv));
-                    setsockopt(sock, SOL_SOCKET, SO_RCVBUF, (char *)&bufsz, sizeof(bufsz));
-                    setsockopt(sock, SOL_SOCKET, SO_SNDBUF, (char *)&bufsz, sizeof(bufsz));
-                    net_set_keepalive(sock);
-                }
-            }
-        }
-    }
-    if (pending != INVALID_SOCKET) closesocket(pending);
-    retire_data_socket(active);
-    if (s_x.listen_s != INVALID_SOCKET) closesocket(s_x.listen_s);
-    s_x.listen_s = INVALID_SOCKET; InterlockedExchange(&s_x.listening, 0);
-    hop_decoder_free(dec);
-    return 0;
-}
-
-DWORD WINAPI xfer_receive_client_thread(LPVOID unused){
-    (void)unused;unsigned delay=500;
-    hop_decoder *dec=hop_decoder_new(NULL,on_data_frame);if(!dec)return 1;
-    while(WaitForSingleObject(s_x.stop,0)!=WAIT_OBJECT_0){
-        rx_poll_cancel();
-        hop_session_id session;
-        if(!hop_session_current(&session)){WaitForSingleObject(s_x.stop,200);continue;}
-        SOCKET sock=net_connect_timeout_win(s_x.cfg.peer_host,s_x.cfg.data_port,s_x.stop);
-        if(sock==INVALID_SOCKET){
-            if(s_x.cfg.peer_host[0])hop_log(HOP_LOG_WARN,"xfer: TCP data connection failed: host=%s port=%u; check data port and firewall",s_x.cfg.peer_host,(unsigned)s_x.cfg.data_port);
-            for(unsigned waited=0;waited<delay;waited+=200){
-                rx_poll_cancel();
-                if(WaitForSingleObject(s_x.stop,200)==WAIT_OBJECT_0)break;
-            }
-            delay=delay<8000?delay*2:8000;continue;
-        }
-        DWORD snd=5000,rcv=200;net_set_keepalive(sock);
-        setsockopt(sock,SOL_SOCKET,SO_SNDTIMEO,(char*)&snd,sizeof(snd));setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,(char*)&rcv,sizeof(rcv));
-        rx_bind_session(&session);hop_decoder_reset(dec);
-        EnterCriticalSection(&s_x.lock);s_x.session=session;s_x.client=sock;s_x.peer_ready=0;++s_x.epoch;
-        hop_xfer_sender_active_job_reset_peer_abort(&s_x.active_job);LeaveCriticalSection(&s_x.lock);
-        uint8_t hello[2+HOP_TOKEN_MAX+HOP_SESSION_BYTES],header[HOP_HEADER_SIZE];
-        uint32_t len=hop_xfer_hello_encode(hello,s_x.cfg.token,&session);hop_encode_header(header,HOP_MSG_XFER_HELLO,len);
-        if(!xfer_send_all(sock,(const char*)header,sizeof(header)) || !xfer_send_all(sock,(const char*)hello,(int)len))shutdown(sock,SD_BOTH);
-        uint64_t started=hop_monotonic_ms();int authed=0;
-        while(WaitForSingleObject(s_x.stop,0)!=WAIT_OBJECT_0 && hop_session_matches(&session)){
-            EnterCriticalSection(&s_x.lock);authed=s_x.peer_ready;LeaveCriticalSection(&s_x.lock);
-            if(!authed && hop_handshake_expired(hop_monotonic_ms(),started))break;
-            rx_poll_cancel();
-            uint8_t buf[65536];int n=recv(sock,(char*)buf,sizeof(buf),0);
-            if(n==SOCKET_ERROR){int e=WSAGetLastError();if(e==WSAETIMEDOUT||e==WSAEWOULDBLOCK||e==WSAEINTR)continue;break;}
-            if(n<=0||!hop_decoder_feed(dec,buf,(uint32_t)n))break;
-        }
-        retire_data_socket(sock);rx_close_file(&s_rx);
-        delay=authed?500:(delay<8000?delay*2:8000);
-        for(unsigned waited=0;waited<delay;waited+=200){
-            rx_poll_cancel();
-            if(WaitForSingleObject(s_x.stop,200)==WAIT_OBJECT_0)break;
-        }
-    }
-    hop_decoder_free(dec);return 0;
 }

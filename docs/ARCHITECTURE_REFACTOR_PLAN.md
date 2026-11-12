@@ -287,7 +287,15 @@ tests/
 
 **目标**：解除接收端对发送端翻译单元静态状态的隐式依赖，并让接收协议、会话/批次生命周期、socket 线程与写盘队列拥有明确的模块边界。
 
-当前进展：Windows/macOS writer queue 的 buffer pool 已抽取为共享 Core 模块；文件句柄和 open/write-at/close 文件操作已分别抽取到 `src/win/xfer_writer_io.c`、`src/mac/xfer_writer_io.c`；writer queue 与 worker 已分别成为 `src/win/xfer_writer_queue.c`、`src/mac/xfer_writer_queue.c`、`src/win/xfer_writer_worker.c`、`src/mac/xfer_writer_worker.c` 生产编译单元。接收帧的 HELLO/token、session 绑定和旧批次 CHUNK/END 过滤已收敛到共享 `src/core/xfer_rx_frame_gate.c`。接收端已从 include 片段转为独立生产编译单元 `src/win/xfer_receive.c`、`src/mac/xfer_receive.c`，由窄头 `xfer_receive.h` 暴露 start/stop/owner-clean 审计和原生线程入口；receiver 私有状态、socket listener/accept、平台 service adapter 与 cancel/disconnect 轮询保留在各自 `.c` 内，`xfer.c` 不再 include 实现片段。发送端状态仅经 `xfer_sender_internal.h` 的窄入口访问。阶段 2 仍需补 stop-vs-producer、分配失败、慢盘/持久错误和 sanitizer 压力覆盖，并完成真实双机接收/断线/取消验收，尚不能标记完成。
+Windows 和 macOS 的数据连接、Receiver 和 Writer Queue 分别由以下模块持有。两端使用同一套 Core 帧准入、消息处理、队列记账和资源规则。
+
+| 所有者 | 状态与职责 | 跨模块输入和输出 |
+|---|---|---|
+| 平台 `xfer.c` | 原生数据 socket、监听/连接循环、会话快照、epoch、认证就绪状态 | 向 Receiver 绑定会话并提交当前连接的帧、断线和取消轮询。提供 ACK/ABORT 发送与发送端回执入口 |
+| 平台 `xfer_receive.c` 与共享 Receiver Core | 接收批次、文件/图片状态、Task、暂存路径、取消和 DONE 回执 | 通过 Services 调用原生文件系统、Writer、剪贴板和状态发布。Receiver 启动时初始化 Services，随后才能绑定首个数据会话 |
+| 平台 Writer Queue / Worker / IO 与共享 RX 记账 | 有界队列、缓冲池、工作线程与写入句柄 | 接收 OPEN/WRITE/CLOSE，已接收命令按序完成。归还 Task RX 预留后才解除队列记账。停止时关闭准入，超时保留状态供重试 |
+
+同一控制会话的数据连接恢复时，Receiver 保留已确认条目和批次状态；控制会话切换时，旧批次走终结清理。物理双机测试与长时间资源测量单独记录。
 
 顺序：
 1. 绘制 receiver 模块的静态依赖表；明确接收状态、writer 状态和外部回调。
@@ -471,7 +479,7 @@ tests/
 | 基线核对 | 完成 | `68818b3f093af20385c3fba5785405eb4ac8d634` | 已核实 main HEAD、PR/分支状态；完成主要模块与函数簇审计附件。动态调用图、全量资源所有权追踪仍作为阶段 0 深度审计待办。 |
 | 阶段 0：深度审计 | 进行中 | `eaf8488b21c87201297aaf9edcdad2660bab76f2` | 已建立模块/函数簇和平台差异清单；仍需逐项追踪所有资源 owner、锁顺序、线程退出与回调迟到路径。PR 基线双平台 CI 已通过。 |
 | 阶段 1：构建与模块边界 | 进行中 | `6a994e691c844c60b3b15615f299633531283c13` | app 构建递归发现已完成；ACK Window、Transfer Tracking、RX Buffer Pool 已成为独立生产编译单元并接入两端测试。Core 平台 include 检查、显式 source manifest/重复源检查仍待完成。 |
-| 阶段 2：接收端/Writer | 进行中 | `15ab5dc2621b57d1856c2985856894dd0faa7fcc` | 双平台 Receiver、Writer Queue、Worker 已独立编译，接收帧准入和队列记账走共享 Core。Receiver 独立编译基线的 [CI #1662](https://github.com/alex520lq/HopDesk/actions/runs/43166795395) 双平台通过。关闭顺序、故障覆盖与实机验收见后续实施记录。 |
+| 阶段 2：接收端/Writer | 代码、自动化和双机数据通道验收完成 | 见 PR #14 | 双平台连接所有权与 Receiver 分离。原生 TCP 回环、Writer 故障注入和物理双机续传、取消、大文件逐字节比对见后续记录。 |
 | 阶段 3：Sender/Service | 待完成 | — | 待实施。 |
 | 阶段 4：共享 Transfer Domain | 待完成 | — | 待实施。 |
 | 阶段 5：Clipboard | 进行中 | `d7722d121892caf23d2707e019f8697886da786d` | Core 统一 Offer、入站 Request 准入、延迟写入身份校验与图片预算分类；暂时额度不足在释放后重试同一剪贴板版本，永久超限不重试。Windows/macOS CI 已通过；双机实测待验收。 |
@@ -899,6 +907,15 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - Receiver 数据线程退出后才停止 Writer Queue。Writer 超时会保留队列、Task 和 staging 状态供下次关闭重试。成功 join 后才清理 Receiver Task 和 staging。队列 owner 等其他调用线程退出后销毁同步对象。
 - 双平台生产模块测试覆盖在途预留导致的关闭超时、拒绝后续命令、预算恰好归还一次、关闭重试，以及写入错误在后续写入成功后仍保留至显式重置。缓冲池分配失败注入验证 Task 与队列预留回滚后可重试同一 WRITE。关闭编排测试注入 Writer stop 失败，验证 Receiver reset 与最终资源审计均延后。
 - macOS 本地原生构建、`sh scripts/test-core.sh`、`python3 scripts/test-regressions.py`、传输协议、TCP 回环及 macOS 连接测试通过，Writer Queue 并发回归额外通过 ThreadSanitizer。真实慢盘/磁盘满、物理双机断线续传和取消、长时间资源测量尚待执行。
+
+### 2026-11-12：阶段 2 连接所有权与验收覆盖
+
+- 两端 `xfer.c` 持有原生数据连接、epoch 和认证状态，只把当前连接的帧和生命周期事件交给 Receiver。Receiver 的取消信号、批次、Task 与暂存目录留在 Receiver，平台连接和状态锁均由原模块持有。
+- Receiver 在首个会话绑定前初始化 Core 上下文与 Services。同一控制会话重连时，已 ACK 的文件留在交付列表。两端原生回环测试覆盖中途断线、只重传未确认文件、旧批次帧过滤、DONE 重放、取消后清理和预算归零。
+- Writer Queue 测试分别填满 slot 和 byte 上限，模拟阻塞写盘，验证关闭唤醒、已接收写入排空及预算归还。权限拒绝和磁盘满通过测试专用对象注入原生错误，正式应用沿用原生 I/O。macOS 生产链接用例运行 ASan/UBSan，队列并发用例额外运行 ThreadSanitizer。
+- 物理 Windows → macOS 在基线 `1d346fa` 上也会在 128 KiB 后停滞。共享限速器现在保留等待前已积累的额度，只有成功准入才扣减。Core 和生产 Sender chunk 测试均验证精确等待后可以发送。
+- 两台物理设备通过局域网运行生产数据通道、Sender、Receiver 和文件 I/O。48 MiB 文件双向中途断线续传并逐字节比对，两个方向的取消均完成且通过关闭时的资源对账。测试进程注入控制会话并观察剪贴板交付回调。桌面剪贴板实操、真实磁盘满/慢盘与长时间运行仍单列在手动验收表。
+- 同一双机配置再双向传输 1 GiB，接收端逐字节比对。64 KiB 分块、64 MiB/s 配置上限，Windows → macOS 约 16.2 秒，接收队列峰值为 8 槽、512 KiB。macOS → Windows 约 21.8 秒，接收队列峰值为 3 槽、192 KiB。按两端进程各自的系统指标，Windows Sender/Receiver 峰值工作集分别约 24.0/15.3 MiB，macOS Sender/Receiver 峰值 RSS 分别约 18.9/11.2 MiB。数值来自测试进程。
 
 
 ## 12. 新的重构执行协议（最高优先级，后续 Agent 必须遵守）

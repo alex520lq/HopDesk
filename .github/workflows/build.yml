@@ -125,6 +125,9 @@ jobs:
       - name: Run macOS control and listener loopback tests
         run: python3 scripts/test-mac-connection.py
 
+      - name: Run native macOS receive and resume integration tests
+        run: python3 scripts/test-mac-receive.py
+
       - name: Verify macOS app and shared branding
         run: |
           bash -n scripts/update-macos.command

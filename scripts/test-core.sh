@@ -65,10 +65,13 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
   -I "$ROOT/src/core" \
   -include "$ROOT/tests/writer_pool_alloc_override.h" \
   -c "$ROOT/src/core/xfer_buffer_pool.c" -o "$BUILD/writer-buffer-pool-test.o"
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I "$ROOT/src/mac" -include "$ROOT/tests/writer_io_fault_override.h" \
+  -c "$ROOT/src/mac/xfer_writer_io.c" -o "$BUILD/writer-io-fault-test.o"
 clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -I "$ROOT/src/mac" -o "$BUILD/hopdesk-writer-queue-tests" \
   "$ROOT/tests/mac_writer_queue_tests.c" "$ROOT/src/mac/xfer_writer_queue.c" \
-  "$ROOT/src/mac/xfer_writer_io.c" "$ROOT/src/mac/xfer_writer_worker.c" \
+  "$BUILD/writer-io-fault-test.o" "$ROOT/src/mac/xfer_writer_worker.c" \
   "$BUILD/writer-buffer-pool-test.o" "$ROOT/src/core/xfer_rx_queue.c" \
   "$ROOT/src/core/xfer_budget.c"
 "$BUILD/hopdesk-writer-queue-tests"

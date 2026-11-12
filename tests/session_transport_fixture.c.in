@@ -86,11 +86,14 @@ static int send_all(int fd,const void *p,size_t n){assert(fd==7);assert(captured
 #ifdef FIXTURE_WINDOWS
 static int xfer_send_all(int fd,const char *p,int n){return send_all(fd,p,(size_t)n);}
 #endif
-static int shutdown(int fd,int how){(void)fd;(void)how;closed++;return 0;}
-static void xfer_kick(void){closed++;}
 static void on_data_msg(void *user,uint8_t type,const uint8_t *p,uint32_t len){(void)user;(void)type;(void)p;(void)len;delivered++;}
-static void fixture_log(hop_log_level level,const char *format,...){(void)level;(void)format;}
-#define hop_log fixture_log
+static void on_data_frame(void *user,uint8_t type,const uint8_t *p,uint32_t len){
+ (void)user;hop_rx_frame_gate_input input;input.expected_session=s_x.session;
+ input.active_batch=s_rx.batch_state.active?s_rx.batch_state.batch:0;
+ hop_rx_frame_gate_result gate=hop_xfer_rx_gate_frame(&input,g_mac.cfg.token,type,p,len);
+ if(gate.action==HOP_RX_FRAME_DISPATCH)on_data_msg(NULL,type,gate.body,gate.body_length);
+ else if(gate.action==HOP_RX_FRAME_REJECT_PEER||gate.action==HOP_RX_FRAME_HELLO_REJECT)closed++;
+}
 #define CHUNK_HDR (25u + HOP_DATA_PREFIX)
 static int not_busy(void){return 0;}
 @FUNCTIONS@

@@ -41,7 +41,7 @@ typedef struct {
     hop_win_sender_threads sender_threads; hop_xfer_sender_queue queue;
     int sync_initialized,shutting_down; xfer_job *shutdown_jobs;
     uint32_t batch_seq,chunk; hop_xfer_rate_limiter rate;
-    hop_xfer_sender_active_job active_job; uint32_t cancel_batch; volatile LONG cancel_rx;
+    hop_xfer_sender_active_job active_job; uint32_t cancel_batch;
 } hop_win_xfer_state;
 typedef struct {
     CRITICAL_SECTION *state_lock,*tx_lock; SOCKET *client; int *peer_ready;

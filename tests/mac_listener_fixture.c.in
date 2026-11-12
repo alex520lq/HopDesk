@@ -29,7 +29,8 @@ static int s_listener=-1,s_data_listener=-1;
 void hop_log(hop_log_level level,const char *fmt,...){(void)level;(void)fmt;}
 int hop_session_matches(const hop_session_id *s){(void)s;return atomic_load(&valid);}
 /* This listener fixture has no receive task; observe the production poll hook. */
-static void rx_poll_cancel(void){atomic_fetch_add(&cancel_polls,1);}
+static int xfer_data_connection_ready(void){return 0;}
+static void xfer_receive_poll_cancel(int connected){assert(!connected);atomic_fetch_add(&cancel_polls,1);}
 /* Linux has no SO_NOSIGPIPE; emulate it in the fixture only.
  * On macOS, exercise the native socket option directly and verify it with
  * getsockopt() below. */

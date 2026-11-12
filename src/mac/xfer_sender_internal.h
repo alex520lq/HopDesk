@@ -41,7 +41,7 @@ typedef struct {
     hop_xfer_sender_queue queue; uint32_t batch_seq,chunk;
     hop_xfer_rate_limiter rate; hop_mac_sender_threads sender_threads;
     int sync_initialized,shutting_down; xf_job *shutdown_jobs;
-    hop_xfer_sender_active_job active_job; uint32_t cancel_batch; volatile int cancel_rx;
+    hop_xfer_sender_active_job active_job; uint32_t cancel_batch;
 } hop_mac_xfer_state;
 typedef struct {
     pthread_mutex_t *session_lock,*queue_lock,*tx_lock; int *sock,*peer_ready;

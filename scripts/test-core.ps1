@@ -101,6 +101,8 @@ if ($LASTEXITCODE -ne 0) { throw "Writer worker lifecycle tests failed ($LASTEXI
 $writerQueue = Join-Path $build 'hopdesk-writer-queue-tests.exe'
 $poolOverride = Join-Path $root 'tests/writer_pool_alloc_override.h'
 $writerPoolObject = Join-Path $build 'writer-buffer-pool-test.obj'
+$writerIoOverride = Join-Path $root 'tests/writer_io_fault_override.h'
+$writerIoObject = Join-Path $build 'writer-io-fault-test.obj'
 $writerPoolSource = Join-Path $root 'src/core/xfer_buffer_pool.c'
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
     & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc "/FI$poolOverride" /c "/Fo$writerPoolObject" $writerPoolSource
@@ -108,7 +110,14 @@ if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
     & gcc -std=c11 -O2 -Wall -Wextra -I $inc -include $poolOverride -c -o $writerPoolObject $writerPoolSource
 }
 if ($LASTEXITCODE -ne 0) { throw "Writer buffer pool test object compilation failed ($LASTEXITCODE)" }
-$writerQueueSources = @((Join-Path $root 'tests/writer_queue_tests.c'), (Join-Path $root 'src/win/xfer_writer_queue.c'), (Join-Path $root 'src/win/xfer_writer_io.c'), (Join-Path $root 'src/win/xfer_writer_worker.c'), $writerPoolObject, (Join-Path $root 'src/core/xfer_rx_queue.c'), (Join-Path $root 'src/core/xfer_budget.c'))
+$writerIoSource = Join-Path $root 'src/win/xfer_writer_io.c'
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I (Join-Path $root 'src/win') "/FI$writerIoOverride" /c "/Fo$writerIoObject" $writerIoSource
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I (Join-Path $root 'src/win') -include $writerIoOverride -c -o $writerIoObject $writerIoSource
+}
+if ($LASTEXITCODE -ne 0) { throw "Writer IO fault-injection object compilation failed ($LASTEXITCODE)" }
+$writerQueueSources = @((Join-Path $root 'tests/writer_queue_tests.c'), (Join-Path $root 'src/win/xfer_writer_queue.c'), (Join-Path $root 'src/win/xfer_writer_worker.c'), $writerIoObject, $writerPoolObject, (Join-Path $root 'src/core/xfer_rx_queue.c'), (Join-Path $root 'src/core/xfer_budget.c'))
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
     & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /I (Join-Path $root 'src/win') /Fe:$writerQueue @writerQueueSources
 } else {

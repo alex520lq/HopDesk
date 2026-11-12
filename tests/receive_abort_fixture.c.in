@@ -27,6 +27,7 @@
 static uint64_t fake_ms=1000;
 uint64_t hop_monotonic_ms(void){return ++fake_ms;}
 uint64_t hop_wallclock_ms(void){return 1700000000000ull+fake_ms;}
+int hop_session_matches(const hop_session_id *session){(void)session;return 1;}
 #define hop_log(...) ((void)0)
 #define MAX_PATH 260
 #define INVALID_SOCKET (-1)
@@ -204,7 +205,6 @@ static void apply_paths(const void*p,int n){(void)p;(void)n;applied++;}
 @RX_WRITER_CALLBACKS@
 @CANCEL_LOCAL@
 @BIND_SESSION@
-static void rx_expire_stale_session(void){}
 @POLL_CANCEL@
 @BUSY@
 static int try_image_buffer_ensure(hop_xfer_rx_image_buffer *buffer,uint64_t expected){
@@ -286,9 +286,9 @@ int main(void){
         chunk(1,0,0);late_end();late_done(batch);peer_abort(batch,reason);rx_cancel_local();
         assert_terminal(batch,reason,before);assert(closes==old_closes+1);
         image_begin(batch+1,1);seed_resources();
-        s_x.cancel_rx=1;
+        xfer_receive_cancel_request();
         image_begin(batch,1); /* tombstone survives a newer active receive */
-        assert(s_x.cancel_rx==1); /* stale BEGIN must not consume the newer cancellation */
+        assert(s_receive_cancel_requested==1); /* stale BEGIN must not consume newer cancellation */
         assert(s_rx.batch_state.active && s_rx.batch_state.batch==batch+1 && s_rx.cur_path && saved==before+1);
         peer_abort(batch,reason);late_done(batch);assert(s_rx.batch_state.active && s_rx.batch_state.batch==batch+1);
         rx_cancel_local();assert_terminal(batch+1,HOP_ABORT_CANCEL,before+1);
@@ -325,7 +325,7 @@ int main(void){
     late_done(202); assert_terminal(202,HOP_ABORT_CANCEL,before);
     assert(applied==0);
     /* A same-session data outage is bounded; reconnect resets the grace timer. */
-    before=saved; image_begin(203,1); seed_resources();s_x.cancel_rx=0;s_x.peer_ready=0;
+    before=saved; image_begin(203,1); seed_resources();s_receive_cancel_requested=0;s_x.peer_ready=0;
     rx_poll_cancel();fake_ms+=HOP_XFER_RX_DISCONNECT_BUDGET_MS-3;rx_poll_cancel();assert(s_rx.batch_state.active);
     s_x.peer_ready=1;rx_poll_cancel();s_x.peer_ready=0;rx_poll_cancel();assert(s_rx.batch_state.active);
     fake_ms+=HOP_XFER_RX_DISCONNECT_BUDGET_MS;rx_poll_cancel();

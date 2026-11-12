@@ -76,9 +76,11 @@ static void run_command(hop_writer_queue *queue, writer_command *command) {
 static int worker_take(void *context, void *task_out) {
     hop_writer_queue *queue = (hop_writer_queue *)context;
     EnterCriticalSection(&queue->lock);
-    while (queue->accounting.queued_slots == 0 && !queue->stop)
+    /* A producer may still be returning a reservation outside this lock. */
+    while (queue->accounting.queued_slots == 0 &&
+           (!queue->stop || !hop_xfer_rx_queue_drained(&queue->accounting)))
         SleepConditionVariableCS(&queue->cv_work, &queue->lock, INFINITE);
-    if (queue->accounting.queued_slots == 0 && queue->stop) {
+    if (queue->accounting.queued_slots == 0) {
         LeaveCriticalSection(&queue->lock);
         return 0;
     }
@@ -208,16 +210,6 @@ int hop_writer_queue_enqueue_write(hop_writer_queue *queue, void *task_owner,
     }
     LeaveCriticalSection(&queue->lock);
 
-    if (!queue->callbacks.reserve_task_rx ||
-        !queue->callbacks.reserve_task_rx(queue->callback_context, task_owner, length)) {
-        EnterCriticalSection(&queue->lock);
-        hop_xfer_rx_queue_rollback(&queue->accounting, length);
-        WakeAllConditionVariable(&queue->cv_space);
-        LeaveCriticalSection(&queue->lock);
-        watchdog_end(queue, guard);
-        return 0;
-    }
-
     writer_command command;
     memset(&command, 0, sizeof(command));
     command.kind = RX_WRITE;
@@ -226,40 +218,44 @@ int hop_writer_queue_enqueue_write(hop_writer_queue *queue, void *task_owner,
     command.task_owner = task_owner;
     command.pool_slot = -1;
 
-    EnterCriticalSection(&queue->lock);
+    int task_reserved = queue->callbacks.reserve_task_rx(queue->callback_context,
+                                                         task_owner, length);
     int pool_result = 0;
+    EnterCriticalSection(&queue->lock);
+    if (!task_reserved) goto rollback;
+
     while (!queue->stop &&
            (pool_result = hop_xfer_buffer_pool_acquire_locked(
                 &queue->pool, length, &command.pool_slot, &command.data)) == 0)
         SleepConditionVariableCS(&queue->cv_space, &queue->lock, INFINITE);
-    if (queue->stop || pool_result != 1) {
-        hop_xfer_rx_queue_rollback(&queue->accounting, length);
-        WakeAllConditionVariable(&queue->cv_space);
-        LeaveCriticalSection(&queue->lock);
-        queue->callbacks.release_task_rx(queue->callback_context, task_owner, length);
-        watchdog_end(queue, guard);
-        return 0;
-    }
+    if (queue->stop || pool_result != 1) goto release_task;
     LeaveCriticalSection(&queue->lock);
 
     memcpy(command.data, data, length);
 
     EnterCriticalSection(&queue->lock);
-    if (queue->stop || !hop_xfer_rx_queue_commit_reserved(&queue->accounting)) {
-        hop_xfer_rx_queue_rollback(&queue->accounting, length);
-        hop_xfer_buffer_pool_release_locked(&queue->pool, command.pool_slot);
-        WakeAllConditionVariable(&queue->cv_space);
-        LeaveCriticalSection(&queue->lock);
-        queue->callbacks.release_task_rx(queue->callback_context, task_owner, length);
-        watchdog_end(queue, guard);
-        return 0;
-    }
+    if (queue->stop || !hop_xfer_rx_queue_commit_reserved(&queue->accounting))
+        goto release_task;
     queue->ring[queue->tail] = command;
     queue->tail = (queue->tail + 1) % RX_Q_SLOTS;
     WakeConditionVariable(&queue->cv_work);
     LeaveCriticalSection(&queue->lock);
     watchdog_end(queue, guard);
     return 1;
+
+release_task:
+    LeaveCriticalSection(&queue->lock);
+    queue->callbacks.release_task_rx(queue->callback_context, task_owner, length);
+    EnterCriticalSection(&queue->lock);
+rollback:
+    /* Keep the reservation charged until its Task budget is returned. */
+    hop_xfer_buffer_pool_release_locked(&queue->pool, command.pool_slot);
+    hop_xfer_rx_queue_rollback(&queue->accounting, length);
+    WakeAllConditionVariable(&queue->cv_space);
+    if (queue->stop) WakeAllConditionVariable(&queue->cv_work);
+    LeaveCriticalSection(&queue->lock);
+    watchdog_end(queue, guard);
+    return 0;
 }
 
 void hop_writer_queue_drain(hop_writer_queue *queue) {
@@ -282,7 +278,6 @@ int hop_writer_queue_error(const hop_writer_queue *queue) {
 int hop_writer_queue_stop(hop_writer_queue *queue) {
     if (!queue) return 0;
     if (queue->stopped) return 1;
-    hop_writer_queue_drain(queue);
     EnterCriticalSection(&queue->lock);
     queue->stop = 1;
     WakeAllConditionVariable(&queue->cv_work);
@@ -290,12 +285,12 @@ int hop_writer_queue_stop(hop_writer_queue *queue) {
     LeaveCriticalSection(&queue->lock);
     if (!hop_writer_worker_join(&queue->worker)) return 0;
     hop_xfer_buffer_pool_dispose(&queue->pool);
-    DeleteCriticalSection(&queue->lock);
     queue->stopped = 1;
     return 1;
 }
 
 void hop_writer_queue_destroy(hop_writer_queue *queue) {
     if (!queue || !queue->stopped) return;
+    DeleteCriticalSection(&queue->lock);
     free(queue);
 }

@@ -1419,7 +1419,7 @@ int main(void){
         receiver_stop=extract(receive,'xfer_receive_stop')
         receiver_clean=extract(receive,'xfer_receive_owner_clean')
         assert 'return wq_start();' in receiver_start
-        assert receiver_stop.index('rx_reset(&s_rx)') < receiver_stop.index('wq_stop()')
+        assert receiver_stop.index('if (!wq_stop()) return 0;') < receiver_stop.index('rx_reset(&s_rx)')
         assert 'memcmp(&s_rx.entry_reservations, &empty_entry_reservations' in receiver_clean
         assert '!s_rx.image_buffer.data && !s_rx.tops && s_rx.ntop == 0' in receiver_clean
         assert 'static int wq_stop(void)' in receive and 'return 0;' in writer_stop
@@ -1810,12 +1810,13 @@ int main(void){
     # state machine and is retired after the Core migration.
     owner_platform='win' if os.name=='nt' else 'mac'
 
-    # Execute the production top-level xfer_shutdown orchestration with native
-    # lock/event primitives and injected failures at Join, Job drain, Writer
-    # stop, and final Task/Reservation audit. No shared state may be destroyed
-    # until every phase succeeds; a later call must resume from retained state.
+    # Execute both production shutdown entry points with native lock/event
+    # primitives and failures injected at join, Job drain, Writer stop and
+    # audit. Writer stop must succeed before resetting Receiver state.
     shutdown_source=(ROOT/f'src/{owner_platform}/xfer.c').read_text(encoding='utf-8')
     shutdown_function=extract(shutdown_source,'xfer_shutdown')
+    receiver_source=(ROOT/f'src/{owner_platform}/xfer_receive.c').read_text(encoding='utf-8')
+    receiver_stop_function=extract(receiver_source,'xfer_receive_stop')
     shutdown_prefix=r'''
 #include <assert.h>
 #include <stdint.h>
@@ -1900,10 +1901,15 @@ static int sender_shutdown_drain_jobs(void) {
     if (drain_failures) { drain_failures--; return 0; }
     return 1;
 }
-static int xfer_receive_stop(void) {
-    reset_calls++; writer_calls++;
+static int s_rx;
+static int wq_stop(void) {
+    writer_calls++;
     if (writer_failures) { writer_failures--; return 0; }
     return 1;
+}
+static void rx_reset(int *state) {
+    assert(state == &s_rx);
+    reset_calls++;
 }
 static int xfer_shutdown_task_audit(void) {
     audit_calls++;
@@ -1936,21 +1942,21 @@ int main(void) {
     assert(!reset_calls && !writer_calls && !audit_calls);
     assert(!ack_destroy_calls && !history_close_calls && s_x.sync_initialized);
 
-    /* Writer stop failure: Receiver reset may be retried, but no audit/teardown. */
+    /* Writer stop failure: keep Receiver state alive for the next attempt. */
     assert(!xfer_shutdown());
-    assert(join_calls==3 && drain_calls==2 && reset_calls==1 && writer_calls==1);
+    assert(join_calls==3 && drain_calls==2 && !reset_calls && writer_calls==1);
     assert(!audit_calls && !ack_destroy_calls && !history_close_calls);
     assert(s_x.sync_initialized);
 
     /* Final audit failure: ACK/history/locks must still remain alive. */
     assert(!xfer_shutdown());
-    assert(join_calls==4 && drain_calls==3 && reset_calls==2 && writer_calls==2);
+    assert(join_calls==4 && drain_calls==3 && reset_calls==1 && writer_calls==2);
     assert(audit_calls==1 && !ack_destroy_calls && !history_close_calls);
     assert(s_x.sync_initialized);
 
     /* A later retry finishes cleanup exactly once. */
     assert(xfer_shutdown());
-    assert(join_calls==5 && drain_calls==4 && reset_calls==3 && writer_calls==3);
+    assert(join_calls==5 && drain_calls==4 && reset_calls==2 && writer_calls==3);
     assert(audit_calls==2 && ack_destroy_calls==1 && history_close_calls==1);
     assert(wake_calls==5 && !s_x.sync_initialized);
 #if defined(_WIN32)
@@ -1959,13 +1965,14 @@ int main(void) {
 
     /* Shutdown after successful teardown is idempotent and touches no dead lock. */
     assert(xfer_shutdown());
-    assert(join_calls==5 && drain_calls==4 && reset_calls==3 && writer_calls==3);
+    assert(join_calls==5 && drain_calls==4 && reset_calls==2 && writer_calls==3);
     assert(audit_calls==2 && ack_destroy_calls==1 && history_close_calls==1);
     puts("PASS: production xfer_shutdown retains native state across Join, Job drain, Writer stop, and audit failures; retry and idempotent close succeed");
     return 0;
 }
 """
-    run('sender_shutdown_orchestration_retry',shutdown_prefix+shutdown_function+'\n'+shutdown_main,
+    run('sender_shutdown_orchestration_retry',
+        shutdown_prefix+receiver_stop_function+'\n'+shutdown_function+'\n'+shutdown_main,
         threads=(owner_platform=='mac'))
 
     retry_core=(ROOT/'src/core/xfer_sender_retry.c').read_text(encoding='utf-8')

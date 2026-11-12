@@ -18,6 +18,7 @@ typedef struct {
     void (*write_error)(void *context, uint64_t offset, int error);
 } hop_writer_queue_callbacks;
 
+/* The owner keeps callback context alive until worker and callers have exited. */
 hop_writer_queue *hop_writer_queue_create(
     void *callback_context, const hop_writer_queue_callbacks *callbacks);
 int hop_writer_queue_enqueue_open(hop_writer_queue *queue, const char *path);
@@ -28,7 +29,10 @@ int hop_writer_queue_enqueue_close(hop_writer_queue *queue);
 void hop_writer_queue_drain(hop_writer_queue *queue);
 void hop_writer_queue_error_reset(hop_writer_queue *queue);
 int hop_writer_queue_error(const hop_writer_queue *queue);
+/* Closes admission, then joins the worker with a timeout. The owner may retry. */
 int hop_writer_queue_stop(hop_writer_queue *queue);
+/* The owner serializes stop/destroy and joins other callers before destroy.
+ * A successful stop is required before destruction. */
 void hop_writer_queue_destroy(hop_writer_queue *queue);
 
 #endif

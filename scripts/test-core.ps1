@@ -99,7 +99,16 @@ if ($LASTEXITCODE -ne 0) { throw "Writer worker compilation failed ($LASTEXITCOD
 if ($LASTEXITCODE -ne 0) { throw "Writer worker lifecycle tests failed ($LASTEXITCODE)" }
 
 $writerQueue = Join-Path $build 'hopdesk-writer-queue-tests.exe'
-$writerQueueSources = @((Join-Path $root 'tests/writer_queue_tests.c'), (Join-Path $root 'src/win/xfer_writer_queue.c'), (Join-Path $root 'src/win/xfer_writer_io.c'), (Join-Path $root 'src/win/xfer_writer_worker.c'), (Join-Path $root 'src/core/xfer_buffer_pool.c'), (Join-Path $root 'src/core/xfer_rx_queue.c'), (Join-Path $root 'src/core/xfer_budget.c'))
+$poolOverride = Join-Path $root 'tests/writer_pool_alloc_override.h'
+$writerPoolObject = Join-Path $build 'writer-buffer-pool-test.obj'
+$writerPoolSource = Join-Path $root 'src/core/xfer_buffer_pool.c'
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc "/FI$poolOverride" /c "/Fo$writerPoolObject" $writerPoolSource
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -include $poolOverride -c -o $writerPoolObject $writerPoolSource
+}
+if ($LASTEXITCODE -ne 0) { throw "Writer buffer pool test object compilation failed ($LASTEXITCODE)" }
+$writerQueueSources = @((Join-Path $root 'tests/writer_queue_tests.c'), (Join-Path $root 'src/win/xfer_writer_queue.c'), (Join-Path $root 'src/win/xfer_writer_io.c'), (Join-Path $root 'src/win/xfer_writer_worker.c'), $writerPoolObject, (Join-Path $root 'src/core/xfer_rx_queue.c'), (Join-Path $root 'src/core/xfer_budget.c'))
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
     & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /I (Join-Path $root 'src/win') /Fe:$writerQueue @writerQueueSources
 } else {

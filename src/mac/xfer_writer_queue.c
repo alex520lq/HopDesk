@@ -77,9 +77,11 @@ static void run_command(hop_writer_queue *queue, writer_command *command) {
 static int worker_take(void *context, void *task_out) {
     hop_writer_queue *queue = (hop_writer_queue *)context;
     pthread_mutex_lock(&queue->lock);
-    while (queue->accounting.queued_slots == 0 && !queue->stop)
+    /* A producer may still be returning a reservation outside this lock. */
+    while (queue->accounting.queued_slots == 0 &&
+           (!queue->stop || !hop_xfer_rx_queue_drained(&queue->accounting)))
         pthread_cond_wait(&queue->cv_work, &queue->lock);
-    if (queue->accounting.queued_slots == 0 && queue->stop) {
+    if (queue->accounting.queued_slots == 0) {
         pthread_mutex_unlock(&queue->lock);
         return 0;
     }
@@ -218,15 +220,6 @@ int hop_writer_queue_enqueue_write(hop_writer_queue *queue, void *task_owner,
     }
     pthread_mutex_unlock(&queue->lock);
 
-    if (!queue->callbacks.reserve_task_rx(queue->callback_context, task_owner, length)) {
-        pthread_mutex_lock(&queue->lock);
-        hop_xfer_rx_queue_rollback(&queue->accounting, length);
-        pthread_cond_broadcast(&queue->cv_space);
-        pthread_mutex_unlock(&queue->lock);
-        watchdog_end(queue, guard);
-        return 0;
-    }
-
     writer_command command;
     memset(&command, 0, sizeof(command));
     command.kind = RX_WRITE;
@@ -235,40 +228,44 @@ int hop_writer_queue_enqueue_write(hop_writer_queue *queue, void *task_owner,
     command.task_owner = task_owner;
     command.pool_slot = -1;
 
-    pthread_mutex_lock(&queue->lock);
+    int task_reserved = queue->callbacks.reserve_task_rx(queue->callback_context,
+                                                         task_owner, length);
     int pool_result = 0;
+    pthread_mutex_lock(&queue->lock);
+    if (!task_reserved) goto rollback;
+
     while (!queue->stop &&
            (pool_result = hop_xfer_buffer_pool_acquire_locked(
                 &queue->pool, length, &command.pool_slot, &command.data)) == 0)
         pthread_cond_wait(&queue->cv_space, &queue->lock);
-    if (queue->stop || pool_result != 1) {
-        hop_xfer_rx_queue_rollback(&queue->accounting, length);
-        pthread_cond_broadcast(&queue->cv_space);
-        pthread_mutex_unlock(&queue->lock);
-        queue->callbacks.release_task_rx(queue->callback_context, task_owner, length);
-        watchdog_end(queue, guard);
-        return 0;
-    }
+    if (queue->stop || pool_result != 1) goto release_task;
     pthread_mutex_unlock(&queue->lock);
 
     memcpy(command.data, data, length);
 
     pthread_mutex_lock(&queue->lock);
-    if (queue->stop || !hop_xfer_rx_queue_commit_reserved(&queue->accounting)) {
-        hop_xfer_rx_queue_rollback(&queue->accounting, length);
-        hop_xfer_buffer_pool_release_locked(&queue->pool, command.pool_slot);
-        pthread_cond_broadcast(&queue->cv_space);
-        pthread_mutex_unlock(&queue->lock);
-        queue->callbacks.release_task_rx(queue->callback_context, task_owner, length);
-        watchdog_end(queue, guard);
-        return 0;
-    }
+    if (queue->stop || !hop_xfer_rx_queue_commit_reserved(&queue->accounting))
+        goto release_task;
     queue->ring[queue->tail] = command;
     queue->tail = (queue->tail + 1) % RX_Q_SLOTS;
     pthread_cond_signal(&queue->cv_work);
     pthread_mutex_unlock(&queue->lock);
     watchdog_end(queue, guard);
     return 1;
+
+release_task:
+    pthread_mutex_unlock(&queue->lock);
+    queue->callbacks.release_task_rx(queue->callback_context, task_owner, length);
+    pthread_mutex_lock(&queue->lock);
+rollback:
+    /* Keep the reservation charged until its Task budget is returned. */
+    hop_xfer_buffer_pool_release_locked(&queue->pool, command.pool_slot);
+    hop_xfer_rx_queue_rollback(&queue->accounting, length);
+    pthread_cond_broadcast(&queue->cv_space);
+    if (queue->stop) pthread_cond_broadcast(&queue->cv_work);
+    pthread_mutex_unlock(&queue->lock);
+    watchdog_end(queue, guard);
+    return 0;
 }
 
 void hop_writer_queue_drain(hop_writer_queue *queue) {
@@ -292,7 +289,6 @@ int hop_writer_queue_error(const hop_writer_queue *queue) {
 int hop_writer_queue_stop(hop_writer_queue *queue) {
     if (!queue) return 0;
     if (queue->stopped) return 1;
-    hop_writer_queue_drain(queue);
     pthread_mutex_lock(&queue->lock);
     queue->stop = 1;
     pthread_cond_broadcast(&queue->cv_work);
@@ -300,14 +296,14 @@ int hop_writer_queue_stop(hop_writer_queue *queue) {
     pthread_mutex_unlock(&queue->lock);
     if (!hop_writer_worker_join(&queue->worker)) return 0;
     hop_xfer_buffer_pool_dispose(&queue->pool);
-    pthread_mutex_destroy(&queue->lock);
-    pthread_cond_destroy(&queue->cv_work);
-    pthread_cond_destroy(&queue->cv_space);
     queue->stopped = 1;
     return 1;
 }
 
 void hop_writer_queue_destroy(hop_writer_queue *queue) {
     if (!queue || !queue->stopped) return;
+    pthread_cond_destroy(&queue->cv_space);
+    pthread_cond_destroy(&queue->cv_work);
+    pthread_mutex_destroy(&queue->lock);
     free(queue);
 }

@@ -138,15 +138,16 @@ static int wq_stop(void) {
     return 1;
 }
 
-/* Public receiver lifecycle: the writer must exist before the data thread can
- * enqueue, and shutdown must reset batch/file state before stopping it. */
+/* The data thread is joined before stop. Keep its Task and staging state
+ * alive until the writer has released its reservations and closed the file. */
 int xfer_receive_start(void) {
     return wq_start();
 }
 
 int xfer_receive_stop(void) {
+    if (!wq_stop()) return 0;
     rx_reset(&s_rx);
-    return wq_stop();
+    return 1;
 }
 
 int xfer_receive_owner_clean(void) {

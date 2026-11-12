@@ -1,6 +1,6 @@
 # Receive Writer Queue Contract
 
-Status: design contract for architecture refactor phase 2. This document does not claim that the worker has already been extracted.
+The Windows and macOS Receiver use independent production Writer Queue and Worker modules. This contract defines their ownership and shutdown order.
 
 ## Responsibilities
 
@@ -40,10 +40,11 @@ Rules:
 4. Ownership transfers to the queue only after the command is committed to the ring.
 5. After dequeue, the worker owns the command until completion; dequeue does not release slot/byte accounting.
 6. Completion releases the Task reservation (WRITE only), pool slot (WRITE only), and queue accounting exactly once, then wakes blocked producers/drainers.
-7. drain completes only when queued, busy, and reserved counts are all zero.
+7. `drain` completes only when queued, busy, and reserved counts are all zero. Rollback keeps the reservation counted until the Task RX release callback returns.
 8. CLOSE is ordered behind prior writes. Receiver must drain after CLOSE before verifying, deleting, or reusing the file.
 9. No caller may mutate or free a WRITE buffer after commit.
-10. Queue shutdown rejects new producers, wakes all blocked producers and the worker, drains accepted commands, closes the file, joins the worker, and only then destroys synchronization primitives and pool storage.
+10. The Receiver joins its data thread before calling Writer Queue `stop`. `stop` closes admission and wakes blocked producers before attempting the bounded worker join. The worker drains accepted commands, waits for in-flight reservation rollback, and closes its file before exit. The Receiver may reset its Task and clean staging after the join succeeds.
+11. The owner serializes `stop` and `destroy`, and joins all other callers before `destroy`. Queue synchronization stays alive until `destroy` so callers can observe closed admission while shutdown is in progress.
 
 ## Lifecycle contract
 

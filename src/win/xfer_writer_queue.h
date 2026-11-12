@@ -19,7 +19,7 @@ typedef struct {
     void (*write_error)(void *context, uint64_t offset, unsigned long error);
 } hop_writer_queue_callbacks;
 
-/* callback_context and callback-owned Task objects must outlive successful stop. */
+/* The owner keeps callback context alive until worker and callers have exited. */
 hop_writer_queue *hop_writer_queue_create(
     void *callback_context, const hop_writer_queue_callbacks *callbacks);
 int hop_writer_queue_enqueue_open(hop_writer_queue *queue, const wchar_t *path);
@@ -30,9 +30,10 @@ int hop_writer_queue_enqueue_close(hop_writer_queue *queue);
 void hop_writer_queue_drain(hop_writer_queue *queue);
 void hop_writer_queue_error_reset(hop_writer_queue *queue);
 int hop_writer_queue_error(const hop_writer_queue *queue);
-/* Stop drains accepted work. A join timeout retains the complete queue object. */
+/* Closes admission, then joins the worker with a timeout. The owner may retry. */
 int hop_writer_queue_stop(hop_writer_queue *queue);
-/* Destroy is valid only after stop returned success. */
+/* The owner serializes stop/destroy and joins other callers before destroy.
+ * A successful stop is required before destruction. */
 void hop_writer_queue_destroy(hop_writer_queue *queue);
 
 #endif

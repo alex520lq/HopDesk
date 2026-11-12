@@ -471,7 +471,7 @@ tests/
 | 基线核对 | 完成 | `68818b3f093af20385c3fba5785405eb4ac8d634` | 已核实 main HEAD、PR/分支状态；完成主要模块与函数簇审计附件。动态调用图、全量资源所有权追踪仍作为阶段 0 深度审计待办。 |
 | 阶段 0：深度审计 | 进行中 | `eaf8488b21c87201297aaf9edcdad2660bab76f2` | 已建立模块/函数簇和平台差异清单；仍需逐项追踪所有资源 owner、锁顺序、线程退出与回调迟到路径。PR 基线双平台 CI 已通过。 |
 | 阶段 1：构建与模块边界 | 进行中 | `6a994e691c844c60b3b15615f299633531283c13` | app 构建递归发现已完成；ACK Window、Transfer Tracking、RX Buffer Pool 已成为独立生产编译单元并接入两端测试。Core 平台 include 检查、显式 source manifest/重复源检查仍待完成。 |
-| 阶段 2：接收端/Writer | 进行中 | `9a210d4c44295222aa72436c4913b0fb6ba9d10f` | Writer queue/worker 已成为平台生产编译单元；共享 RX Queue accounting 与 Writer IO adapter 已接入两端测试。接收帧 HELLO/token、session 绑定和非当前批次 CHUNK/END 准入已抽到共享 `xfer_rx_frame_gate`。接收端已转为独立 `xfer_receive.c` 生产单元，`xfer.c` 只包含窄生命周期头。剩余：receiver 生命周期压力覆盖、真实双机接收/断线/取消验收。前一提交 Run #1660 Windows/macOS CI PASS；本切片 CI 待验。 |
+| 阶段 2：接收端/Writer | 进行中 | `15ab5dc2621b57d1856c2985856894dd0faa7fcc` | 双平台 Receiver、Writer Queue、Worker 已独立编译，接收帧准入和队列记账走共享 Core。Receiver 独立编译基线的 [CI #1662](https://github.com/alex520lq/HopDesk/actions/runs/43166795395) 双平台通过。关闭顺序、故障覆盖与实机验收见后续实施记录。 |
 | 阶段 3：Sender/Service | 待完成 | — | 待实施。 |
 | 阶段 4：共享 Transfer Domain | 待完成 | — | 待实施。 |
 | 阶段 5：Clipboard | 进行中 | `d7722d121892caf23d2707e019f8697886da786d` | Core 统一 Offer、入站 Request 准入、延迟写入身份校验与图片预算分类；暂时额度不足在释放后重试同一剪贴板版本，永久超限不重试。Windows/macOS CI 已通过；双机实测待验收。 |
@@ -884,14 +884,21 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 真实双设备断线、取消、重连及长时间传输仍未执行，不得用 CI loopback 代替。
 
 
-### 2026-11-12：Receiver 独立生产编译单元（阶段 2，CI 待验）
+### 2026-11-12：Receiver 独立生产编译单元（阶段 2，CI PASS）
 
 - 将 `src/win/xfer_receive.inc`、`src/mac/xfer_receive.inc` 通过 `git mv` 转为独立生产编译单元 `src/win/xfer_receive.c`、`src/mac/xfer_receive.c`；新增窄生命周期头 `xfer_receive.h`，只暴露 `xfer_receive_start`、`xfer_receive_stop`、`xfer_receive_owner_clean` 和原生 socket 线程入口。
 - Receiver 私有状态（writer 绑定、`xfer_rx_context`、batch/file/image staging、listener/client socket、取消与断线轮询）留在各自 receiver 单元；`xfer.c` 的 init/shutdown/owner audit 改为调用 receiver API，不再包含实现片段。
 - 发送端共享的 status 发布函数和 Windows `xfer_send_all` 通过 `xfer_sender_internal.h` 显式导出；macOS `temp_root` 移入 receiver；删除 receiver 内已无调用方的 `wq_push`、`wq_push_data`、`wq_drain`、`wq_error_get` 兼容包装，writer 操作统一走 `hop_writer_queue_*`。
 - 更新 `scripts/test-regressions.py`、`test-updates.py`、`test-mac-connection.py`、`test-ha.ps1` 与 `tests/session_transport_fixture.c.in`：生产源码路径、线程入口、shutdown 顺序、owner-clean 审计和 Windows `xfer_send_all` 测试替身均对齐新边界。
 - 本地验证：`sh scripts/build-mac.sh`、`python3 scripts/test-regressions.py`、`sh scripts/test-core.sh`、`python3 scripts/test-mac-connection.py`、`sh scripts/test-xfer-protocol.sh`、`sh scripts/test-network.sh` 通过；macOS 构建中 receiver 单元无 unused-function 警告。Windows 原生构建仅能通过本轮提交后的 GitHub Actions 验证。
-- 阶段 2 尚未完成：stop-vs-producer、分配失败、慢盘/持久错误、sanitizer 压力、真实双机接收/断线/取消仍未验收。本提交只关闭“Receiver 仍是隐式 include 片段”这一结构问题；精确提交 SHA 的 Windows/macOS CI 结果待补记。
+- 提交 `15ab5dc2621b57d1856c2985856894dd0faa7fcc` 的 [CI #1662](https://github.com/alex520lq/HopDesk/actions/runs/43166795395) 在 Windows 和 macOS 均通过原生构建、测试和打包。阶段 2 的故障覆盖和真实双机接收、断线、取消验收另行跟踪。
+
+### 2026-11-12：Receiver / Writer Queue 关闭顺序
+
+- 两端 Writer Queue 的 `stop` 先关闭入队准入，再执行有超时的 worker join。已接受的命令继续按顺序处理。在途 WRITE 的 Task RX 预算归还后才撤销队列预留，worker 在这些预留清零后关闭文件并退出。
+- Receiver 数据线程退出后才停止 Writer Queue。Writer 超时会保留队列、Task 和 staging 状态供下次关闭重试。成功 join 后才清理 Receiver Task 和 staging。队列 owner 等其他调用线程退出后销毁同步对象。
+- 双平台生产模块测试覆盖在途预留导致的关闭超时、拒绝后续命令、预算恰好归还一次、关闭重试，以及写入错误在后续写入成功后仍保留至显式重置。缓冲池分配失败注入验证 Task 与队列预留回滚后可重试同一 WRITE。关闭编排测试注入 Writer stop 失败，验证 Receiver reset 与最终资源审计均延后。
+- macOS 本地原生构建、`sh scripts/test-core.sh`、`python3 scripts/test-regressions.py`、传输协议、TCP 回环及 macOS 连接测试通过，Writer Queue 并发回归额外通过 ThreadSanitizer。真实慢盘/磁盘满、物理双机断线续传和取消、长时间资源测量尚待执行。
 
 
 ## 12. 新的重构执行协议（最高优先级，后续 Agent 必须遵守）

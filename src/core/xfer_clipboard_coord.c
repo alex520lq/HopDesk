@@ -119,7 +119,7 @@ hop_clip_outcome hop_clip_coord_complete_paste(hop_clipboard_txn *txn,
 
 hop_clip_paste_apply_result hop_clip_coord_paste_apply_result(hop_clipboard_txn *txn,
     uint32_t request_id, uint64_t armed_version, uint64_t native_after, int success) {
-    if (!txn || !request_id) return HOP_CLIP_PASTE_APPLY_CANCEL;
+    if (!txn || !request_id || txn->stopping) return HOP_CLIP_PASTE_APPLY_CANCEL;
     if (success) {
         /* armed_version twice on purpose: the transaction must still hold the
          * identity it had before the write, and the native clipboard must be at
@@ -128,9 +128,9 @@ hop_clip_paste_apply_result hop_clip_coord_paste_apply_result(hop_clipboard_txn 
                    armed_version, armed_version)
             ? HOP_CLIP_PASTE_APPLY_COMPLETE : HOP_CLIP_PASTE_APPLY_CANCEL;
     }
-    (void)hop_clipboard_txn_update_pending_paste_version(txn, request_id,
-              armed_version, armed_version, native_after);
-    return HOP_CLIP_PASTE_APPLY_REARM;
+    return hop_clipboard_txn_update_pending_paste_version(txn, request_id,
+               armed_version, armed_version, native_after)
+        ? HOP_CLIP_PASTE_APPLY_REARM : HOP_CLIP_PASTE_APPLY_CANCEL;
 }
 
 hop_clip_outcome hop_clip_coord_link_state(hop_clipboard_txn *txn,

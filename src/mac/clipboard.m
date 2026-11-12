@@ -496,17 +496,19 @@ static void apply_objects_retry(NSArray *objects, NSString *kind,
         [pb clearContents];
         uint64_t cleared=(uint64_t)[pb changeCount];
         s_last_change=(NSInteger)cleared;
-        (void)hop_clip_coord_paste_apply_result(&s_clip_txn,request_id,txn_expected,cleared,0);
+        if (hop_clip_coord_paste_apply_result(&s_clip_txn, request_id,
+                txn_expected, cleared, 0) != HOP_CLIP_PASTE_APPLY_REARM) {
+            pthread_mutex_unlock(&s_offer_lock);
+            return;
+        }
         BOOL ok=[pb writeObjects:objects];
         uint64_t after_write=(uint64_t)[pb changeCount];
         s_last_change=(NSInteger)after_write;
-        if(ok) {
-            ok=hop_clip_coord_paste_apply_result(&s_clip_txn,request_id,cleared,cleared,1)==HOP_CLIP_PASTE_APPLY_COMPLETE;
-        } else {
-            (void)hop_clip_coord_paste_apply_result(&s_clip_txn,request_id,cleared,after_write,0);
-        }
+        hop_clip_paste_apply_result result = hop_clip_coord_paste_apply_result(
+            &s_clip_txn, request_id, cleared, after_write, ok);
         pthread_mutex_unlock(&s_offer_lock);
-        if(ok) { statusbar_notify_paste_ready(); hop_log(HOP_LOG_INFO,"clip: files ready; choose a target and paste again"); return; }
+        if(result == HOP_CLIP_PASTE_APPLY_COMPLETE) { statusbar_notify_paste_ready(); hop_log(HOP_LOG_INFO,"clip: files ready; choose a target and paste again"); return; }
+        if(result != HOP_CLIP_PASTE_APPLY_REARM) return;
         if(attempt<10) { NSInteger next=(NSInteger)after_write; dispatch_after(dispatch_time(DISPATCH_TIME_NOW,150ull*NSEC_PER_MSEC),dispatch_get_main_queue(),^{ apply_objects_retry(objects,kind,attempt+1,next,request_id); }); }
         else { pthread_mutex_lock(&s_offer_lock); hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,request_id); pthread_mutex_unlock(&s_offer_lock); }
         return;

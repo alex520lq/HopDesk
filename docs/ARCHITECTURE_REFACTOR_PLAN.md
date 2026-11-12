@@ -1,8 +1,8 @@
 # HopDesk 架构重构实施规划
 
-> 状态：阶段 1/2 已合并入主干；Clipboard 完整重构（§12.5）进行中，活动 PR #14。未在“实施记录”中附提交和测试证据的工作，不得标记完成。
-> 基线主干：`origin/main` @ `1593cc0cae0a347af980dd716b314215af943408`
-> 活动分支：`refactor/clipboard-request-admission`（PR #14）
+> 状态：阶段 1/2 已合并入主干；Clipboard 完整重构（§12.5）进行中。未在“实施记录”中附提交和测试证据的工作，不得标记完成。
+> 当前 Clipboard 基线：`origin/main` @ `ee057d7a60c1db879605630940cc4733c22002d7`
+> 活动分支：`refactor/clipboard-coordinator`。PR #14 的 CI 仅对应历史提交。
 > 历史分支：`refactor/architecture-modularization` 已随 PR #11（merge `c14332c`，第二父 `f239774`）进入主干，仅作历史引用，不再承载开发。
 > 目标：在不改变产品行为、网络协议和用户工作流的前提下，将 HopDesk 从平台文件堆叠式组织演进为边界清晰、可独立测试、跨平台规则一致的模块化工程。
 
@@ -1102,3 +1102,11 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 本地验证：`bash scripts/build-mac.sh`、`hopdesk-clipboard-coord-tests`、`hopdesk-clipboard-txn-tests`（均带 ASan/UBSan）、`python3 scripts/test-regressions.py`（All targeted regressions passed）全部通过。`scripts/test-updates.py` 的 `replace_fail` 既有失败仍未修复，会在第 42 行中断 `test-core.sh`，导致脚本化路径永远跑不到 clipboard 用例；因此上述 clipboard 测试是手动编译直接运行的。
 - **已知未处理分歧**：`clipboard_on_link` 在 macOS 会先检查 `stopping` 再决定是否重播 Offer，Windows 的 `clip_on_link` 完全没有 stopping 概念。这是关机时序问题，不属于身份退役，留待单独问题处理，不在本切片静默修改。
 - 未验证：Windows 原生构建与测试（仅 CI）、真实双机粘贴、剪贴板争用、关闭竞态。
+
+### 2026-11-12：修复 Offer 路径所有权与 Paste Worker 竞态
+
+- macOS 在锁内编码 Offer，发送方在锁外只读取自己持有的 payload。入站 Offer 或清除可以释放已移交的路径，不影响发送缓冲。
+- Windows 在同一把锁下释放 Core Worker 准入并置位完成事件。关闭流程禁止新准入，确认等待成功后，在锁下摘除句柄，再关闭句柄。
+- Core 先识别已接收的重复请求，再判断 Worker 是否忙。两端只为通过准入检查的请求分配快照。原生写入失败后，只有 Core 接受版本更新时才安排重试。
+- 在 macOS 上以 `2164e8d` 为基础的工作区通过 `bash scripts/test-core.sh`（含定向回归）、`bash scripts/build-mac.sh`、`bash scripts/test-xfer-protocol.sh` 和 `bash scripts/test-network.sh`。临时 ASan/UBSan 夹具在实际 Offer 发送函数中注入路径清理，仍能解码随后发送的 Offer。
+- Windows 原生构建、双平台 CI、真实双机及资源测量未执行。

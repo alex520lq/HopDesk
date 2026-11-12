@@ -6,14 +6,18 @@ static void clip_send_paste_failed(uint32_t request_id,uint8_t reason) {
 typedef struct { wchar_t **paths; int count; uint32_t request_id; uint64_t offer_id; } clip_paste_work;
 
 static void clip_free_paste_work(clip_paste_work *work) {
+    if (!work) return;
     for (int i = 0; i < work->count; ++i) free(work->paths[i]);
     free(work->paths);
     free(work);
 }
 
 static int clip_snapshot_paste_paths(void *context) {
-    clip_paste_work *work = context;
     if (s_local_offer_count <= 0) return 0;
+    clip_paste_work **slot = context;
+    clip_paste_work *work = calloc(1, sizeof(*work));
+    if (!work) return 0;
+    *slot = work;
     work->paths = calloc((size_t)s_local_offer_count, sizeof(wchar_t *));
     if (!work->paths) return 0;
     for (int i = 0; i < s_local_offer_count; ++i) {
@@ -24,6 +28,14 @@ static int clip_snapshot_paste_paths(void *context) {
     return 1;
 }
 
+static void clip_finish_paste_worker(void) {
+    AcquireSRWLockExclusive(&s_offer_lock);
+    hop_clipboard_txn_finish_paste_worker(&s_clip_txn);
+    /* Admission resets this event under the same lock. */
+    SetEvent(s_paste_workers_done);
+    ReleaseSRWLockExclusive(&s_offer_lock);
+}
+
 static DWORD WINAPI clip_paste_worker(LPVOID arg) {
     clip_paste_work *w=(clip_paste_work*)arg;
     SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
@@ -31,8 +43,7 @@ static DWORD WINAPI clip_paste_worker(LPVOID arg) {
     if(!ok)clip_send_paste_failed(w->request_id,
         xfer_connected()?HOP_CLIP_PASTE_FAIL_SOURCE_IO:HOP_CLIP_PASTE_FAIL_TRANSFER);
     clip_free_paste_work(w);
-    AcquireSRWLockExclusive(&s_offer_lock);hop_clipboard_txn_finish_paste_worker(&s_clip_txn);ReleaseSRWLockExclusive(&s_offer_lock);
-    if(s_paste_workers_done)SetEvent(s_paste_workers_done);
+    clip_finish_paste_worker();
     return 0;
 }
 void clip_on_link(int connected) {
@@ -105,13 +116,10 @@ void clip_on_paste_failed(const uint8_t *p,uint32_t len) {
 void clip_on_paste_request(const uint8_t *p,uint32_t len) {
     hop_clip_paste_request_msg m;
     if(!hop_clip_paste_request_decode(p,len,&m))return;
-    clip_paste_work *w=(clip_paste_work*)calloc(1,sizeof(*w));
-    if(!w){clip_send_paste_failed(m.request_id,HOP_CLIP_PASTE_FAIL_BUSY);return;}
-    w->request_id = m.request_id;
-    w->offer_id = m.generation;
+    clip_paste_work *w = NULL;
     AcquireSRWLockExclusive(&s_offer_lock);
     hop_clip_outcome out=hop_clip_coord_paste_request(&s_clip_txn,m.request_id,m.origin,m.generation,
-        clip_local_device(),s_paste_workers_done != NULL,clip_snapshot_paste_paths,w);
+        clip_local_device(),s_paste_workers_done != NULL,clip_snapshot_paste_paths,&w);
     if(out.action==HOP_CLIP_ACT_SPAWN_PASTE_WORKER)ResetEvent(s_paste_workers_done);
     ReleaseSRWLockExclusive(&s_offer_lock);
     if(out.action!=HOP_CLIP_ACT_SPAWN_PASTE_WORKER){
@@ -120,12 +128,14 @@ void clip_on_paste_request(const uint8_t *p,uint32_t len) {
             clip_send_paste_failed(out.request_id,out.fail_reason);
         return;
     }
+    w->request_id = m.request_id;
+    w->offer_id = m.generation;
     HANDLE t=CreateThread(NULL,0,clip_paste_worker,w,0,NULL);
     if(!t){
         clip_free_paste_work(w);
         clip_send_paste_failed(m.request_id,HOP_CLIP_PASTE_FAIL_BUSY);
-        AcquireSRWLockExclusive(&s_offer_lock);hop_clipboard_txn_finish_paste_worker(&s_clip_txn);ReleaseSRWLockExclusive(&s_offer_lock);
-        SetEvent(s_paste_workers_done);return;
+        clip_finish_paste_worker();
+        return;
     }
     CloseHandle(t);
 }

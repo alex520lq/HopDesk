@@ -39,22 +39,23 @@ static void clip_consume_offers(void) {
     pthread_mutex_unlock(&s_offer_lock);
     clip_announce_retired(retired);
 }
-static int clip_send_offer(const char *const *paths,int count,uint64_t generation) {
-    char *names[HOP_CLIP_OFFER_MAX_ITEMS]={0};
-    uint8_t *payload=NULL;uint32_t len=0;int ok=0;
-    if(!paths||count<=0||count>(int)HOP_CLIP_OFFER_MAX_ITEMS)return 0;
-    for(int i=0;i<count;++i){
-        const char *base=strrchr(paths[i],'/');base=base?base+1:paths[i];
-        size_t n=strlen(base);
-        if(!n||n>HOP_NAME_LEN_MAX)goto done;
-        names[i]=strdup(base);if(!names[i])goto done;
+static uint32_t clip_encode_offer(uint8_t *payload, const char *const *paths,
+                                  int count, uint64_t generation) {
+    if (!payload || count <= 0 || count > (int)HOP_CLIP_OFFER_MAX_ITEMS) return 0;
+    const char *names[HOP_CLIP_OFFER_MAX_ITEMS];
+    for (int i = 0; i < count; ++i) {
+        const char *slash = strrchr(paths[i], '/');
+        names[i] = slash ? slash + 1 : paths[i];
     }
-    payload=(uint8_t*)malloc(HOP_CLIP_OFFER_MAX_PAYLOAD);if(!payload)goto done;
-    len=hop_clip_file_offer_encode(payload,HOP_CLIP_OFFER_MAX_PAYLOAD,
-        clip_local_device(),generation,(const char *const *)names,count);
-    if(len)ok=net_send(HOP_MSG_CLIP_FILE_OFFER,payload,len);
-done:
-    for(int i=0;i<count;++i)free(names[i]);free(payload);return ok;
+    return hop_clip_file_offer_encode(payload, HOP_CLIP_OFFER_MAX_PAYLOAD,
+        clip_local_device(), generation, names, count);
+}
+static int clip_send_offer(const char *const *paths,int count,uint64_t generation) {
+    uint8_t *payload = malloc(HOP_CLIP_OFFER_MAX_PAYLOAD);
+    uint32_t len = clip_encode_offer(payload, paths, count, generation);
+    int sent = len && net_send(HOP_MSG_CLIP_FILE_OFFER, payload, len);
+    free(payload);
+    return sent;
 }
 static int clip_publish_local_paths(NSArray<NSURL *> *urls) {
     NSUInteger n=[urls count];
@@ -70,17 +71,22 @@ static int clip_publish_local_paths(NSArray<NSURL *> *urls) {
             return 0;
         }
     }
+    uint8_t *payload = malloc(HOP_CLIP_OFFER_MAX_PAYLOAD);
     uint64_t generation=0;
     pthread_mutex_lock(&s_offer_lock);
     hop_clip_retired_offers retired=hop_clip_coord_publish_local_offer(&s_clip_txn,&generation);
+    /* Send only the encoded bytes after unlocking. The shared paths can be
+     * retired by an inbound offer as soon as we release the lock. */
+    uint32_t len = clip_encode_offer(payload, (const char *const *)copies, (int)n, generation);
     clip_drop_local_offer_paths();
     for(NSUInteger i=0;i<n;++i)s_local_offer_paths[i]=copies[i];
     s_local_offer_count=(int)n;
     pthread_mutex_unlock(&s_offer_lock);
     clip_announce_retired(retired);
-    if(!clip_send_offer((const char *const *)copies,(int)n,generation))
+    if(!len || !net_send(HOP_MSG_CLIP_FILE_OFFER, payload, len))
         hop_log(HOP_LOG_WARN,"clip: file offer stored; peer will be updated on reconnect");
     else hop_log(HOP_LOG_INFO,"clip: file offer published (%lu top-level item(s), no file data sent)",(unsigned long)n);
+    free(payload);
     return 1;
 }
 

@@ -74,14 +74,18 @@ void clipboard_on_paste_failed(const uint8_t *p,uint32_t len) {
     hop_log(HOP_LOG_WARN,"clip: remote paste request %u failed (reason %u)",id,(unsigned)reason);
 }
 static void clip_free_paste_work(clip_paste_work *work) {
+    if (!work) return;
     for (int i = 0; i < work->count; ++i) free(work->paths[i]);
     free(work->paths);
     free(work);
 }
 
 static int clip_snapshot_paste_paths(void *context) {
-    clip_paste_work *work = context;
     if (s_local_offer_count <= 0) return 0;
+    clip_paste_work **slot = context;
+    clip_paste_work *work = calloc(1, sizeof(*work));
+    if (!work) return 0;
+    *slot = work;
     work->paths = calloc((size_t)s_local_offer_count, sizeof(char *));
     if (!work->paths) return 0;
     for (int i = 0; i < s_local_offer_count; ++i) {
@@ -102,13 +106,10 @@ static void clip_paste_worker(void *arg) {
 void clipboard_on_paste_request(const uint8_t *p,uint32_t len) {
     hop_clip_paste_request_msg m;
     if(!hop_clip_paste_request_decode(p,len,&m))return;
-    clip_paste_work *w=(clip_paste_work*)calloc(1,sizeof(*w));
-    if(!w){clip_send_paste_failed(m.request_id,HOP_CLIP_PASTE_FAIL_BUSY);return;}
-    w->request_id = m.request_id;
-    w->offer_id = m.generation;
+    clip_paste_work *w = NULL;
     pthread_mutex_lock(&s_offer_lock);
     hop_clip_outcome out=hop_clip_coord_paste_request(&s_clip_txn,m.request_id,m.origin,m.generation,
-        clip_local_device(),s_paste_group != nil,clip_snapshot_paste_paths,w);
+        clip_local_device(),s_paste_group != nil,clip_snapshot_paste_paths,&w);
     if(out.action==HOP_CLIP_ACT_SPAWN_PASTE_WORKER)dispatch_group_enter(s_paste_group);
     pthread_mutex_unlock(&s_offer_lock);
     if(out.action!=HOP_CLIP_ACT_SPAWN_PASTE_WORKER){
@@ -117,6 +118,8 @@ void clipboard_on_paste_request(const uint8_t *p,uint32_t len) {
             clip_send_paste_failed(out.request_id,out.fail_reason);
         return;
     }
+    w->request_id = m.request_id;
+    w->offer_id = m.generation;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
         clip_paste_worker(w);
         pthread_mutex_lock(&s_offer_lock);hop_clipboard_txn_finish_paste_worker(&s_clip_txn);pthread_mutex_unlock(&s_offer_lock);

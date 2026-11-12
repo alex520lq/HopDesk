@@ -97,9 +97,13 @@ int main(void) {
     assert(out.request_id == 900 && out.generation == local_gen);
     assert(t.paste_scan_active);
 
-    /* A retried request while the worker runs is busy, not a duplicate. */
+    /* A replay must not send a failure that cancels the original request. */
     out = hop_clip_coord_paste_request(&t, 900, local, local_gen, local, 1,
-                                       snapshot_ok, &snapshot);
+                                       snapshot_fail, NULL);
+    assert(out.action == HOP_CLIP_ACT_NONE);
+    assert(t.paste_scan_active && t.seen_next == 1);
+    out = hop_clip_coord_paste_request(&t, 901, local, local_gen, local, 1,
+                                       snapshot_fail, NULL);
     assert(out.action == HOP_CLIP_ACT_SEND_PASTE_FAILED);
     assert(out.fail_reason == HOP_CLIP_PASTE_FAIL_BUSY);
 
@@ -286,7 +290,13 @@ int main(void) {
     assert(hop_clip_coord_complete_paste(&t, rid, 42, 1).action == HOP_CLIP_ACT_APPLY_PASTE);
     assert(hop_clip_coord_paste_apply_result(&t, rid, expected + 1, expected + 1, 1) ==
            HOP_CLIP_PASTE_APPLY_CANCEL);
+    assert(hop_clip_coord_paste_apply_result(&t, rid, expected + 1, expected + 2, 0) ==
+           HOP_CLIP_PASTE_APPLY_CANCEL);
     assert(t.pending_request_id == rid);
+    assert(t.pending_clipboard_version == expected);
+    hop_clipboard_txn_set_stopping(&t, 1);
+    assert(hop_clip_coord_paste_apply_result(&t, rid, expected, expected + 1, 0) ==
+           HOP_CLIP_PASTE_APPLY_CANCEL);
 
     /* An unknown request and a null transaction both refuse. */
     hop_clipboard_txn_init(&t);

@@ -23,7 +23,7 @@
 #include "xfer.h"
 #include "../core/xfer_task.h"
 #include "../core/xfer_clipboard_txn.h"
-#include "../core/xfer_clipboard_coord.h"
+#include "../core/xfer_clipboard_txn.h"
 #include "../core/xfer_budget.h"
 
 #include <stdlib.h>
@@ -496,7 +496,7 @@ static void apply_objects_retry(NSArray *objects, NSString *kind,
         [pb clearContents];
         uint64_t cleared=(uint64_t)[pb changeCount];
         s_last_change=(NSInteger)cleared;
-        if (hop_clip_coord_paste_apply_result(&s_clip_txn, request_id,
+        if (hop_clipboard_paste_apply(&s_clip_txn, request_id,
                 txn_expected, cleared, 0) != HOP_CLIP_PASTE_APPLY_REARM) {
             pthread_mutex_unlock(&s_offer_lock);
             return;
@@ -504,7 +504,7 @@ static void apply_objects_retry(NSArray *objects, NSString *kind,
         BOOL ok=[pb writeObjects:objects];
         uint64_t after_write=(uint64_t)[pb changeCount];
         s_last_change=(NSInteger)after_write;
-        hop_clip_paste_apply_result result = hop_clip_coord_paste_apply_result(
+        hop_clip_paste_apply_result result = hop_clipboard_paste_apply(
             &s_clip_txn, request_id, cleared, after_write, ok);
         pthread_mutex_unlock(&s_offer_lock);
         if(result == HOP_CLIP_PASTE_APPLY_COMPLETE) { statusbar_notify_paste_ready(); hop_log(HOP_LOG_INFO,"clip: files ready; choose a target and paste again"); return; }

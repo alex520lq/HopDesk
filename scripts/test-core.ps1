@@ -556,34 +556,20 @@ if ($LASTEXITCODE -ne 0) { throw "Sender ACK adapter test compilation failed ($L
 & $senderAckAdapter
 if ($LASTEXITCODE -ne 0) { throw "Sender ACK adapter tests failed ($LASTEXITCODE)" }
 
-$clipboardTxn = Join-Path $build 'hopdesk-clipboard-txn-tests.exe'
-$clipboardTxnSources = @(
+$clipboard = Join-Path $build 'hopdesk-clipboard-txn-tests.exe'
+$clipboardSources = @(
     (Join-Path $root 'tests/xfer_clipboard_txn_tests.c'),
     (Join-Path $root 'src/core/xfer_clipboard_txn.c')
 )
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
-    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$clipboardTxn @clipboardTxnSources
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$clipboard @clipboardSources
 } else {
-    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $clipboardTxn @clipboardTxnSources
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $clipboard @clipboardSources
 }
-if ($LASTEXITCODE -ne 0) { throw "Clipboard transaction test compilation failed ($LASTEXITCODE)" }
-& $clipboardTxn
-if ($LASTEXITCODE -ne 0) { throw "Clipboard transaction tests failed ($LASTEXITCODE)" }
+if ($LASTEXITCODE -ne 0) { throw "Clipboard tests compilation failed ($LASTEXITCODE)" }
+& $clipboard
+if ($LASTEXITCODE -ne 0) { throw "Clipboard tests failed ($LASTEXITCODE)" }
 
-$clipboardCoord = Join-Path $build 'hopdesk-clipboard-coord-tests.exe'
-$clipboardCoordSources = @(
-    (Join-Path $root 'tests/xfer_clipboard_coord_tests.c'),
-    (Join-Path $root 'src/core/xfer_clipboard_coord.c'),
-    (Join-Path $root 'src/core/xfer_clipboard_txn.c')
-)
-if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
-    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$clipboardCoord @clipboardCoordSources
-} else {
-    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $clipboardCoord @clipboardCoordSources
-}
-if ($LASTEXITCODE -ne 0) { throw "Clipboard coordinator test compilation failed ($LASTEXITCODE)" }
-& $clipboardCoord
-if ($LASTEXITCODE -ne 0) { throw "Clipboard coordinator tests failed ($LASTEXITCODE)" }
 
 # Shared Sender Job release transaction (owner/resource/Task/Shutdown ordering).
 $jobLifecycle = Join-Path $build 'hopdesk-sender-job-lifecycle-tests.exe'

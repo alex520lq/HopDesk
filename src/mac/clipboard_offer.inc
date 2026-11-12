@@ -24,7 +24,7 @@ static void clip_announce_retired(hop_clip_retired_offers retired) {
  * Caller must NOT hold s_offer_lock. */
 static void clip_retire_offers(void) {
     pthread_mutex_lock(&s_offer_lock);
-    hop_clip_retired_offers retired=hop_clip_coord_retire_offers(&s_clip_txn);
+    hop_clip_retired_offers retired=hop_clipboard_retire_offers(&s_clip_txn);
     clip_drop_local_offer_paths();
     pthread_mutex_unlock(&s_offer_lock);
     clip_announce_retired(retired);
@@ -34,7 +34,7 @@ static void clip_retire_offers(void) {
  * Caller must NOT hold s_offer_lock. */
 static void clip_consume_offers(void) {
     pthread_mutex_lock(&s_offer_lock);
-    hop_clip_retired_offers retired=hop_clip_coord_consume_offers(&s_clip_txn);
+    hop_clip_retired_offers retired=hop_clipboard_consume_offers(&s_clip_txn);
     clip_drop_local_offer_paths();
     pthread_mutex_unlock(&s_offer_lock);
     clip_announce_retired(retired);
@@ -74,7 +74,7 @@ static int clip_publish_local_paths(NSArray<NSURL *> *urls) {
     uint8_t *payload = malloc(HOP_CLIP_OFFER_MAX_PAYLOAD);
     uint64_t generation=0;
     pthread_mutex_lock(&s_offer_lock);
-    hop_clip_retired_offers retired=hop_clip_coord_publish_local_offer(&s_clip_txn,&generation);
+    hop_clip_retired_offers retired=hop_clipboard_publish_local_offer(&s_clip_txn,&generation);
     /* Send only the encoded bytes after unlocking. The shared paths can be
      * retired by an inbound offer as soon as we release the lock. */
     uint32_t len = clip_encode_offer(payload, (const char *const *)copies, (int)n, generation);

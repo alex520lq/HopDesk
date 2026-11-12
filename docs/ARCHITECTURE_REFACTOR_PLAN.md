@@ -1,8 +1,7 @@
 # HopDesk 架构重构实施规划
 
-> 状态：阶段 1/2 已合并入主干；Clipboard 完整重构（§12.5）进行中。未在“实施记录”中附提交和测试证据的工作，不得标记完成。
-> 当前 Clipboard 基线：`origin/main` @ `ee057d7a60c1db879605630940cc4733c22002d7`
-> 活动分支：`refactor/clipboard-coordinator`。PR #14 的 CI 仅对应历史提交。
+> 状态：PR #15 已合并；当前从 `origin/main` @ `db40605bf90f04de92200b015aa00a0e6d3e2bab` 开始 Clipboard 边界收敛。未在“实施记录”中附提交和测试证据的工作，不得标记完成。
+> 活动分支：`fix/clipboard-domain-consolidation`。历史 PR 的 CI 不能作为当前分支的验证结果。
 > 历史分支：`refactor/architecture-modularization` 已随 PR #11（merge `c14332c`，第二父 `f239774`）进入主干，仅作历史引用，不再承载开发。
 > 目标：在不改变产品行为、网络协议和用户工作流的前提下，将 HopDesk 从平台文件堆叠式组织演进为边界清晰、可独立测试、跨平台规则一致的模块化工程。
 
@@ -81,6 +80,7 @@ HopDesk 采用 **Native UI / Native Platform + Shared C Core** 路线：
 - 不要把平台 API 做机械的一对一包装，也不要为了“统一”而制造没有实际复用价值的泛化框架、虚假通用类型或多层转发。
 - 共享接口只统一真实相同的语义。Windows Event 与 macOS Condition Variable、Clipboard Sequence 与 NSPasteboard changeCount 等差异，应保留在 Adapter 内，并在接口契约中说明其行为。
 - 不以文件行数、目录层级、共享代码百分比或新增模块数量作为单独的成功标准；以职责单一、依赖可见、状态所有权清晰、重复业务逻辑减少、可独立测试和可安全演进为准。
+- 新增概念、调用层级或公开接口时，必须说明它消除了哪项实际风险或重复业务决策；若理解同一业务流程需要更多模块且无可验证收益，不接受该抽象。每个重构切片须列出删除的旧接口、缩短的生产调用路径和仍需保留的平台差异。
 - 重构必须增量进行：一次聚焦一个模块/切片；同步检查 Windows/macOS 对应实现；不进行无必要的大规模目录搬迁或全盘重写。
 
 #### 性能、内存与交付体积是架构约束
@@ -219,7 +219,7 @@ tests/
 
 - Core 保存 Offer ID、Request ID、generation、origin、状态和 codec；不保存平台对象。
 - Platform Clipboard Adapter 负责获取系统快照、写入文件/文本/图片、读取 sequence/changeCount。
-- Clipboard Coordinator 负责 Offer 生命周期、Paste Transaction、版本校验、异步重试和完成/取消。
+- 单一 Clipboard 业务状态所有者负责 Offer / Request / Paste 的身份、版本、幂等与完成/取消规则；不得仅为把 Transaction 返回值翻译成 Action 而保留第二层公开接口。平台各自负责异步重试和原生写入。
 - 图片读取/解码/格式转换不得在 UI 主线程执行；所有临时内存必须先预留预算，释放或所有权转移必须可追踪。
 - 传输完成写入剪贴板前必须校验 Request ID、session 和本机 clipboard generation，旧任务不得覆盖用户新复制的内容。
 
@@ -989,6 +989,14 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 **目标结构**：共享 Clipboard Transaction Core 负责纯业务状态和决策（Offer/Request/Paste 状态、ID/generation 校验、去重、终结原因、迟到事件拒绝）；平台 Adapter 负责原生剪贴板读写、序列号/changeCount 采样、图片转换、路径桥接、线程调度和系统回调。平台差异必须显式表达，不得用大量布尔参数或无意义通用回调掩盖。
 
 **验收**：两端生产构建使用同一套事务规则；覆盖 Offer 替换/清除、重复/过期/迟到 Request、成功/失败 Paste、取消/断线、图片预算与重试、Task/Reservation exactly-once 释放；删除两端重复的事务状态机和旧包装；Windows/macOS 原生构建与相关测试通过。完成前不得开始 Connection、Input 或 UI 重构。
+
+### 2026-11-13：Clipboard 边界收敛（分支实现，等待 CI）
+
+- 单一 `xfer_clipboard_txn.[ch]` 生产模块拥有 Offer / Request / Paste 状态与共享决策。删除独立 `xfer_clipboard_coord.[ch]`、`hop_clip_action` / `hop_clip_outcome` 和第二套 `*_coord_*` 入口。原低层组合函数改为模块内部 `static`；两端直接调用业务转换接口。
+- Windows/macOS 的锁、原生剪贴板写入、路径快照、线程和重试仍在平台层；发包仍发生在状态锁释放后。macOS 完成回调沿用事务保存的 expected version，实际 `changeCount` 在落地函数核对；这轮没有改变该行为，也未把它当作实机验证。
+- Clipboard 测试合为一个目标，保留 Offer 身份、重复/过期 Request、版本守卫、失败重挂、通知范围、断线重播、停止和迟到回调的向量；回归脚本验证两端生产调用与旧 Action 层缺席。
+- 分支上的本地验证：`bash scripts/test-core.sh`、`python3 scripts/test-regressions.py`、`bash scripts/build-mac.sh`、`bash scripts/test-xfer-protocol.sh`、`bash scripts/test-network.sh` 均通过（提交前工作区状态）。Windows 原生构建、当前分支 CI、真实双机剪贴板、剪贴板争用与关闭竞态均未执行，不得标记完成验收。
+- 可核查的结构变化：Clipboard Core 从两个生产编译单元变为一个；公开函数由旧两头文件合计 25 个降为 16 个；典型生产调用从 Adapter → Coordinator → Transaction 缩为 Adapter → Clipboard 业务接口。未测量运行时性能或长期维护成本，不据此宣称性能提升。
 
 **当前状态**：共享 Core 已接管 Offer、入站 Paste Request 准入、延迟写入的请求身份校验与图片预算分类。macOS 主队列和 Windows 窗口消息、定时器携带请求身份到写入点。图片暂时额度不足时，两端都会在 Task/Reservation 释放后重试同一剪贴板版本；永久超限不再重试。共享事务回归覆盖重复完成、旧请求不能清除新 Offer，以及自身剪贴板版本推进；Windows 生产函数夹具覆盖锁重入、队列替换、原生剪贴板版本过期、旧回调隔离和图片准入/重试。[PR #14](https://github.com/alex520lq/HopDesk/pull/14) 的 `d7722d121892caf23d2707e019f8697886da786d` 已通过 [Windows/macOS CI](https://github.com/alex520lq/HopDesk/actions/runs/43144273368)。实际双机粘贴、剪贴板争用和关闭竞态仍待人工验证。
 

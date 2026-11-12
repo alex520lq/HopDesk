@@ -25,7 +25,7 @@ static void clip_announce_retired(hop_clip_retired_offers retired) {
  * Caller must NOT hold s_offer_lock. */
 static void clip_retire_offers(void) {
     AcquireSRWLockExclusive(&s_offer_lock);
-    hop_clip_retired_offers retired = hop_clip_coord_retire_offers(&s_clip_txn);
+    hop_clip_retired_offers retired = hop_clipboard_retire_offers(&s_clip_txn);
     clip_drop_local_offer_paths();
     ReleaseSRWLockExclusive(&s_offer_lock);
     clip_announce_retired(retired);
@@ -35,7 +35,7 @@ static void clip_retire_offers(void) {
  * Caller must NOT hold s_offer_lock. */
 static void clip_consume_offers(void) {
     AcquireSRWLockExclusive(&s_offer_lock);
-    hop_clip_retired_offers retired = hop_clip_coord_consume_offers(&s_clip_txn);
+    hop_clip_retired_offers retired = hop_clipboard_consume_offers(&s_clip_txn);
     clip_drop_local_offer_paths();
     ReleaseSRWLockExclusive(&s_offer_lock);
     clip_announce_retired(retired);
@@ -89,7 +89,7 @@ static int clip_publish_local_offer(const wchar_t *const *paths, int count) {
     }
     uint64_t generation=0;
     AcquireSRWLockExclusive(&s_offer_lock);
-    hop_clip_retired_offers retired=hop_clip_coord_publish_local_offer(&s_clip_txn,&generation);
+    hop_clip_retired_offers retired=hop_clipboard_publish_local_offer(&s_clip_txn,&generation);
     clip_drop_local_offer_paths();
     for(int i=0;i<count;++i) s_local_offer_paths[i]=copies[i];
     s_local_offer_count=count;

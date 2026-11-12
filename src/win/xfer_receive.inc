@@ -542,29 +542,6 @@ static void rx_remove_top(xfer_rx_context *rx, const wchar_t *p) {
 static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
     (void)user;
 
-    if (type == HOP_MSG_XFER_HELLO) {
-        size_t want = strlen(s_x.cfg.token);
-        int valid = hop_xfer_hello_bound(p, len, s_x.cfg.token, &s_x.session) && hop_session_matches(&s_x.session);
-        if (!valid) {
-            hop_log(HOP_LOG_ERROR,
-                    "xfer: peer handshake rejected (protocol/token mismatch)");
-            EnterCriticalSection(&s_x.lock);
-            SOCKET active = s_x.client;
-            s_x.peer_ready = 0;
-            LeaveCriticalSection(&s_x.lock);
-            if (active != INVALID_SOCKET) shutdown(active, SD_BOTH);
-            return;
-        }
-        EnterCriticalSection(&s_x.lock);
-        s_x.peer_ready = 1;
-        LeaveCriticalSection(&s_x.lock);
-        hop_log(HOP_LOG_INFO,
-                want ? "xfer: authenticated peer data channel (v%u)" :
-                       "xfer: peer data channel ready (v%u)",
-                (unsigned)HOP_XFER_PROTO_VER);
-        return;
-    }
-
     EnterCriticalSection(&s_x.lock);
     int ready = s_x.peer_ready;
     SOCKET active = s_x.client;
@@ -582,23 +559,50 @@ static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len
 }
 
 /* Transport gate: typed handlers only see frames bound to this control session.
- * Old batch CHUNK/END are ignored, never applied to the next active file. */
+ * Old batch CHUNK/END are ignored, never applied to the next active file.
+ * HELLO/session/batch admission lives in shared Core; this adapter only
+ * snapshots native session state and closes the socket on rejection. */
 static void on_data_frame_checked(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
-    if (type == HOP_MSG_XFER_HELLO) { on_data_msg(user, type, p, len); return; }
+    hop_rx_frame_gate_input input;
+    input.active_batch = s_rx.batch_state.active ? s_rx.batch_state.batch : 0;
     EnterCriticalSection(&s_x.lock);
-    hop_session_id session = s_x.session;
+    input.expected_session = s_x.session;
     LeaveCriticalSection(&s_x.lock);
-    uint32_t batch, body_len; const uint8_t *body;
-    if (!hop_session_matches(&session) ||
-        !hop_data_unwrap(type, p, len, &session, &batch, &body, &body_len)) {
-        EnterCriticalSection(&s_x.lock);
-        if (s_x.client != INVALID_SOCKET) shutdown(s_x.client, SD_BOTH);
-        LeaveCriticalSection(&s_x.lock);
-        return;
+
+    hop_rx_frame_gate_result gate =
+        hop_xfer_rx_gate_frame(&input, s_x.cfg.token, type, p, len);
+    switch (gate.action) {
+        case HOP_RX_FRAME_HELLO_ACCEPT:
+            EnterCriticalSection(&s_x.lock);
+            s_x.peer_ready = 1;
+            LeaveCriticalSection(&s_x.lock);
+            hop_log(HOP_LOG_INFO,
+                    s_x.cfg.token[0] ? "xfer: authenticated peer data channel (v%u)" :
+                                       "xfer: peer data channel ready (v%u)",
+                    (unsigned)HOP_XFER_PROTO_VER);
+            return;
+        case HOP_RX_FRAME_HELLO_REJECT: {
+            hop_log(HOP_LOG_ERROR,
+                    "xfer: peer handshake rejected (protocol/token mismatch)");
+            EnterCriticalSection(&s_x.lock);
+            SOCKET active = s_x.client;
+            s_x.peer_ready = 0;
+            LeaveCriticalSection(&s_x.lock);
+            if (active != INVALID_SOCKET) shutdown(active, SD_BOTH);
+            return;
+        }
+        case HOP_RX_FRAME_REJECT_PEER:
+            EnterCriticalSection(&s_x.lock);
+            if (s_x.client != INVALID_SOCKET) shutdown(s_x.client, SD_BOTH);
+            LeaveCriticalSection(&s_x.lock);
+            return;
+        case HOP_RX_FRAME_DISPATCH:
+            on_data_msg(user, type, gate.body, gate.body_length);
+            return;
+        case HOP_RX_FRAME_DROP:
+        default:
+            return;
     }
-    if ((type == HOP_MSG_FILE_CHUNK || type == HOP_MSG_FILE_END) &&
-        (!s_rx.batch_state.active || batch != s_rx.batch_state.batch)) return;
-    on_data_msg(user, type, body, body_len);
 }
 
 static void on_data_frame(void *user, uint8_t type, const uint8_t *p, uint32_t len) {

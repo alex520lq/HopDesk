@@ -1053,7 +1053,7 @@ int main(void){
             assert 's_x.' not in extract(sender,callback)
         functions='\n'.join([extract(sender,'sender_context_session_current'),extract(sender,'sender_context_write_frame'),extract(sender,'sender_context_snapshot_session'),extract(sender,'send_small_with_context'),extract(commit_adapter,'sender_commit_is_stopping'),extract(commit_adapter,'sender_commit_wait_ms'),extract(sender,'send_small'),extract(sender,'send_chunk')]+[extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_release_terminal_resources','rx_abort_release_resources','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end','hop_xfer_rx_reset_batch_state','hop_xfer_rx_terminate_batch','hop_xfer_rx_bind_session','rx_bind_session','rx_expire_stale_session','on_data_frame_checked','on_data_frame']])
         fixture=fixture.replace('@FUNCTIONS@',functions)
-        run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c','src/core/xfer_sender_chunk.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_task.c','src/core/xfer_budget.c','src/core/xfer_sender_context_adapter.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c'],threads=True)
+        run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c','src/core/xfer_sender_chunk.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_task.c','src/core/xfer_budget.c','src/core/xfer_sender_context_adapter.c','src/core/xfer_rx_frame_gate.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c'],threads=True)
 
     control=(ROOT/'src/mac/net_client.c').read_text(encoding='utf-8')+'\n'+(ROOT/'src/mac/net_client_protocol.inc').read_text(encoding='utf-8')
     for platform,source_name,module_name in [('win','net_server.c','net_server_protocol.inc'),('mac','net_client.c','net_client_protocol.inc')]:
@@ -1166,6 +1166,12 @@ int main(void){
         assert all(name in services for name in ['shutdown_data_channel','mark_sender_aborted','send_abort','send_file_ack','send_done_ack','deliver_ack','clear_cancel_request','create_staging_directory','discard_staging_directory','send_abort','reset_file_error','open_file','write_file_chunk','close_file','file_error','build_path','prepare_file_path','is_top_level_path','remove_file'])
         on_data_msg=extract(receiver,'on_data_msg')
         assert 'rx_context_configure();' in on_data_msg and '&hop_xfer_rx_platform_dispatch_handlers, &s_rx' in on_data_msg
+        assert 'HOP_MSG_XFER_HELLO' not in on_data_msg
+        frame_gate=extract(receiver,'on_data_frame_checked')
+        assert 'hop_xfer_rx_gate_frame(&input, ' in frame_gate
+        assert 'hop_data_unwrap(' not in frame_gate
+        assert 'hop_xfer_hello_bound(' not in frame_gate
+        assert 'HOP_RX_FRAME_HELLO_ACCEPT' in frame_gate and 'HOP_RX_FRAME_REJECT_PEER' in frame_gate
         assert 'hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, rx)' in file_ack_handler
         assert 'hop_xfer_rx_handle_done_ack(p, len, rx_ack_deliver_done, rx)' in done_ack_handler
         assert 'hop_xfer_rx_batch_abort_decide(' in core_message_handlers

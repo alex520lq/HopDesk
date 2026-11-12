@@ -503,28 +503,6 @@ static void rx_remove_top(xfer_rx_context *rx, const char *p) {
 static void on_data_msg(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
     (void)user;
 
-    if (type == HOP_MSG_XFER_HELLO) {
-        size_t want = strlen(g_mac.cfg.token);
-        int valid = hop_xfer_hello_bound(p, len, g_mac.cfg.token, &s_x.session) && hop_session_matches(&s_x.session);
-        if (!valid) {
-            hop_log(HOP_LOG_ERROR,
-                    "xfer: peer handshake rejected (protocol/token mismatch)");
-            pthread_mutex_lock(&s_x.slock);
-            if (s_x.sock >= 0) shutdown(s_x.sock, SHUT_RDWR);
-            s_x.peer_ready = 0;
-            pthread_mutex_unlock(&s_x.slock);
-            return;
-        }
-        pthread_mutex_lock(&s_x.slock);
-        s_x.peer_ready = 1;
-        pthread_mutex_unlock(&s_x.slock);
-        hop_log(HOP_LOG_INFO,
-                want ? "xfer: authenticated peer data channel (v%u)" :
-                       "xfer: peer data channel ready (v%u)",
-                (unsigned)HOP_XFER_PROTO_VER);
-        return;
-    }
-
     pthread_mutex_lock(&s_x.slock);
     int ready = s_x.peer_ready;
     int active_sock = s_x.sock;
@@ -552,23 +530,50 @@ static int do_connect(void) {
 }
 
 /* Transport gate: typed handlers only see frames bound to this control session.
- * Old batch CHUNK/END are ignored, never applied to the next active file. */
+ * Old batch CHUNK/END are ignored, never applied to the next active file.
+ * HELLO/session/batch admission lives in shared Core; this adapter only
+ * snapshots native session state and closes the socket on rejection. */
 static void on_data_frame_checked(void *user, uint8_t type, const uint8_t *p, uint32_t len) {
-    if (type == HOP_MSG_XFER_HELLO) { on_data_msg(user, type, p, len); return; }
+    hop_rx_frame_gate_input input;
+    input.active_batch = s_rx.batch_state.active ? s_rx.batch_state.batch : 0;
     pthread_mutex_lock(&s_x.slock);
-    hop_session_id session = s_x.session;
+    input.expected_session = s_x.session;
     pthread_mutex_unlock(&s_x.slock);
-    uint32_t batch, body_len; const uint8_t *body;
-    if (!hop_session_matches(&session) ||
-        !hop_data_unwrap(type, p, len, &session, &batch, &body, &body_len)) {
-        pthread_mutex_lock(&s_x.slock);
-        if (s_x.sock != -1) shutdown(s_x.sock, SHUT_RDWR);
-        pthread_mutex_unlock(&s_x.slock);
-        return;
+
+    hop_rx_frame_gate_result gate =
+        hop_xfer_rx_gate_frame(&input, g_mac.cfg.token, type, p, len);
+    switch (gate.action) {
+        case HOP_RX_FRAME_HELLO_ACCEPT:
+            pthread_mutex_lock(&s_x.slock);
+            s_x.peer_ready = 1;
+            pthread_mutex_unlock(&s_x.slock);
+            hop_log(HOP_LOG_INFO,
+                    g_mac.cfg.token[0] ? "xfer: authenticated peer data channel (v%u)" :
+                                         "xfer: peer data channel ready (v%u)",
+                    (unsigned)HOP_XFER_PROTO_VER);
+            return;
+        case HOP_RX_FRAME_HELLO_REJECT: {
+            hop_log(HOP_LOG_ERROR,
+                    "xfer: peer handshake rejected (protocol/token mismatch)");
+            pthread_mutex_lock(&s_x.slock);
+            int active_sock = s_x.sock;
+            s_x.peer_ready = 0;
+            pthread_mutex_unlock(&s_x.slock);
+            if (active_sock >= 0) shutdown(active_sock, SHUT_RDWR);
+            return;
+        }
+        case HOP_RX_FRAME_REJECT_PEER:
+            pthread_mutex_lock(&s_x.slock);
+            if (s_x.sock != -1) shutdown(s_x.sock, SHUT_RDWR);
+            pthread_mutex_unlock(&s_x.slock);
+            return;
+        case HOP_RX_FRAME_DISPATCH:
+            on_data_msg(user, type, gate.body, gate.body_length);
+            return;
+        case HOP_RX_FRAME_DROP:
+        default:
+            return;
     }
-    if ((type == HOP_MSG_FILE_CHUNK || type == HOP_MSG_FILE_END) &&
-        (!s_rx.batch_state.active || batch != s_rx.batch_state.batch)) return;
-    on_data_msg(user, type, body, body_len);
 }
 
 static void on_data_frame(void *user, uint8_t type, const uint8_t *p, uint32_t len) {

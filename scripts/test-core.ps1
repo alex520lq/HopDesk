@@ -186,6 +186,17 @@ if ($LASTEXITCODE -ne 0) { throw "RX batch rules test compilation failed ($LASTE
 & $rxBatchRules
 if ($LASTEXITCODE -ne 0) { throw "RX batch rules tests failed ($LASTEXITCODE)" }
 
+$rxFrameGate = Join-Path $build 'hopdesk-rx-frame-gate-tests.exe'
+$rxFrameGateSources = @((Join-Path $root 'tests/xfer_rx_frame_gate_tests.c'), (Join-Path $root 'src/core/xfer_rx_frame_gate.c'), (Join-Path $root 'src/core/protocol.c'), (Join-Path $root 'src/core/session.c'))
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$rxFrameGate @rxFrameGateSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $rxFrameGate @rxFrameGateSources
+}
+if ($LASTEXITCODE -ne 0) { throw "RX frame gate test compilation failed ($LASTEXITCODE)" }
+& $rxFrameGate
+if ($LASTEXITCODE -ne 0) { throw "RX frame gate tests failed ($LASTEXITCODE)" }
+
 $rxEntryReservations = Join-Path $build 'hopdesk-rx-entry-reservations-tests.exe'
 $rxEntryReservationSources = @((Join-Path $root 'tests/xfer_rx_entry_reservations_tests.c'), (Join-Path $root 'src/core/xfer_rx_entry_reservations.c'))
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {

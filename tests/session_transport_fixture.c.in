@@ -16,11 +16,13 @@
 #include "xfer_rx_services.h"
 #include "xfer_rx_context.h"
 #include "xfer_rx_batch_state.h"
+#include "xfer_rx_frame_gate.h"
 #define SD_BOTH 2
 #define SHUT_RDWR 2
 #define INVALID_SOCKET -1
 typedef int SOCKET;
-static struct {int client,sock,lock,slock;unsigned long epoch;uint32_t chunk;hop_session_id session;hop_xfer_rate_limiter rate;} s_x;
+static struct {int client,sock,lock,slock,peer_ready;unsigned long epoch;uint32_t chunk;hop_session_id session;hop_xfer_rate_limiter rate;hop_config cfg;} s_x;
+struct { hop_config cfg; } g_mac;
 typedef struct {
     int *state_lock;
     int *session_lock;
@@ -84,6 +86,8 @@ static int send_all(int fd,const void *p,size_t n){assert(fd==7);assert(captured
 static int shutdown(int fd,int how){(void)fd;(void)how;closed++;return 0;}
 static void xfer_kick(void){closed++;}
 static void on_data_msg(void *user,uint8_t type,const uint8_t *p,uint32_t len){(void)user;(void)type;(void)p;(void)len;delivered++;}
+static void fixture_log(hop_log_level level,const char *format,...){(void)level;(void)format;}
+#define hop_log fixture_log
 #define CHUNK_HDR (25u + HOP_DATA_PREFIX)
 static int not_busy(void){return 0;}
 @FUNCTIONS@

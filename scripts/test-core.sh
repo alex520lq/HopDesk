@@ -98,6 +98,12 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
 "$BUILD/hopdesk-rx-batch-rules-tests"
 
 clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I "$ROOT/src/core" -o "$BUILD/hopdesk-rx-frame-gate-tests" \
+  "$ROOT/tests/xfer_rx_frame_gate_tests.c" "$ROOT/src/core/xfer_rx_frame_gate.c" \
+  "$ROOT/src/core/protocol.c" "$ROOT/src/core/session.c"
+"$BUILD/hopdesk-rx-frame-gate-tests"
+
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-rx-entry-reservations-tests" \
   "$ROOT/tests/xfer_rx_entry_reservations_tests.c" "$ROOT/src/core/xfer_rx_entry_reservations.c"
 "$BUILD/hopdesk-rx-entry-reservations-tests"

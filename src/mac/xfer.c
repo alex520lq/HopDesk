@@ -11,27 +11,8 @@
  * ===================================================================== */
 #include "mac_app.h"
 #include "xfer.h"
+#include "xfer_receive.h"
 #include "../core/hop.h"
-#include "xfer_rx_fs.h"
-#include "../core/xfer_rx_receipt.h"
-#include "../core/xfer_rx_lifecycle.h"
-#include "../core/xfer_rx_batch_rules.h"
-#include "../core/xfer_rx_entry_reservations.h"
-#include "../core/xfer_rx_file_state.h"
-#include "../core/xfer_rx_dispatch.h"
-#include "../core/xfer_rx_platform_dispatch.h"
-#include "../core/xfer_rx_services.h"
-#include "../core/xfer_rx_context.h"
-#include "../core/xfer_rx_message_handlers.h"
-#include "../core/xfer_rx_ack_handler.h"
-#include "../core/xfer_rx_protocol_adapter.h"
-#include "../core/xfer_rx_frame_gate.h"
-#include "../core/xfer_rx_batch_state.h"
-#include "../core/xfer_rx_image_state.h"
-#include "../core/xfer_rx_image_buffer.h"
-#include "xfer_writer_queue.h"
-#include "../core/xfer_rx_queue.h"
-#include "../core/update_state.h"
 #include "../core/xfer_budget.h"
 #include "../core/xfer_task.h"
 #include "../core/xfer_task_history.h"
@@ -170,7 +151,7 @@ static void history_save(void) {
 static hop_xfer_tracking *status_for(int direction) {
     return direction == HOP_XFER_DIR_SEND ? &s_send_status : &s_receive_status;
 }
-static int status_begin(uint32_t batch,int direction,uint32_t files,uint64_t bytes,const char *name,int phase) {
+int status_begin(uint32_t batch,int direction,uint32_t files,uint64_t bytes,const char *name,int phase) {
     int created=0;
     pthread_mutex_lock(&s_status_lock);
     hop_xfer_tracking *t = status_for(direction);
@@ -256,7 +237,7 @@ static void status_set_files(uint32_t batch,const xf_entry *entries,int n) {
     }
     pthread_mutex_unlock(&s_status_lock);
 }
-static void status_image(uint32_t batch,int direction,uint64_t size) {
+void status_image(uint32_t batch,int direction,uint64_t size) {
     pthread_mutex_lock(&s_status_lock);
     hop_xfer_tracking *t=status_for(direction);
     if(hop_xfer_tracking_matches(t,batch)) {
@@ -266,7 +247,7 @@ static void status_image(uint32_t batch,int direction,uint64_t size) {
     }
     pthread_mutex_unlock(&s_status_lock);
 }
-static void status_add_received_file(uint32_t batch,uint32_t id,const char *path,uint64_t size,int directory) {
+void status_add_received_file(uint32_t batch,uint32_t id,const char *path,uint64_t size,int directory) {
     pthread_mutex_lock(&s_status_lock);
     hop_xfer_tracking_file(&s_receive_status,batch,id,path,size,directory,HOP_XFER_FILE_RECEIVING);
     if(hop_xfer_tracking_matches(&s_receive_status,batch) && path)
@@ -452,26 +433,6 @@ int send_small(int fd, uint8_t type, const uint8_t *p,
  * 这里让一次是给同优先级的其他工作减压。 */
 void yield_cpu(void) { sched_yield(); }
 
-
-
-
-
-/* $TMPDIR 在 macOS 上带尾部斜杠（/var/folders/…/T/），直接拼 "/HopDesk"
- * 就得到 "T//HopDesk"。POSIX 下双斜杠无害，但日志和剪贴板里的路径
- * 会变成两个不同字符串表示同一个文件，排查时容易看花眼。去掉尾斜杠。 */
-static const char *temp_root(void) {
-    static char buf[1024];
-    const char *t = getenv("TMPDIR");
-    if (!t || !*t) return "/tmp";
-
-    size_t n = strlen(t);
-    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
-    memcpy(buf, t, n);
-    buf[n] = '\0';
-    while (n > 1 && buf[n - 1] == '/') buf[--n] = '\0';
-    return buf;
-}
-
 /* Relative path validation is shared in src/core/xfer_validate.c. */
 
 /* Source scanning is implemented by xfer_scanner.c. */
@@ -482,8 +443,6 @@ static const char *temp_root(void) {
  * 数据直接读进发送缓冲的 CHUNK_HDR 处，省掉一次内存拷贝。
  * 每块带 CRC32：TCP 的 16 位校验和配合网卡 offload 有可能漏检，
  * GB 级传输漏检一次就是静默损坏。 */
-/* Receiver and disk writer share this translation unit and its private state. */
-#include "xfer_receive.inc"
 
 /* ---------------- 对外接口 ---------------- */
 
@@ -540,7 +499,7 @@ int xfer_init(const hop_config *cfg) {
     }
 
     /* 写盘线程要先起来，接收路径一进来就会往队列里塞 */
-    if (!wq_start()) {
+    if (!xfer_receive_start()) {
         hop_log(HOP_LOG_ERROR, "xfer: writer thread start failed");
         pthread_rwlock_unlock(&s_x_lifecycle_lock);
         if (!xfer_shutdown())
@@ -549,7 +508,7 @@ int xfer_init(const hop_config *cfg) {
     }
 
     if (!hop_mac_sender_threads_start(
-            &s_x.sender_threads, send_thread, conn_thread, NULL)) {
+            &s_x.sender_threads, send_thread, xfer_receive_connection_thread, NULL)) {
         hop_log(HOP_LOG_ERROR, "xfer: sender/connection thread start failed");
         pthread_rwlock_unlock(&s_x_lifecycle_lock);
         if (!xfer_shutdown())
@@ -570,13 +529,7 @@ static int xfer_shutdown_task_audit(void) {
         s_x.shutdown_jobs == NULL &&
         !hop_xfer_sender_active_job_is_active(&s_x.active_job);
     pthread_mutex_unlock(&s_x.qlock);
-    static const hop_xfer_rx_entry_reservations empty_entry_reservations = {0};
-    int receiver_clean = s_wq == NULL && s_rx.writer == NULL &&
-        !s_rx.task.initialized && !s_rx.task.id &&
-        !s_rx.batch_state.active && !s_rx.cur_path &&
-        memcmp(&s_rx.entry_reservations, &empty_entry_reservations,
-               sizeof(empty_entry_reservations)) == 0 &&
-        !s_rx.image_buffer.data && !s_rx.tops && s_rx.ntop == 0;
+    int receiver_clean = xfer_receive_owner_clean();
     if (!sender_clean || !receiver_clean) {
         hop_log(HOP_LOG_ERROR,
                 "xfer: shutdown owner audit failed (sender_clean=%d receiver_clean=%d)",
@@ -644,8 +597,7 @@ int xfer_shutdown(void) {
         return 0;
     }
 
-    rx_reset(&s_rx);
-    if (!wq_stop()) {
+    if (!xfer_receive_stop()) {
         hop_log(HOP_LOG_WARN, "xfer: writer worker still owns receive resources; preserve shared state for retry");
         pthread_rwlock_unlock(&s_x_lifecycle_lock);
         return 0;

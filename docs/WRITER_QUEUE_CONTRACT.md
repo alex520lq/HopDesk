@@ -119,7 +119,7 @@ The Windows implementation now exists as `src/win/xfer_writer_queue.[ch]` with a
 
 The Receiver compatibility layer exposes only its existing local operations and no longer reaches into queue internals. `tests/writer_queue_tests.c` links the production queue/worker/IO/Core modules and checks disk bytes plus budget rollback/release.
 
-This is one platform slice only. macOS still uses the previous queue implementation in `xfer_receive.inc`; API and semantic parity plus macOS native tests are required before removing both legacy implementations or declaring phase 2 complete.
+Both platform queues are now independent production units, and Receiver no longer shares a translation unit with Sender: `xfer_receive.c` owns receiver wire dispatch, socket lifecycle, cancel/disconnect polling and its private context, while queue ring/accounting/worker/IO stay in the queue modules. Remaining phase-2 work is lifecycle stress coverage (stop-vs-producer, allocation failure, slow disk/persistent error, sanitizer) plus physical two-device validation; do not declare phase 2 complete from unit or CI results alone.
 
 
 ## 2026-11-08 Cross-platform production extraction status

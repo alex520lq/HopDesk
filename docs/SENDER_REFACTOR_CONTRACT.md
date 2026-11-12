@@ -6,31 +6,27 @@
 
 ## 1. Current production layout
 
-The sender is not an independently compiled module yet:
+Sender and Receiver are now independent production translation units; `xfer.c` no longer includes implementation fragments:
 
-- `src/win/xfer.c` includes `xfer_sender_protocol.inc` and `xfer_sender_worker.inc`, then `xfer_receive.inc`.
-- `src/mac/xfer.c` has the same include-based arrangement.
-- Windows `xfer_sender_protocol.inc` is approximately 672 lines; macOS is approximately 652 lines.
-- The protocol include contains rate pacing, frame send, ACK-window synchronization wrappers, per-file send, DONE commit, job execution, and outbound ACK/ABORT helpers.
-- `xfer_sender_worker.inc` contains queue unlink/free and the sender thread; it directly reads and mutates the platform `s_x` state and job structure.
-- File enumeration (`elist_push`, `walk_into`, guarded filesystem traversal) remains in each platform `xfer.c`.
-- Public status/history/retry/cancel APIs and persistent history are also in `xfer.c`.
-
-The shared Core already contains independently compiled `xfer_ack_window.[ch]`, `xfer_rate.[ch]`, `xfer_task.[ch]`, `xfer_budget.[ch]`, and `xfer_tracking.[ch]`. These are policy/state primitives, not a complete Sender Service.
+- `src/win/xfer.c` / `src/mac/xfer.c` keep transfer service lifecycle, public status/history/retry/cancel APIs, rate feedback, and platform orchestration.
+- Sender protocol/job execution lives in `xfer_sender.c`; submission in `xfer_submit.c`; enumeration in `xfer_scanner.c`; thread/queue ownership in `xfer_sender_threads.c` and the worker adapter.
+- Commit, connection, ACK and worker platform adapters are separate `.c` units and communicate through the shared Sender context/queue/engine contracts.
+- Receiver is `src/win/xfer_receive.c` / `src/mac/xfer_receive.c` with a narrow `xfer_receive.h` lifecycle API; it no longer shares a translation unit with Sender or with the Writer Queue.
+- Public status/history/retry/cancel APIs and persistent history remain in `xfer.c`.
+- Shared Core already contains independently compiled policy/state modules including `xfer_ack_window.[ch]`, `xfer_rate.[ch]`, `xfer_task.[ch]`, `xfer_budget.[ch]`, `xfer_tracking.[ch]`, `xfer_sender_queue.[ch]`, `xfer_sender_worker.[ch]`, `xfer_sender_engine.[ch]`, `xfer_sender_job_lifecycle.[ch]`, and `xfer_rx_*` receiver rules. These are policy/state primitives, not a complete Transfer Service.
 
 ## 2. Dependency findings that constrain extraction
 
 ### ACK path
 
-The ACK window data structure is shared Core, but the synchronization and wake-up mechanism is still hidden in a file-static `s_ack`:
+The ACK window data structure is shared Core. At audit time the synchronization and wake-up mechanism was hidden in a file-static `s_ack`:
 
 - Windows: `CRITICAL_SECTION + auto-reset event`.
 - macOS: `pthread_mutex_t + pthread_cond_t`.
 - Sender protocol code owns register/mark-sent/set-deadline/take/unregister/wait.
-- Receiver code calls the same translation unit's `ack_deliver`.
-- shutdown and cancellation paths directly signal `s_ack`.
+- Receiver delivery and shutdown/cancellation wake-ups crossed that same hidden state.
 
-Therefore ACK storage can only be moved safely after the inbound delivery, sender wait, cancel wake-up, shutdown wake-up, and lifecycle initialization/teardown paths are all migrated together. Moving only the static declaration or wrapper functions would leave a hidden cross-module dependency.
+This constraint has since been resolved: the opaque ACK coordinator is owned by the platform Sender context, Receiver wakes it through the context adapter, and `xfer_receive.c` no longer shares a translation unit with Sender. The historical sequencing requirement remains documented below because moving only the static declaration or wrapper functions without migrating delivery, wait, cancel and shutdown together would recreate the same hidden cross-module dependency.
 
 ### Sender execution
 

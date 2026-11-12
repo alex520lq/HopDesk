@@ -68,6 +68,9 @@ void status_chunk_timed(int,uint32_t,uint32_t,uint64_t,uint32_t,uint64_t,uint64_
 void status_stage_time(int,uint32_t,int,uint64_t);
 void status_file_phase(int,uint32_t,int,int,uint32_t);
 void status_end(int,uint32_t,int,const char *);
+int status_begin(uint32_t,int,uint32_t,uint64_t,const char *,int);
+void status_image(uint32_t,int,uint64_t);
+void status_add_received_file(uint32_t,uint32_t,const char *,uint64_t,int);
 void status_start_job(const xf_job *);
 uint64_t rate_now_ns(void);
 int sender_context_is_stopping(void *);

@@ -1,4 +1,49 @@
-/* Included by xfer.c in the same translation unit; not compiled separately. */
+/* =====================================================================
+ *  HopDesk - Windows 数据通道接收端
+ *
+ *  Receiver-owned production unit: writer queue integration, wire dispatch,
+ *  data listener/client threads, cancel/disconnect polling and staging state.
+ *  Shared sender state is reached only through xfer_sender_internal.h.
+ * ===================================================================== */
+/* winsock2 必须在 windows.h 之前 */
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
+#include "app.h"
+#include "xfer.h"
+#include "xfer_rx_fs.h"
+#include "xfer_writer_queue.h"
+#include "xfer_sender_internal.h"
+#include "xfer_receive.h"
+#include "../core/hop.h"
+#include "../core/xfer_rx_receipt.h"
+#include "../core/xfer_rx_lifecycle.h"
+#include "../core/xfer_rx_batch_rules.h"
+#include "../core/xfer_rx_entry_reservations.h"
+#include "../core/xfer_rx_file_state.h"
+#include "../core/xfer_rx_dispatch.h"
+#include "../core/xfer_rx_platform_dispatch.h"
+#include "../core/xfer_rx_services.h"
+#include "../core/xfer_rx_context.h"
+#include "../core/xfer_rx_message_handlers.h"
+#include "../core/xfer_rx_ack_handler.h"
+#include "../core/xfer_rx_protocol_adapter.h"
+#include "../core/xfer_rx_frame_gate.h"
+#include "../core/xfer_rx_batch_state.h"
+#include "../core/xfer_rx_image_state.h"
+#include "../core/xfer_rx_image_buffer.h"
+#include "../core/xfer_rx_queue.h"
+#include "../core/update_state.h"
+#include "../core/xfer_budget.h"
+#include "../core/xfer_task.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <wchar.h>
+
+#define XFER_RX_ROOT L"HopDesk"
+
 /* ---------------- 写盘队列 ----------------
  *
  * 网络线程只做"收包 + 校验 + 入队"，写盘交给独立线程。
@@ -8,16 +53,10 @@
  * 这就是显式背压：内存上界 = RX_Q_SLOTS × chunk，不随传输时长增长。
  * 文件句柄由写线程独占，避免"网络线程关文件、写线程还在写"的竞态。
  */
-enum { RX_OPEN = 1, RX_CLOSE };
-
-typedef struct {
-    int kind;
-    wchar_t path[MAX_PATH];
-} rx_task;
-
 static hop_writer_queue *s_wq;
 static xfer_rx_context s_rx;
 static int rx_discard_dir(xfer_rx_context *rx);
+static void rx_reset(xfer_rx_context *rx);
 
 static int wq_reserve_task_rx(void *context, void *owner, uint32_t bytes) {
     (void)context;
@@ -77,27 +116,6 @@ static int wq_start(void) {
     return s_wq != NULL;
 }
 
-static int wq_push(const rx_task *task) {
-    if (!s_wq || !task) return 0;
-    if (task->kind == RX_OPEN)
-        return hop_writer_queue_enqueue_open(s_wq, task->path);
-    if (task->kind == RX_CLOSE)
-        return hop_writer_queue_enqueue_close(s_wq);
-    return 0;
-}
-
-static int wq_push_data(hop_xfer_task *owner, uint64_t offset,
-                        const uint8_t *data, uint32_t length) {
-    return s_wq && hop_writer_queue_enqueue_write(s_wq, owner, offset, data, length);
-}
-
-static void wq_drain(void) {
-    if (s_wq) hop_writer_queue_drain(s_wq);
-}
-static int wq_error_get(void) {
-    return s_wq ? hop_writer_queue_error(s_wq) : 0;
-}
-
 static int wq_stop(void) {
     if (!s_wq) {
         s_rx.writer = NULL;
@@ -116,6 +134,27 @@ static int wq_stop(void) {
     s_rx.writer = NULL;
     hop_writer_queue_destroy(stopped);
     return 1;
+}
+
+/* Public receiver lifecycle: the writer must exist before the data thread can
+ * enqueue, and shutdown must reset batch/file state before stopping it. */
+int xfer_receive_start(void) {
+    return wq_start();
+}
+
+int xfer_receive_stop(void) {
+    rx_reset(&s_rx);
+    return wq_stop();
+}
+
+int xfer_receive_owner_clean(void) {
+    static const hop_xfer_rx_entry_reservations empty_entry_reservations = {0};
+    return s_wq == NULL && s_rx.writer == NULL &&
+        !s_rx.task.initialized && !s_rx.task.id &&
+        !s_rx.batch_state.active && !s_rx.cur_path &&
+        memcmp(&s_rx.entry_reservations, &empty_entry_reservations,
+               sizeof(empty_entry_reservations)) == 0 &&
+        !s_rx.image_buffer.data && !s_rx.tops && s_rx.ntop == 0;
 }
 
 /* ---------------- 接收 ---------------- */
@@ -662,7 +701,7 @@ static void retire_data_socket(SOCKET sock) {
     closesocket(sock);
     LeaveCriticalSection(&s_txlock);
 }
-static DWORD WINAPI listen_thread(LPVOID arg) {
+DWORD WINAPI xfer_receive_listener_thread(LPVOID arg) {
     (void)arg;
     hop_decoder *dec = hop_decoder_new(NULL, on_data_frame);
     if (!dec) return 1;
@@ -727,8 +766,8 @@ static DWORD WINAPI listen_thread(LPVOID arg) {
                     uint32_t reply_len = hop_xfer_hello_encode(reply, s_x.cfg.token, &session);
                     uint8_t header[HOP_HEADER_SIZE];
                     hop_encode_header(header, HOP_MSG_XFER_HELLO, reply_len);
-                    bad = !send_all(pending, (const char *)header, sizeof(header)) ||
-                          !send_all(pending, (const char *)reply, (int)reply_len);
+                    bad = !xfer_send_all(pending, (const char *)header, sizeof(header)) ||
+                          !xfer_send_all(pending, (const char *)reply, (int)reply_len);
                 }
                 if (!bad) {
                     hop_log(HOP_LOG_INFO, active == INVALID_SOCKET ? "xfer: authenticated data channel" :
@@ -771,7 +810,7 @@ static DWORD WINAPI listen_thread(LPVOID arg) {
     return 0;
 }
 
-static DWORD WINAPI data_client_thread(LPVOID unused){
+DWORD WINAPI xfer_receive_client_thread(LPVOID unused){
     (void)unused;unsigned delay=500;
     hop_decoder *dec=hop_decoder_new(NULL,on_data_frame);if(!dec)return 1;
     while(WaitForSingleObject(s_x.stop,0)!=WAIT_OBJECT_0){
@@ -794,7 +833,7 @@ static DWORD WINAPI data_client_thread(LPVOID unused){
         hop_xfer_sender_active_job_reset_peer_abort(&s_x.active_job);LeaveCriticalSection(&s_x.lock);
         uint8_t hello[2+HOP_TOKEN_MAX+HOP_SESSION_BYTES],header[HOP_HEADER_SIZE];
         uint32_t len=hop_xfer_hello_encode(hello,s_x.cfg.token,&session);hop_encode_header(header,HOP_MSG_XFER_HELLO,len);
-        if(!send_all(sock,(const char*)header,sizeof(header)) || !send_all(sock,(const char*)hello,(int)len))shutdown(sock,SD_BOTH);
+        if(!xfer_send_all(sock,(const char*)header,sizeof(header)) || !xfer_send_all(sock,(const char*)hello,(int)len))shutdown(sock,SD_BOTH);
         uint64_t started=hop_monotonic_ms();int authed=0;
         while(WaitForSingleObject(s_x.stop,0)!=WAIT_OBJECT_0 && hop_session_matches(&session)){
             EnterCriticalSection(&s_x.lock);authed=s_x.peer_ready;LeaveCriticalSection(&s_x.lock);

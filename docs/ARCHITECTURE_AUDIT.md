@@ -4,37 +4,37 @@
 
 ## 1. 传输模块
 
-### Windows `src/win/xfer.c`（约 1,913 行）
+### Windows `src/win/xfer.c`（约 665 行）
 
 职责/函数簇：
 - 状态与历史：`history_prepare_path`、`history_load/save`、`status_*`、`xfer_get_status*`、`xfer_get_history`。
 - 文件枚举：`elist_push/free`、`guarded_find_next`、`walk_into`。
-- 网络帧与发送：`send_session_current`、`send_all`、`send_small`、`send_chunk`、`send_file_entry`、`send_image_job`、`send_done*`。
+- 网络帧与发送：`send_session_current`、`xfer_send_all`、`send_small`、`send_chunk`、`send_file_entry`、`send_image_job`、`send_done*`。
 - 限速/反馈：`rate_init_from_config`、`rate_wait_for_chunk`、`rate_queue_pressure_permille`、`rate_feedback`。
 - ACK：`ack_register`、`ack_mark_sent`、`ack_set_deadline`、`ack_deliver`、`ack_wait`。
 - 任务编排：`run_job`、`send_thread`、`submit`、`xfer_submit_*`、`xfer_cancel_task`、`xfer_init/shutdown`。
-- 接收端：在文件末尾通过 `#include "xfer_receive.inc"` 编译。
+- 接收端：已拆为独立生产编译单元 `src/win/xfer_receive.c`；`xfer.c` 只包含窄生命周期头 `xfer_receive.h`，不再 include 实现片段。
 
 重要共享状态包括 status/history locks、send/receive tracking、history records、TX frame lock、发送 epoch，以及传输队列/当前 task/session 状态。具体字段必须在拆分前进一步列成 owner/lock 表。
 
-### macOS `src/mac/xfer.c`（约 1,860 行）
+### macOS `src/mac/xfer.c`（约 691 行）
 
 职责簇与 Windows 基本对应，但系统调用分别使用 POSIX/pthread。额外需要核对：
 - macOS 的数据连接建立/接受方式与 Windows listener/client 组合不同。
 - `pthread` 生命周期、QOS、socket close/shutdown 与 Windows thread/event 语义不能机械替换。
 - `s_txlock`、`s_status_lock`、`s_history_io_lock`、`s_send_epoch` 等状态必须明确线程所有权。
-- 同样 include `xfer_receive.inc`，所以拆分时要按行为对齐而不是按行号复制。
+- 接收端同样已拆为 `src/mac/xfer_receive.c`，拆分时按行为对齐而不是按行号复制。
 
-### Receive includes
+### Receiver modules
 
-`src/win/xfer_receive.inc`（约 1,415 行）和 `src/mac/xfer_receive.inc`（约 1,278 行）可分为：
-1. Writer queue / buffer pool：`wq_pool_acquire_locked`、`wq_pool_release_locked`、`wq_task_run`、`writer_thread`（Windows）、`wq_push*`、`wq_drain/start/stop`。
+`src/win/xfer_receive.c`（约 854 行）和 `src/mac/xfer_receive.c`（约 807 行）现在是独立生产编译单元，不再被 `xfer.c` include。`xfer_receive.h` 只暴露 start/stop/owner-clean 审计和原生线程入口；Receiver 私有状态、wire dispatch 和 staging 上下文留在各自 `.c` 内。模块内可分为：
+1. Writer integration：`wq_start/stop`、Task budget/watchdog/clock/status/log callbacks、`s_wq` 与 `xfer_rx_context` 的绑定；ring、buffer pool、worker 和平台文件 IO 已属于 `xfer_writer_queue.c` / `xfer_writer_io.c` / `xfer_writer_worker.c`。
 2. Receiver file state：`rx_close_file`、`rx_clear_state`、`rx_reset`、`rx_bind_session`、`rx_expire_stale_session`、目录与顶层条目管理。
 3. Batch lifecycle：`rx_terminate`、`rx_begin_batch`、`rx_finish_batch`。
 4. Protocol dispatch：`on_data_msg`、`on_data_frame_checked`、`on_data_frame`。
-5. Socket lifecycle：Windows `data_listener`、`listen_thread`、`data_client_thread`；macOS `do_connect`、`accept_data`。
+5. Socket lifecycle：Windows `data_listener`、`xfer_receive_listener_thread`、`xfer_receive_client_thread`；macOS `do_connect`、`accept_data`、`xfer_receive_connection_thread`。
 
-Writer queue 当前通过 include 访问 task/budget、status timing、watchdog 和平台文件操作。独立化时必须用明确的配置/回调接口替代隐式静态依赖。Writer 负责缓冲区和写盘任务，不负责协议 ACK 或 Task 终态决策。
+Receiver 通过显式 `hop_xfer_rx_services` callback 获取 status、clipboard、filesystem 和 writer 能力；发送端共享状态只经 `xfer_sender_internal.h` 的窄入口访问，不再依赖同一翻译单元的静态符号。Writer 负责缓冲区和写盘任务，不负责协议 ACK 或 Task 终态决策。阶段 2 仍需完成 stop-vs-producer、分配失败、慢盘/持久错误和 sanitizer 压力覆盖，不能仅凭模块拆分标记完成。
 
 ## 2. 剪贴板模块
 

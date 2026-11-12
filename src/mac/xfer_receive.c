@@ -1,4 +1,51 @@
-/* Included by xfer.c in the same translation unit; not compiled separately. */
+/* =====================================================================
+ *  HopDesk - macOS 数据通道接收端
+ *
+ *  Receiver-owned production unit: writer queue integration, wire dispatch,
+ *  data connection thread, cancel/disconnect polling and staging state.
+ *  Shared sender state is reached only through xfer_sender_internal.h.
+ * ===================================================================== */
+#include "mac_app.h"
+#include "xfer.h"
+#include "xfer_rx_fs.h"
+#include "xfer_writer_queue.h"
+#include "xfer_sender_internal.h"
+#include "xfer_receive.h"
+#include "../core/hop.h"
+#include "../core/xfer_rx_receipt.h"
+#include "../core/xfer_rx_lifecycle.h"
+#include "../core/xfer_rx_batch_rules.h"
+#include "../core/xfer_rx_entry_reservations.h"
+#include "../core/xfer_rx_file_state.h"
+#include "../core/xfer_rx_dispatch.h"
+#include "../core/xfer_rx_platform_dispatch.h"
+#include "../core/xfer_rx_services.h"
+#include "../core/xfer_rx_context.h"
+#include "../core/xfer_rx_message_handlers.h"
+#include "../core/xfer_rx_ack_handler.h"
+#include "../core/xfer_rx_protocol_adapter.h"
+#include "../core/xfer_rx_frame_gate.h"
+#include "../core/xfer_rx_batch_state.h"
+#include "../core/xfer_rx_image_state.h"
+#include "../core/xfer_rx_image_buffer.h"
+#include "../core/xfer_rx_queue.h"
+#include "../core/update_state.h"
+#include "../core/xfer_budget.h"
+#include "../core/xfer_task.h"
+
+#include <arpa/inet.h>
+#include <errno.h>
+#include <netinet/in.h>
+#include <sched.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 /* ---------------- 写盘队列 ----------------
  *
  * 网络线程只做"收包 + 校验 + 入队"，写盘交给独立线程。
@@ -8,16 +55,10 @@
  * 这就是显式背压：内存上界 = RX_Q_SLOTS × chunk，不随传输时长增长。
  * 文件描述符由写线程独占，避免"网络线程关文件、写线程还在写"的竞态。
  */
-enum { RX_OPEN = 1, RX_CLOSE };
-
-typedef struct {
-    int kind;
-    char path[4096];
-} rx_task;
-
 static hop_writer_queue *s_wq;
 static xfer_rx_context s_rx;
 static int rx_discard_dir(xfer_rx_context *rx);
+static void rx_reset(xfer_rx_context *rx);
 
 static int wq_reserve_task_rx(void *context, void *owner, uint32_t bytes) {
     (void)context;
@@ -77,27 +118,6 @@ static int wq_start(void) {
     return s_wq != NULL;
 }
 
-static int wq_push(const rx_task *task) {
-    if (!s_wq || !task) return 0;
-    if (task->kind == RX_OPEN)
-        return hop_writer_queue_enqueue_open(s_wq, task->path);
-    if (task->kind == RX_CLOSE)
-        return hop_writer_queue_enqueue_close(s_wq);
-    return 0;
-}
-
-static int wq_push_data(hop_xfer_task *owner, uint64_t offset,
-                        const uint8_t *data, uint32_t length) {
-    return s_wq && hop_writer_queue_enqueue_write(s_wq, owner, offset, data, length);
-}
-
-static void wq_drain(void) {
-    if (s_wq) hop_writer_queue_drain(s_wq);
-}
-static int wq_error_get(void) {
-    return s_wq ? hop_writer_queue_error(s_wq) : 0;
-}
-
 static int wq_stop(void) {
     if (!s_wq) {
         s_rx.writer = NULL;
@@ -118,8 +138,44 @@ static int wq_stop(void) {
     return 1;
 }
 
+/* Public receiver lifecycle: the writer must exist before the data thread can
+ * enqueue, and shutdown must reset batch/file state before stopping it. */
+int xfer_receive_start(void) {
+    return wq_start();
+}
+
+int xfer_receive_stop(void) {
+    rx_reset(&s_rx);
+    return wq_stop();
+}
+
+int xfer_receive_owner_clean(void) {
+    static const hop_xfer_rx_entry_reservations empty_entry_reservations = {0};
+    return s_wq == NULL && s_rx.writer == NULL &&
+        !s_rx.task.initialized && !s_rx.task.id &&
+        !s_rx.batch_state.active && !s_rx.cur_path &&
+        memcmp(&s_rx.entry_reservations, &empty_entry_reservations,
+               sizeof(empty_entry_reservations)) == 0 &&
+        !s_rx.image_buffer.data && !s_rx.tops && s_rx.ntop == 0;
+}
+
 /* ---------------- 接收 ---------------- */
 
+/* $TMPDIR 在 macOS 上带尾部斜杠（/var/folders/…/T/），直接拼 "/HopDesk"
+ * 就得到 "T//HopDesk"。POSIX 下双斜杠无害，但日志和剪贴板里的路径
+ * 会变成两个不同字符串表示同一个文件，排查时容易看花眼。去掉尾斜杠。 */
+static const char *temp_root(void) {
+    static char buf[1024];
+    const char *t = getenv("TMPDIR");
+    if (!t || !*t) return "/tmp";
+
+    size_t n = strlen(t);
+    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+    memcpy(buf, t, n);
+    buf[n] = '\0';
+    while (n > 1 && buf[n - 1] == '/') buf[--n] = '\0';
+    return buf;
+}
 
 static void rx_context_shutdown_data(void *context) {
     (void)context;
@@ -630,7 +686,7 @@ static int accept_data(const hop_session_id *expected){
     }
     return -1;
 }
-static void *conn_thread(void *arg) {
+void *xfer_receive_connection_thread(void *arg) {
     (void)arg;
     hop_decoder *dec = hop_decoder_new(NULL, on_data_frame);
     if (!dec) return NULL;

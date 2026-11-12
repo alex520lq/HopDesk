@@ -126,8 +126,8 @@ HopDesk 选择原生路线的重要原因之一，是保持轻量后台常驻和
 |---|---:|---|
 | `src/win/xfer.c` | 约 1,913 行 | 发送、任务队列、状态/历史、限速、ACK、生命周期混杂 |
 | `src/mac/xfer.c` | 约 1,860 行 | 与 Windows 对应逻辑并行演进，跨平台规则重复 |
-| `src/win/xfer_receive.inc` | 约 1,415 行 | 接收协议、写盘队列、文件/会话生命周期耦合 |
-| `src/mac/xfer_receive.inc` | 约 1,278 行 | 与 Windows 接收实现相似但存在平台差异 |
+| `src/win/xfer_receive.c` | 约 854 行 | 接收协议、写盘队列集成、文件/会话生命周期与 socket 线程 |
+| `src/mac/xfer_receive.c` | 约 807 行 | 与 Windows 接收实现相似但存在平台差异 |
 | `src/win/main_ui.c` | 约 860 行 | 页面、配置、任务展示、日志刷新 |
 | `src/mac/main_ui.m` | 约 805 行 | Cocoa 页面、配置、任务展示混合 |
 | `src/win/clipboard.c` | 886 行 | 剪贴板协议、图片工作线程、粘贴事务混合 |
@@ -139,7 +139,7 @@ HopDesk 选择原生路线的重要原因之一，是保持轻量后台常驻和
 
 ### 2.3 已确认的结构性问题
 
-1. `xfer.c` 通过 `#include "xfer_receive.inc"` 引入接收端实现；这不是独立编译模块，接收代码依赖同一翻译单元中的静态状态和函数。
+1. 接收端曾是 `xfer.c` 通过 `#include "xfer_receive.inc"` 引入的实现片段，依赖同一翻译单元中的静态状态和函数；现已拆为独立 `xfer_receive.c` 生产编译单元，后续仍需继续收窄 receiver 内部职责并补齐生命周期压力测试。
 2. Windows/macOS 各自维护发送、接收、剪贴板、状态展示代码。平台 API 差异合理，但任务状态转换、ACK/checkpoint、预算/释放语义应有共享规则和跨平台一致测试。
 3. 传输层同时承担任务队列、扫描、网络 IO、ACK、速率控制、历史和 UI 状态桥接，职责过载。
 4. 剪贴板层同时承担平台 API、Offer/Request 协议、图片解码/转换、异步任务调度和结果提交，生命周期边界复杂。
@@ -285,18 +285,18 @@ tests/
 
 ### 阶段 2：传输接收端与写盘模块化（P0）
 
-**目标**：首先解除 `xfer_receive.inc` 对发送端翻译单元静态状态的隐式依赖。
+**目标**：解除接收端对发送端翻译单元静态状态的隐式依赖，并让接收协议、会话/批次生命周期、socket 线程与写盘队列拥有明确的模块边界。
 
-当前进展：Windows/macOS writer queue 的 buffer pool 已抽取为共享 Core 模块；文件句柄和 open/write-at/close 文件操作已分别抽取到 `src/win/xfer_writer_io.c`、`src/mac/xfer_writer_io.c`；writer queue 与 worker 已分别成为 `src/win/xfer_writer_queue.c`、`src/mac/xfer_writer_queue.c`、`src/win/xfer_writer_worker.c`、`src/mac/xfer_writer_worker.c` 生产编译单元。接收帧的 HELLO/token、session 绑定和旧批次 CHUNK/END 过滤已收敛到共享 `src/core/xfer_rx_frame_gate.c`，两端 include 只保留原生 session 快照、socket 关闭和消息调度。socket listener/accept 线程、平台 service adapter 与 cancel/disconnect 轮询仍在 include 中，尚不能把阶段 2 标记为完成。
+当前进展：Windows/macOS writer queue 的 buffer pool 已抽取为共享 Core 模块；文件句柄和 open/write-at/close 文件操作已分别抽取到 `src/win/xfer_writer_io.c`、`src/mac/xfer_writer_io.c`；writer queue 与 worker 已分别成为 `src/win/xfer_writer_queue.c`、`src/mac/xfer_writer_queue.c`、`src/win/xfer_writer_worker.c`、`src/mac/xfer_writer_worker.c` 生产编译单元。接收帧的 HELLO/token、session 绑定和旧批次 CHUNK/END 过滤已收敛到共享 `src/core/xfer_rx_frame_gate.c`。接收端已从 include 片段转为独立生产编译单元 `src/win/xfer_receive.c`、`src/mac/xfer_receive.c`，由窄头 `xfer_receive.h` 暴露 start/stop/owner-clean 审计和原生线程入口；receiver 私有状态、socket listener/accept、平台 service adapter 与 cancel/disconnect 轮询保留在各自 `.c` 内，`xfer.c` 不再 include 实现片段。发送端状态仅经 `xfer_sender_internal.h` 的窄入口访问。阶段 2 仍需补 stop-vs-producer、分配失败、慢盘/持久错误和 sanitizer 压力覆盖，并完成真实双机接收/断线/取消验收，尚不能标记完成。
 
 顺序：
-1. 绘制 receiver include 的静态依赖表；明确接收状态、writer 状态和外部回调。
+1. 绘制 receiver 模块的静态依赖表；明确接收状态、writer 状态和外部回调。
 2. 提取 Writer Queue 契约：start / enqueue-open / enqueue-write / enqueue-close / drain / stop / snapshot。
 3. Writer 以平台文件 IO adapter 执行写入；不自行做 Task 终态或 ACK 决策。
 4. 将 Windows writer queue 提取为独立生产编译单元并链接测试。
 5. 对照同一契约提取 macOS writer queue；保持两端 slot/bytes/pool 语义一致。
-6. 将 Receiver Protocol / Batch Lifecycle 从 include 拆成独立模块；通过明确 callback/interface 获取 status、abort、clipboard dispatch 等能力。
-7. 删除 `.inc`，不允许以新的 include 文件替代旧隐式依赖。
+6. 将 Receiver Protocol / Batch Lifecycle 收敛到独立 receiver 生产单元；通过明确 callback/interface 获取 status、abort、clipboard dispatch 等能力。
+7. 已删除 `.inc`；后续不得以新的 include 文件替代旧隐式依赖。
 
 验收：
 - 两端 writer 模块可独立编译/单测。
@@ -406,8 +406,8 @@ tests/
 
 | 顺序 | 当前文件 | 目标职责模块 | 阶段 |
 |---:|---|---|---|
-| 1 | `src/win/xfer_receive.inc` | writer queue + receiver protocol/lifecycle 独立模块 | 2 |
-| 2 | `src/mac/xfer_receive.inc` | 与 Windows 同契约的 macOS writer/receiver 模块 | 2 |
+| 1 | `src/win/xfer_receive.c` | writer queue 集成 + receiver protocol/lifecycle 生产单元 | 2 |
+| 2 | `src/mac/xfer_receive.c` | 与 Windows 同契约的 macOS receiver/writer 生产单元 | 2 |
 | 3 | `src/win/xfer.c` | transfer service / sender / scanner / ACK / rate / status adapter | 3 |
 | 4 | `src/mac/xfer.c` | 与 Windows 同业务契约的 macOS adapters | 3 |
 | 5 | `src/win/clipboard.c` | clipboard protocol / coordinator / image worker / Win32 adapter | 5 |
@@ -471,7 +471,7 @@ tests/
 | 基线核对 | 完成 | `68818b3f093af20385c3fba5785405eb4ac8d634` | 已核实 main HEAD、PR/分支状态；完成主要模块与函数簇审计附件。动态调用图、全量资源所有权追踪仍作为阶段 0 深度审计待办。 |
 | 阶段 0：深度审计 | 进行中 | `eaf8488b21c87201297aaf9edcdad2660bab76f2` | 已建立模块/函数簇和平台差异清单；仍需逐项追踪所有资源 owner、锁顺序、线程退出与回调迟到路径。PR 基线双平台 CI 已通过。 |
 | 阶段 1：构建与模块边界 | 进行中 | `6a994e691c844c60b3b15615f299633531283c13` | app 构建递归发现已完成；ACK Window、Transfer Tracking、RX Buffer Pool 已成为独立生产编译单元并接入两端测试。Core 平台 include 检查、显式 source manifest/重复源检查仍待完成。 |
-| 阶段 2：接收端/Writer | 进行中 | `9a210d4c44295222aa72436c4913b0fb6ba9d10f` | Writer queue/worker 已成为平台生产编译单元；共享 RX Queue accounting 与 Writer IO adapter 已接入两端测试。接收帧 HELLO/token、session 绑定和非当前批次 CHUNK/END 准入已抽到共享 `xfer_rx_frame_gate`。剩余：`xfer_receive.inc` 中的 socket listener/accept 线程、平台 service adapter、cancel/disconnect 轮询，以及最终删除 `.inc`。Run #1660 Windows/macOS CI PASS。 |
+| 阶段 2：接收端/Writer | 进行中 | `9a210d4c44295222aa72436c4913b0fb6ba9d10f` | Writer queue/worker 已成为平台生产编译单元；共享 RX Queue accounting 与 Writer IO adapter 已接入两端测试。接收帧 HELLO/token、session 绑定和非当前批次 CHUNK/END 准入已抽到共享 `xfer_rx_frame_gate`。接收端已转为独立 `xfer_receive.c` 生产单元，`xfer.c` 只包含窄生命周期头。剩余：receiver 生命周期压力覆盖、真实双机接收/断线/取消验收。前一提交 Run #1660 Windows/macOS CI PASS；本切片 CI 待验。 |
 | 阶段 3：Sender/Service | 待完成 | — | 待实施。 |
 | 阶段 4：共享 Transfer Domain | 待完成 | — | 待实施。 |
 | 阶段 5：Clipboard | 进行中 | `d7722d121892caf23d2707e019f8697886da786d` | Core 统一 Offer、入站 Request 准入、延迟写入身份校验与图片预算分类；暂时额度不足在释放后重试同一剪贴板版本，永久超限不重试。Windows/macOS CI 已通过；双机实测待验收。 |
@@ -883,6 +883,15 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - CI 纠错：Run #1631 的 Windows 应用构建通过；macOS 构建发现 Worker Adapter 缺少 `<errno.h>`，导致 `ETIMEDOUT` 未声明，已补齐 include。后续提交 supersede 了中间运行。**最终验证：GitHub Actions Run #1635（ID `43037203168`，tested head `07ecf5fbea98477ad67efd2d2a0f58900e6d13fb`）Windows MSVC 与 macOS Apple Clang 全流程 PASS**：应用构建、portable Core/regression、文件传输协议、TCP loopback、Windows native role/reconnect、macOS control/listener loopback、updater/bundle 检查及双平台打包。PR 流程按预期跳过 Release 发布。
 - 真实双设备断线、取消、重连及长时间传输仍未执行，不得用 CI loopback 代替。
 
+
+### 2026-11-12：Receiver 独立生产编译单元（阶段 2，CI 待验）
+
+- 将 `src/win/xfer_receive.inc`、`src/mac/xfer_receive.inc` 通过 `git mv` 转为独立生产编译单元 `src/win/xfer_receive.c`、`src/mac/xfer_receive.c`；新增窄生命周期头 `xfer_receive.h`，只暴露 `xfer_receive_start`、`xfer_receive_stop`、`xfer_receive_owner_clean` 和原生 socket 线程入口。
+- Receiver 私有状态（writer 绑定、`xfer_rx_context`、batch/file/image staging、listener/client socket、取消与断线轮询）留在各自 receiver 单元；`xfer.c` 的 init/shutdown/owner audit 改为调用 receiver API，不再包含实现片段。
+- 发送端共享的 status 发布函数和 Windows `xfer_send_all` 通过 `xfer_sender_internal.h` 显式导出；macOS `temp_root` 移入 receiver；删除 receiver 内已无调用方的 `wq_push`、`wq_push_data`、`wq_drain`、`wq_error_get` 兼容包装，writer 操作统一走 `hop_writer_queue_*`。
+- 更新 `scripts/test-regressions.py`、`test-updates.py`、`test-mac-connection.py`、`test-ha.ps1` 与 `tests/session_transport_fixture.c.in`：生产源码路径、线程入口、shutdown 顺序、owner-clean 审计和 Windows `xfer_send_all` 测试替身均对齐新边界。
+- 本地验证：`sh scripts/build-mac.sh`、`python3 scripts/test-regressions.py`、`sh scripts/test-core.sh`、`python3 scripts/test-mac-connection.py`、`sh scripts/test-xfer-protocol.sh`、`sh scripts/test-network.sh` 通过；macOS 构建中 receiver 单元无 unused-function 警告。Windows 原生构建仅能通过本轮提交后的 GitHub Actions 验证。
+- 阶段 2 尚未完成：stop-vs-producer、分配失败、慢盘/持久错误、sanitizer 压力、真实双机接收/断线/取消仍未验收。本提交只关闭“Receiver 仍是隐式 include 片段”这一结构问题；精确提交 SHA 的 Windows/macOS CI 结果待补记。
 
 
 ## 12. 新的重构执行协议（最高优先级，后续 Agent 必须遵守）

@@ -7,27 +7,8 @@
 
 #include "app.h"
 #include "xfer.h"
+#include "xfer_receive.h"
 #include "../core/hop.h"
-#include "xfer_rx_fs.h"
-#include "../core/xfer_rx_receipt.h"
-#include "../core/xfer_rx_lifecycle.h"
-#include "../core/xfer_rx_batch_rules.h"
-#include "../core/xfer_rx_entry_reservations.h"
-#include "../core/xfer_rx_file_state.h"
-#include "../core/xfer_rx_dispatch.h"
-#include "../core/xfer_rx_platform_dispatch.h"
-#include "../core/xfer_rx_services.h"
-#include "../core/xfer_rx_context.h"
-#include "../core/xfer_rx_message_handlers.h"
-#include "../core/xfer_rx_ack_handler.h"
-#include "../core/xfer_rx_protocol_adapter.h"
-#include "../core/xfer_rx_frame_gate.h"
-#include "../core/xfer_rx_batch_state.h"
-#include "../core/xfer_rx_image_state.h"
-#include "../core/xfer_rx_image_buffer.h"
-#include "xfer_writer_queue.h"
-#include "../core/xfer_rx_queue.h"
-#include "../core/update_state.h"
 #include "../core/xfer_budget.h"
 #include "../core/xfer_task.h"
 #include "../core/xfer_task_history.h"
@@ -44,8 +25,6 @@
 #include <io.h>
 #include <time.h>
 #include "xfer_sender_internal.h"
-
-#define XFER_RX_ROOT      L"HopDesk"
 
 /* ---------------- 条目 / 作业 ---------------- */
 
@@ -141,7 +120,7 @@ static void history_save(void) {
 static hop_xfer_tracking *status_for(int direction) {
     return direction == HOP_XFER_DIR_SEND ? &s_send_status : &s_receive_status;
 }
-static int status_begin(uint32_t batch,int direction,uint32_t files,uint64_t bytes,const char *name,int phase) {
+int status_begin(uint32_t batch,int direction,uint32_t files,uint64_t bytes,const char *name,int phase) {
     int created=0;
     AcquireSRWLockExclusive(&s_status_lock);
     hop_xfer_tracking *t = status_for(direction);
@@ -227,7 +206,7 @@ static void status_set_files(uint32_t batch,const xfer_entry *entries,int n) {
     }
     ReleaseSRWLockExclusive(&s_status_lock);
 }
-static void status_image(uint32_t batch,int direction,uint64_t size) {
+void status_image(uint32_t batch,int direction,uint64_t size) {
     AcquireSRWLockExclusive(&s_status_lock);
     hop_xfer_tracking *t=status_for(direction);
     if(hop_xfer_tracking_matches(t,batch)) {
@@ -237,7 +216,7 @@ static void status_image(uint32_t batch,int direction,uint64_t size) {
     }
     ReleaseSRWLockExclusive(&s_status_lock);
 }
-static void status_add_received_file(uint32_t batch,uint32_t id,const char *path,uint64_t size,int directory) {
+void status_add_received_file(uint32_t batch,uint32_t id,const char *path,uint64_t size,int directory) {
     AcquireSRWLockExclusive(&s_status_lock);
     hop_xfer_tracking_file(&s_receive_status,batch,id,path,size,directory,HOP_XFER_FILE_RECEIVING);
     if(hop_xfer_tracking_matches(&s_receive_status,batch) && path)
@@ -330,7 +309,7 @@ __thread unsigned long s_send_epoch;
 sender_platform_context s_sender_platform;
 hop_xfer_sender_context s_sender_context;
 
-static int send_all(SOCKET c, const char *p, int len) {
+int xfer_send_all(SOCKET c, const char *p, int len) {
     while (len > 0) {
         int n = send(c, p, len, 0);
         if (n == SOCKET_ERROR && WSAGetLastError() == WSAEINTR) continue;
@@ -373,7 +352,7 @@ int sender_context_write_frame(void *user, intptr_t socket_handle,
             break;
         }
         if (parts[i].size)
-            ok = send_all(sock, (const char *)parts[i].data, (int)parts[i].size);
+            ok = xfer_send_all(sock, (const char *)parts[i].data, (int)parts[i].size);
     }
     LeaveCriticalSection(ctx->tx_lock);
     return ok;
@@ -444,8 +423,6 @@ int send_small(SOCKET c, uint8_t type, const uint8_t *p,
  * 数据直接读进发送缓冲的 CHUNK_HDR 处，省掉一次内存拷贝。
  * 每块带 CRC32：TCP 的 16 位校验和配合网卡 offload 有可能漏检，
  * GB 级传输漏检一次就是静默损坏。 */
-/* Receiver and disk writer share this translation unit and its private state. */
-#include "xfer_receive.inc"
 
 /* ---------------- 对外接口 ---------------- */
 
@@ -490,11 +467,12 @@ int xfer_init(HWND hwnd, const hop_config *cfg) {
     if (!s_x.stop || !s_x.q_evt) goto fail;
 
     /* 写盘线程要先起来，接收路径一进来就会往队列里塞 */
-    if (!wq_start()) goto fail;
+    if (!xfer_receive_start()) goto fail;
 
     if (!hop_win_sender_threads_start(
             &s_x.sender_threads,
-            cfg->role == HOP_ROLE_SERVER ? listen_thread : data_client_thread,
+            cfg->role == HOP_ROLE_SERVER ? xfer_receive_listener_thread
+                                         : xfer_receive_client_thread,
             send_thread, NULL))
         goto fail;
 
@@ -520,13 +498,7 @@ static int xfer_shutdown_task_audit(void) {
         s_x.shutdown_jobs == NULL &&
         !hop_xfer_sender_active_job_is_active(&s_x.active_job);
     LeaveCriticalSection(&s_x.lock);
-    static const hop_xfer_rx_entry_reservations empty_entry_reservations = {0};
-    int receiver_clean = s_wq == NULL && s_rx.writer == NULL &&
-        !s_rx.task.initialized && !s_rx.task.id &&
-        !s_rx.batch_state.active && !s_rx.cur_path &&
-        memcmp(&s_rx.entry_reservations, &empty_entry_reservations,
-               sizeof(empty_entry_reservations)) == 0 &&
-        !s_rx.image_buffer.data && !s_rx.tops && s_rx.ntop == 0;
+    int receiver_clean = xfer_receive_owner_clean();
     if (!sender_clean || !receiver_clean) {
         hop_log(HOP_LOG_ERROR,
                 "xfer: shutdown owner audit failed (sender_clean=%d receiver_clean=%d)",
@@ -595,8 +567,7 @@ int xfer_shutdown(void) {
         return 0;
     }
 
-    rx_reset(&s_rx);
-    if (!wq_stop()) {
+    if (!xfer_receive_stop()) {
         hop_log(HOP_LOG_WARN, "xfer: writer worker still owns receive resources; preserve shared state for retry");
         ReleaseSRWLockExclusive(&s_x_lifecycle_lock);
         return 0;

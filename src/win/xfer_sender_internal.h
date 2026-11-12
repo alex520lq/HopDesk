@@ -65,6 +65,7 @@ hop_xfer_sender_job_result sender_commit_adapter_run(const xfer_job *);
 void ack_deliver(uint32_t,uint32_t,int);
 int sender_context_session_current(void *,intptr_t,uint64_t);
 int sender_context_write_frame(void *,intptr_t,uint64_t,const hop_xfer_sender_frame_part *,size_t);
+int xfer_send_all(SOCKET,const char *,int);
 void yield_cpu(void);
 int send_small_with_context(const hop_xfer_sender_context *,SOCKET,uint8_t,const uint8_t *,uint32_t,uint32_t);
 int send_small(SOCKET,uint8_t,const uint8_t *,uint32_t,uint32_t);
@@ -72,6 +73,9 @@ void status_chunk_timed(int,uint32_t,uint32_t,uint64_t,uint32_t,uint64_t,uint64_
 void status_stage_time(int,uint32_t,int,uint64_t);
 void status_file_phase(int,uint32_t,int,int,uint32_t);
 void status_end(int,uint32_t,int,const char *);
+int status_begin(uint32_t,int,uint32_t,uint64_t,const char *,int);
+void status_image(uint32_t,int,uint64_t);
+void status_add_received_file(uint32_t,uint32_t,const char *,uint64_t,int);
 void status_start_job(const xfer_job *);
 uint64_t rate_now_ns(void);
 int sender_context_is_stopping(void *);

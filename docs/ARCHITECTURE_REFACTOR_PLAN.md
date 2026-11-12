@@ -1,8 +1,9 @@
 # HopDesk 架构重构实施规划
 
-> 状态：实施基线已建立；按本文件逐项推进。未在“实施记录”中附提交和测试证据的工作，不得标记完成。
-> 基线主干：`main` @ `c00bf9d9fc8f0bf89f1bd2a99b8728b5cefd48e8`
-> 活动分支：`refactor/architecture-modularization`
+> 状态：阶段 1/2 已合并入主干；Clipboard 完整重构（§12.5）进行中，活动 PR #14。未在“实施记录”中附提交和测试证据的工作，不得标记完成。
+> 基线主干：`origin/main` @ `1593cc0cae0a347af980dd716b314215af943408`
+> 活动分支：`refactor/clipboard-request-admission`（PR #14）
+> 历史分支：`refactor/architecture-modularization` 已随 PR #11（merge `c14332c`，第二父 `f239774`）进入主干，仅作历史引用，不再承载开发。
 > 目标：在不改变产品行为、网络协议和用户工作流的前提下，将 HopDesk 从平台文件堆叠式组织演进为边界清晰、可独立测试、跨平台规则一致的模块化工程。
 
 ## 1. 重构目标与非目标
@@ -894,7 +895,7 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 
 ### 2026-11-12：Receiver 独立生产编译单元（阶段 2，CI PASS）
 
-- 将 `src/win/xfer_receive.inc`、`src/mac/xfer_receive.inc` 通过 `git mv` 转为独立生产编译单元 `src/win/xfer_receive.c`、`src/mac/xfer_receive.c`；新增窄生命周期头 `xfer_receive.h`，只暴露 `xfer_receive_start`、`xfer_receive_stop`、`xfer_receive_owner_clean` 和原生 socket 线程入口。
+- 将 `src/win/xfer_receive.inc`、`src/mac/xfer_receive.inc` 通过 `git mv` 转为独立生产编译单元 `src/win/xfer_receive.c`、`src/mac/xfer_receive.c`；新增窄生命周期头 `xfer_receive.h`，只暴露 `xfer_receive_start`、`xfer_receive_stop`、`xfer_receive_owner_clean` 和原生 socket 线程入口。（**2026-11-12 更正**：该头文件此后已扩展到 24 个导出符号，混入 Transport 服务与状态/ACK 报告，不再是“只暴露生命周期”的窄接口；收敛计划见文末 P0 收口记录。）
 - Receiver 私有状态（writer 绑定、`xfer_rx_context`、batch/file/image staging、listener/client socket、取消与断线轮询）留在各自 receiver 单元；`xfer.c` 的 init/shutdown/owner audit 改为调用 receiver API，不再包含实现片段。
 - 发送端共享的 status 发布函数和 Windows `xfer_send_all` 通过 `xfer_sender_internal.h` 显式导出；macOS `temp_root` 移入 receiver；删除 receiver 内已无调用方的 `wq_push`、`wq_push_data`、`wq_drain`、`wq_error_get` 兼容包装，writer 操作统一走 `hop_writer_queue_*`。
 - 更新 `scripts/test-regressions.py`、`test-updates.py`、`test-mac-connection.py`、`test-ha.ps1` 与 `tests/session_transport_fixture.c.in`：生产源码路径、线程入口、shutdown 顺序、owner-clean 审计和 Windows `xfer_send_all` 测试替身均对齐新边界。
@@ -1031,3 +1032,18 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 两端 `job_free()` 缩减为构造 borrowed view 并调用共享 Core；Owner enum 移至共享契约头。
 - 新增独立生命周期测试并接入 Windows/macOS Core test runner。
 - 验收门槛：双平台应用编译、完整 Core tests、源码回归、CI；失败时先修复，不合并。
+
+
+### 2026-11-12：P0 收口 —— 模块边界、验收范围与仓库状态核实
+
+**核实方式**：`git status` / `git fetch --prune` / `git branch -vv` / `git merge-base --is-ancestor` / `git diff origin/main main`，两端 `xfer_receive.h` 与 Clipboard `.inc` 全文比对，PR #11/#12/#13/#14 元数据与 check runs。以下为实测结论，不是推测。
+
+- **Clipboard `.inc` 实际是 4 个文件，不是 2 个**：`src/win|mac/clipboard_offer.inc` 与 `src/win|mac/clipboard_paste.inc`，分别由 `clipboard.c:73/727`、`clipboard.m:63/602` include。另有 4 个 `net_*.inc` 属网络层，不在 Clipboard 范围。
+- **`.inc` 的核心问题是重复业务编排，不是文件名**：两端 paste 片段中“协议解码 → Core 事务调用 → 发送/失败回执”的编排约七成相同，只有原生序列号/changeCount 采样、路径快照、Worker 启动和最终粘贴落地不同。因此 `git mv` 成 `.c` 不构成完成（§1.3），正确目标是提取 Clipboard Coordinator 并注入平台服务。
+- **`scripts/test-regressions.py` 已把 `.inc` 路径写死**：读取 `clipboard_paste.inc` / `clipboard_offer.inc`，并断言 `#include "clipboard_paste.inc"` 存在。拆分 `.inc` 必须在同一提交内更新这些源码断言，否则测试失败或退化为假通过。
+- **`xfer_receive.h` 已扩到 24 个导出符号**，混装三类契约：Receiver 自身生命周期与连接回调、Transport→Receiver 服务（`xfer_data_send_*`、`xfer_data_connection_shutdown`）、状态/ACK 报告（`status_*`、`ack_deliver`、`rate_now_ns`）。其中 `ack_deliver`、`status_begin`、`status_chunk_timed`、`rate_now_ns` 由 `xfer.c` / `xfer_sender.c` 实现，同时在 `xfer_sender_internal.h` 重复声明；两端 `xfer_receive.h` 除 `<windows.h>` 与 guard 外内容一致，说明它并非平台契约。重复声明不违反 C 语义，故 CI 仍为绿色——这是边界债，不是运行时缺陷。
+- **接口收敛不得作为“接口先行”提交**：按 §12.1 / §12.4，`xfer_receive.h` 拆分必须与 Receiver Services 注入、调用方迁移、重复声明删除在同一完整问题内完成。因此归入 P2，不作为 PR #14 的追加改动。
+- **PR #14 当前 CI 证据**：head `b694992f813be66708b2e312994c603d1cc4ae25` 的 [Run #43179307951](https://github.com/alex520lq/HopDesk/actions/runs/43179307951) 中，`Windows build, tests and package (MSVC)` 与 `macOS build, tests and package` 均 success，`Publish public update release` 按 PR 流程 skipped。此前记录的 `d7722d1` 已被 `1d346fa`、`b694992` supersede。
+- **验收范围需要分层**：`docs/MANUAL_TEST_RUNBOOK.md` 是通用清单（APP-/INPUT-/CLIP- 编号），没有 Receiver 专项用例，也不回指本文件的实机记录；本文件 2026-11-12 记录包含真实双机 48 MiB / 1 GiB 双向传输、逐字节比对、取消与资源对账（基线 `1d346fa`）。二者需建立交叉引用并补齐 RX-* 用例，避免把“已实机验证”与“通用清单未填”混为一谈。
+- **分支状态**：远端仅存 `main`、`refactor/architecture-modularization`（`f239774`，已是 `origin/main` 祖先）、`refactor/clipboard-request-admission`（`b694992`）。`refactor/sender-job-lifecycle` 与 `refactor/architecture-next` 已删除。前者可在获得明确授权后删除，删除本身不丢失内容。
+- **本地 `main` 与 `origin/main` 分歧（新增，优先级高于文档陈旧）**：本地 `main` @ `9a41a9e` 领先 `origin/main` 4 个提交（`9a41a9e` / `e6f4b1a` / `b5172b7` / `6243312`），但 `git diff origin/main main` 为空，即树内容完全一致。成因是 PR #12 分支 tip `e6f4b1a` 已被 squash 合并为 `ae85b55`，本地又把它合并回 `main`，形成重复历史。这不影响构建，但会让后续 Agent 的 `main` 基线判断出错。修正需 `git reset --hard origin/main`，属 §4 / §12.3 禁止的破坏性操作，必须取得明确授权后才能执行。

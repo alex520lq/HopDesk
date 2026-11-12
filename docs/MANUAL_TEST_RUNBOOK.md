@@ -99,6 +99,9 @@ Run every case in both directions (Windows→Mac and Mac→Windows).
 | CLIP-010 | Send invalid dimensions/stride via protocol harness | Receiver rejects without excessive allocation |
 | CLIP-011 | Send image with missing final chunk, gap, overlap or extra chunk | Image is not applied to clipboard; batch is rejected |
 | CLIP-012 | Corrupt one image chunk CRC | Image is discarded; no partial image reaches clipboard |
+| CLIP-013 | Rapidly copy images and text on both devices while a remote paste is pending | Latest clipboard content wins; an older request never overwrites newer content; no hang or duplicate paste |
+| CLIP-014 | Copy another large image before the previous image conversion/send finishes | The newer clipboard version is not swallowed; the same version retries after budget release, while a permanently oversized image is rejected once without a retry loop |
+| CLIP-015 | Quit or disconnect while an image snapshot or paste transaction is active | Task/Reservation cleanup completes or remains auditable; no crash, double free, or clipboard overwrite after shutdown |
 
 ## Display control
 

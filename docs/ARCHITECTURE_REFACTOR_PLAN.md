@@ -474,7 +474,7 @@ tests/
 | 阶段 2：接收端/Writer | 进行中 | `54496ab83eb5f3caa61a5b3f5a6b7379a461c56e` | 在既有共享 RX Queue accounting 与平台 Writer IO adapter 之上，将队列容量/预留/忙碌写入/排空测试拆为独立 `tests/xfer_rx_queue_tests.c` 目标，并接入 macOS/Windows 测试脚本。Writer thread、队列同步和 receiver lifecycle 仍未拆完；本切片新增 CI 尚待运行。 |
 | 阶段 3：Sender/Service | 待完成 | — | 待实施。 |
 | 阶段 4：共享 Transfer Domain | 待完成 | — | 待实施。 |
-| 阶段 5：Clipboard | 进行中 | `99c52ae71c3208b480fe37486940a6ad535615c6` | Core 统一入站准入与延迟写入的请求身份校验。Windows/macOS CI 已通过；图片预算重试和双机实测待验收。 |
+| 阶段 5：Clipboard | 进行中 | `d7722d121892caf23d2707e019f8697886da786d` | Core 统一 Offer、入站 Request 准入、延迟写入身份校验与图片预算分类；暂时额度不足在释放后重试同一剪贴板版本，永久超限不重试。Windows/macOS CI 已通过；双机实测待验收。 |
 | 阶段 6：Connection | 待完成 | — | 待实施。 |
 | 阶段 7：Input | 待完成 | — | 待实施。 |
 | 阶段 8：UI | 待完成 | — | 待实施。 |
@@ -956,7 +956,7 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 
 **验收**：两端生产构建使用同一套事务规则；覆盖 Offer 替换/清除、重复/过期/迟到 Request、成功/失败 Paste、取消/断线、图片预算与重试、Task/Reservation exactly-once 释放；删除两端重复的事务状态机和旧包装；Windows/macOS 原生构建与相关测试通过。完成前不得开始 Connection、Input 或 UI 重构。
 
-**当前状态**：共享 Core 已接管 Offer、入站 Paste Request 准入和延迟写入的请求身份校验。macOS 主队列和 Windows 窗口消息、定时器携带请求身份到写入点。共享事务回归覆盖重复完成、旧请求不能清除新 Offer，以及自身剪贴板版本推进。Windows 生产函数夹具覆盖锁重入、队列替换、原生剪贴板版本过期和旧回调隔离。[PR #14](https://github.com/alex520lq/HopDesk/pull/14) 的 `99c52ae71c3208b480fe37486940a6ad535615c6` 已通过 [Windows/macOS CI](https://github.com/alex520lq/HopDesk/actions/runs/43139003149)。下一项是图片预算暂时不足时重试同一剪贴板版本。实际双机粘贴、剪贴板争用和关闭竞态仍待验证。
+**当前状态**：共享 Core 已接管 Offer、入站 Paste Request 准入、延迟写入的请求身份校验与图片预算分类。macOS 主队列和 Windows 窗口消息、定时器携带请求身份到写入点。图片暂时额度不足时，两端都会在 Task/Reservation 释放后重试同一剪贴板版本；永久超限不再重试。共享事务回归覆盖重复完成、旧请求不能清除新 Offer，以及自身剪贴板版本推进；Windows 生产函数夹具覆盖锁重入、队列替换、原生剪贴板版本过期、旧回调隔离和图片准入/重试。[PR #14](https://github.com/alex520lq/HopDesk/pull/14) 的 `d7722d121892caf23d2707e019f8697886da786d` 已通过 [Windows/macOS CI](https://github.com/alex520lq/HopDesk/actions/runs/43144273368)。实际双机粘贴、剪贴板争用和关闭竞态仍待人工验证。
 
 
 ### Clipboard 完整重构实现记录（2026-11-11，等待 CI）
@@ -969,13 +969,15 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 当前实现提交的 Windows/macOS CI 尚未执行；在精确提交 SHA 的 Actions 完成前不得标记验收通过。真实双设备 Paste、剪贴板争用和关闭竞态仍需单独实机验证。
 
 
-### 2026-11-12：Clipboard 图片预算延迟重试（当前切片，CI 待验）
+### 2026-11-12：Clipboard 图片预算延迟重试（CI PASS）
 
 - 新增共享 `hop_xfer_budget_image_conversion_fits()`，只判断图片输入与转换缓冲是否可能落在配置的图像/临时内存上限内，不读取当前占用；用于区分永久超限与暂时额度不足。
 - macOS：`send_image_data_async` 改为三态返回；仅当 Task/Reservation 清理完成时才回滚 `changeCount`，让同一剪贴板版本重试；清理未完成时保留 owner 供关闭审计/重试，避免重复回滚覆盖迟到的写入状态。转换额度不足仍设置 `budget_deferred`，在 worker 完成 Task 释放后回滚同一版本。
 - Windows：新增生产路径 `image_snapshot_prepare`，在分配 DIB 快照前先做共享预算分类，暂不可用时不再分配 owner/任务；`send_dib` 在转换预算预留失败时返回可重试状态；worker 仅在 Task 释放完成且剪贴板 sequence 未变化时重新投递 `WM_APP_CLIP`，停止中不重投。
 - 回归：共享分类器单测覆盖边界、NULL 与溢出；Windows 生产函数夹具覆盖暂不可用不分配、重试前释放、永久超限不重试、停止不重投；macOS 源码断言三态返回、Task 释放后再回滚、永久超限不回滚。
-- 本地验证：`sh scripts/test-core.sh`、`python3 scripts/test-regressions.py`、`sh scripts/build-mac.sh`、`sh scripts/test-xfer-protocol.sh`、`sh scripts/test-network.sh` 通过。Windows 原生构建和双平台 CI 待本提交运行；真实双机粘贴、剪贴板争用与关闭竞态仍未验证。
+- 本地验证：`sh scripts/test-core.sh`、`python3 scripts/test-regressions.py`、`sh scripts/build-mac.sh`、`sh scripts/test-xfer-protocol.sh`、`sh scripts/test-network.sh` 通过。
+- CI 证据：GitHub Actions Run #1658（ID `43144273368`，head `d7722d121892caf23d2707e019f8697886da786d`）Windows MSVC 与 macOS 全流程 PASS：应用构建、Core/regression（含共享图片预算分类和 Windows 生产准入夹具）、文件传输协议、TCP loopback、Windows native role/reconnect、macOS control/listener loopback、更新检查与双平台打包。Release 发布按 PR 流程跳过。
+- 真实双机粘贴、剪贴板争用与关闭竞态仍未验证；不能以 CI 结果替代物理双设备验收。
 
 
 ### 2026-11-11：Sender Job Lifecycle 完整收口（实现分支，CI 待验）

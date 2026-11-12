@@ -353,7 +353,6 @@ int main(void){
 #include <stdlib.h>
 #include <assert.h>
 #include "xfer_clipboard_txn.h"
-#include "xfer_clipboard_coord.h"
 typedef void *HGLOBAL;typedef unsigned UINT;typedef int HWND;typedef unsigned DWORD;
 #define IDT_CLIP_RETRY 1
 #define CF_HDROP 15
@@ -388,9 +387,9 @@ static void KillTimer(HWND h,int i){(void)h;(void)i;}
 #define VALUE(n) ((void*)(uintptr_t)(n))
 static uint32_t stage_paste(DWORD version) {
     uint32_t id=0,origin=0; uint64_t generation=0,expected=0;
-    hop_clipboard_txn_set_remote_offer(&s_clip_txn,22,version+10);
-    assert(hop_clipboard_txn_begin_paste(&s_clip_txn,version,version,0x80000000u,&id,&origin,&generation,&expected)==1);
-    assert(hop_clipboard_txn_complete_paste(&s_clip_txn,id,version,1,NULL));
+    assert(hop_clipboard_remote_offer(&s_clip_txn,11,22,version+10,NULL));
+    assert(hop_clipboard_begin_paste(&s_clip_txn,version,version,0x80000000u,&id,&origin,&generation,&expected)==1);
+    assert(hop_clipboard_complete_paste(&s_clip_txn,id,version,1,NULL));
     return id;
 }
 int main(void){
@@ -461,7 +460,7 @@ int main(void){
     puts("PASS: production Windows retry waits for clipboard, notifies only on successful paste apply and preserves newer content");return 0;
 }
 '''
-    run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','clip_staged_request_matches','clip_cancel_staged_if_match','discard_pending_replacing','apply_global_expected','apply_global','clip_retry_pending','clip_on_paste_message'])+clip_main,['src/core/xfer_clipboard_txn.c','src/core/xfer_clipboard_coord.c'])
+    run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','clip_staged_request_matches','clip_cancel_staged_if_match','discard_pending_replacing','apply_global_expected','apply_global','clip_retry_pending','clip_on_paste_message'])+clip_main,['src/core/xfer_clipboard_txn.c'])
     # A cross-device paste batch must never fall through to the ordinary clipboard writer.
     for platform in ['win','mac']:
         rx='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.c','xfer_rx_protocol_handlers.c'))
@@ -472,7 +471,7 @@ int main(void){
             assert 'GetClipboardSequenceNumber()!=expected' in clip
             paste_message=extract(clip,'clip_on_paste_message')
             assert 'SendInput(' not in paste_message
-            assert 'apply_global_expected(CF_HDROP,h,(DWORD)expected,1,request_id)' in paste_message
+            assert re.sub(r'\s+', '', 'apply_global_expected(CF_HDROP,h,(DWORD)expected,1,request_id)') in re.sub(r'\s+', '', paste_message)
         else:
             assert 'clipboard_complete_remote_paste(batch, (const char *const *)top_paths, top_count, 1)' in rx
             assert 'clipboard_complete_remote_paste(batch, NULL, 0, 0)' in rx
@@ -2081,72 +2080,33 @@ int main(void) {
         )
 
 
-    # Clipboard Offer/Paste transaction policy has one shared Core owner.
-    clip_txn=(ROOT/'src/core/xfer_clipboard_txn.c').read_text(encoding='utf-8')
-    clip_txn_header=(ROOT/'src/core/xfer_clipboard_txn.h').read_text(encoding='utf-8')
-    for api in ['hop_clipboard_txn_publish_local_offer','hop_clipboard_txn_clear_remote_offer',
-                'hop_clipboard_txn_begin_paste','hop_clipboard_txn_accept_request',
-                'hop_clipboard_txn_complete_paste','hop_clipboard_txn_finish_paste_worker']:
-        assert api in clip_txn and api in clip_txn_header
-    assert 'HOP_CLIPBOARD_TXN_SEEN_REQUESTS' in clip_txn_header
-
-    # Inbound Offer/Request orchestration has one shared decision owner. The
-    # adapters keep the platform lock and native state; they must not re-derive
-    # admission, identity or terminal-reason rules of their own.
-    clip_coord=(ROOT/'src/core/xfer_clipboard_coord.c').read_text(encoding='utf-8')
-    clip_coord_header=(ROOT/'src/core/xfer_clipboard_coord.h').read_text(encoding='utf-8')
-    for api in ['hop_clip_coord_remote_offer','hop_clip_coord_offer_clear',
-                'hop_clip_coord_paste_request','hop_clip_coord_begin_paste',
-                'hop_clip_coord_complete_paste','hop_clip_coord_retire_offers',
-                'hop_clip_coord_consume_offers','hop_clip_coord_publish_local_offer',
-                'hop_clip_coord_link_state','hop_clip_coord_paste_apply_result']:
-        assert api in clip_coord and api in clip_coord_header
-    for txn_api in ['hop_clipboard_txn_set_remote_offer','hop_clipboard_txn_begin_paste',
-                    'hop_clipboard_txn_accept_request','hop_clipboard_txn_complete_paste',
-                    'hop_clipboard_txn_clear_offer_if_match','hop_clipboard_txn_publish_local_offer',
-                    'hop_clipboard_txn_clear_local_offer','hop_clipboard_txn_clear_remote_offer',
-                    'hop_clipboard_txn_finish_pending_paste_and_clear_offer',
-                    'hop_clipboard_txn_update_pending_paste_version']:
-        assert txn_api in clip_coord, txn_api+' must be driven by the shared coordinator'
-
+    # Clipboard policy has one state owner and direct domain operations.
+    clip_core=(ROOT/'src/core/xfer_clipboard_txn.c').read_text(encoding='utf-8')
+    clip_header=(ROOT/'src/core/xfer_clipboard_txn.h').read_text(encoding='utf-8')
+    assert not (ROOT/'src/core/xfer_clipboard_coord.c').exists()
+    assert not (ROOT/'src/core/xfer_clipboard_coord.h').exists()
+    for forbidden in ['hop_clip_action','hop_clip_outcome','HOP_CLIP_ACT_','_txn_coord_']:
+        assert forbidden not in clip_core+clip_header
+    for api in ['hop_clipboard_remote_offer','hop_clipboard_offer_clear','hop_clipboard_paste_request',
+                'hop_clipboard_begin_paste','hop_clipboard_complete_paste','hop_clipboard_paste_apply',
+                'hop_clipboard_link_state','hop_clipboard_retire_offers','hop_clipboard_consume_offers',
+                'hop_clipboard_publish_local_offer']:
+        assert api in clip_core and api in clip_header
+    assert 'HOP_CLIPBOARD_TXN_SEEN_REQUESTS' in clip_header
     for platform,main_name in [('win','clipboard.c'),('mac','clipboard.m')]:
         main=(ROOT/f'src/{platform}/{main_name}').read_text(encoding='utf-8')
         offer=(ROOT/f'src/{platform}/clipboard_offer.inc').read_text(encoding='utf-8')
         paste=(ROOT/f'src/{platform}/clipboard_paste.inc').read_text(encoding='utf-8')
         assert 'xfer_clipboard_txn.h' in main
-        assert 'xfer_clipboard_coord.h' in main
-        # Publishing and retiring the local identity are delegated too.
-        assert 'hop_clip_coord_publish_local_offer' in offer
-        assert 'hop_clip_coord_retire_offers' in offer
-        assert 'hop_clip_coord_consume_offers' in offer
-        assert 'clip_retire_offers(' in main
-        assert 'clip_consume_offers(' in main
-        assert 'hop_clipboard_txn_publish_local_offer' not in offer
-        # Retiring both identities must stay one critical section with one
-        # announcement policy. The old split helper cleared the local identity
-        # on its own and let each call site re-pair it by hand.
-        for adapter in (main,offer,paste):
-            assert 'clip_clear_local_offer' not in adapter
-            assert 'hop_clipboard_txn_clear_local_offer' not in adapter
-        # Link transitions are a Core decision too: replay, forget, or nothing.
-        assert 'hop_clip_coord_link_state' in paste
-        assert 'clip_send_local_offer_snapshot' not in offer
-        assert 'clip_clear_remote_offer_local' not in offer
-        assert 'clip_clear_remote_offer_local' not in paste
-        # Completing or re-arming a paste is one shared rule: completion must
-        # validate against the version armed before the native write, because
-        # the write moves that version itself.
-        assert 'hop_clip_coord_paste_apply_result' in main
-        assert 'hop_clipboard_txn_finish_pending_paste_and_clear_offer' not in main
-        assert 'hop_clipboard_txn_update_pending_paste_version' not in main
-        for delegated in ['hop_clip_coord_remote_offer','hop_clip_coord_offer_clear',
-                          'hop_clip_coord_begin_paste','hop_clip_coord_paste_request',
-                          'hop_clip_coord_complete_paste']:
-            assert delegated in paste, delegated+' must be delegated, not re-implemented'
-        for reimplemented in ['hop_clipboard_txn_set_remote_offer','hop_clipboard_txn_begin_paste',
-                              'hop_clipboard_txn_accept_request','hop_clipboard_txn_complete_paste']:
-            assert reimplemented not in paste, reimplemented+' must not appear in the adapter'
-        assert 's_seen_paste_requests' not in paste
-        assert 's_offer_request_seq' not in paste
+        assert 'hop_clipboard_publish_local_offer' in offer
+        assert 'hop_clipboard_retire_offers' in offer and 'hop_clipboard_consume_offers' in offer
+        assert 'hop_clipboard_link_state' in paste
+        assert 'hop_clipboard_paste_apply' in main
+        for api in ['hop_clipboard_remote_offer','hop_clipboard_offer_clear','hop_clipboard_begin_paste',
+                    'hop_clipboard_paste_request','hop_clipboard_complete_paste']:
+            assert api in paste
+        assert 'hop_clip_action' not in main+offer+paste
+        assert 'hop_clip_outcome' not in main+offer+paste
+        assert 's_seen_paste_requests' not in paste and 's_offer_request_seq' not in paste
 
     print('All targeted regressions passed.',flush=True)

@@ -48,14 +48,13 @@ void hop_clipboard_txn_cancel_pending_paste(hop_clipboard_txn *txn, uint32_t req
 int hop_clipboard_txn_complete_paste(hop_clipboard_txn *txn, uint32_t request_id,
                                      uint64_t current_clipboard_version, int success,
                                      uint64_t *expected_version);
-hop_clipboard_request_result hop_clipboard_txn_check_request(
-    const hop_clipboard_txn *txn, uint32_t request_id, uint64_t offer_generation,
-    int worker_available);
 int hop_clipboard_txn_get_pending_paste(const hop_clipboard_txn *txn,
                                         uint32_t request_id, uint64_t *expected_version);
+/* Under the same lock, snapshot the native paths before recording admission.
+ * The callback must not reenter the transaction. A failed snapshot leaves it unchanged. */
 hop_clipboard_request_result hop_clipboard_txn_accept_request(
     hop_clipboard_txn *txn, uint32_t request_id, uint64_t offer_generation,
-    int worker_available);
+    int worker_available, int (*snapshot)(void *), void *context);
 void hop_clipboard_txn_finish_paste_worker(hop_clipboard_txn *txn);
 
 #endif

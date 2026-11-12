@@ -91,7 +91,7 @@ int hop_clipboard_txn_complete_paste(hop_clipboard_txn *txn, uint32_t request_id
     }
     return 1;
 }
-hop_clipboard_request_result hop_clipboard_txn_check_request(
+static hop_clipboard_request_result check_request(
     const hop_clipboard_txn *txn, uint32_t request_id, uint64_t offer_generation,
     int worker_available) {
     if (!txn || !request_id) return HOP_CLIPBOARD_REQUEST_STALE;
@@ -111,10 +111,11 @@ int hop_clipboard_txn_get_pending_paste(const hop_clipboard_txn *txn,
 }
 hop_clipboard_request_result hop_clipboard_txn_accept_request(
     hop_clipboard_txn *txn, uint32_t request_id, uint64_t offer_generation,
-    int worker_available) {
+    int worker_available, int (*snapshot)(void *), void *context) {
     hop_clipboard_request_result result =
-        hop_clipboard_txn_check_request(txn, request_id, offer_generation, worker_available);
+        check_request(txn, request_id, offer_generation, worker_available);
     if (result != HOP_CLIPBOARD_REQUEST_ACCEPTED) return result;
+    if (!snapshot || !snapshot(context)) return HOP_CLIPBOARD_REQUEST_BUSY;
     txn->seen_requests[txn->seen_next++ % HOP_CLIPBOARD_TXN_SEEN_REQUESTS] = request_id;
     txn->paste_scan_active = 1;
     return HOP_CLIPBOARD_REQUEST_ACCEPTED;

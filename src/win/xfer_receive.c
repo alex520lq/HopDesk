@@ -22,7 +22,6 @@
 #include "../core/xfer_rx_context.h"
 #include "../core/xfer_rx_message_handlers.h"
 #include "../core/xfer_rx_ack_handler.h"
-#include "../core/xfer_rx_protocol_adapter.h"
 #include "../core/xfer_rx_frame_gate.h"
 #include "../core/xfer_rx_batch_state.h"
 #include "../core/xfer_rx_image_state.h"
@@ -56,7 +55,6 @@ static void rx_reset(xfer_rx_context *rx);
 static void rx_context_configure(void);
 static hop_xfer_rx_lifecycle s_rx_lifecycle;
 static int s_rx_initialized;
-static hop_xfer_rx_protocol_adapter s_rx_protocol_adapter;
 static hop_xfer_rx_done_receipt s_done_receipt;
 
 static int wq_reserve_task_rx(void *context, void *owner, uint32_t bytes) {
@@ -275,8 +273,6 @@ static void rx_reset(xfer_rx_context *rx) {
  * session may retain ACKs/tombstones; a new control session starts cleanly. */
 /* One FIFO sender batch can be awaiting DONE_ACK per session. This is only
  * wire idempotency metadata, not another task or reservation owner. */
-static hop_xfer_rx_done_receipt s_done_receipt;
-
 static void *rx_context_build_path(void *context, const char *relative, uint32_t length) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx || !relative || !length || length > HOP_PATH_LEN_MAX) return NULL;
@@ -485,8 +481,6 @@ static void rx_context_configure(void) {
     s_rx.services.status_file_phase = rx_context_status_file_phase;
     s_rx.services.status_set_files_total = rx_context_status_set_files_total;
     s_rx.services.status_reset = rx_context_status_reset;
-    (void)hop_xfer_rx_protocol_adapter_init(&s_rx_protocol_adapter,
-        &hop_xfer_rx_platform_dispatch_handlers, &s_rx);
 }
 static int rx_discard_dir(xfer_rx_context *rx);
 static void rx_bind_session(const hop_session_id *session) {
@@ -580,11 +574,8 @@ hop_rx_frame_action xfer_receive_process_frame(const hop_session_id *session,
         hop_xfer_rx_gate_frame(&input, token, type, payload, length);
     if (gate.action == HOP_RX_FRAME_DISPATCH) {
         if (!authenticated) return HOP_RX_FRAME_REJECT_PEER;
-        static hop_xfer_rx_protocol_adapter adapter;
-        hop_xfer_rx_protocol_adapter_init(&adapter,
+        (void)hop_xfer_rx_dispatch_message(type, gate.body, gate.body_length,
             &hop_xfer_rx_platform_dispatch_handlers, &s_rx);
-        (void)hop_xfer_rx_protocol_adapter_dispatch(&adapter, type,
-                                                    gate.body, gate.body_length);
     }
     return gate.action;
 }

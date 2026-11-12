@@ -33,9 +33,9 @@ with tempfile.TemporaryDirectory(prefix='hopdesk-regression-') as directory:
         subprocess.run([str(exe)],cwd=work,check=True,timeout=30)
 
     run('tracking_config',(ROOT/'tests/regression_tests.c').read_text(encoding='utf-8'),['src/core/config.c','src/core/xfer_tracking.c'])
-    run('rx_protocol_adapter',r'''
+    run('rx_dispatch',r'''
 #include "hop.h"
-#include "xfer_rx_protocol_adapter.h"
+#include "xfer_rx_dispatch.h"
 #include <assert.h>
 #include <stdio.h>
 typedef struct { int calls; int marker; } test_context;
@@ -45,24 +45,19 @@ static void on_file_begin(void *context,const uint8_t *payload,uint32_t length) 
     state->calls++;
 }
 int main(void) {
-    hop_xfer_rx_protocol_adapter adapter={0};
     hop_xfer_rx_dispatch_handlers handlers={0};
     test_context context={0,73};
     uint8_t payload[2]={4,5};
-    assert(!hop_xfer_rx_protocol_adapter_dispatch(&adapter,HOP_MSG_FILE_BEGIN,payload,2));
-    assert(!hop_xfer_rx_protocol_adapter_init(NULL,&handlers,&context));
-    assert(!hop_xfer_rx_protocol_adapter_init(&adapter,NULL,&context));
+    assert(!hop_xfer_rx_dispatch_message(HOP_MSG_FILE_BEGIN,payload,2,&handlers,&context));
     handlers.file_begin=on_file_begin;
-    assert(hop_xfer_rx_protocol_adapter_init(&adapter,&handlers,&context));
-    assert(hop_xfer_rx_protocol_adapter_dispatch(&adapter,HOP_MSG_FILE_BEGIN,payload,2));
+    assert(hop_xfer_rx_dispatch_message(HOP_MSG_FILE_BEGIN,payload,2,&handlers,&context));
     assert(context.calls==1);
-    assert(!hop_xfer_rx_protocol_adapter_dispatch(&adapter,0xff,payload,2));
+    assert(!hop_xfer_rx_dispatch_message(0xff,payload,2,&handlers,&context));
     assert(context.calls==1);
-    puts("PASS: receiver protocol adapter validates lifecycle and forwards explicit context");
+    puts("PASS: receiver dispatch rejects missing/unknown handlers and forwards context");
     return 0;
 }
-''',['src/core/xfer_rx_protocol_adapter.c','src/core/xfer_rx_dispatch.c'])
-
+''',['src/core/xfer_rx_dispatch.c'])
     # Exercise the real Windows filesystem adapter with the exact staging
     # path shape produced by xfer_receive.c, not a generic "HopDesk" prefix.
     if os.name == 'nt':
@@ -464,6 +459,11 @@ int main(void){
     # A cross-device paste batch must never fall through to the ordinary clipboard writer.
     for platform in ['win','mac']:
         rx='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.c','xfer_rx_protocol_handlers.c'))
+        receive=(ROOT/f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_rx_dispatch_message(type, gate.body, gate.body_length,' in receive
+        assert '&hop_xfer_rx_platform_dispatch_handlers, &s_rx' in receive
+        assert 'xfer_rx_protocol_adapter' not in receive
+        assert receive.count('static hop_xfer_rx_done_receipt s_done_receipt;') == 1
         if platform=='win':
             assert 'clip_complete_remote_paste(batch, (const wchar_t *const *)top_paths, top_count, 1)' in rx
             assert 'clip_complete_remote_paste(batch, NULL, 0, 0)' in rx
@@ -787,7 +787,7 @@ int main(void){
         if platform=='win': common='#define FIXTURE_WINDOWS 1\n'+common
         sender_source=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         core_finish_source=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
-        run('image_'+platform,common+'\n'+extract(core_finish_source,'hop_xfer_rx_reset_batch_state')+'\n'+extract(core_finish_source,'rx_release_terminal_resources')+'\n'+extract(core_finish_source,'rx_abort_clear_state')+'\n'+extract(core_finish_source,'hop_xfer_rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_protocol_adapter.c','src/core/xfer_rx_dispatch.c'],threads=True)
+        run('image_'+platform,common+'\n'+extract(core_finish_source,'hop_xfer_rx_reset_batch_state')+'\n'+extract(core_finish_source,'rx_release_terminal_resources')+'\n'+extract(core_finish_source,'rx_abort_clear_state')+'\n'+extract(core_finish_source,'hop_xfer_rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_dispatch.c'],threads=True)
     # Run the actual per-platform state wrappers, not only a reimplemented model.
     for platform in ['win','mac']:
         source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')

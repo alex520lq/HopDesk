@@ -6,14 +6,18 @@ static void clip_send_paste_failed(uint32_t request_id,uint8_t reason) {
 typedef struct { wchar_t **paths; int count; uint32_t request_id; uint64_t offer_id; } clip_paste_work;
 
 static void clip_free_paste_work(clip_paste_work *work) {
+    if (!work) return;
     for (int i = 0; i < work->count; ++i) free(work->paths[i]);
     free(work->paths);
     free(work);
 }
 
 static int clip_snapshot_paste_paths(void *context) {
-    clip_paste_work *work = context;
     if (s_local_offer_count <= 0) return 0;
+    clip_paste_work **slot = context;
+    clip_paste_work *work = calloc(1, sizeof(*work));
+    if (!work) return 0;
+    *slot = work;
     work->paths = calloc((size_t)s_local_offer_count, sizeof(wchar_t *));
     if (!work->paths) return 0;
     for (int i = 0; i < s_local_offer_count; ++i) {
@@ -24,6 +28,14 @@ static int clip_snapshot_paste_paths(void *context) {
     return 1;
 }
 
+static void clip_finish_paste_worker(void) {
+    AcquireSRWLockExclusive(&s_offer_lock);
+    hop_clipboard_txn_finish_paste_worker(&s_clip_txn);
+    /* Admission resets this event under the same lock. */
+    SetEvent(s_paste_workers_done);
+    ReleaseSRWLockExclusive(&s_offer_lock);
+}
+
 static DWORD WINAPI clip_paste_worker(LPVOID arg) {
     clip_paste_work *w=(clip_paste_work*)arg;
     SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
@@ -31,53 +43,66 @@ static DWORD WINAPI clip_paste_worker(LPVOID arg) {
     if(!ok)clip_send_paste_failed(w->request_id,
         xfer_connected()?HOP_CLIP_PASTE_FAIL_SOURCE_IO:HOP_CLIP_PASTE_FAIL_TRANSFER);
     clip_free_paste_work(w);
-    AcquireSRWLockExclusive(&s_offer_lock);hop_clipboard_txn_finish_paste_worker(&s_clip_txn);ReleaseSRWLockExclusive(&s_offer_lock);
-    if(s_paste_workers_done)SetEvent(s_paste_workers_done);
+    clip_finish_paste_worker();
     return 0;
 }
 void clip_on_link(int connected) {
-    if(connected)clip_send_local_offer_snapshot();
-    else clip_clear_remote_offer_local();
+    wchar_t *copies[HOP_CLIP_OFFER_MAX_ITEMS] = {0};
+    int count = 0, valid = 1;
+    uint64_t generation = 0;
+    AcquireSRWLockExclusive(&s_offer_lock);
+    hop_clip_outcome out = hop_clip_coord_link_state(&s_clip_txn, connected, s_local_offer_count);
+    if (out.action == HOP_CLIP_ACT_RESEND_LOCAL_OFFER) {
+        count = s_local_offer_count;
+        generation = out.generation;
+        for (int i = 0; i < count; ++i)
+            if (s_local_offer_paths[i]) copies[i] = _wcsdup(s_local_offer_paths[i]);
+    }
+    ReleaseSRWLockExclusive(&s_offer_lock);
+    if (out.action != HOP_CLIP_ACT_RESEND_LOCAL_OFFER) return;
+    /* A partially duplicated snapshot would announce a shorter offer than the
+     * clipboard really holds, so a single failure cancels the replay. */
+    for (int i = 0; i < count; ++i) if (!copies[i]) valid = 0;
+    if (valid && !clip_send_offer((const wchar_t *const *)copies, count, clip_local_device(), generation))
+        hop_log(HOP_LOG_WARN, "clip: file offer resend failed");
+    for (int i = 0; i < count; ++i) free(copies[i]);
 }
 void clip_on_remote_file_offer(const uint8_t *p,uint32_t len) {
     hop_clip_file_offer_msg m;
-    if(!hop_clip_file_offer_decode(p,len,&m)||m.origin==clip_local_device())return;
-    AcquireSRWLockShared(&s_offer_lock);
-    int stopping=s_clip_stopping;
-    ReleaseSRWLockShared(&s_offer_lock);
-    if(stopping)return;
-    clip_clear_local_offer(1);
+    if(!hop_clip_file_offer_decode(p,len,&m))return;
     AcquireSRWLockExclusive(&s_offer_lock);
-    if(!s_clip_stopping)hop_clipboard_txn_set_remote_offer(&s_clip_txn,m.origin,m.generation);
+    hop_clip_outcome out=hop_clip_coord_remote_offer(&s_clip_txn,clip_local_device(),m.origin,m.generation);
+    if(out.action==HOP_CLIP_ACT_CLEAR_LOCAL_OFFER)clip_drop_local_offer_paths();
     ReleaseSRWLockExclusive(&s_offer_lock);
-    hop_log(HOP_LOG_INFO,"clip: remote file offer received (%u item(s)); no data requested",m.count);
+    if(out.notify_peer)clip_send_offer_clear(clip_local_device(),out.cleared_generation);
+    if(out.action==HOP_CLIP_ACT_CLEAR_LOCAL_OFFER)
+        hop_log(HOP_LOG_INFO,"clip: remote file offer received (%u item(s)); no data requested",m.count);
 }
 void clip_on_remote_file_offer_clear(const uint8_t *p,uint32_t len) {
     uint32_t origin=0;uint64_t generation=0;
     if(!hop_clip_file_offer_clear_decode(p,len,&origin,&generation))return;
     AcquireSRWLockExclusive(&s_offer_lock);
-    int match=hop_clipboard_txn_clear_offer_if_match(&s_clip_txn,clip_local_device(),origin,generation);
+    hop_clip_outcome out=hop_clip_coord_offer_clear(&s_clip_txn,clip_local_device(),origin,generation);
+    if(out.action==HOP_CLIP_ACT_CLEAR_LOCAL_OFFER)clip_drop_local_offer_paths();
     ReleaseSRWLockExclusive(&s_offer_lock);
-    if(match==1)clip_clear_local_offer(0);
 }
 int clip_request_remote_paste(void) {
     uint8_t p[HOP_CLIP_PASTE_REQUEST_BYTES];
-    uint32_t id=0,origin=0;uint64_t generation=0,expected=0;
     DWORD sequence=GetClipboardSequenceNumber();
     AcquireSRWLockExclusive(&s_offer_lock);
-    int begin=hop_clipboard_txn_begin_paste(&s_clip_txn,sequence,s_last_sequence,
-        HOP_XFER_PASTE_BATCH_FLAG,&id,&origin,&generation,&expected);
+    hop_clip_outcome out=hop_clip_coord_begin_paste(&s_clip_txn,(uint64_t)sequence,(uint64_t)s_last_sequence,
+        HOP_XFER_PASTE_BATCH_FLAG);
     ReleaseSRWLockExclusive(&s_offer_lock);
-    if(begin==0)return 0;
-    if(begin==2)return 1;
-    int sent=hop_clip_paste_request_encode(p,id,origin,generation,expected) &&
+    if(out.action==HOP_CLIP_ACT_NONE)return 0;
+    if(out.action==HOP_CLIP_ACT_RESEND_PENDING)return 1;
+    int sent=hop_clip_paste_request_encode(p,out.request_id,out.origin,out.generation,out.expected_version) &&
              net_server_send(g_app.net,HOP_MSG_CLIP_PASTE_REQUEST,p,sizeof(p));
     if(!sent) {
         AcquireSRWLockExclusive(&s_offer_lock);
-        hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,id);
+        hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,out.request_id);
         ReleaseSRWLockExclusive(&s_offer_lock);
-        hop_log(HOP_LOG_WARN,"clip: paste request %u could not be sent",id);
-    } else hop_log(HOP_LOG_INFO,"clip: cross-device paste requested (%u)",id);
+        hop_log(HOP_LOG_WARN,"clip: paste request %u could not be sent",out.request_id);
+    } else hop_log(HOP_LOG_INFO,"clip: cross-device paste requested (%u)",out.request_id);
     return 1;
 }
 void clip_on_paste_failed(const uint8_t *p,uint32_t len) {
@@ -91,44 +116,43 @@ void clip_on_paste_failed(const uint8_t *p,uint32_t len) {
 void clip_on_paste_request(const uint8_t *p,uint32_t len) {
     hop_clip_paste_request_msg m;
     if(!hop_clip_paste_request_decode(p,len,&m))return;
-    if(m.origin!=clip_local_device()){clip_send_paste_failed(m.request_id,HOP_CLIP_PASTE_FAIL_STALE);return;}
-    clip_paste_work *w=(clip_paste_work*)calloc(1,sizeof(*w));
-    if(!w){clip_send_paste_failed(m.request_id,HOP_CLIP_PASTE_FAIL_BUSY);return;}
-    w->request_id = m.request_id;
-    w->offer_id = m.generation;
+    clip_paste_work *w = NULL;
     AcquireSRWLockExclusive(&s_offer_lock);
-    hop_clipboard_request_result decision = hop_clipboard_txn_accept_request(
-        &s_clip_txn, m.request_id, m.generation, s_paste_workers_done != NULL, clip_snapshot_paste_paths, w);
-    if (decision != HOP_CLIPBOARD_REQUEST_ACCEPTED) {
-        ReleaseSRWLockExclusive(&s_offer_lock);
+    hop_clip_outcome out=hop_clip_coord_paste_request(&s_clip_txn,m.request_id,m.origin,m.generation,
+        clip_local_device(),s_paste_workers_done != NULL,clip_snapshot_paste_paths,&w);
+    if(out.action==HOP_CLIP_ACT_SPAWN_PASTE_WORKER)ResetEvent(s_paste_workers_done);
+    ReleaseSRWLockExclusive(&s_offer_lock);
+    if(out.action!=HOP_CLIP_ACT_SPAWN_PASTE_WORKER){
         clip_free_paste_work(w);
-        if (decision != HOP_CLIPBOARD_REQUEST_DUPLICATE)
-            clip_send_paste_failed(m.request_id, decision == HOP_CLIPBOARD_REQUEST_STALE
-                ? HOP_CLIP_PASTE_FAIL_STALE : HOP_CLIP_PASTE_FAIL_BUSY);
+        if(out.action==HOP_CLIP_ACT_SEND_PASTE_FAILED)
+            clip_send_paste_failed(out.request_id,out.fail_reason);
         return;
     }
-    ResetEvent(s_paste_workers_done);
-    ReleaseSRWLockExclusive(&s_offer_lock);
+    w->request_id = m.request_id;
+    w->offer_id = m.generation;
     HANDLE t=CreateThread(NULL,0,clip_paste_worker,w,0,NULL);
     if(!t){
         clip_free_paste_work(w);
         clip_send_paste_failed(m.request_id,HOP_CLIP_PASTE_FAIL_BUSY);
-        AcquireSRWLockExclusive(&s_offer_lock);hop_clipboard_txn_finish_paste_worker(&s_clip_txn);ReleaseSRWLockExclusive(&s_offer_lock);
-        SetEvent(s_paste_workers_done);return;
+        clip_finish_paste_worker();
+        return;
     }
     CloseHandle(t);
 }
 void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n,int success) {
     uint64_t expected=0;
     AcquireSRWLockExclusive(&s_offer_lock);
-    if(s_clip_stopping){hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,0);ReleaseSRWLockExclusive(&s_offer_lock);return;}
-    int valid=hop_clipboard_txn_complete_paste(&s_clip_txn,batch,(uint64_t)GetClipboardSequenceNumber(),success,&expected);
+    hop_clip_outcome out=hop_clip_coord_complete_paste(&s_clip_txn,batch,
+        (uint64_t)GetClipboardSequenceNumber(),success);
+    if(out.action==HOP_CLIP_ACT_CANCEL_PENDING)hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,0);
     ReleaseSRWLockExclusive(&s_offer_lock);
-    if(!valid){
+    if(out.action==HOP_CLIP_ACT_CANCEL_PENDING)return;
+    if(out.action!=HOP_CLIP_ACT_APPLY_PASTE){
         if(!success)hop_log(HOP_LOG_WARN,"clip: paste transfer %u incomplete; clipboard unchanged",batch);
         else hop_log(HOP_LOG_WARN,"clip: paste %u finished after clipboard changed; files kept, clipboard not overwritten",batch);
         return;
     }
+    expected=out.expected_version;
     HGLOBAL h=make_drop_global(paths,n);
     int posted=0;
     if(h){

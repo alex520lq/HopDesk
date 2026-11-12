@@ -23,6 +23,7 @@
 #include "xfer.h"
 #include "../core/xfer_task.h"
 #include "../core/xfer_clipboard_txn.h"
+#include "../core/xfer_clipboard_coord.h"
 #include "../core/xfer_budget.h"
 
 #include <stdlib.h>
@@ -41,7 +42,6 @@ static pthread_mutex_t s_offer_lock = PTHREAD_MUTEX_INITIALIZER;
 static dispatch_group_t s_paste_group;
 static int s_image_work_active;
 static hop_clipboard_txn s_clip_txn;
-#define s_local_offer_generation (s_clip_txn.local_offer_generation)
 #define s_local_offer_sequence (s_clip_txn.local_offer_sequence)
 #define s_offer_request_seq (s_clip_txn.request_sequence)
 #define s_remote_offer_origin (s_clip_txn.remote_offer_origin)
@@ -378,8 +378,7 @@ static void poll_pasteboard(void) {
         if(!unchanged)s_last_change=cc;
         pthread_mutex_unlock(&s_offer_lock);
         if(unchanged)return;
-        clip_invalidate_remote_offer(1);
-        clip_clear_local_offer(1);
+        clip_retire_offers();
 
         /* 文件优先：Finder 里 Cmd+C 一个文件，剪贴板上是 fileURL，
          * 只读字符串的话会"什么都不发生" */
@@ -404,7 +403,7 @@ static void poll_pasteboard(void) {
                 hop_log(HOP_LOG_INFO, "clip: image conversion already active; latest snapshot deferred");
                 return;
             }
-            clip_clear_remote_offer_local(); clip_clear_local_offer(1);
+            clip_consume_offers();
             int scheduled=send_image_data_async(imageType, cc, previous_change);
             if (scheduled==0) {
                 pthread_mutex_lock(&s_offer_lock);
@@ -419,7 +418,7 @@ static void poll_pasteboard(void) {
             const char *utf8 = [s UTF8String];
             uint32_t n = utf8 ? (uint32_t)strlen(utf8) : 0;
             if (n > 0 && n <= HOP_TEXT_MAX) {
-                clip_clear_remote_offer_local(); clip_clear_local_offer(1);
+                clip_consume_offers();
                 (void)send_text(s);
                 return;
             }
@@ -497,18 +496,19 @@ static void apply_objects_retry(NSArray *objects, NSString *kind,
         [pb clearContents];
         uint64_t cleared=(uint64_t)[pb changeCount];
         s_last_change=(NSInteger)cleared;
-        (void)hop_clipboard_txn_update_pending_paste_version(&s_clip_txn,request_id,txn_expected,
-                                                              txn_expected,cleared);
+        if (hop_clip_coord_paste_apply_result(&s_clip_txn, request_id,
+                txn_expected, cleared, 0) != HOP_CLIP_PASTE_APPLY_REARM) {
+            pthread_mutex_unlock(&s_offer_lock);
+            return;
+        }
         BOOL ok=[pb writeObjects:objects];
         uint64_t after_write=(uint64_t)[pb changeCount];
         s_last_change=(NSInteger)after_write;
-        if(ok) {
-            ok=hop_clipboard_txn_finish_pending_paste_and_clear_offer(&s_clip_txn,request_id,cleared,cleared);
-        } else {
-            (void)hop_clipboard_txn_update_pending_paste_version(&s_clip_txn,request_id,cleared,cleared,after_write);
-        }
+        hop_clip_paste_apply_result result = hop_clip_coord_paste_apply_result(
+            &s_clip_txn, request_id, cleared, after_write, ok);
         pthread_mutex_unlock(&s_offer_lock);
-        if(ok) { statusbar_notify_paste_ready(); hop_log(HOP_LOG_INFO,"clip: files ready; choose a target and paste again"); return; }
+        if(result == HOP_CLIP_PASTE_APPLY_COMPLETE) { statusbar_notify_paste_ready(); hop_log(HOP_LOG_INFO,"clip: files ready; choose a target and paste again"); return; }
+        if(result != HOP_CLIP_PASTE_APPLY_REARM) return;
         if(attempt<10) { NSInteger next=(NSInteger)after_write; dispatch_after(dispatch_time(DISPATCH_TIME_NOW,150ull*NSEC_PER_MSEC),dispatch_get_main_queue(),^{ apply_objects_retry(objects,kind,attempt+1,next,request_id); }); }
         else { pthread_mutex_lock(&s_offer_lock); hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,request_id); pthread_mutex_unlock(&s_offer_lock); }
         return;
@@ -541,7 +541,7 @@ void clipboard_apply(const char *utf8) {
     NSString *s;
 
     if (!utf8 || !*utf8) return;
-    clip_clear_local_offer(1); clip_clear_remote_offer_local();
+    clip_consume_offers();
     s = [NSString stringWithUTF8String:utf8];
     if (!s) return;
 
@@ -551,7 +551,7 @@ void clipboard_apply(const char *utf8) {
 /* 一批文件/目录落盘完毕：把顶层条目挂到剪贴板，Finder 里 Cmd+V 即复制 */
 void clipboard_apply_paths(const char *const *paths, int n) {
     if (!paths || n <= 0) return;
-    clip_clear_local_offer(1); clip_clear_remote_offer_local();
+    clip_consume_offers();
 
     NSMutableArray<NSString *> *strs = [NSMutableArray arrayWithCapacity:(NSUInteger)n];
     for (int i = 0; i < n; ++i) {
@@ -570,7 +570,7 @@ void clipboard_apply_paths(const char *const *paths, int n) {
 
 /* 收到图片：裸 BGRA 自上而下 -> NSImage -> 剪贴板 */
 void clipboard_apply_image(const uint8_t *bgra, int w, int h, int stride) {
-    clip_clear_local_offer(1); clip_clear_remote_offer_local();
+    clip_consume_offers();
     if (!bgra || w <= 0 || h <= 0 || stride < w * 4) return;
 
     size_t bytes = (size_t)stride * (size_t)h;

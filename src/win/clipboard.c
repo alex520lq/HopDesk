@@ -18,6 +18,7 @@
 #include "xfer.h"
 #include "../core/xfer_task.h"
 #include "../core/xfer_clipboard_txn.h"
+#include "../core/xfer_clipboard_coord.h"
 #include "../core/xfer_budget.h"
 
 #include <shellapi.h>
@@ -58,7 +59,6 @@ static SRWLOCK s_offer_lock = SRWLOCK_INIT;
 static hop_clipboard_txn s_clip_txn;
 static wchar_t *s_local_offer_paths[HOP_CLIP_OFFER_MAX_ITEMS];
 static int s_local_offer_count;
-#define s_local_offer_generation (s_clip_txn.local_offer_generation)
 #define s_local_offer_sequence (s_clip_txn.local_offer_sequence)
 #define s_offer_request_seq (s_clip_txn.request_sequence)
 #define s_remote_offer_origin (s_clip_txn.remote_offer_origin)
@@ -68,7 +68,7 @@ static int s_local_offer_count;
 #define s_seen_paste_next (s_clip_txn.seen_next)
 #define s_paste_scan_active (s_clip_txn.paste_scan_active)
 #define s_clip_stopping (s_clip_txn.stopping)
-static HANDLE s_paste_workers_done;static HANDLE s_paste_workers_done;
+static HANDLE s_paste_workers_done;
 
 #include "clipboard_offer.inc"
 
@@ -131,14 +131,20 @@ static int apply_global_expected(UINT format,HGLOBAL h,DWORD required_sequence,i
                 if(SetClipboardData(format,h)) {
                     s_remote_sequence=GetClipboardSequenceNumber(); s_last_sequence=s_remote_sequence;
                     int finished=1;
-                    if(request_id) finished=hop_clipboard_txn_finish_pending_paste_and_clear_offer(&s_clip_txn,request_id,expected,expected);
+                    if(request_id) finished=hop_clip_coord_paste_apply_result(&s_clip_txn,request_id,expected,expected,1)==HOP_CLIP_PASTE_APPLY_COMPLETE;
                     if(request_id) ReleaseSRWLockExclusive(&s_offer_lock);
                     CloseClipboard();
                     if(request_id && finished) { s_queued_paste_request=0; ui_notify_paste_ready(); }
                     return 1;
                 }
                 expected=GetClipboardSequenceNumber(); s_remote_sequence=expected; s_last_sequence=expected;
-                if(request_id) (void)hop_clipboard_txn_update_pending_paste_version(&s_clip_txn,request_id,before_empty,before_empty,expected);
+                if (request_id && hop_clip_coord_paste_apply_result(&s_clip_txn,
+                        request_id, before_empty, expected, 0) != HOP_CLIP_PASTE_APPLY_REARM) {
+                    ReleaseSRWLockExclusive(&s_offer_lock);
+                    CloseClipboard();
+                    GlobalFree(h);
+                    return 0;
+                }
             }
             if(request_id) ReleaseSRWLockExclusive(&s_offer_lock);
             CloseClipboard();
@@ -194,15 +200,24 @@ void clip_retry_pending(void) {
         if(SetClipboardData(s_pending_format,s_pending_global)) {
             s_pending_global=NULL; s_remote_sequence=GetClipboardSequenceNumber(); s_last_sequence=s_remote_sequence;
             int finished=1;
-            if(paste) finished=hop_clipboard_txn_finish_pending_paste_and_clear_offer(&s_clip_txn,request_id,s_pending_sequence,s_pending_sequence);
+            if(paste) finished=hop_clip_coord_paste_apply_result(&s_clip_txn,request_id,s_pending_sequence,s_pending_sequence,1)==HOP_CLIP_PASTE_APPLY_COMPLETE;
             if(paste) ReleaseSRWLockExclusive(&s_offer_lock);
             CloseClipboard(); hop_log(HOP_LOG_INFO,"clip: pending remote clipboard applied");
             if(paste && finished) { s_queued_paste_request=0; ui_notify_paste_ready(); }
         } else {
             DWORD next=GetClipboardSequenceNumber(); s_pending_sequence=next; s_remote_sequence=next; s_last_sequence=next;
-            if(paste) (void)hop_clipboard_txn_update_pending_paste_version(&s_clip_txn,request_id,before_empty,before_empty,next);
+            int rearm = !paste || hop_clip_coord_paste_apply_result(&s_clip_txn,
+                request_id, before_empty, next, 0) == HOP_CLIP_PASTE_APPLY_REARM;
             if(paste) ReleaseSRWLockExclusive(&s_offer_lock);
-            CloseClipboard(); schedule_clip_retry(); return;
+            CloseClipboard();
+            if (rearm) {
+                schedule_clip_retry();
+            } else {
+                discard_pending();
+                s_queued_paste_request = 0;
+                KillTimer(g_app.hwnd, IDT_CLIP_RETRY);
+            }
+            return;
         }
     } else {
         if(paste) ReleaseSRWLockExclusive(&s_offer_lock);
@@ -232,8 +247,14 @@ void clip_init(HWND hwnd) {
 }
 
 int clip_shutdown(HWND hwnd) {
-    AcquireSRWLockExclusive(&s_offer_lock);hop_clipboard_txn_set_stopping(&s_clip_txn,1);ReleaseSRWLockExclusive(&s_offer_lock);
-    if(s_paste_workers_done)WaitForSingleObject(s_paste_workers_done,INFINITE);
+    AcquireSRWLockExclusive(&s_offer_lock);
+    hop_clipboard_txn_set_stopping(&s_clip_txn, 1);
+    HANDLE workers_done = s_paste_workers_done;
+    ReleaseSRWLockExclusive(&s_offer_lock);
+    if (workers_done && WaitForSingleObject(workers_done, INFINITE) != WAIT_OBJECT_0) {
+        hop_log(HOP_LOG_ERROR, "clip: waiting for paste worker failed");
+        return 0;
+    }
     RemoveClipboardFormatListener(hwnd);
     if (s_image_thread) { WaitForSingleObject(s_image_thread, INFINITE); CloseHandle(s_image_thread); s_image_thread = NULL; }
     if (!image_work_retry_pending()) {
@@ -245,7 +266,10 @@ int clip_shutdown(HWND hwnd) {
         if (pending.lParam) GlobalFree((HGLOBAL)pending.lParam);
     while (PeekMessageW(&pending, hwnd, WM_APP_CLIP_PASTE, WM_APP_CLIP_PASTE, PM_REMOVE))
         if (pending.lParam) GlobalFree((HGLOBAL)pending.lParam);
-    if(s_paste_workers_done){CloseHandle(s_paste_workers_done);s_paste_workers_done=NULL;}
+    AcquireSRWLockExclusive(&s_offer_lock);
+    s_paste_workers_done = NULL;
+    ReleaseSRWLockExclusive(&s_offer_lock);
+    if (workers_done) CloseHandle(workers_done);
     KillTimer(hwnd, IDT_CLIP_RETRY);
     if (s_pending_global) { GlobalFree(s_pending_global); s_pending_global = NULL; }
     return 1;
@@ -571,8 +595,7 @@ void clip_on_update(void) {
     if(s_remote_sequence && sequence==s_remote_sequence){s_last_sequence=sequence;return;}
     if(sequence!=s_last_sequence){
         s_last_sequence=sequence;
-        clip_invalidate_remote_offer(1);
-        clip_clear_local_offer(1);
+        clip_retire_offers();
     }
 
     if (IsClipboardFormatAvailable(CF_DIB) || IsClipboardFormatAvailable(CF_HDROP)) {
@@ -611,8 +634,7 @@ void clip_on_update(void) {
     }
 
     CloseClipboard();
-    clip_clear_local_offer(1);
-    clip_clear_remote_offer_local();
+    clip_consume_offers();
     hop_log(HOP_LOG_INFO, "clip: unsupported clipboard format, ignored");
 }
 
@@ -626,8 +648,7 @@ void clip_apply_remote(const uint8_t *p, uint32_t len) {
 
     if (len < 5) return;
     if (!hop_clip_should_apply_remote(hop_get_be32(p), (g_app.cfg.role==HOP_ROLE_SERVER?HOP_DEV_SERVER:HOP_DEV_CLIENT))) return; /* 自己发的，回环 */
-    clip_clear_local_offer(1);
-    clip_clear_remote_offer_local();
+    clip_consume_offers();
 
     u = (char *)malloc((size_t)(len - 3));           /* 文本 + NUL */
     if (!u) return;
@@ -687,8 +708,7 @@ void clip_apply_remote_paths(const wchar_t *const *paths,int n) {
 
 /* 收到图片：裸 BGRA 自上而下 -> CF_DIB（32 位，自下而上，BI_RGB） */
 void clip_apply_remote_image(const uint8_t *bgra, int w, int h, int stride) {
-    clip_clear_local_offer(1);
-    clip_clear_remote_offer_local();
+    clip_consume_offers();
     if (!bgra || w <= 0 || h <= 0 || w > INT_MAX / 4 || stride < w * 4) return;
 
     size_t out_stride = (size_t)w * 4;

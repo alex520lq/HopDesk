@@ -1,8 +1,8 @@
 # HopDesk 架构重构实施规划
 
-> 状态：阶段 1/2 已合并入主干；Clipboard 完整重构（§12.5）进行中，活动 PR #14。未在“实施记录”中附提交和测试证据的工作，不得标记完成。
-> 基线主干：`origin/main` @ `1593cc0cae0a347af980dd716b314215af943408`
-> 活动分支：`refactor/clipboard-request-admission`（PR #14）
+> 状态：阶段 1/2 已合并入主干；Clipboard 完整重构（§12.5）进行中。未在“实施记录”中附提交和测试证据的工作，不得标记完成。
+> 当前 Clipboard 基线：`origin/main` @ `ee057d7a60c1db879605630940cc4733c22002d7`
+> 活动分支：`refactor/clipboard-coordinator`。PR #14 的 CI 仅对应历史提交。
 > 历史分支：`refactor/architecture-modularization` 已随 PR #11（merge `c14332c`，第二父 `f239774`）进入主干，仅作历史引用，不再承载开发。
 > 目标：在不改变产品行为、网络协议和用户工作流的前提下，将 HopDesk 从平台文件堆叠式组织演进为边界清晰、可独立测试、跨平台规则一致的模块化工程。
 
@@ -1047,3 +1047,66 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - **验收范围需要分层**：`docs/MANUAL_TEST_RUNBOOK.md` 是通用清单（APP-/INPUT-/CLIP- 编号），没有 Receiver 专项用例，也不回指本文件的实机记录；本文件 2026-11-12 记录包含真实双机 48 MiB / 1 GiB 双向传输、逐字节比对、取消与资源对账（基线 `1d346fa`）。二者需建立交叉引用并补齐 RX-* 用例，避免把“已实机验证”与“通用清单未填”混为一谈。
 - **分支状态**：远端仅存 `main`、`refactor/architecture-modularization`（`f239774`，已是 `origin/main` 祖先）、`refactor/clipboard-request-admission`（`b694992`）。`refactor/sender-job-lifecycle` 与 `refactor/architecture-next` 已删除。前者可在获得明确授权后删除，删除本身不丢失内容。
 - **本地 `main` 与 `origin/main` 分歧（新增，优先级高于文档陈旧）**：本地 `main` @ `9a41a9e` 领先 `origin/main` 4 个提交（`9a41a9e` / `e6f4b1a` / `b5172b7` / `6243312`），但 `git diff origin/main main` 为空，即树内容完全一致。成因是 PR #12 分支 tip `e6f4b1a` 已被 squash 合并为 `ae85b55`，本地又把它合并回 `main`，形成重复历史。这不影响构建，但会让后续 Agent 的 `main` 基线判断出错。修正需 `git reset --hard origin/main`，属 §4 / §12.3 禁止的破坏性操作，必须取得明确授权后才能执行。
+
+
+### 2026-11-12：Clipboard 入站编排决策 Core 化（阶段 2 续，CI 待验）
+
+- 新增 `src/core/xfer_clipboard_coord.[ch]`：把入站 FILE_OFFER、FILE_OFFER_CLEAR、PASTE_REQUEST、出站 PASTE_REQUEST 的起始判定、以及 Paste 完成判定收敛为纯决策函数，返回 `hop_clip_action` 供适配层执行。形态对齐 `xfer_rx_frame_gate`。
+- **不把 `lock/unlock` 注入 Core**：适配层持锁调用，Core 只改事务状态并返回动作；网络发送在适配层解锁后执行。Core 不出现任何 OS 类型、线程原语或原生路径表示。
+- Windows/macOS 的 `clipboard_paste.inc` 改为委托：`hop_clip_coord_remote_offer`、`hop_clip_coord_offer_clear`、`hop_clip_coord_begin_paste`、`hop_clip_coord_paste_request`、`hop_clip_coord_complete_paste`。两端不再各自维护 origin 校验、admission→失败原因映射和 stopping 分支。
+- **修复两端语义不对称**（此前只在 Windows 存在的防护，现在两端一致）：入站 Offer 在持锁状态下重新检查 `stopping`；Paste 完成后落地前检查 `stopping`。此前 macOS 只在锁外检查一次。
+- 新增锁内辅助 `clip_drop_local_offer_paths()`，由退役与发布路径共用，去掉重复的释放循环；同时删除 `src/win/clipboard.c` 中重复声明的 `static HANDLE s_paste_workers_done;`。（`clip_clear_local_offer` 在本阶段仍是独立辅助函数，后续切片随 9 处两步退役一并删除。）
+- 新增 `tests/xfer_clipboard_coord_tests.c`（覆盖自身 origin 忽略、stopping 拒绝、Offer 匹配清除、admission 四种结果、begin 三态、完成版本守卫与停止取消），接入 `scripts/test-core.sh` 与 `scripts/test-core.ps1`。
+- `scripts/test-regressions.py` 改为断言适配层**委托**这五个决策入口，并反向断言 `hop_clipboard_txn_set_remote_offer` / `begin_paste` / `accept_request` / `complete_paste` 不再出现在 `clipboard_paste.inc`，防止后续重新长出重复实现。
+- 本地验证：`sh scripts/build-mac.sh`、`python3 scripts/test-regressions.py`（All targeted regressions passed）、`hopdesk-clipboard-txn-tests`、`hopdesk-clipboard-coord-tests`、`sh scripts/test-xfer-protocol.sh`、`sh scripts/test-network.sh` 全部通过。
+- `sh scripts/test-core.sh` 在 `scripts/test-updates.py` 的 `replace_fail` 用例中断；该失败已在干净 `origin/main`（`ee057d7`）的独立 worktree 上复现，属既有环境问题，与本切片无关，需单独处理。
+- 未验证：Windows 原生构建与测试（仅 CI）、真实双机粘贴、剪贴板争用、关闭竞态。不得以 CI 或单元测试替代物理双设备验收。
+- 未纳入本切片：出站 Offer 发布的三段加锁序列（invalidate → clear → publish）仍是平台实现，因其并发顺序最敏感且缺乏实机基线，留待下一问题单独处理。
+
+
+### 2026-11-12：粘贴落地的完成/重挂不变量 Core 化（阶段 2 续，CI 待验）
+
+- 新增 `hop_clip_coord_paste_apply_result(txn, request_id, armed_version, native_after, success)`，返回 `HOP_CLIP_PASTE_APPLY_COMPLETE` / `REARM` / `CANCEL`。它编码的规则是：**完成必须以原生写入之前的版本校验**，因为写入本身会推进原生版本；失败则把 pending 重挂到写入后的新版本。
+- 这条不变量此前两端各写一遍，形式都是「把同一个变量传两次」：`finish_pending_paste_and_clear_offer(request_id, v, v)` 与 `update_pending_paste_version(request_id, v, v, new)`。一旦有人把 `v` 换成写入后的版本，完成就会静默地永远失败——正是这种错误最适合由单一实现挡住。
+- 7 处调用点全部改为该入口（Windows 4 处、macOS 3 处），逐处核对参数映射一致，未改变任何控制流。适配层不再直接调用 `finish_pending_paste_and_clear_offer` 与 `update_pending_paste_version`。
+- **明确不做的事**：原生写入本身与其加锁编排留在适配层。Windows 是一次原子 `EmptyClipboard + SetClipboardData` 加定时器重试，macOS 是 `clearContents` 再 `writeObjects` 加 10 次退避；更关键的是 Windows 在非粘贴写入（`request_id == 0`）时根本不取事务锁，而 macOS 全程持锁。把写入前的 gate 也搬进 Core 会强行给 Windows 加一次无必要的加锁，属 §1.3 禁止的机械抽象。
+- 扩展 `tests/xfer_clipboard_coord_tests.c`：覆盖以写入前版本完成、以错误版本完成必须拒绝、失败重挂到新版本、跟随自身 clear 的重挂、未知 request 与 NULL 事务拒绝。
+- `scripts/test-regressions.py`：Windows 生产代码回归桩补入 `xfer_clipboard_coord.h` 并链接 `xfer_clipboard_coord.c`，使「production Windows retry waits for clipboard…」这条用例真正覆盖新入口；同时增加反向断言，禁止适配层再出现这两个事务写入。
+- 本地验证：`bash scripts/build-mac.sh`、`hopdesk-clipboard-coord-tests`（ASan/UBSan）、`python3 scripts/test-regressions.py`（含上述 Windows 粘贴重试用例）、`test-xfer-protocol.sh`、`test-network.sh` 全部通过。
+- 未验证：Windows 原生构建与测试（仅 CI）；**macOS 粘贴落地路径没有自动化覆盖**，本次只做了逐行参数映射核对，其正确性依据是等价替换而非测试。
+
+### 2026-11-12：链路状态转移 Core 化（阶段 2 续，CI 待验）
+
+- 新增 `hop_clip_coord_link_state(txn, connected, local_offer_count)` 与两个动作 `HOP_CLIP_ACT_RESEND_LOCAL_OFFER` / `HOP_CLIP_ACT_FORGET_REMOTE_OFFER`。Core 决定三件事：stopping 时完全忽略转移；链路恢复且有已发布 generation 时按原 generation 重播；链路断开时只遗忘 peer 身份、保留本地身份供下次重连重播。
+- **修掉一处真实分歧**：macOS 的 `clipboard_on_link` 会先读 `stopping` 再决定是否重播，Windows 的 `clip_on_link` 完全没有这个检查——正在关闭的 Windows 剪贴板仍会在链路变化时发送。现在两端都走 Core，判断只有一份。Windows 的 `s_clip_stopping` 此前只用于粘贴路径和 `WM_APP_CLIP_PASTE`，本次才覆盖到链路。
+- 两端 `clip_on_link` 由「调用一个快照函数 / 调用一个清除函数」改为「一次 Core 决策 + 一次原生路径快照」，并把 `s_local_offer_count` 在锁内捕获，避免解锁后再读共享计数。
+- 删除 `clip_send_local_offer_snapshot` 与 `clip_clear_remote_offer_local`（各自唯一调用方都是 `clip_on_link`），以及随之变成死代码的 `s_local_offer_generation` 宏别名。
+- 重播取快照的锁由 Windows 的共享锁改为独占锁：Core 在断开分支要改事务状态，且这与其余所有 coord 调用点一致。剪贴板操作频率极低，争用影响可忽略。
+- 扩展 `tests/xfer_clipboard_coord_tests.c`：覆盖按原 generation 重播、空路径数组不重播、无 generation 不重播、断开只清 peer 身份、stopping 时两条分支都被忽略且 peer 身份保留、NULL 事务惰性。
+- `scripts/test-regressions.py` 增加断言：`hop_clip_coord_link_state` 必须出现在 `clipboard_paste.inc`，两个已删除的辅助函数不得再出现。
+- 本地验证：`bash scripts/build-mac.sh`、`hopdesk-clipboard-coord-tests`（ASan/UBSan）、`python3 scripts/test-regressions.py` 全部通过。
+- 未验证：Windows 原生构建与测试（仅 CI）、真实双机粘贴、链路抖动下的重播。
+
+### 2026-11-12：出站 Offer 发布与身份退役收敛（阶段 2 续，CI 待验）
+
+- 新增 `hop_clip_coord_retire_offers`、`hop_clip_coord_consume_offers` 与 `hop_clip_coord_publish_local_offer`：在**一个临界区**内同时退役 peer 身份与本地身份，并返回 `hop_clip_retired_offers{remote, local_generation, notify}`。适配层在释放锁后执行 OFFER_CLEAR 与 OFFER 发送。
+- **通知策略归 Core**：新增 `hop_clip_notify`。剪贴板被外部改动 → `HOP_CLIP_NOTIFY_BOTH`（`clip_retire_offers`）；我们自己写入剪贴板（应用远端粘贴、或发布无法描述的内容）→ `HOP_CLIP_NOTIFY_LOCAL_ONLY`（`clip_consume_offers`），因为 peer 仍然拥有它自己发布的 Offer，不能被通知丢弃。这条协议语义此前散落在两端各自的两步调用里，靠「先调哪个函数」隐式表达。
+- 两端 `clip_publish_local_offer` / `clip_publish_local_paths` 不再分三次加锁（invalidate → clear → publish），改为一次加锁完成退役与装载，消除「远端身份已清除、本地身份仍存活」的中间窗口。
+- 两端「本地剪贴板内容变化」路径（`clip_on_update` / `poll_pasteboard`）改用 `clip_retire_offers()`。
+- **9 处两步退役合并**：`clip_clear_remote_offer_local(); clip_clear_local_offer(1);` 在两端共 9 处（Windows 3 处、macOS 5 处主文件 + 2 处发布失败路径），每处都是两次独立加锁。全部改为单次加锁的 `clip_consume_offers()`，并删除 `clip_clear_local_offer`（已无调用方）与 `clip_invalidate_remote_offer`。
+- **保留 `clip_clear_remote_offer_local`**：它服务「链路断开 → 只遗忘 peer 的 Offer，本地 Offer 保留待重连重播」这一条独立规则，是单次事务调用而非多步编排，为它新增 Core 入口会变成 §1.3 禁止的虚假通用层。
+- **顺带修掉一处两端分歧**：发布失败时 Windows 的 `clip_offer_names` 失败路径会退役身份，而 `_wcsdup` 失败路径和 macOS 的 `strdup` 失败路径都不退役。现统一为两端失败即 `clip_consume_offers()`——剪贴板已换成无法描述的内容，旧 Offer 两侧都失效，留着会让 peer 粘贴到过期文件。
+- **Worker 生命周期结论（不新增抽象）**：两端已经只有一份业务状态——Core 的 `paste_scan_active` 负责准入互斥，平台侧仅保留各自的等待原语（Windows `s_paste_workers_done` 手动重置 Event / macOS `s_paste_group`）。二者在 spawn 前置位、在 `finish_paste_worker` 之后置完成、在 shutdown 阻塞等待，语义等价。把 Event 与 dispatch_group 强行统一会制造 §1.3 禁止的虚假通用层，因此本切片不动它。
+- 扩展 `tests/xfer_clipboard_coord_tests.c`：覆盖双身份退役、发布时返回旧身份并递增 generation、三种意图的通知策略、无身份可退役时降级为 `HOP_CLIP_NOTIFY_NONE`、以及 NULL 事务不写入 generation。
+- `scripts/test-regressions.py` 增加反向断言：`clip_clear_local_offer` 与 `hop_clipboard_txn_clear_local_offer` 不得再出现在两端适配层，`hop_clipboard_txn_publish_local_offer` 不得出现在 `clipboard_offer.inc`，防止两步退役重新长出来。
+- 本地验证：`bash scripts/build-mac.sh`、`hopdesk-clipboard-coord-tests`、`hopdesk-clipboard-txn-tests`（均带 ASan/UBSan）、`python3 scripts/test-regressions.py`（All targeted regressions passed）全部通过。`scripts/test-updates.py` 的 `replace_fail` 既有失败仍未修复，会在第 42 行中断 `test-core.sh`，导致脚本化路径永远跑不到 clipboard 用例；因此上述 clipboard 测试是手动编译直接运行的。
+- **已知未处理分歧**：`clipboard_on_link` 在 macOS 会先检查 `stopping` 再决定是否重播 Offer，Windows 的 `clip_on_link` 完全没有 stopping 概念。这是关机时序问题，不属于身份退役，留待单独问题处理，不在本切片静默修改。
+- 未验证：Windows 原生构建与测试（仅 CI）、真实双机粘贴、剪贴板争用、关闭竞态。
+
+### 2026-11-12：修复 Offer 路径所有权与 Paste Worker 竞态
+
+- macOS 在锁内编码 Offer，发送方在锁外只读取自己持有的 payload。入站 Offer 或清除可以释放已移交的路径，不影响发送缓冲。
+- Windows 在同一把锁下释放 Core Worker 准入并置位完成事件。关闭流程禁止新准入，确认等待成功后，在锁下摘除句柄，再关闭句柄。
+- Core 先识别已接收的重复请求，再判断 Worker 是否忙。两端只为通过准入检查的请求分配快照。原生写入失败后，只有 Core 接受版本更新时才安排重试。
+- 在 macOS 上以 `2164e8d` 为基础的工作区通过 `bash scripts/test-core.sh`（含定向回归）、`bash scripts/build-mac.sh`、`bash scripts/test-xfer-protocol.sh` 和 `bash scripts/test-network.sh`。临时 ASan/UBSan 夹具在实际 Offer 发送函数中注入路径清理，仍能解码随后发送的 Offer。
+- Windows 原生构建、双平台 CI、真实双机及资源测量未执行。

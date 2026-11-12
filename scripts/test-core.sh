@@ -262,3 +262,9 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-clipboard-txn-tests" \
   "$ROOT/tests/xfer_clipboard_txn_tests.c" "$ROOT/src/core/xfer_clipboard_txn.c"
 "$BUILD/hopdesk-clipboard-txn-tests"
+
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I "$ROOT/src/core" -o "$BUILD/hopdesk-clipboard-coord-tests" \
+  "$ROOT/tests/xfer_clipboard_coord_tests.c" "$ROOT/src/core/xfer_clipboard_coord.c" \
+  "$ROOT/src/core/xfer_clipboard_txn.c"
+"$BUILD/hopdesk-clipboard-coord-tests"

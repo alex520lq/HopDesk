@@ -98,10 +98,11 @@ static hop_clipboard_request_result check_request(
     const hop_clipboard_txn *txn, uint32_t request_id, uint64_t offer_generation,
     int worker_available) {
     if (!txn || !request_id) return HOP_CLIPBOARD_REQUEST_STALE;
-    if (txn->stopping || !worker_available || txn->paste_scan_active)
-        return HOP_CLIPBOARD_REQUEST_BUSY;
+    if (txn->stopping) return HOP_CLIPBOARD_REQUEST_BUSY;
+    /* A BUSY reply to a duplicate would cancel the peer's original request. */
     for (unsigned i = 0; i < HOP_CLIPBOARD_TXN_SEEN_REQUESTS; ++i)
         if (txn->seen_requests[i] == request_id) return HOP_CLIPBOARD_REQUEST_DUPLICATE;
+    if (!worker_available || txn->paste_scan_active) return HOP_CLIPBOARD_REQUEST_BUSY;
     if (!offer_generation || offer_generation != txn->local_offer_generation)
         return HOP_CLIPBOARD_REQUEST_STALE;
     return HOP_CLIPBOARD_REQUEST_ACCEPTED;

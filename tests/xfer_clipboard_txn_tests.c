@@ -62,11 +62,11 @@ int main(void) {
     snapshot_ok = 1;
     assert(hop_clipboard_txn_accept_request(&t, 900, local, 1, snapshot_paths, &snapshot_ok) ==
            HOP_CLIPBOARD_REQUEST_ACCEPTED);
-    assert(hop_clipboard_txn_accept_request(&t, 900, local, 1, snapshot_paths, &snapshot_ok) ==
-           HOP_CLIPBOARD_REQUEST_BUSY);
-    hop_clipboard_txn_finish_paste_worker(&t);
     assert(hop_clipboard_txn_accept_request(&t, 900, local, 1, snapshot_paths, NULL) ==
            HOP_CLIPBOARD_REQUEST_DUPLICATE);
+    assert(hop_clipboard_txn_accept_request(&t, 901, local, 1, snapshot_paths, NULL) ==
+           HOP_CLIPBOARD_REQUEST_BUSY);
+    hop_clipboard_txn_finish_paste_worker(&t);
     assert(hop_clipboard_txn_accept_request(&t, 901, local + 1, 1, snapshot_paths, NULL) ==
            HOP_CLIPBOARD_REQUEST_STALE);
     assert(hop_clipboard_txn_accept_request(&t, 901, local, 0, snapshot_paths, &snapshot_ok) ==

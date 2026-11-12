@@ -353,6 +353,7 @@ int main(void){
 #include <stdlib.h>
 #include <assert.h>
 #include "xfer_clipboard_txn.h"
+#include "xfer_clipboard_coord.h"
 typedef void *HGLOBAL;typedef unsigned UINT;typedef int HWND;typedef unsigned DWORD;
 #define IDT_CLIP_RETRY 1
 #define CF_HDROP 15
@@ -460,7 +461,7 @@ int main(void){
     puts("PASS: production Windows retry waits for clipboard, notifies only on successful paste apply and preserves newer content");return 0;
 }
 '''
-    run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','clip_staged_request_matches','clip_cancel_staged_if_match','discard_pending_replacing','apply_global_expected','apply_global','clip_retry_pending','clip_on_paste_message'])+clip_main,['src/core/xfer_clipboard_txn.c'])
+    run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','clip_staged_request_matches','clip_cancel_staged_if_match','discard_pending_replacing','apply_global_expected','apply_global','clip_retry_pending','clip_on_paste_message'])+clip_main,['src/core/xfer_clipboard_txn.c','src/core/xfer_clipboard_coord.c'])
     # A cross-device paste batch must never fall through to the ordinary clipboard writer.
     for platform in ['win','mac']:
         rx='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.c','xfer_rx_protocol_handlers.c'))
@@ -2098,12 +2099,14 @@ int main(void) {
                 'hop_clip_coord_paste_request','hop_clip_coord_begin_paste',
                 'hop_clip_coord_complete_paste','hop_clip_coord_retire_offers',
                 'hop_clip_coord_consume_offers','hop_clip_coord_publish_local_offer',
-                'hop_clip_coord_link_state']:
+                'hop_clip_coord_link_state','hop_clip_coord_paste_apply_result']:
         assert api in clip_coord and api in clip_coord_header
     for txn_api in ['hop_clipboard_txn_set_remote_offer','hop_clipboard_txn_begin_paste',
                     'hop_clipboard_txn_accept_request','hop_clipboard_txn_complete_paste',
                     'hop_clipboard_txn_clear_offer_if_match','hop_clipboard_txn_publish_local_offer',
-                    'hop_clipboard_txn_clear_local_offer','hop_clipboard_txn_clear_remote_offer']:
+                    'hop_clipboard_txn_clear_local_offer','hop_clipboard_txn_clear_remote_offer',
+                    'hop_clipboard_txn_finish_pending_paste_and_clear_offer',
+                    'hop_clipboard_txn_update_pending_paste_version']:
         assert txn_api in clip_coord, txn_api+' must be driven by the shared coordinator'
 
     for platform,main_name in [('win','clipboard.c'),('mac','clipboard.m')]:
@@ -2130,6 +2133,12 @@ int main(void) {
         assert 'clip_send_local_offer_snapshot' not in offer
         assert 'clip_clear_remote_offer_local' not in offer
         assert 'clip_clear_remote_offer_local' not in paste
+        # Completing or re-arming a paste is one shared rule: completion must
+        # validate against the version armed before the native write, because
+        # the write moves that version itself.
+        assert 'hop_clip_coord_paste_apply_result' in main
+        assert 'hop_clipboard_txn_finish_pending_paste_and_clear_offer' not in main
+        assert 'hop_clipboard_txn_update_pending_paste_version' not in main
         for delegated in ['hop_clip_coord_remote_offer','hop_clip_coord_offer_clear',
                           'hop_clip_coord_begin_paste','hop_clip_coord_paste_request',
                           'hop_clip_coord_complete_paste']:

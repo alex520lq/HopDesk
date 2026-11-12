@@ -84,6 +84,28 @@ typedef enum {
     HOP_CLIP_NOTIFY_BOTH         /* both identities are dead */
 } hop_clip_notify;
 
+/* Outcome of one native clipboard write attempt for a staged paste.
+ *
+ * The write itself stays in the adapter: Windows does it as one atomic
+ * EmptyClipboard + SetClipboardData, macOS as clearContents then writeObjects,
+ * and their retry shapes differ. What must not be duplicated is the invariant
+ * around it, because getting it wrong fails silently: completion has to
+ * validate against the version the transaction was armed with *before* the
+ * write, since the write moves the native version itself. Passing the version
+ * observed after the write would make completion reject its own success. */
+typedef enum {
+    HOP_CLIP_PASTE_APPLY_COMPLETE = 0, /* paste done, offer cleared */
+    HOP_CLIP_PASTE_APPLY_REARM = 1,    /* still pending at the new version */
+    HOP_CLIP_PASTE_APPLY_CANCEL = 2    /* give up on this request */
+} hop_clip_paste_apply_result;
+
+/* Under the adapter lock, after the native write attempt.
+ * success != 0 completes the paste and clears the offer against armed_version.
+ * success == 0 re-arms the pending paste at native_after, which is also how an
+ * adapter follows a native version move caused by its own write phase. */
+hop_clip_paste_apply_result hop_clip_coord_paste_apply_result(hop_clipboard_txn *txn,
+    uint32_t request_id, uint64_t armed_version, uint64_t native_after, int success);
+
 /* Link state change. Core owns the rules: a stopping clipboard ignores the
  * transition entirely; a live link re-announces the stored offer when one is
  * complete; a dead link forgets the peer's offer but keeps our own so it can be

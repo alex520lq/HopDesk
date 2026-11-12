@@ -1064,6 +1064,17 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 未纳入本切片：出站 Offer 发布的三段加锁序列（invalidate → clear → publish）仍是平台实现，因其并发顺序最敏感且缺乏实机基线，留待下一问题单独处理。
 
 
+### 2026-11-12：粘贴落地的完成/重挂不变量 Core 化（阶段 2 续，CI 待验）
+
+- 新增 `hop_clip_coord_paste_apply_result(txn, request_id, armed_version, native_after, success)`，返回 `HOP_CLIP_PASTE_APPLY_COMPLETE` / `REARM` / `CANCEL`。它编码的规则是：**完成必须以原生写入之前的版本校验**，因为写入本身会推进原生版本；失败则把 pending 重挂到写入后的新版本。
+- 这条不变量此前两端各写一遍，形式都是「把同一个变量传两次」：`finish_pending_paste_and_clear_offer(request_id, v, v)` 与 `update_pending_paste_version(request_id, v, v, new)`。一旦有人把 `v` 换成写入后的版本，完成就会静默地永远失败——正是这种错误最适合由单一实现挡住。
+- 7 处调用点全部改为该入口（Windows 4 处、macOS 3 处），逐处核对参数映射一致，未改变任何控制流。适配层不再直接调用 `finish_pending_paste_and_clear_offer` 与 `update_pending_paste_version`。
+- **明确不做的事**：原生写入本身与其加锁编排留在适配层。Windows 是一次原子 `EmptyClipboard + SetClipboardData` 加定时器重试，macOS 是 `clearContents` 再 `writeObjects` 加 10 次退避；更关键的是 Windows 在非粘贴写入（`request_id == 0`）时根本不取事务锁，而 macOS 全程持锁。把写入前的 gate 也搬进 Core 会强行给 Windows 加一次无必要的加锁，属 §1.3 禁止的机械抽象。
+- 扩展 `tests/xfer_clipboard_coord_tests.c`：覆盖以写入前版本完成、以错误版本完成必须拒绝、失败重挂到新版本、跟随自身 clear 的重挂、未知 request 与 NULL 事务拒绝。
+- `scripts/test-regressions.py`：Windows 生产代码回归桩补入 `xfer_clipboard_coord.h` 并链接 `xfer_clipboard_coord.c`，使「production Windows retry waits for clipboard…」这条用例真正覆盖新入口；同时增加反向断言，禁止适配层再出现这两个事务写入。
+- 本地验证：`bash scripts/build-mac.sh`、`hopdesk-clipboard-coord-tests`（ASan/UBSan）、`python3 scripts/test-regressions.py`（含上述 Windows 粘贴重试用例）、`test-xfer-protocol.sh`、`test-network.sh` 全部通过。
+- 未验证：Windows 原生构建与测试（仅 CI）；**macOS 粘贴落地路径没有自动化覆盖**，本次只做了逐行参数映射核对，其正确性依据是等价替换而非测试。
+
 ### 2026-11-12：链路状态转移 Core 化（阶段 2 续，CI 待验）
 
 - 新增 `hop_clip_coord_link_state(txn, connected, local_offer_count)` 与两个动作 `HOP_CLIP_ACT_RESEND_LOCAL_OFFER` / `HOP_CLIP_ACT_FORGET_REMOTE_OFFER`。Core 决定三件事：stopping 时完全忽略转移；链路恢复且有已发布 generation 时按原 generation 重播；链路断开时只遗忘 peer 身份、保留本地身份供下次重连重播。

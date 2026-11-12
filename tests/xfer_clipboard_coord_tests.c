@@ -18,6 +18,8 @@ int main(void) {
 
     /* ---- inbound FILE_OFFER ---- */
     hop_clipboard_txn t;
+    uint32_t rid = 0, origin = 0;
+    uint64_t gen = 0, expected = 0;
     hop_clipboard_txn_init(&t);
 
     assert(hop_clip_coord_remote_offer(NULL, local, peer, 5).action == HOP_CLIP_ACT_NONE);
@@ -250,6 +252,47 @@ int main(void) {
     /* Null transaction is inert for link transitions too. */
     assert(hop_clip_coord_link_state(NULL, 1, 5).action == HOP_CLIP_ACT_NONE);
     assert(hop_clip_coord_link_state(NULL, 0, 5).action == HOP_CLIP_ACT_NONE);
+
+    /* ---- native write result for a staged paste ---- */
+    /* Completion validates against the version armed before the write, because
+     * the write itself moves the native version. */
+    hop_clipboard_txn_init(&t);
+    hop_clipboard_txn_set_remote_offer(&t, peer, 90);
+    assert(hop_clipboard_txn_begin_paste(&t, 40, 40, 0x80000000u, &rid, &origin, &gen, &expected) == 1);
+    assert(hop_clip_coord_complete_paste(&t, rid, 40, 1).action == HOP_CLIP_ACT_APPLY_PASTE);
+    assert(hop_clip_coord_paste_apply_result(&t, rid, expected, expected + 1, 1) ==
+           HOP_CLIP_PASTE_APPLY_COMPLETE);
+    assert(!t.pending_request_id);
+
+    /* A failed write re-arms the same request at the new native version. */
+    hop_clipboard_txn_init(&t);
+    hop_clipboard_txn_set_remote_offer(&t, peer, 91);
+    assert(hop_clipboard_txn_begin_paste(&t, 41, 41, 0x80000000u, &rid, &origin, &gen, &expected) == 1);
+    assert(hop_clip_coord_complete_paste(&t, rid, 41, 1).action == HOP_CLIP_ACT_APPLY_PASTE);
+    assert(hop_clip_coord_paste_apply_result(&t, rid, expected, expected + 1, 0) ==
+           HOP_CLIP_PASTE_APPLY_REARM);
+    assert(t.pending_request_id == rid);
+    assert(t.pending_clipboard_version == expected + 1);
+    /* Following our own clear is the same operation. */
+    assert(hop_clip_coord_paste_apply_result(&t, rid, expected + 1, expected + 2, 0) ==
+           HOP_CLIP_PASTE_APPLY_REARM);
+    assert(t.pending_clipboard_version == expected + 2);
+
+    /* Completion with the wrong armed version cannot succeed: this is the
+     * mistake the shared entry point exists to prevent. */
+    hop_clipboard_txn_init(&t);
+    hop_clipboard_txn_set_remote_offer(&t, peer, 92);
+    assert(hop_clipboard_txn_begin_paste(&t, 42, 42, 0x80000000u, &rid, &origin, &gen, &expected) == 1);
+    assert(hop_clip_coord_complete_paste(&t, rid, 42, 1).action == HOP_CLIP_ACT_APPLY_PASTE);
+    assert(hop_clip_coord_paste_apply_result(&t, rid, expected + 1, expected + 1, 1) ==
+           HOP_CLIP_PASTE_APPLY_CANCEL);
+    assert(t.pending_request_id == rid);
+
+    /* An unknown request and a null transaction both refuse. */
+    hop_clipboard_txn_init(&t);
+    assert(hop_clip_coord_paste_apply_result(&t, 4242, 1, 1, 1) == HOP_CLIP_PASTE_APPLY_CANCEL);
+    assert(hop_clip_coord_paste_apply_result(NULL, 1, 1, 1, 1) == HOP_CLIP_PASTE_APPLY_CANCEL);
+    assert(hop_clip_coord_paste_apply_result(NULL, 1, 1, 1, 0) == HOP_CLIP_PASTE_APPLY_CANCEL);
 
     puts("PASS: clipboard orchestration decisions");
     return 0;

@@ -496,15 +496,14 @@ static void apply_objects_retry(NSArray *objects, NSString *kind,
         [pb clearContents];
         uint64_t cleared=(uint64_t)[pb changeCount];
         s_last_change=(NSInteger)cleared;
-        (void)hop_clipboard_txn_update_pending_paste_version(&s_clip_txn,request_id,txn_expected,
-                                                              txn_expected,cleared);
+        (void)hop_clip_coord_paste_apply_result(&s_clip_txn,request_id,txn_expected,cleared,0);
         BOOL ok=[pb writeObjects:objects];
         uint64_t after_write=(uint64_t)[pb changeCount];
         s_last_change=(NSInteger)after_write;
         if(ok) {
-            ok=hop_clipboard_txn_finish_pending_paste_and_clear_offer(&s_clip_txn,request_id,cleared,cleared);
+            ok=hop_clip_coord_paste_apply_result(&s_clip_txn,request_id,cleared,cleared,1)==HOP_CLIP_PASTE_APPLY_COMPLETE;
         } else {
-            (void)hop_clipboard_txn_update_pending_paste_version(&s_clip_txn,request_id,cleared,cleared,after_write);
+            (void)hop_clip_coord_paste_apply_result(&s_clip_txn,request_id,cleared,after_write,0);
         }
         pthread_mutex_unlock(&s_offer_lock);
         if(ok) { statusbar_notify_paste_ready(); hop_log(HOP_LOG_INFO,"clip: files ready; choose a target and paste again"); return; }

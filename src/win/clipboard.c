@@ -131,14 +131,14 @@ static int apply_global_expected(UINT format,HGLOBAL h,DWORD required_sequence,i
                 if(SetClipboardData(format,h)) {
                     s_remote_sequence=GetClipboardSequenceNumber(); s_last_sequence=s_remote_sequence;
                     int finished=1;
-                    if(request_id) finished=hop_clipboard_txn_finish_pending_paste_and_clear_offer(&s_clip_txn,request_id,expected,expected);
+                    if(request_id) finished=hop_clip_coord_paste_apply_result(&s_clip_txn,request_id,expected,expected,1)==HOP_CLIP_PASTE_APPLY_COMPLETE;
                     if(request_id) ReleaseSRWLockExclusive(&s_offer_lock);
                     CloseClipboard();
                     if(request_id && finished) { s_queued_paste_request=0; ui_notify_paste_ready(); }
                     return 1;
                 }
                 expected=GetClipboardSequenceNumber(); s_remote_sequence=expected; s_last_sequence=expected;
-                if(request_id) (void)hop_clipboard_txn_update_pending_paste_version(&s_clip_txn,request_id,before_empty,before_empty,expected);
+                if(request_id) (void)hop_clip_coord_paste_apply_result(&s_clip_txn,request_id,before_empty,expected,0);
             }
             if(request_id) ReleaseSRWLockExclusive(&s_offer_lock);
             CloseClipboard();
@@ -194,13 +194,13 @@ void clip_retry_pending(void) {
         if(SetClipboardData(s_pending_format,s_pending_global)) {
             s_pending_global=NULL; s_remote_sequence=GetClipboardSequenceNumber(); s_last_sequence=s_remote_sequence;
             int finished=1;
-            if(paste) finished=hop_clipboard_txn_finish_pending_paste_and_clear_offer(&s_clip_txn,request_id,s_pending_sequence,s_pending_sequence);
+            if(paste) finished=hop_clip_coord_paste_apply_result(&s_clip_txn,request_id,s_pending_sequence,s_pending_sequence,1)==HOP_CLIP_PASTE_APPLY_COMPLETE;
             if(paste) ReleaseSRWLockExclusive(&s_offer_lock);
             CloseClipboard(); hop_log(HOP_LOG_INFO,"clip: pending remote clipboard applied");
             if(paste && finished) { s_queued_paste_request=0; ui_notify_paste_ready(); }
         } else {
             DWORD next=GetClipboardSequenceNumber(); s_pending_sequence=next; s_remote_sequence=next; s_last_sequence=next;
-            if(paste) (void)hop_clipboard_txn_update_pending_paste_version(&s_clip_txn,request_id,before_empty,before_empty,next);
+            if(paste) (void)hop_clip_coord_paste_apply_result(&s_clip_txn,request_id,before_empty,next,0);
             if(paste) ReleaseSRWLockExclusive(&s_offer_lock);
             CloseClipboard(); schedule_clip_retry(); return;
         }

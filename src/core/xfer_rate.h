@@ -42,7 +42,8 @@ void hop_xfer_rate_init(hop_xfer_rate_limiter *rate,
                         uint64_t burst_bytes,
                         uint64_t now_ns);
 
-/* Returns the delay before 'bytes' may be sent. Call again after sleeping.
+/* Returns the delay before 'bytes' may be sent. Only a zero result consumes
+ * tokens. Call again after sleeping so the existing credit can finish refilling.
  * A chunk larger than burst_bytes is invalid and returns UINT64_MAX. */
 uint64_t hop_xfer_rate_wait_ns(hop_xfer_rate_limiter *rate,
                                uint64_t bytes,

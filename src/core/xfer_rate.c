@@ -86,7 +86,7 @@ void hop_xfer_rate_init(hop_xfer_rate_limiter *rate,
 uint64_t hop_xfer_rate_wait_ns(hop_xfer_rate_limiter *rate,
                                uint64_t bytes,
                                uint64_t now_ns) {
-    uint64_t elapsed, missing, ns_to_full, add, wait_ns;
+    uint64_t elapsed, missing, ns_to_full, add;
     if (!rate || !bytes || !rate->current_rate_bytes_per_sec) return 0;
     if (bytes > rate->burst_bytes) return UINT64_MAX;
 
@@ -117,11 +117,8 @@ uint64_t hop_xfer_rate_wait_ns(hop_xfer_rate_limiter *rate,
         return 0;
     }
     missing = bytes - rate->tokens_bytes;
-    rate->tokens_bytes = 0;
-    wait_ns = (missing * RATE_NS_PER_SEC +
-               rate->current_rate_bytes_per_sec - 1u) /
-              rate->current_rate_bytes_per_sec;
-    return wait_ns;
+    return (missing * RATE_NS_PER_SEC + rate->current_rate_bytes_per_sec - 1u) /
+           rate->current_rate_bytes_per_sec;
 }
 
 void hop_xfer_rate_note_send_time(hop_xfer_rate_limiter *rate, uint64_t bytes, uint64_t send_us) {

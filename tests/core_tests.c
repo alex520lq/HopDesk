@@ -915,7 +915,11 @@ static void test_xfer_rate_limiter(void) {
     CHECK(hop_xfer_rate_wait_ns(&rate,50,0)==0);
     CHECK(rate.tokens_bytes==50);
     CHECK(hop_xfer_rate_wait_ns(&rate,100,0)==50000000ull);
-    CHECK(hop_xfer_rate_wait_ns(&rate,100,50000000ull)==50000000ull);
+    CHECK(rate.tokens_bytes==50);
+    CHECK(hop_xfer_rate_wait_ns(&rate,100,25000000ull)==25000000ull);
+    CHECK(rate.tokens_bytes==75);
+    CHECK(hop_xfer_rate_wait_ns(&rate,100,50000000ull)==0);
+    CHECK(rate.tokens_bytes==0);
     CHECK(hop_xfer_rate_wait_ns(&rate,50,100000000ull)==0);
     CHECK(hop_xfer_rate_wait_ns(&rate,101,100000000ull)==UINT64_MAX);
 

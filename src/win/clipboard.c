@@ -18,6 +18,7 @@
 #include "xfer.h"
 #include "../core/xfer_task.h"
 #include "../core/xfer_clipboard_txn.h"
+#include "../core/xfer_budget.h"
 
 #include <shellapi.h>
 #include <stdio.h>
@@ -38,10 +39,11 @@ typedef struct {
 /* Latest remote clipboard payload survives temporary clipboard contention.
  * Ownership of HGLOBAL transfers here; Windows owns it only after SetClipboardData. */
 static int open_retry(HWND hwnd); /* used by pending remote-clipboard writer */
-static int apply_global_expected(UINT format,HGLOBAL h,DWORD required_sequence,int enforce_sequence,int clear_remote);
+static int apply_global_expected(UINT format,HGLOBAL h,DWORD required_sequence,int enforce_sequence,uint32_t request_id);
 static HGLOBAL s_pending_global;
 static UINT s_pending_format;
 static DWORD s_pending_sequence;
+static uint32_t s_queued_paste_request;
 static DWORD s_remote_sequence;
 static HANDLE s_image_thread;
 static volatile LONG s_image_busy;
@@ -61,13 +63,11 @@ static int s_local_offer_count;
 #define s_offer_request_seq (s_clip_txn.request_sequence)
 #define s_remote_offer_origin (s_clip_txn.remote_offer_origin)
 #define s_remote_offer_generation (s_clip_txn.remote_offer_generation)
-#define s_pending_paste_request (s_clip_txn.pending_request_id)
 #define s_pending_paste_sequence (s_clip_txn.pending_clipboard_version)
 #define s_seen_paste_requests (s_clip_txn.seen_requests)
 #define s_seen_paste_next (s_clip_txn.seen_next)
 #define s_paste_scan_active (s_clip_txn.paste_scan_active)
 #define s_clip_stopping (s_clip_txn.stopping)
-static int s_pending_clear_remote;
 static HANDLE s_paste_workers_done;static HANDLE s_paste_workers_done;
 
 #include "clipboard_offer.inc"
@@ -75,97 +75,140 @@ static HANDLE s_paste_workers_done;static HANDLE s_paste_workers_done;
 static int image_work_retry_pending(void);
 
 static void discard_pending(void) {
-    if(s_pending_global)GlobalFree(s_pending_global);
+    if(s_pending_global) GlobalFree(s_pending_global);
     s_pending_global=NULL;
 }
+
 
 static void schedule_clip_retry(void) {
     if (g_app.hwnd) SetTimer(g_app.hwnd, IDT_CLIP_RETRY, 120, NULL);
 }
 
-static int apply_global_expected(UINT format,HGLOBAL h,DWORD required_sequence,int enforce_sequence,int clear_remote) {
+static int clip_staged_request_matches(uint32_t request_id, uint64_t expected) {
+    uint64_t staged_version=0;
+    return hop_clipboard_txn_get_staged_paste(&s_clip_txn,request_id,&staged_version) &&
+           staged_version==expected;
+}
+static void clip_cancel_staged_if_match(uint32_t request_id, uint64_t expected) {
+    if (clip_staged_request_matches(request_id,expected))
+        hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,request_id);
+}
+
+static void discard_pending_replacing(uint32_t next_request_id) {
+    uint32_t old_id=s_queued_paste_request;
+    DWORD old_version=s_pending_sequence;
+    if(old_id && old_id!=next_request_id)
+        clip_cancel_staged_if_match(old_id,old_version);
+    discard_pending();
+    s_queued_paste_request=0;
+}
+
+static int apply_global_expected(UINT format,HGLOBAL h,DWORD required_sequence,int enforce_sequence,uint32_t request_id) {
     if (!h) return 0;
     DWORD expected=enforce_sequence?required_sequence:GetClipboardSequenceNumber();
-    if(GetClipboardSequenceNumber()!=expected){GlobalFree(h);if(clear_remote)clip_clear_remote_offer_local();return 0;}
-    discard_pending();
-    s_pending_clear_remote=0;
-    if (open_retry(g_app.hwnd)) {
-        if(GetClipboardSequenceNumber()!=expected) {
-            CloseClipboard(); GlobalFree(h);
-            if(clear_remote)clip_clear_remote_offer_local();
-            return 0;
-        }
-        if (EmptyClipboard()) {
-            if (SetClipboardData(format, h)) {
-                s_remote_sequence = GetClipboardSequenceNumber();
-                s_last_sequence = s_remote_sequence;
-                if(clear_remote)clip_clear_remote_offer_local();
-                CloseClipboard();
-                if(clear_remote)ui_notify_paste_ready();
-                return 1;
-            }
-            /* EmptyClipboard succeeded, so this sequence change is ours. Keep
-             * the HGLOBAL queued against that exact empty clipboard version. */
-            expected=GetClipboardSequenceNumber();
-            s_remote_sequence=expected;
-            s_last_sequence=expected; /* suppress our own empty update while queued */
-        }
-        CloseClipboard();
+    if(request_id) AcquireSRWLockExclusive(&s_offer_lock);
+    if(GetClipboardSequenceNumber()!=expected) {
+        if(request_id) { clip_cancel_staged_if_match(request_id,expected); ReleaseSRWLockExclusive(&s_offer_lock); }
+        GlobalFree(h); return 0;
     }
-    if(GetClipboardSequenceNumber()!=expected){GlobalFree(h);if(clear_remote)clip_clear_remote_offer_local();return 0;}
-    if (s_pending_global) GlobalFree(s_pending_global);
-    s_pending_clear_remote=clear_remote;
-    s_pending_global = h;
-    s_pending_format = format;
-    s_pending_sequence = expected;
-    schedule_clip_retry();
-    hop_log(HOP_LOG_WARN, "clip: clipboard busy; queued remote format %u for retry", format);
+    if(request_id) {
+        int valid=clip_staged_request_matches(request_id,expected);
+        if(!valid){ReleaseSRWLockExclusive(&s_offer_lock);GlobalFree(h);return 0;}
+        ReleaseSRWLockExclusive(&s_offer_lock);
+    }
+    if(open_retry(g_app.hwnd)) {
+        if(request_id) AcquireSRWLockExclusive(&s_offer_lock);
+        int sequence_matches=GetClipboardSequenceNumber()==expected;
+        int valid=sequence_matches;
+        if(request_id) valid=valid && clip_staged_request_matches(request_id,expected);
+        if(!sequence_matches && request_id) clip_cancel_staged_if_match(request_id,expected);
+        if(valid) {
+            if(!request_id) AcquireSRWLockExclusive(&s_offer_lock);
+            discard_pending_replacing(request_id);
+            if(!request_id) ReleaseSRWLockExclusive(&s_offer_lock);
+            if(EmptyClipboard()) {
+                DWORD before_empty=expected;
+                if(SetClipboardData(format,h)) {
+                    s_remote_sequence=GetClipboardSequenceNumber(); s_last_sequence=s_remote_sequence;
+                    int finished=1;
+                    if(request_id) finished=hop_clipboard_txn_finish_pending_paste_and_clear_offer(&s_clip_txn,request_id,expected,expected);
+                    if(request_id) ReleaseSRWLockExclusive(&s_offer_lock);
+                    CloseClipboard();
+                    if(request_id && finished) { s_queued_paste_request=0; ui_notify_paste_ready(); }
+                    return 1;
+                }
+                expected=GetClipboardSequenceNumber(); s_remote_sequence=expected; s_last_sequence=expected;
+                if(request_id) (void)hop_clipboard_txn_update_pending_paste_version(&s_clip_txn,request_id,before_empty,before_empty,expected);
+            }
+            if(request_id) ReleaseSRWLockExclusive(&s_offer_lock);
+            CloseClipboard();
+        } else {
+            if(request_id) ReleaseSRWLockExclusive(&s_offer_lock);
+            CloseClipboard(); GlobalFree(h); return 0;
+        }
+    }
+    if(GetClipboardSequenceNumber()!=expected) {
+        if(request_id) {
+            AcquireSRWLockExclusive(&s_offer_lock);
+            clip_cancel_staged_if_match(request_id,expected);
+            ReleaseSRWLockExclusive(&s_offer_lock);
+        }
+        GlobalFree(h); return 0;
+    }
+    /* Queue only after confirming the same transaction still owns this request. */
+    if(request_id) {
+        AcquireSRWLockExclusive(&s_offer_lock);
+        int valid=clip_staged_request_matches(request_id,expected);
+        if(!valid){ReleaseSRWLockExclusive(&s_offer_lock);GlobalFree(h);return 0;}
+    }
+    if(!request_id) AcquireSRWLockExclusive(&s_offer_lock);
+    discard_pending_replacing(request_id);
+    s_pending_global=h; s_pending_format=format; s_pending_sequence=expected;
+    s_queued_paste_request=request_id;
+    ReleaseSRWLockExclusive(&s_offer_lock);
+    schedule_clip_retry(); hop_log(HOP_LOG_WARN,"clip: clipboard busy; queued remote format %u for retry",format);
     return 0;
 }
 static int apply_global(UINT format,HGLOBAL h){return apply_global_expected(format,h,0,0,0);}
 
 void clip_retry_pending(void) {
-    if (s_pending_global) {
-        if (open_retry(g_app.hwnd)) {
-            if(GetClipboardSequenceNumber()!=s_pending_sequence) {
-                int clear_remote=s_pending_clear_remote;
-                discard_pending(); s_pending_clear_remote=0;
-                if(clear_remote)clip_clear_remote_offer_local();
-                CloseClipboard();
-                KillTimer(g_app.hwnd,IDT_CLIP_RETRY); return;
-            }
-            if (EmptyClipboard()) {
-                if (SetClipboardData(s_pending_format, s_pending_global)) {
-                    s_pending_global = NULL; /* ownership transferred to Windows */
-                    s_remote_sequence = GetClipboardSequenceNumber();
-                    s_last_sequence = s_remote_sequence;
-                    int paste_ready=s_pending_clear_remote;
-                    if(paste_ready)clip_clear_remote_offer_local();
-                    s_pending_clear_remote=0;
-                    hop_log(HOP_LOG_INFO, "clip: pending remote clipboard applied");
-                    CloseClipboard();
-                    if(paste_ready)ui_notify_paste_ready();
-                } else {
-                    /* Only our EmptyClipboard changed the sequence; retain the
-                     * queued payload but reject any later user clipboard change. */
-                    s_pending_sequence=GetClipboardSequenceNumber();
-                    s_remote_sequence=s_pending_sequence;
-                    s_last_sequence=s_pending_sequence; /* our empty update, not a user copy */
-                    CloseClipboard();
-                    schedule_clip_retry();
-                    return;
-                }
-            } else {
-                CloseClipboard();
-                schedule_clip_retry();
-                return;
-            }
-        } else {
-            schedule_clip_retry();
-            return;
-        }
+    if(!s_pending_global) { KillTimer(g_app.hwnd,IDT_CLIP_RETRY); return; }
+    uint32_t request_id=s_queued_paste_request; int paste=request_id!=0;
+    if(paste) AcquireSRWLockExclusive(&s_offer_lock);
+    if(paste && !clip_staged_request_matches(request_id,s_pending_sequence)) {
+        ReleaseSRWLockExclusive(&s_offer_lock); discard_pending(); s_queued_paste_request=0;
+        KillTimer(g_app.hwnd,IDT_CLIP_RETRY); return;
     }
-    KillTimer(g_app.hwnd, IDT_CLIP_RETRY);
+    if(paste) ReleaseSRWLockExclusive(&s_offer_lock);
+    if(!open_retry(g_app.hwnd)){schedule_clip_retry();return;}
+    if(paste) AcquireSRWLockExclusive(&s_offer_lock);
+    int valid=GetClipboardSequenceNumber()==s_pending_sequence;
+    if(paste) valid=valid && clip_staged_request_matches(request_id,s_pending_sequence);
+    if(!valid) {
+        if(paste) clip_cancel_staged_if_match(request_id,s_pending_sequence);
+        if(paste) ReleaseSRWLockExclusive(&s_offer_lock);
+        discard_pending(); s_queued_paste_request=0; CloseClipboard(); KillTimer(g_app.hwnd,IDT_CLIP_RETRY); return;
+    }
+    if(EmptyClipboard()) {
+        DWORD before_empty=s_pending_sequence;
+        if(SetClipboardData(s_pending_format,s_pending_global)) {
+            s_pending_global=NULL; s_remote_sequence=GetClipboardSequenceNumber(); s_last_sequence=s_remote_sequence;
+            int finished=1;
+            if(paste) finished=hop_clipboard_txn_finish_pending_paste_and_clear_offer(&s_clip_txn,request_id,s_pending_sequence,s_pending_sequence);
+            if(paste) ReleaseSRWLockExclusive(&s_offer_lock);
+            CloseClipboard(); hop_log(HOP_LOG_INFO,"clip: pending remote clipboard applied");
+            if(paste && finished) { s_queued_paste_request=0; ui_notify_paste_ready(); }
+        } else {
+            DWORD next=GetClipboardSequenceNumber(); s_pending_sequence=next; s_remote_sequence=next; s_last_sequence=next;
+            if(paste) (void)hop_clipboard_txn_update_pending_paste_version(&s_clip_txn,request_id,before_empty,before_empty,next);
+            if(paste) ReleaseSRWLockExclusive(&s_offer_lock);
+            CloseClipboard(); schedule_clip_retry(); return;
+        }
+    } else {
+        if(paste) ReleaseSRWLockExclusive(&s_offer_lock);
+        CloseClipboard(); schedule_clip_retry(); return;
+    }
+    KillTimer(g_app.hwnd,IDT_CLIP_RETRY);
 }
 
 /* 图片上限：4K 截图裸 BGRA 约 33 MB，留到 256 MB 足够，再大就是异常了 */
@@ -273,6 +316,35 @@ static int image_work_task_begin(hop_xfer_task *task) {
            hop_xfer_task_reserve_job(task) &&
            hop_xfer_task_set_state(task, HOP_XFER_TASK_ACTIVE);
 }
+static int image_work_task_finish(clip_image_task_owner *owner, int success);
+
+/* Admission is shared by the worker and its production-path fixture. Return
+ * 1 when the input snapshot is reserved, 0 for retryable pressure, -1 when
+ * the image can never fit the configured ceilings or cleanup failed. */
+static int image_snapshot_prepare(size_t bytes, clip_image_task_owner **owner_out) {
+    if (!owner_out) return -1;
+    *owner_out=NULL;
+    hop_xfer_budget_snapshot budget;
+    hop_xfer_budget_get_snapshot(&budget);
+    if (!hop_xfer_budget_image_conversion_fits((uint64_t)bytes,0,&budget.limits)) return -1;
+
+    clip_image_task_owner *owner=(clip_image_task_owner*)calloc(1,sizeof(*owner));
+    if (!owner) return 0;
+    if (!image_work_task_begin(&owner->task))
+        return image_work_task_finish(owner,0)?0:-1;
+    *owner_out=owner;
+    if (!hop_xfer_task_reserve_image_temp(&owner->task,(uint64_t)bytes)) {
+        hop_log(HOP_LOG_WARN,"clip: DIB snapshot memory budget exhausted (task=%llu)",
+                (unsigned long long)owner->task.id);
+        return 0;
+    }
+    return 1;
+}
+static int image_snapshot_should_copy(int prepared) { return prepared==1; }
+static int image_worker_should_retry(int result, int task_finished,
+                                    int same_sequence, int stopping) {
+    return !stopping && ((result==0 && task_finished) || !same_sequence);
+}
 
 static int image_work_task_finish_attempt(clip_image_task_owner *owner, int success) {
     if (!owner) return 1;
@@ -353,8 +425,12 @@ static int send_dib(HANDLE h, DWORD sequence, hop_xfer_task *task) {
     }
     if (!task || !hop_xfer_task_reserve_image_temp(task, (uint64_t)total)) {
         GlobalUnlock(h);
+        hop_xfer_budget_snapshot budget;
+        hop_xfer_budget_get_snapshot(&budget);
+        uint64_t input=task?hop_xfer_task_image_temp_bytes(task):0;
+        int retryable=task && hop_xfer_budget_image_conversion_fits(input,(uint64_t)total,&budget.limits);
         hop_log(HOP_LOG_WARN, "clip: DIB conversion memory budget exhausted");
-        return -1;
+        return retryable?0:-1;
     }
 
     const uint8_t *src = (const uint8_t *)bi + (size_t)offset;
@@ -416,7 +492,7 @@ static DWORD WINAPI image_worker(LPVOID arg) {
     UINT format = CF_DIB;
     HGLOBAL copy = NULL;
     clip_image_task_owner *image_task_owner = NULL;
-    int opened = 0, result = 0;
+    int opened = 0, result = 0, snapshot_ready = 1;
     for (int i = 0; i < 6 && !opened; ++i) {
         opened = OpenClipboard(NULL) != 0;
         if (!opened) Sleep(15);
@@ -431,15 +507,10 @@ static DWORD WINAPI image_worker(LPVOID arg) {
             if (bytes >= (format == CF_DIB ? sizeof(BITMAPINFOHEADER) : sizeof(HOP_DROPFILES)) &&
                 bytes <= CLIP_IMG_MAX_BYTES) {
                 if (format == CF_DIB) {
-                    image_task_owner=(clip_image_task_owner*)calloc(1,sizeof(*image_task_owner));
-                    if (!image_task_owner || !image_work_task_begin(&image_task_owner->task)) result = -1;
-                    else if (!hop_xfer_task_reserve_image_temp(&image_task_owner->task, (uint64_t)bytes)) {
-                        hop_log(HOP_LOG_WARN, "clip: DIB snapshot memory budget exhausted (task=%llu)",
-                                (unsigned long long)image_task_owner->task.id);
-                        result = -1;
-                    }
+                    int prepared=image_snapshot_prepare((size_t)bytes,&image_task_owner);
+                    if(prepared!=1){result=prepared;snapshot_ready=0;}
                 }
-                if (result != -1) {
+                if (result != -1 && image_snapshot_should_copy(snapshot_ready)) {
                     copy = GlobalAlloc(GMEM_MOVEABLE, bytes);
                     void *from = GlobalLock(src);
                     void *to = copy ? GlobalLock(copy) : NULL;
@@ -460,11 +531,13 @@ static DWORD WINAPI image_worker(LPVOID arg) {
         } else result = send_dib(copy, sequence, image_task_owner ? &image_task_owner->task : NULL);
         GlobalFree(copy);
     }
-    if (image_task_owner)
-        (void)image_work_task_finish(image_task_owner, result > 0);
+    int task_finished=!image_task_owner || image_work_task_finish(image_task_owner, result > 0);
     InterlockedExchange(&s_image_busy, 0);
-    if (!result || GetClipboardSequenceNumber() != sequence)
+    AcquireSRWLockExclusive(&s_offer_lock);
+    if (image_worker_should_retry(result,task_finished,
+            GetClipboardSequenceNumber()==sequence,s_clip_stopping))
         PostMessageW(g_app.hwnd, WM_APP_CLIP, 0, 0);
+    ReleaseSRWLockExclusive(&s_offer_lock);
     return 0;
 }
 static void queue_image(void) {

@@ -41,7 +41,7 @@ typedef struct {
     hop_win_sender_threads sender_threads; hop_xfer_sender_queue queue;
     int sync_initialized,shutting_down; xfer_job *shutdown_jobs;
     uint32_t batch_seq,chunk; hop_xfer_rate_limiter rate;
-    hop_xfer_sender_active_job active_job; uint32_t cancel_batch; volatile LONG cancel_rx;
+    hop_xfer_sender_active_job active_job; uint32_t cancel_batch;
 } hop_win_xfer_state;
 typedef struct {
     CRITICAL_SECTION *state_lock,*tx_lock; SOCKET *client; int *peer_ready;
@@ -65,6 +65,7 @@ hop_xfer_sender_job_result sender_commit_adapter_run(const xfer_job *);
 void ack_deliver(uint32_t,uint32_t,int);
 int sender_context_session_current(void *,intptr_t,uint64_t);
 int sender_context_write_frame(void *,intptr_t,uint64_t,const hop_xfer_sender_frame_part *,size_t);
+int xfer_send_all(SOCKET,const char *,int);
 void yield_cpu(void);
 int send_small_with_context(const hop_xfer_sender_context *,SOCKET,uint8_t,const uint8_t *,uint32_t,uint32_t);
 int send_small(SOCKET,uint8_t,const uint8_t *,uint32_t,uint32_t);
@@ -72,6 +73,9 @@ void status_chunk_timed(int,uint32_t,uint32_t,uint64_t,uint32_t,uint64_t,uint64_
 void status_stage_time(int,uint32_t,int,uint64_t);
 void status_file_phase(int,uint32_t,int,int,uint32_t);
 void status_end(int,uint32_t,int,const char *);
+int status_begin(uint32_t,int,uint32_t,uint64_t,const char *,int);
+void status_image(uint32_t,int,uint64_t);
+void status_add_received_file(uint32_t,uint32_t,const char *,uint64_t,int);
 void status_start_job(const xfer_job *);
 uint64_t rate_now_ns(void);
 int sender_context_is_stopping(void *);

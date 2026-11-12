@@ -64,7 +64,7 @@ int main(void) {
 ''',['src/core/xfer_rx_protocol_adapter.c','src/core/xfer_rx_dispatch.c'])
 
     # Exercise the real Windows filesystem adapter with the exact staging
-    # path shape produced by xfer_receive.inc, not a generic "HopDesk" prefix.
+    # path shape produced by xfer_receive.c, not a generic "HopDesk" prefix.
     if os.name == 'nt':
         run('win_rx_fs_staging_cleanup',r"""
  #include "xfer_rx_fs.h"
@@ -352,6 +352,7 @@ int main(void){
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include "xfer_clipboard_txn.h"
 typedef void *HGLOBAL;typedef unsigned UINT;typedef int HWND;typedef unsigned DWORD;
 #define IDT_CLIP_RETRY 1
 #define CF_HDROP 15
@@ -360,12 +361,19 @@ static struct {HWND hwnd;} g_app={1};
 static HGLOBAL s_pending_global;
 static UINT s_pending_format;
 static DWORD s_pending_sequence,s_remote_sequence,s_last_sequence;
-static int s_pending_clear_remote;
-static int can_open,fail_set,freed,clear_remote_calls,paste_notices;
+static uint32_t s_queued_paste_request;
+static int s_offer_lock; static hop_clipboard_txn s_clip_txn;
+#define s_clip_stopping (s_clip_txn.stopping)
+static void lock_acquire(int *lock){assert(!*lock);*lock=1;}
+static void lock_release(int *lock){assert(*lock);*lock=0;}
+#define AcquireSRWLockExclusive(lock) lock_acquire(lock)
+#define AcquireSRWLockShared(lock) lock_acquire(lock)
+#define ReleaseSRWLockExclusive(lock) lock_release(lock)
+#define ReleaseSRWLockShared(lock) lock_release(lock)
+static int can_open,fail_set,freed,paste_notices;
 static void ui_notify_paste_ready(void){paste_notices++;}
 static HGLOBAL clipboard;static DWORD sequence=1;
-static int apply_global_expected(UINT,HGLOBAL,DWORD,int,int);
-static void clip_clear_remote_offer_local(void){clear_remote_calls++;}
+static int apply_global_expected(UINT,HGLOBAL,DWORD,int,uint32_t);
 static int open_retry(HWND h){(void)h;return can_open;}
 static int EmptyClipboard(void){clipboard=NULL;sequence++;return 1;}
 static HGLOBAL SetClipboardData(UINT f,HGLOBAL h){(void)f;if(fail_set)return NULL;clipboard=h;sequence++;return h;}
@@ -377,6 +385,13 @@ static void KillTimer(HWND h,int i){(void)h;(void)i;}
 '''
     clip_main=r'''
 #define VALUE(n) ((void*)(uintptr_t)(n))
+static uint32_t stage_paste(DWORD version) {
+    uint32_t id=0,origin=0; uint64_t generation=0,expected=0;
+    hop_clipboard_txn_set_remote_offer(&s_clip_txn,22,version+10);
+    assert(hop_clipboard_txn_begin_paste(&s_clip_txn,version,version,0x80000000u,&id,&origin,&generation,&expected)==1);
+    assert(hop_clipboard_txn_complete_paste(&s_clip_txn,id,version,1,NULL));
+    return id;
+}
 int main(void){
     can_open=0;apply_global(1,VALUE(101));
     can_open=1;assert(apply_global(1,VALUE(202)));
@@ -392,23 +407,63 @@ int main(void){
     /* Completed cross-device paste must not notify until a busy clipboard is
      * successfully written; a subsequent user clipboard change cancels it. */
     can_open=0;DWORD expected=sequence;
-    clip_on_paste_message(VALUE(606),expected);
+    uint32_t old_id=stage_paste(expected);
+    clip_on_paste_message(VALUE(606),old_id);
     assert(s_pending_global==VALUE(606) && paste_notices==0);
     can_open=1;clip_retry_pending();
     assert(clipboard==VALUE(606) && !s_pending_global && paste_notices==1);
-    expected=sequence;clip_on_paste_message(VALUE(707),expected);
+    expected=sequence;uint32_t current_id=stage_paste(expected);
+    clip_on_paste_message(VALUE(707),current_id);
     assert(clipboard==VALUE(707) && paste_notices==2);
-    can_open=0;expected=sequence;clip_on_paste_message(VALUE(808),expected);
+    can_open=0;expected=sequence;uint32_t queued_id=stage_paste(expected);
+    clip_on_paste_message(VALUE(808),queued_id);
     assert(s_pending_global==VALUE(808));clipboard=VALUE(909);sequence++;
     can_open=1;clip_retry_pending();
     assert(clipboard==VALUE(909) && !s_pending_global && paste_notices==2);
+    /* B replaces A's queued paste. Replacing it must cancel A while retaining
+     * B's staged transaction and payload. */
+    can_open=0;expected=sequence;uint32_t a_id=stage_paste(expected);
+    clip_on_paste_message(VALUE(1001),a_id);
+    assert(s_pending_global==VALUE(1001));
+    hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,a_id);
+    uint32_t b_id=stage_paste(sequence);
+    can_open=1;clip_on_paste_message(VALUE(1002),b_id);
+    assert(clipboard==VALUE(1002) && !s_pending_global);
+    assert(!hop_clipboard_txn_get_staged_paste(&s_clip_txn,a_id,NULL));
+    assert(!hop_clipboard_txn_get_staged_paste(&s_clip_txn,b_id,NULL));
+    /* An ordinary clipboard write also replaces and cancels a queued paste. */
+    can_open=0;expected=sequence;uint32_t replaced_id=stage_paste(expected);
+    clip_on_paste_message(VALUE(1101),replaced_id);
+    assert(s_pending_global==VALUE(1101));
+    can_open=1;assert(apply_global(1,VALUE(1102)));
+    assert(clipboard==VALUE(1102) && !s_pending_global);
+    assert(!hop_clipboard_txn_get_staged_paste(&s_clip_txn,replaced_id,NULL));
+    /* A matching staged request whose native clipboard changed before the
+     * first message arrives must be canceled and its payload freed. */
+    expected=sequence;uint32_t stale_id=stage_paste(expected);
+    sequence++;
+    int before_free=freed;
+    clip_on_paste_message(VALUE(1201),stale_id);
+    assert(freed==before_free+1 && !s_pending_global);
+    assert(!hop_clipboard_txn_get_staged_paste(&s_clip_txn,stale_id,NULL));
+    /* A delayed A completion must not replace a same-version B already queued
+     * after A was superseded. */
+    can_open=0;expected=sequence;uint32_t late_a=stage_paste(expected);
+    hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,late_a);
+    uint32_t queued_b=stage_paste(expected);
+    clip_on_paste_message(VALUE(1302),queued_b);
+    assert(s_pending_global==VALUE(1302));
+    before_free=freed;
+    clip_on_paste_message(VALUE(1301),late_a);
+    assert(freed==before_free+1 && s_pending_global==VALUE(1302));
+    assert(hop_clipboard_txn_get_staged_paste(&s_clip_txn,queued_b,NULL));
     puts("PASS: production Windows retry waits for clipboard, notifies only on successful paste apply and preserves newer content");return 0;
 }
 '''
-    run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','apply_global_expected','apply_global','clip_retry_pending','clip_on_paste_message'])+clip_main)
+    run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','clip_staged_request_matches','clip_cancel_staged_if_match','discard_pending_replacing','apply_global_expected','apply_global','clip_retry_pending','clip_on_paste_message'])+clip_main,['src/core/xfer_clipboard_txn.c'])
     # A cross-device paste batch must never fall through to the ordinary clipboard writer.
     for platform in ['win','mac']:
-        rx='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
+        rx='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.c','xfer_rx_protocol_handlers.c'))
         if platform=='win':
             assert 'clip_complete_remote_paste(batch, (const wchar_t *const *)top_paths, top_count, 1)' in rx
             assert 'clip_complete_remote_paste(batch, NULL, 0, 0)' in rx
@@ -416,7 +471,7 @@ int main(void){
             assert 'GetClipboardSequenceNumber()!=expected' in clip
             paste_message=extract(clip,'clip_on_paste_message')
             assert 'SendInput(' not in paste_message
-            assert 'apply_global_expected(CF_HDROP,h,expected_sequence,1,1)' in paste_message
+            assert 'apply_global_expected(CF_HDROP,h,(DWORD)expected,1,request_id)' in paste_message
         else:
             assert 'clipboard_complete_remote_paste(batch, (const char *const *)top_paths, top_count, 1)' in rx
             assert 'clipboard_complete_remote_paste(batch, NULL, 0, 0)' in rx
@@ -486,15 +541,34 @@ int main(void){
     assert 'if (!rx->batch_state.active) return; /* late data after termination */' in shared_rx_handlers
     assert 'if (hop_xfer_task_cancel_requested(rx->task.id))' in shared_rx_handlers
     clip=(ROOT/'src/mac/clipboard.m').read_text(encoding='utf-8')
+    win_clip=(ROOT/'src/win/clipboard.c').read_text(encoding='utf-8')
     assert 'send_image_data_async(imageType, cc, previous_change)' in clip
     assert 'budget_deferred = 1' in clip
     assert 's_last_change = previous_change' in clip
     assert 'image budget released; same clipboard version will be retried' in clip
+    async_image=extract(clip,'send_image_data_async')
+    assert async_image.count('return finished?0:-1;') == 2
+    assert 'return cleanup_ok?0:-1;' in async_image
+    assert 'int task_finished=image_work_task_finish(owner, success);' in async_image
+    assert 'if (budget_deferred && task_finished)' in async_image
+    assert 'int scheduled=send_image_data_async(imageType, cc, previous_change);' in clip
+    assert 'if (scheduled==0)' in clip
     # Intrinsically oversized decoded images are permanent failures, while
     # contention for a feasible allocation remains retryable.
     image_send=extract(clip,'send_image')
-    assert image_send.index('image_conversion_fits_budget(') < image_send.index('budget_deferred = 1')
+    assert image_send.index('hop_xfer_budget_image_conversion_fits(') < image_send.index('budget_deferred = 1')
     assert 'statusbar_notify_image_limit()' in image_send
+    win_worker=extract(win_clip,'image_worker')
+    win_dib=extract(win_clip,'send_dib')
+    win_admission=extract(win_clip,'image_snapshot_prepare')
+    assert 'hop_xfer_budget_image_conversion_fits((uint64_t)bytes,0,&budget.limits)' in win_admission
+    assert 'snapshot_ready=0;' in win_worker
+    assert 'if (result != -1 && image_snapshot_should_copy(snapshot_ready))' in win_worker
+    assert win_worker.index('snapshot_ready=0;') < win_worker.index('if (result != -1 && image_snapshot_should_copy(snapshot_ready))')
+    assert 'return retryable?0:-1' in win_dib
+    assert 'if(prepared!=1){result=prepared;snapshot_ready=0;}' in win_worker
+    assert win_worker.index('image_work_task_finish(image_task_owner, result > 0)') < win_worker.index('image_worker_should_retry(result,task_finished,')
+    assert 'image_worker_should_retry(result,task_finished,' in win_worker
     image_limits_preamble=r'''
 #include "xfer_budget.h"
 #include <assert.h>
@@ -503,22 +577,74 @@ int main(void){
     image_limits_main=r'''
 int main(void){
     hop_xfer_budget_limits limits={0};limits.max_image_bytes=100;limits.max_image_temp_bytes=80;
-    assert(image_conversion_fits_budget(20,60,&limits));
-    assert(!image_conversion_fits_budget(20,61,&limits));
+    assert(hop_xfer_budget_image_conversion_fits(20,60,&limits));
+    assert(!hop_xfer_budget_image_conversion_fits(20,61,&limits));
     limits.max_image_temp_bytes=200;
-    assert(image_conversion_fits_budget(20,80,&limits));
-    assert(!image_conversion_fits_budget(20,81,&limits));
-    assert(!image_conversion_fits_budget(UINT64_MAX,1,&limits));
-    assert(!image_conversion_fits_budget(1,1,NULL));
-    puts("PASS: intrinsic image budget rejects permanent oversize, retains feasible retries");return 0;
+    assert(hop_xfer_budget_image_conversion_fits(20,80,&limits));
+    assert(!hop_xfer_budget_image_conversion_fits(20,81,&limits));
+    assert(!hop_xfer_budget_image_conversion_fits(UINT64_MAX,1,&limits));
+    assert(!hop_xfer_budget_image_conversion_fits(1,1,NULL));
+    puts("PASS: shared image budget classifier separates permanent oversize from temporary contention");return 0;
 }
 '''
-    run('image_budget_permanent',image_limits_preamble+extract(clip,'image_conversion_fits_budget')+image_limits_main)
+    run('image_budget_permanent',image_limits_preamble+image_limits_main,['src/core/xfer_budget.c'],threads=True)
+
+    win_image_preamble=r'''
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "xfer_task.h"
+#include "xfer_budget.h"
+typedef struct clip_image_task_owner { struct clip_image_task_owner *next; hop_xfer_task task; } clip_image_task_owner;
+static volatile int s_image_task_seq;
+static clip_image_task_owner *s_pending_image_tasks;
+uint64_t hop_wallclock_ms(void){return 1;}
+#define InterlockedIncrement(p) (++(*(p)))
+#define hop_log(...) ((void)0)
+'''
+    win_image_main=r'''
+int main(void){
+    hop_xfer_budget_snapshot limits;hop_xfer_budget_get_snapshot(&limits);
+    hop_xfer_budget_limits configured=limits.limits;
+    configured.max_jobs=2;configured.max_image_bytes=64;configured.max_single_image_bytes=64;configured.max_image_temp_bytes=64;
+    assert(hop_xfer_budget_set_limits_for_test(&configured));
+    hop_xfer_reservation_handle pressure={0};
+    assert(hop_xfer_budget_reservation_init(&pressure,9001));
+    assert(hop_xfer_budget_reserve_job(&pressure));
+    assert(hop_xfer_budget_reserve_image_temp(&pressure,64));
+    clip_image_task_owner *owner=NULL;
+    int first=image_snapshot_prepare(32,&owner);
+    assert(first==0 && owner); /* retryable input pressure, no snapshot allocation */
+    assert(!image_snapshot_should_copy(first));
+    assert(image_work_task_finish(owner,0)); /* release Task/job/temp before retry */
+    hop_xfer_budget_snapshot after_release;hop_xfer_budget_get_snapshot(&after_release);
+    assert(after_release.jobs==1 && after_release.image_temp_bytes==64);
+    assert(hop_xfer_budget_release_image_temp(&pressure,64));
+    assert(hop_xfer_budget_release(&pressure));
+    hop_xfer_budget_get_snapshot(&after_release);assert(after_release.jobs==0 && after_release.image_temp_bytes==0);
+    int same_sequence=123;
+    int second=image_snapshot_prepare(32,&owner);
+    assert(second==1 && owner && same_sequence==123);
+    assert(image_snapshot_should_copy(second));
+    assert(image_work_task_finish(owner,0));
+    int permanent=image_snapshot_prepare(65,&owner);
+    assert(permanent==-1 && !owner && !image_snapshot_should_copy(permanent));
+    assert(!image_worker_should_retry(permanent,1,1,0));
+    assert(image_worker_should_retry(0,1,1,0));
+    assert(image_worker_should_retry(-1,1,0,0));
+    assert(!image_worker_should_retry(1,1,1,0));
+    assert(!image_worker_should_retry(0,1,1,1));
+    assert(!s_pending_image_tasks);
+    puts("PASS: production Windows image admission defers without allocation, releases before same-version retry, and rejects permanent oversize");return 0;
+}
+'''
+    win_image_helpers='\n'.join(extract(win_clip,name) for name in ['image_work_task_begin','image_work_task_finish_attempt','image_work_task_finish','image_snapshot_prepare','image_snapshot_should_copy','image_worker_should_retry'])
+    run('win_image_snapshot_admission',win_image_preamble+win_image_helpers+win_image_main,
+        ['src/core/xfer_task.c','src/core/xfer_budget.c'],threads=True)
 
     for platform in ['win','mac']:
-        rx_sources='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
-        source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
-        source=source.replace('#include "xfer_receive.inc"', rx_sources)
         common=r'''
 #include "hop.h"
 #include "xfer_rx_batch_rules.h"
@@ -664,7 +790,7 @@ int main(void){
         run('image_'+platform,common+'\n'+extract(core_finish_source,'hop_xfer_rx_reset_batch_state')+'\n'+extract(core_finish_source,'rx_release_terminal_resources')+'\n'+extract(core_finish_source,'rx_abort_clear_state')+'\n'+extract(core_finish_source,'hop_xfer_rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_protocol_adapter.c','src/core/xfer_rx_dispatch.c'],threads=True)
     # Run the actual per-platform state wrappers, not only a reimplemented model.
     for platform in ['win','mac']:
-        source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8').replace('#include "xfer_receive.inc"', '\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c')))
+        source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
         preamble=r'''
 #include "hop.h"
 #include "xfer_tracking.h"
@@ -820,7 +946,7 @@ int main(void){
     # Exact production case bodies + lifecycle helpers; only OS I/O is doubled.
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
-        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
+        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.c','xfer_rx_protocol_handlers.c'))
         assert 's_ack' not in receiver
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         protocol_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
@@ -885,7 +1011,7 @@ int main(void){
             ]),
             'CANCEL_LOCAL':extract(receiver,'rx_cancel_local'),
             'BIND_SESSION':extract(receiver,'rx_bind_session'),
-            'POLL_CANCEL':extract(receiver,'rx_poll_cancel'),
+            'POLL_CANCEL':'static volatile int s_receive_cancel_requested;\n'+extract(receiver,'xfer_receive_cancel_request')+'\n'+extract(receiver,'rx_expire_stale_session')+'\n'+extract(receiver,'xfer_receive_poll_cancel')+'\nstatic void rx_poll_cancel(void){xfer_receive_poll_cancel(s_x.peer_ready);}',
             'BUSY':extract(sender,'xfer_busy'),
             'DISPATCH_HANDLERS':dispatch_handlers,
         }
@@ -912,19 +1038,21 @@ int main(void){
 
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
-        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
+        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.c','xfer_rx_protocol_handlers.c'))
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         fixture=(ROOT/'tests/session_transport_fixture.c.in').read_text(encoding='utf-8')
         context_protocol=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         commit_adapter=(ROOT/f'src/{platform}/xfer_sender_commit_adapter.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_rx_gate_frame' in extract(receiver, 'xfer_receive_process_frame')
         assert 's_sender_context.user = &s_sender_platform' in context_protocol
         for callback in ['sender_context_is_stopping','sender_context_is_batch_cancelled','sender_context_peer_aborted','sender_context_wait_ns']:
             assert 's_x.' not in extract(context_protocol,callback)
         for callback in ['sender_context_session_current','sender_context_write_frame','sender_context_snapshot_session']:
             assert 's_x.' not in extract(sender,callback)
-        functions='\n'.join([extract(sender,'sender_context_session_current'),extract(sender,'sender_context_write_frame'),extract(sender,'sender_context_snapshot_session'),extract(sender,'send_small_with_context'),extract(commit_adapter,'sender_commit_is_stopping'),extract(commit_adapter,'sender_commit_wait_ms'),extract(sender,'send_small'),extract(sender,'send_chunk')]+[extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_release_terminal_resources','rx_abort_release_resources','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end','hop_xfer_rx_reset_batch_state','hop_xfer_rx_terminate_batch','hop_xfer_rx_bind_session','rx_bind_session','rx_expire_stale_session','on_data_frame_checked','on_data_frame']])
+        functions='\n'.join([extract(sender,'sender_context_session_current'),extract(sender,'sender_context_write_frame'),extract(sender,'sender_context_snapshot_session'),extract(sender,'send_small_with_context'),extract(commit_adapter,'sender_commit_is_stopping'),extract(commit_adapter,'sender_commit_wait_ms'),extract(sender,'send_small'),extract(sender,'send_chunk')]+[extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_release_terminal_resources','rx_abort_release_resources','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end','hop_xfer_rx_reset_batch_state','hop_xfer_rx_terminate_batch','hop_xfer_rx_bind_session','rx_bind_session','rx_expire_stale_session']])
         fixture=fixture.replace('@FUNCTIONS@',functions)
-        run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c','src/core/xfer_sender_chunk.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_task.c','src/core/xfer_budget.c','src/core/xfer_sender_context_adapter.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c'],threads=True)
+        if platform=='win': fixture='#define FIXTURE_WINDOWS 1\n'+fixture
+        run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c','src/core/xfer_sender_chunk.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_task.c','src/core/xfer_budget.c','src/core/xfer_sender_context_adapter.c','src/core/xfer_rx_frame_gate.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c'],threads=True)
 
     control=(ROOT/'src/mac/net_client.c').read_text(encoding='utf-8')+'\n'+(ROOT/'src/mac/net_client_protocol.inc').read_text(encoding='utf-8')
     for platform,source_name,module_name in [('win','net_server.c','net_server_protocol.inc'),('mac','net_client.c','net_client_protocol.inc')]:
@@ -948,7 +1076,7 @@ int main(void){
     # batch/file ID is reused; the unresolved file remains the resume point.
     for platform in ['mac','win']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
-        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.inc','xfer_rx_protocol_handlers.c'))
+        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.c','xfer_rx_protocol_handlers.c'))
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         protocol_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
         engine_adapter=(ROOT/'src/core/xfer_sender_engine_adapter.c').read_text(encoding='utf-8')
@@ -1024,7 +1152,7 @@ int main(void){
         assert 'typedef struct xfer_rx_context' in context_header
         assert 'hop_xfer_rx_services services;' in context_header
         assert 'void *writer;' in context_header
-        receive_impl=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        receive_impl=(ROOT/f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
         assert 's_rx.services.context = &s_rx;' in receive_impl
         assert 's_rx.writer = s_wq;' in receive_impl
         assert 's_rx.services.build_path = rx_context_build_path;' in receive_impl
@@ -1035,8 +1163,14 @@ int main(void){
         assert 'rx->writer' in receive_impl
         assert 'typedef struct xfer_rx_context' not in receiver
         assert all(name in services for name in ['shutdown_data_channel','mark_sender_aborted','send_abort','send_file_ack','send_done_ack','deliver_ack','clear_cancel_request','create_staging_directory','discard_staging_directory','send_abort','reset_file_error','open_file','write_file_chunk','close_file','file_error','build_path','prepare_file_path','is_top_level_path','remove_file'])
-        on_data_msg=extract(receiver,'on_data_msg')
-        assert 'rx_context_configure();' in on_data_msg and '&hop_xfer_rx_platform_dispatch_handlers, &s_rx' in on_data_msg
+        frame_processor=extract(receiver,'xfer_receive_process_frame')
+        assert 'hop_xfer_rx_gate_frame(&input, token, type, payload, length)' in frame_processor
+        assert 'if (!authenticated) return HOP_RX_FRAME_REJECT_PEER;' in frame_processor
+        assert '&hop_xfer_rx_platform_dispatch_handlers, &s_rx' in frame_processor
+        receive_start=extract(receiver,'xfer_receive_start')
+        assert 'hop_xfer_rx_lifecycle_init(&s_rx_lifecycle)' in receive_start
+        assert 'hop_xfer_rx_done_receipt_clear(&s_done_receipt)' in receive_start
+        assert 'rx_context_configure();' in receive_start
         assert 'hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, rx)' in file_ack_handler
         assert 'hop_xfer_rx_handle_done_ack(p, len, rx_ack_deliver_done, rx)' in done_ack_handler
         assert 'hop_xfer_rx_batch_abort_decide(' in core_message_handlers
@@ -1188,9 +1322,11 @@ int main(void){
         assert 'Invalid sender worker context' in worker and 'Transfer stopped while queued' in worker_core
         internal=(ROOT/f'src/{platform}/xfer_sender_internal.h').read_text(encoding='utf-8')
         assert 'shutdown_jobs' in internal and 's_x.shutting_down' in shutdown
-        # The only remaining implementation include in xfer.c is Receiver; Sender
-        # protocol/worker and submit are independently compiled translation units.
-        assert '#include "xfer_receive.inc"' in lifecycle
+        # Receiver is an independent production translation unit; xfer.c only
+        # includes its narrow lifecycle header.
+        assert '#include "xfer_receive.h"' in lifecycle
+        assert '#include "xfer_receive.c"' not in lifecycle
+        assert 'xfer_receive.inc' not in lifecycle
         assert 'xfer_sender_protocol.inc' not in lifecycle
         assert 'xfer_sender_worker.inc' not in lifecycle
         assert 'xfer_submit.inc' not in lifecycle
@@ -1255,8 +1391,8 @@ int main(void){
         assert ('AcquireSRWLockShared' in submit_enter if platform=='win' else 'pthread_rwlock_rdlock' in submit_enter)
         assert ('AcquireSRWLockExclusive' in shutdown if platform=='win' else 'pthread_rwlock_wrlock' in shutdown)
         assert shutdown.index('sender_threads_join') < shutdown.index('sender_shutdown_drain_jobs')
-        assert shutdown.index('sender_shutdown_drain_jobs') < shutdown.index('rx_reset')
-        assert shutdown.index('rx_reset') < shutdown.index('wq_stop') < shutdown.index('xfer_shutdown_task_audit')
+        assert shutdown.index('sender_shutdown_drain_jobs') < shutdown.index('xfer_receive_stop') < shutdown.index('xfer_shutdown_task_audit')
+        assert 'rx_reset' not in shutdown and 'wq_stop' not in shutdown
         assert shutdown.index('xfer_shutdown_task_audit') < shutdown.index('hop_xfer_task_history_store_close')
         assert 'Transfer interrupted during shutdown' in shutdown_drain
         assert 'HOP_XFER_TASK_INTERRUPTED' in shutdown_drain
@@ -1268,11 +1404,8 @@ int main(void){
         assert 'hop_xfer_sender_queue_empty(&s_x.queue)' in shutdown_audit
         assert 's_x.shutdown_jobs == NULL' in shutdown_audit
         assert 'hop_xfer_sender_active_job_is_active(&s_x.active_job)' in shutdown_audit
-        assert 's_wq == NULL && s_rx.writer == NULL' in shutdown_audit
-        assert '!s_rx.task.initialized && !s_rx.task.id' in shutdown_audit
-        assert '!s_rx.batch_state.active' in shutdown_audit
-        assert 'memcmp(&s_rx.entry_reservations, &empty_entry_reservations' in shutdown_audit
-        assert '!s_rx.image_buffer.data && !s_rx.tops && s_rx.ntop == 0' in shutdown_audit
+        assert 'xfer_receive_owner_clean()' in shutdown_audit
+        assert 's_rx.' not in shutdown_audit and 's_wq' not in shutdown_audit
         assert 'HOP_XFER_SENDER_JOB_SHUTDOWN' in flow_core
         assert 'ops->is_stopping' in flow_core
         if platform=='mac':
@@ -1280,9 +1413,16 @@ int main(void){
         else:
             assert 'sender_context_is_stopping(&s_sender_platform)' in worker
 
-        receive=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        receive=(ROOT/f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
         writer_start=extract(receive,'wq_start')
         writer_stop=extract(receive,'wq_stop')
+        receiver_start=extract(receive,'xfer_receive_start')
+        receiver_stop=extract(receive,'xfer_receive_stop')
+        receiver_clean=extract(receive,'xfer_receive_owner_clean')
+        assert 'return wq_start();' in receiver_start
+        assert receiver_stop.index('if (!wq_stop()) return 0;') < receiver_stop.index('rx_reset(&s_rx)')
+        assert 'memcmp(&s_rx.entry_reservations, &empty_entry_reservations' in receiver_clean
+        assert '!s_rx.image_buffer.data && !s_rx.tops && s_rx.ntop == 0' in receiver_clean
         assert 'static int wq_stop(void)' in receive and 'return 0;' in writer_stop
         assert 's_rx.writer = s_wq;' in writer_start
         assert 's_rx.writer = NULL;' in writer_stop
@@ -1621,9 +1761,11 @@ int main(void){
             listening=extract(submit,'xfer_listening')
             assert lifecycle_read in listening and lifecycle_unlock in listening
             assert listening.index(lifecycle_read) < listening.index('s_x.sync_initialized')
-        receive=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        receive=(ROOT/f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
         protocol=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         internal=(ROOT/f'src/{platform}/xfer_sender_internal.h').read_text(encoding='utf-8')
+        assert 's_x.' not in receive
+        assert 'xfer_sender_internal.h' not in receive
         assert '#include "../core/xfer_sender_active_job.h"' in internal
         assert 'hop_xfer_sender_active_job active_job' in internal
         assert 'hop_xfer_sender_active_job_cancel_target' in transport
@@ -1634,8 +1776,8 @@ int main(void){
         assert 'hop_xfer_sender_active_job_clear_if_matches' in clear_active
         assert dispose_job.index('sender_worker_clear_active_job') < dispose_job.index('job_free')
         assert 'sender_worker_clear_active_job(call->job)' in dispose_job
-        assert 'hop_xfer_sender_active_job_record_peer_abort' in receive
-        assert 'hop_xfer_sender_active_job_reset_peer_abort' in receive
+        assert 'hop_xfer_sender_active_job_record_peer_abort' in transport
+        assert 'hop_xfer_sender_active_job_reset_peer_abort' in transport
         assert 'active_job.abort_batch' in protocol
         assert '#include "../core/xfer_sender_context_adapter.h"' in protocol
         assert 'hop_xfer_sender_context_job_cancel_requested(' in protocol
@@ -1671,12 +1813,13 @@ int main(void){
     # state machine and is retired after the Core migration.
     owner_platform='win' if os.name=='nt' else 'mac'
 
-    # Execute the production top-level xfer_shutdown orchestration with native
-    # lock/event primitives and injected failures at Join, Job drain, Writer
-    # stop, and final Task/Reservation audit. No shared state may be destroyed
-    # until every phase succeeds; a later call must resume from retained state.
+    # Execute both production shutdown entry points with native lock/event
+    # primitives and failures injected at join, Job drain, Writer stop and
+    # audit. Writer stop must succeed before resetting Receiver state.
     shutdown_source=(ROOT/f'src/{owner_platform}/xfer.c').read_text(encoding='utf-8')
     shutdown_function=extract(shutdown_source,'xfer_shutdown')
+    receiver_source=(ROOT/f'src/{owner_platform}/xfer_receive.c').read_text(encoding='utf-8')
+    receiver_stop_function=extract(receiver_source,'xfer_receive_stop')
     shutdown_prefix=r'''
 #include <assert.h>
 #include <stdint.h>
@@ -1687,7 +1830,6 @@ int main(void){
 static int join_failures=1, drain_failures=1, writer_failures=1, audit_failures=1;
 static unsigned join_calls, drain_calls, reset_calls, writer_calls, audit_calls;
 static unsigned wake_calls, ack_destroy_calls, history_close_calls;
-static int s_rx;
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -1762,11 +1904,16 @@ static int sender_shutdown_drain_jobs(void) {
     if (drain_failures) { drain_failures--; return 0; }
     return 1;
 }
-static void rx_reset(void *context) { assert(context==&s_rx); reset_calls++; }
+static int s_rx;
+static int s_rx_initialized;
 static int wq_stop(void) {
     writer_calls++;
     if (writer_failures) { writer_failures--; return 0; }
     return 1;
+}
+static void rx_reset(int *state) {
+    assert(state == &s_rx);
+    reset_calls++;
 }
 static int xfer_shutdown_task_audit(void) {
     audit_calls++;
@@ -1799,21 +1946,21 @@ int main(void) {
     assert(!reset_calls && !writer_calls && !audit_calls);
     assert(!ack_destroy_calls && !history_close_calls && s_x.sync_initialized);
 
-    /* Writer stop failure: Receiver reset may be retried, but no audit/teardown. */
+    /* Writer stop failure: keep Receiver state alive for the next attempt. */
     assert(!xfer_shutdown());
-    assert(join_calls==3 && drain_calls==2 && reset_calls==1 && writer_calls==1);
+    assert(join_calls==3 && drain_calls==2 && !reset_calls && writer_calls==1);
     assert(!audit_calls && !ack_destroy_calls && !history_close_calls);
     assert(s_x.sync_initialized);
 
     /* Final audit failure: ACK/history/locks must still remain alive. */
     assert(!xfer_shutdown());
-    assert(join_calls==4 && drain_calls==3 && reset_calls==2 && writer_calls==2);
+    assert(join_calls==4 && drain_calls==3 && reset_calls==1 && writer_calls==2);
     assert(audit_calls==1 && !ack_destroy_calls && !history_close_calls);
     assert(s_x.sync_initialized);
 
     /* A later retry finishes cleanup exactly once. */
     assert(xfer_shutdown());
-    assert(join_calls==5 && drain_calls==4 && reset_calls==3 && writer_calls==3);
+    assert(join_calls==5 && drain_calls==4 && reset_calls==2 && writer_calls==3);
     assert(audit_calls==2 && ack_destroy_calls==1 && history_close_calls==1);
     assert(wake_calls==5 && !s_x.sync_initialized);
 #if defined(_WIN32)
@@ -1822,13 +1969,14 @@ int main(void) {
 
     /* Shutdown after successful teardown is idempotent and touches no dead lock. */
     assert(xfer_shutdown());
-    assert(join_calls==5 && drain_calls==4 && reset_calls==3 && writer_calls==3);
+    assert(join_calls==5 && drain_calls==4 && reset_calls==2 && writer_calls==3);
     assert(audit_calls==2 && ack_destroy_calls==1 && history_close_calls==1);
     puts("PASS: production xfer_shutdown retains native state across Join, Job drain, Writer stop, and audit failures; retry and idempotent close succeed");
     return 0;
 }
 """
-    run('sender_shutdown_orchestration_retry',shutdown_prefix+shutdown_function+'\n'+shutdown_main,
+    run('sender_shutdown_orchestration_retry',
+        shutdown_prefix+receiver_stop_function+'\n'+shutdown_function+'\n'+shutdown_main,
         threads=(owner_platform=='mac'))
 
     retry_core=(ROOT/'src/core/xfer_sender_retry.c').read_text(encoding='utf-8')

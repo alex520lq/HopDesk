@@ -29,6 +29,15 @@ static int add64(uint64_t a, uint64_t b, uint64_t *out) {
     return 1;
 }
 
+int hop_xfer_budget_image_conversion_fits(uint64_t input_bytes,
+                                          uint64_t conversion_bytes,
+                                          const hop_xfer_budget_limits *limits) {
+    return limits && input_bytes <= limits->max_image_bytes &&
+        conversion_bytes <= limits->max_image_bytes - input_bytes &&
+        input_bytes <= limits->max_image_temp_bytes &&
+        conversion_bytes <= limits->max_image_temp_bytes - input_bytes;
+}
+
 static void subtract_u32(uint32_t *value, uint32_t amount) {
     if (amount > *value) {
         s_used.accounting_errors++;

@@ -78,13 +78,14 @@ with tempfile.TemporaryDirectory(prefix='hopdesk-updates-') as tmp:
     assert 'prepared_ok' in after_spawn and 'PostMessageW(owner, WM_CLOSE' in after_spawn
     assert 'MB_OK | MB_ICONINFORMATION' not in after_spawn
     for platform in ('win','mac'):
-        sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
-        receiver=(ROOT/f'src/{platform}/xfer_receive.inc').read_text(encoding='utf-8')
+        transport=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
+        sender=(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
         for name in ('xfer_submit_paths','xfer_submit_image'):
             wrapper=sender[sender.rindex('int '+name+'('):]
             assert wrapper.index('hop_update_work_enter')<wrapper.index(name+'_impl(')<wrapper.index('hop_update_work_leave')
-        body=receiver[receiver.index('static void on_data_frame(void'):]
-        assert body.index('hop_update_receive_enter')<body.index('on_data_frame_checked(user')<body.index('hop_update_work_leave')
+        start=transport.index('static void xfer_data_frame(void')
+        body=transport[start:transport.index('\n}',start)]
+        assert body.index('hop_update_receive_enter')<body.index('xfer_receive_process_frame(')<body.index('hop_update_work_leave')
     workflow=(ROOT/'.github/workflows/build.yml').read_text(encoding='utf-8')
     assert workflow.index('Guard existing version assets before publication') < workflow.index('name: Publish GitHub Release assets')
     assert 'update_manifest_policy.py release-assets/latest.txt release-repo/latest.txt' in workflow

@@ -61,11 +61,18 @@ clang -std=c11 -Wall -Wextra -Werror -pthread -I "$ROOT/src/mac" \
   "$ROOT/tests/mac_sender_threads_tests.c" "$ROOT/src/mac/xfer_sender_threads.c"
 "$BUILD/hopdesk-sender-threads-tests"
 
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I "$ROOT/src/core" \
+  -include "$ROOT/tests/writer_pool_alloc_override.h" \
+  -c "$ROOT/src/core/xfer_buffer_pool.c" -o "$BUILD/writer-buffer-pool-test.o"
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I "$ROOT/src/mac" -include "$ROOT/tests/writer_io_fault_override.h" \
+  -c "$ROOT/src/mac/xfer_writer_io.c" -o "$BUILD/writer-io-fault-test.o"
 clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -I "$ROOT/src/mac" -o "$BUILD/hopdesk-writer-queue-tests" \
   "$ROOT/tests/mac_writer_queue_tests.c" "$ROOT/src/mac/xfer_writer_queue.c" \
-  "$ROOT/src/mac/xfer_writer_io.c" "$ROOT/src/mac/xfer_writer_worker.c" \
-  "$ROOT/src/core/xfer_buffer_pool.c" "$ROOT/src/core/xfer_rx_queue.c" \
+  "$BUILD/writer-io-fault-test.o" "$ROOT/src/mac/xfer_writer_worker.c" \
+  "$BUILD/writer-buffer-pool-test.o" "$ROOT/src/core/xfer_rx_queue.c" \
   "$ROOT/src/core/xfer_budget.c"
 "$BUILD/hopdesk-writer-queue-tests"
 
@@ -96,6 +103,12 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-rx-batch-rules-tests" \
   "$ROOT/tests/xfer_rx_batch_rules_tests.c" "$ROOT/src/core/xfer_rx_batch_rules.c"
 "$BUILD/hopdesk-rx-batch-rules-tests"
+
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I "$ROOT/src/core" -o "$BUILD/hopdesk-rx-frame-gate-tests" \
+  "$ROOT/tests/xfer_rx_frame_gate_tests.c" "$ROOT/src/core/xfer_rx_frame_gate.c" \
+  "$ROOT/src/core/protocol.c" "$ROOT/src/core/session.c"
+"$BUILD/hopdesk-rx-frame-gate-tests"
 
 clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-rx-entry-reservations-tests" \

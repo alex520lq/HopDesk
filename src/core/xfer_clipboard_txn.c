@@ -78,20 +78,23 @@ void hop_clipboard_txn_cancel_pending_paste(hop_clipboard_txn *txn, uint32_t req
     if (!request_id || txn->pending_request_id == request_id) {
         txn->pending_request_id = 0;
         txn->pending_clipboard_version = 0;
+        txn->pending_paste_staged = 0;
     }
 }
 int hop_clipboard_txn_complete_paste(hop_clipboard_txn *txn, uint32_t request_id,
                                      uint64_t current_version, int success,
                                      uint64_t *expected_version) {
     if (!txn || !request_id || txn->pending_request_id != request_id) return 0;
+    if (txn->pending_paste_staged) return 0;
     if (expected_version) *expected_version = txn->pending_clipboard_version;
     if (!success || txn->pending_clipboard_version != current_version) {
         hop_clipboard_txn_cancel_pending_paste(txn, request_id);
         return 0;
     }
+    txn->pending_paste_staged = 1;
     return 1;
 }
-hop_clipboard_request_result hop_clipboard_txn_check_request(
+static hop_clipboard_request_result check_request(
     const hop_clipboard_txn *txn, uint32_t request_id, uint64_t offer_generation,
     int worker_available) {
     if (!txn || !request_id) return HOP_CLIPBOARD_REQUEST_STALE;
@@ -109,12 +112,42 @@ int hop_clipboard_txn_get_pending_paste(const hop_clipboard_txn *txn,
     if (expected_version) *expected_version = txn->pending_clipboard_version;
     return 1;
 }
+int hop_clipboard_txn_get_staged_paste(const hop_clipboard_txn *txn, uint32_t request_id,
+                                       uint64_t *expected_version) {
+    if (!hop_clipboard_txn_get_pending_paste(txn,request_id,expected_version) ||
+        !txn->pending_paste_staged || txn->stopping) return 0;
+    return 1;
+}
+int hop_clipboard_txn_finish_pending_paste(hop_clipboard_txn *txn, uint32_t request_id,
+                                          uint64_t expected_version, uint64_t current_version) {
+    if (!txn || !request_id || txn->pending_request_id != request_id || !txn->pending_paste_staged ||
+        txn->pending_clipboard_version != expected_version || current_version != expected_version)
+        return 0;
+    hop_clipboard_txn_cancel_pending_paste(txn, request_id);
+    return 1;
+}
+int hop_clipboard_txn_update_pending_paste_version(hop_clipboard_txn *txn, uint32_t request_id,
+                                                   uint64_t expected_version, uint64_t current_version,
+                                                   uint64_t new_version) {
+    if (!txn || !request_id || txn->pending_request_id != request_id || !txn->pending_paste_staged ||
+        txn->pending_clipboard_version != expected_version || current_version != expected_version)
+        return 0;
+    txn->pending_clipboard_version = new_version;
+    return 1;
+}
+int hop_clipboard_txn_finish_pending_paste_and_clear_offer(hop_clipboard_txn *txn, uint32_t request_id,
+                                                          uint64_t expected_version, uint64_t current_version) {
+    if (!hop_clipboard_txn_finish_pending_paste(txn,request_id,expected_version,current_version)) return 0;
+    (void)hop_clipboard_txn_clear_remote_offer(txn);
+    return 1;
+}
 hop_clipboard_request_result hop_clipboard_txn_accept_request(
     hop_clipboard_txn *txn, uint32_t request_id, uint64_t offer_generation,
-    int worker_available) {
+    int worker_available, int (*snapshot)(void *), void *context) {
     hop_clipboard_request_result result =
-        hop_clipboard_txn_check_request(txn, request_id, offer_generation, worker_available);
+        check_request(txn, request_id, offer_generation, worker_available);
     if (result != HOP_CLIPBOARD_REQUEST_ACCEPTED) return result;
+    if (!snapshot || !snapshot(context)) return HOP_CLIPBOARD_REQUEST_BUSY;
     txn->seen_requests[txn->seen_next++ % HOP_CLIPBOARD_TXN_SEEN_REQUESTS] = request_id;
     txn->paste_scan_active = 1;
     return HOP_CLIPBOARD_REQUEST_ACCEPTED;

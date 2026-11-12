@@ -9,9 +9,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 
-/* Receiving clipboard payloads would be a test failure; no desktop writes. */
-void clip_apply_remote_paths(const wchar_t *const *paths, int n) {(void)paths;(void)n;assert(0);}
+/* Observe the Receiver's clipboard handoff without writing the desktop. */
 void clip_apply_remote_image(const uint8_t *p,int w,int h,int stride) {(void)p;(void)w;(void)h;(void)stride;assert(0);}
 void clip_complete_remote_paste(uint32_t batch,const wchar_t *const *paths,int n,int success) {
     (void)batch;(void)paths;(void)n;(void)success;
@@ -61,6 +61,53 @@ static int read_frame(SOCKET s) {
         int ok; assert(hop_hello_ack_decode(body,len,&ok,NULL,NULL,&s_last_ack));
     }
     return header[0];
+}
+
+typedef SOCKET peer_socket;
+static volatile LONG s_receive_publications;
+static int receive_publications(void) {
+    return InterlockedCompareExchange(&s_receive_publications, 0, 0);
+}
+static void test_pause(void) { Sleep(10); }
+static void close_peer(peer_socket peer) { closesocket(peer); }
+static peer_socket connect_data_peer(uint16_t port, const char *token, const hop_session_id *session) {
+    peer_socket peer = connect_peer(port);
+    uint8_t body[2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES];
+    uint32_t length = hop_xfer_hello_encode(body, token, session);
+    assert(length);
+    write_frame(peer, HOP_MSG_XFER_HELLO, body, length);
+    assert(read_frame(peer) == HOP_MSG_XFER_HELLO);
+    assert(hop_xfer_hello_bound(s_last_body, s_last_len, token, session));
+    return peer;
+}
+static int receive_staging_exists(const hop_session_id *session, uint32_t batch) {
+    wchar_t temp[MAX_PATH], path[MAX_PATH], wide_session[33];
+    char session_hex[33];
+    hop_session_hex(session, session_hex);
+    for (size_t i = 0; i < sizeof(session_hex); ++i) wide_session[i] = session_hex[i];
+    DWORD length = GetTempPathW(MAX_PATH, temp);
+    assert(length > 0 && length < MAX_PATH);
+    assert(swprintf(path, MAX_PATH, L"%lsHopDesk\\%ls\\%u", temp, wide_session, batch) > 0);
+    if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) return 1;
+    DWORD error = GetLastError();
+    assert(error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND);
+    return 0;
+}
+#include "receive_transfer_scenario.h"
+
+void clip_apply_remote_paths(const wchar_t *const *paths, int n) {
+    assert(n == 2);
+    receive_expect_file(_wfopen(paths[0], L"rb"), receive_first, sizeof(receive_first));
+    receive_expect_file(_wfopen(paths[1], L"rb"), receive_second, sizeof(receive_second));
+    assert(DeleteFileW(paths[0]) && DeleteFileW(paths[1]));
+    wchar_t directory[MAX_PATH];
+    assert(wcslen(paths[0]) < MAX_PATH);
+    wcscpy(directory, paths[0]);
+    wchar_t *separator = wcsrchr(directory, L'\\');
+    assert(separator);
+    *separator = L'\0';
+    assert(RemoveDirectoryW(directory));
+    InterlockedIncrement(&s_receive_publications);
 }
 static void hello(SOCKET s, const char *token) {
     uint8_t p[128]; size_t tl = strlen(token);
@@ -114,7 +161,7 @@ static void test_client_role(HWND hwnd){
     peer=accept_bounded(control);assert(read_frame(peer)==HOP_MSG_HELLO);
     assert(hop_session_generate(&session));memcpy(ack+12,session.bytes,HOP_SESSION_BYTES);
     write_frame(peer,HOP_MSG_HELLO_ACK,ack,sizeof(ack));assert(wait_client(client,1,1500));
-    xfer_shutdown();net_server_stop(client);closesocket(peer);closesocket(control);closesocket(data);
+    assert(xfer_shutdown());net_server_stop(client);closesocket(peer);closesocket(control);closesocket(data);
     puts("PASS: production Windows client control/data handshake and reconnect (protocol peer double)");
 }
 int main(void) {
@@ -185,7 +232,7 @@ int main(void) {
     assert(!xfer_connected()); closesocket(data_second);
     assert(read_frame(data_silent) == -1); closesocket(data_silent);
 
-
+    run_receive_transfer(&first_session, cfg.token, cfg.data_port);
 
     unsigned long old_epoch = net_server_epoch(server);
     SOCKET second = connect_peer(cfg.port); Sleep(100);
@@ -225,7 +272,7 @@ int main(void) {
     closesocket(live);
     assert(read_frame(silent) == -1); closesocket(silent); /* handshake timeout */
     assert(read_frame(data_timeout) == -1); closesocket(data_timeout);
-    xfer_shutdown();
+    assert(xfer_shutdown());
     net_server_stop(server);
     test_client_role(hwnd);
     MSG message;

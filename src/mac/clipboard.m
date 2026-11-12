@@ -23,6 +23,7 @@
 #include "xfer.h"
 #include "../core/xfer_task.h"
 #include "../core/xfer_clipboard_txn.h"
+#include "../core/xfer_budget.h"
 
 #include <stdlib.h>
 #include <limits.h>
@@ -59,7 +60,7 @@ static image_work_task_owner *s_pending_image_tasks;
 static char *s_local_offer_paths[HOP_CLIP_OFFER_MAX_ITEMS];
 static int s_local_offer_count;
 
-#include "clipboard_offer.inc"#include "clipboard_offer.inc"
+#include "clipboard_offer.inc"
 
 static uint32_t image_work_transfer_id(void) {
     uint32_t id = __sync_add_and_fetch(&s_image_work_seq, 1);
@@ -123,28 +124,19 @@ static int image_work_retry_pending(void) {
     }
 }
 
-static image_work_task_owner *image_work_task_create(void) {
+static image_work_task_owner *image_work_task_create(int *cleanup_ok) {
+    if (cleanup_ok) *cleanup_ok=1;
     image_work_task_owner *owner=(image_work_task_owner *)calloc(1,sizeof(*owner));
     if (!owner) return NULL;
     hop_xfer_task *task=&owner->task;
     if (!hop_xfer_task_init_classified(task, 0, 0, image_work_transfer_id(), HOP_XFER_DIR_NONE, HOP_TASK_KIND_IMAGE_WORK) ||
         !hop_xfer_task_reserve_job(task) ||
         !hop_xfer_task_set_state(task, HOP_XFER_TASK_ACTIVE)) {
-        (void)image_work_task_finish(owner,0);
+        int finished=image_work_task_finish(owner,0);
+        if (cleanup_ok) *cleanup_ok=finished;
         return NULL;
     }
     return owner;
-}
-
-/* Check the task's intrinsic requirement, not the currently available
- * budget. If it exceeds a ceiling even with all other tasks idle, retrying
- * the same clipboard version can never succeed. */
-static int image_conversion_fits_budget(uint64_t input, uint64_t conversion,
-                                        const hop_xfer_budget_limits *limits) {
-    return limits && input <= limits->max_image_bytes &&
-        conversion <= limits->max_image_bytes - input &&
-        input <= limits->max_image_temp_bytes &&
-        conversion <= limits->max_image_temp_bytes - input;
 }
 
 /* NSImage -> 自上而下 BGRA。调用方在 NSImage 解码前预留转换额度；
@@ -181,7 +173,7 @@ static BOOL send_image(NSImage *img, NSInteger expected_change, hop_xfer_task *t
         return NO;
     }
     uint64_t input_reserved = image_temp - *conversion_reserved;
-    if (!image_conversion_fits_budget(input_reserved, conversion_bytes, &budget.limits)) {
+    if (!hop_xfer_budget_image_conversion_fits(input_reserved, conversion_bytes, &budget.limits)) {
         hop_log(HOP_LOG_WARN, "clip: image conversion exceeds the memory budget; copy a smaller image");
         if ([[NSPasteboard generalPasteboard] changeCount] == expected_change)
             statusbar_notify_image_limit();
@@ -254,29 +246,38 @@ cleanup:
 /* Pasteboard image materialization, decoding and BGRA conversion all run on
  * one utility worker. Reserve a bounded upper estimate before dataForType so
  * the main queue never materializes a full image NSData snapshot. */
-static BOOL send_image_data_async(NSPasteboardType imageType, NSInteger expected_change, NSInteger previous_change) {
-    if (!imageType) return NO;
-    image_work_task_owner *owner = image_work_task_create();
+/* 1 means work entered the group, 0 means cleanup completed and caller may
+ * roll back changeCount for retry, -1 means cleanup remains pending. */
+static int send_image_data_async(NSPasteboardType imageType, NSInteger expected_change, NSInteger previous_change) {
+    if (!imageType) return 0;
+    int cleanup_ok=1;
+    image_work_task_owner *owner = image_work_task_create(&cleanup_ok);
     if (!owner) {
-        hop_log(HOP_LOG_WARN, "clip: image conversion task budget exhausted; clipboard change will be retried");
-        return NO;
+        hop_log(HOP_LOG_WARN, cleanup_ok ?
+                "clip: image conversion task budget exhausted; clipboard change will be retried" :
+                "clip: image conversion Task cleanup pending; retry deferred until cleanup succeeds");
+        return cleanup_ok?0:-1;
     }
     hop_xfer_task *task=&owner->task;
     if (!hop_xfer_task_reserve_image_temp(task, CLIP_IMG_MAX_BYTES)) {
         hop_log(HOP_LOG_WARN, "clip: image input memory budget exhausted (task=%llu)",
                 (unsigned long long)task->id);
-        (void)image_work_task_finish(owner, 0);
-        hop_log(HOP_LOG_WARN, "clip: image input budget unavailable; clipboard change will be retried");
-        return NO;
+        int finished=image_work_task_finish(owner, 0);
+        hop_log(HOP_LOG_WARN, finished ?
+                "clip: image input budget unavailable; clipboard change will be retried" :
+                "clip: image input Task cleanup pending; retry deferred until cleanup succeeds");
+        return finished?0:-1;
     }
 
     dispatch_group_t group = nil;
     pthread_mutex_lock(&s_offer_lock);
     if (s_clip_stopping || s_image_work_active || !s_paste_group) {
         pthread_mutex_unlock(&s_offer_lock);
-        (void)image_work_task_finish(owner, 0);
-        hop_log(HOP_LOG_WARN, "clip: image conversion busy; snapshot deferred");
-        return NO;
+        int finished=image_work_task_finish(owner, 0);
+        hop_log(HOP_LOG_WARN, finished ?
+                "clip: image conversion busy; snapshot deferred" :
+                "clip: image conversion Task cleanup pending; retry deferred until cleanup succeeds");
+        return finished?0:-1;
     }
     s_image_work_active = 1;
     group = s_paste_group;
@@ -327,8 +328,8 @@ static BOOL send_image_data_async(NSPasteboardType imageType, NSInteger expected
         }
         /* Task finish runs after the autorelease pool drains, so NSData/NSImage
          * backing memory stays reserved until those objects have released it. */
-        (void)image_work_task_finish(owner, success);
-        if (budget_deferred) {
+        int task_finished=image_work_task_finish(owner, success);
+        if (budget_deferred && task_finished) {
             NSPasteboard *pb = [NSPasteboard generalPasteboard];
             pthread_mutex_lock(&s_offer_lock);
             if (!s_clip_stopping && s_last_change == expected_change &&
@@ -342,7 +343,7 @@ static BOOL send_image_data_async(NSPasteboardType imageType, NSInteger expected
         pthread_mutex_unlock(&s_offer_lock);
         dispatch_group_leave(group);
     });
-    return YES;
+    return 1;
 }
 
 static BOOL send_text(NSString *s) {
@@ -404,7 +405,8 @@ static void poll_pasteboard(void) {
                 return;
             }
             clip_clear_remote_offer_local(); clip_clear_local_offer(1);
-            if (!send_image_data_async(imageType, cc, previous_change)) {
+            int scheduled=send_image_data_async(imageType, cc, previous_change);
+            if (scheduled==0) {
                 pthread_mutex_lock(&s_offer_lock);
                 if (s_last_change == cc) s_last_change = previous_change;
                 pthread_mutex_unlock(&s_offer_lock);
@@ -464,39 +466,58 @@ int clipboard_shutdown(void) {
 /* Retry transient pasteboard write failures, but never overwrite a newer local
  * clipboard change while waiting. expected_count guards delayed retries. */
 static void apply_objects_retry(NSArray *objects, NSString *kind,
-                                NSUInteger attempt, NSInteger expected_count) {
+                                NSUInteger attempt, NSInteger expected_count, uint32_t request_id) {
     if (![NSThread isMainThread]) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            apply_objects_retry(objects, kind, attempt, expected_count);
+            apply_objects_retry(objects, kind, attempt, expected_count, request_id);
         });
         return;
     }
 
     NSPasteboard *pb = [NSPasteboard generalPasteboard];
-    if (expected_count >= 0 && [pb changeCount] != expected_count) {
-        hop_log(HOP_LOG_INFO, "clip: %s apply retry cancelled; clipboard changed locally",
-                [kind UTF8String]);
-        if([kind isEqualToString:@"paths-paste"]) {
-            pthread_mutex_lock(&s_offer_lock); hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,0); pthread_mutex_unlock(&s_offer_lock);
-        }
+    if (!request_id && expected_count >= 0 && [pb changeCount] != expected_count) {
+        hop_log(HOP_LOG_INFO, "clip: %s apply retry cancelled; clipboard changed locally", [kind UTF8String]);
         return;
     }
 
+    if(request_id) {
+        pthread_mutex_lock(&s_offer_lock);
+        uint64_t txn_expected=0;
+        int exists=hop_clipboard_txn_get_staged_paste(&s_clip_txn,request_id,&txn_expected);
+        if (!exists) {
+            pthread_mutex_unlock(&s_offer_lock);
+            return;
+        }
+        if (txn_expected != (uint64_t)expected_count || [pb changeCount] != expected_count) {
+            if (txn_expected == (uint64_t)expected_count)
+                hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,request_id);
+            pthread_mutex_unlock(&s_offer_lock);
+            return;
+        }
+        [pb clearContents];
+        uint64_t cleared=(uint64_t)[pb changeCount];
+        s_last_change=(NSInteger)cleared;
+        (void)hop_clipboard_txn_update_pending_paste_version(&s_clip_txn,request_id,txn_expected,
+                                                              txn_expected,cleared);
+        BOOL ok=[pb writeObjects:objects];
+        uint64_t after_write=(uint64_t)[pb changeCount];
+        s_last_change=(NSInteger)after_write;
+        if(ok) {
+            ok=hop_clipboard_txn_finish_pending_paste_and_clear_offer(&s_clip_txn,request_id,cleared,cleared);
+        } else {
+            (void)hop_clipboard_txn_update_pending_paste_version(&s_clip_txn,request_id,cleared,cleared,after_write);
+        }
+        pthread_mutex_unlock(&s_offer_lock);
+        if(ok) { statusbar_notify_paste_ready(); hop_log(HOP_LOG_INFO,"clip: files ready; choose a target and paste again"); return; }
+        if(attempt<10) { NSInteger next=(NSInteger)after_write; dispatch_after(dispatch_time(DISPATCH_TIME_NOW,150ull*NSEC_PER_MSEC),dispatch_get_main_queue(),^{ apply_objects_retry(objects,kind,attempt+1,next,request_id); }); }
+        else { pthread_mutex_lock(&s_offer_lock); hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,request_id); pthread_mutex_unlock(&s_offer_lock); }
+        return;
+    }
     [pb clearContents];
     pthread_mutex_lock(&s_offer_lock); s_last_change = [pb changeCount]; pthread_mutex_unlock(&s_offer_lock); /* suppress the clear notification */
     BOOL ok = [pb writeObjects:objects];
     if (ok) {
         pthread_mutex_lock(&s_offer_lock); s_last_change = [pb changeCount]; pthread_mutex_unlock(&s_offer_lock);
-        if([kind isEqualToString:@"paths-paste"]) {
-            pthread_mutex_lock(&s_offer_lock);
-            (void)hop_clipboard_txn_clear_remote_offer(&s_clip_txn);
-            pthread_mutex_unlock(&s_offer_lock);
-            /* PID alone cannot prove the original Finder window or folder is
-             * unchanged. Keep the files on the pasteboard and ask the user to
-             * choose the target and paste again rather than injecting input. */
-            statusbar_notify_paste_ready();
-            hop_log(HOP_LOG_INFO,"clip: files ready; choose a target and paste again");
-        }
         hop_log(HOP_LOG_INFO, "clip: %s in; write succeeded on attempt %lu",
                 [kind UTF8String], (unsigned long)(attempt + 1));
         return;
@@ -508,10 +529,9 @@ static void apply_objects_retry(NSArray *objects, NSString *kind,
                 [kind UTF8String], (unsigned long)(attempt + 1));
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 150ull * NSEC_PER_MSEC),
                        dispatch_get_main_queue(), ^{
-            apply_objects_retry(objects, kind, attempt + 1, expected);
+            apply_objects_retry(objects, kind, attempt + 1, expected, 0);
         });
     } else {
-        if([kind isEqualToString:@"paths-paste"]) { pthread_mutex_lock(&s_offer_lock); hop_clipboard_txn_cancel_pending_paste(&s_clip_txn,0); pthread_mutex_unlock(&s_offer_lock); }
         hop_log(HOP_LOG_ERROR, "clip: %s pasteboard write failed after retries",
                 [kind UTF8String]);
     }
@@ -525,7 +545,7 @@ void clipboard_apply(const char *utf8) {
     s = [NSString stringWithUTF8String:utf8];
     if (!s) return;
 
-    apply_objects_retry(@[ s ], @"text", 0, -1);
+    apply_objects_retry(@[ s ], @"text", 0, -1, 0);
 }
 
 /* 一批文件/目录落盘完毕：把顶层条目挂到剪贴板，Finder 里 Cmd+V 即复制 */
@@ -545,7 +565,7 @@ void clipboard_apply_paths(const char *const *paths, int n) {
         NSURL *u = [NSURL fileURLWithPath:p];
         if (u) [urls addObject:u];
     }
-    if ([urls count] > 0) apply_objects_retry(urls, @"paths", 0, -1);
+    if ([urls count] > 0) apply_objects_retry(urls, @"paths", 0, -1, 0);
 }
 
 /* 收到图片：裸 BGRA 自上而下 -> NSImage -> 剪贴板 */
@@ -573,7 +593,7 @@ void clipboard_apply_image(const uint8_t *bgra, int w, int h, int stride) {
                                                   size:NSMakeSize(w, h)];
         CGImageRelease(img);
 
-        apply_objects_retry(@[ ns ], @"image", 0, -1);
+        apply_objects_retry(@[ ns ], @"image", 0, -1, 0);
     });
 }
 

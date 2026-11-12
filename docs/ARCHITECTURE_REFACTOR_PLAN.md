@@ -1,8 +1,9 @@
 # HopDesk 架构重构实施规划
 
-> 状态：实施基线已建立；按本文件逐项推进。未在“实施记录”中附提交和测试证据的工作，不得标记完成。
-> 基线主干：`main` @ `c00bf9d9fc8f0bf89f1bd2a99b8728b5cefd48e8`
-> 活动分支：`refactor/architecture-modularization`
+> 状态：阶段 1/2 已合并入主干；Clipboard 完整重构（§12.5）进行中，活动 PR #14。未在“实施记录”中附提交和测试证据的工作，不得标记完成。
+> 基线主干：`origin/main` @ `1593cc0cae0a347af980dd716b314215af943408`
+> 活动分支：`refactor/clipboard-request-admission`（PR #14）
+> 历史分支：`refactor/architecture-modularization` 已随 PR #11（merge `c14332c`，第二父 `f239774`）进入主干，仅作历史引用，不再承载开发。
 > 目标：在不改变产品行为、网络协议和用户工作流的前提下，将 HopDesk 从平台文件堆叠式组织演进为边界清晰、可独立测试、跨平台规则一致的模块化工程。
 
 ## 1. 重构目标与非目标
@@ -126,8 +127,8 @@ HopDesk 选择原生路线的重要原因之一，是保持轻量后台常驻和
 |---|---:|---|
 | `src/win/xfer.c` | 约 1,913 行 | 发送、任务队列、状态/历史、限速、ACK、生命周期混杂 |
 | `src/mac/xfer.c` | 约 1,860 行 | 与 Windows 对应逻辑并行演进，跨平台规则重复 |
-| `src/win/xfer_receive.inc` | 约 1,415 行 | 接收协议、写盘队列、文件/会话生命周期耦合 |
-| `src/mac/xfer_receive.inc` | 约 1,278 行 | 与 Windows 接收实现相似但存在平台差异 |
+| `src/win/xfer_receive.c` | 约 854 行 | 接收协议、写盘队列集成、文件/会话生命周期与 socket 线程 |
+| `src/mac/xfer_receive.c` | 约 807 行 | 与 Windows 接收实现相似但存在平台差异 |
 | `src/win/main_ui.c` | 约 860 行 | 页面、配置、任务展示、日志刷新 |
 | `src/mac/main_ui.m` | 约 805 行 | Cocoa 页面、配置、任务展示混合 |
 | `src/win/clipboard.c` | 886 行 | 剪贴板协议、图片工作线程、粘贴事务混合 |
@@ -139,7 +140,7 @@ HopDesk 选择原生路线的重要原因之一，是保持轻量后台常驻和
 
 ### 2.3 已确认的结构性问题
 
-1. `xfer.c` 通过 `#include "xfer_receive.inc"` 引入接收端实现；这不是独立编译模块，接收代码依赖同一翻译单元中的静态状态和函数。
+1. 接收端曾是 `xfer.c` 通过 `#include "xfer_receive.inc"` 引入的实现片段，依赖同一翻译单元中的静态状态和函数；现已拆为独立 `xfer_receive.c` 生产编译单元，后续仍需继续收窄 receiver 内部职责并补齐生命周期压力测试。
 2. Windows/macOS 各自维护发送、接收、剪贴板、状态展示代码。平台 API 差异合理，但任务状态转换、ACK/checkpoint、预算/释放语义应有共享规则和跨平台一致测试。
 3. 传输层同时承担任务队列、扫描、网络 IO、ACK、速率控制、历史和 UI 状态桥接，职责过载。
 4. 剪贴板层同时承担平台 API、Offer/Request 协议、图片解码/转换、异步任务调度和结果提交，生命周期边界复杂。
@@ -285,18 +286,26 @@ tests/
 
 ### 阶段 2：传输接收端与写盘模块化（P0）
 
-**目标**：首先解除 `xfer_receive.inc` 对发送端翻译单元静态状态的隐式依赖。
+**目标**：解除接收端对发送端翻译单元静态状态的隐式依赖，并让接收协议、会话/批次生命周期、socket 线程与写盘队列拥有明确的模块边界。
 
-当前进展：Windows/macOS writer queue 的 buffer pool 已抽取为共享 Core 模块；文件句柄和 open/write-at/close 文件操作已分别抽取到 `src/win/xfer_writer_io.c`、`src/mac/xfer_writer_io.c`。writer thread、队列同步、watchdog/status/task callback 仍留在 include 中，不能把阶段 2 标记为完成。
+Windows 和 macOS 的数据连接、Receiver 和 Writer Queue 分别由以下模块持有。两端使用同一套 Core 帧准入、消息处理、队列记账和资源规则。
+
+| 所有者 | 状态与职责 | 跨模块输入和输出 |
+|---|---|---|
+| 平台 `xfer.c` | 原生数据 socket、监听/连接循环、会话快照、epoch、认证就绪状态 | 向 Receiver 绑定会话并提交当前连接的帧、断线和取消轮询。提供 ACK/ABORT 发送与发送端回执入口 |
+| 平台 `xfer_receive.c` 与共享 Receiver Core | 接收批次、文件/图片状态、Task、暂存路径、取消和 DONE 回执 | 通过 Services 调用原生文件系统、Writer、剪贴板和状态发布。Receiver 启动时初始化 Services，随后才能绑定首个数据会话 |
+| 平台 Writer Queue / Worker / IO 与共享 RX 记账 | 有界队列、缓冲池、工作线程与写入句柄 | 接收 OPEN/WRITE/CLOSE，已接收命令按序完成。归还 Task RX 预留后才解除队列记账。停止时关闭准入，超时保留状态供重试 |
+
+同一控制会话的数据连接恢复时，Receiver 保留已确认条目和批次状态；控制会话切换时，旧批次走终结清理。物理双机测试与长时间资源测量单独记录。
 
 顺序：
-1. 绘制 receiver include 的静态依赖表；明确接收状态、writer 状态和外部回调。
+1. 绘制 receiver 模块的静态依赖表；明确接收状态、writer 状态和外部回调。
 2. 提取 Writer Queue 契约：start / enqueue-open / enqueue-write / enqueue-close / drain / stop / snapshot。
 3. Writer 以平台文件 IO adapter 执行写入；不自行做 Task 终态或 ACK 决策。
 4. 将 Windows writer queue 提取为独立生产编译单元并链接测试。
 5. 对照同一契约提取 macOS writer queue；保持两端 slot/bytes/pool 语义一致。
-6. 将 Receiver Protocol / Batch Lifecycle 从 include 拆成独立模块；通过明确 callback/interface 获取 status、abort、clipboard dispatch 等能力。
-7. 删除 `.inc`，不允许以新的 include 文件替代旧隐式依赖。
+6. 将 Receiver Protocol / Batch Lifecycle 收敛到独立 receiver 生产单元；通过明确 callback/interface 获取 status、abort、clipboard dispatch 等能力。
+7. 已删除 `.inc`；后续不得以新的 include 文件替代旧隐式依赖。
 
 验收：
 - 两端 writer 模块可独立编译/单测。
@@ -406,8 +415,8 @@ tests/
 
 | 顺序 | 当前文件 | 目标职责模块 | 阶段 |
 |---:|---|---|---|
-| 1 | `src/win/xfer_receive.inc` | writer queue + receiver protocol/lifecycle 独立模块 | 2 |
-| 2 | `src/mac/xfer_receive.inc` | 与 Windows 同契约的 macOS writer/receiver 模块 | 2 |
+| 1 | `src/win/xfer_receive.c` | writer queue 集成 + receiver protocol/lifecycle 生产单元 | 2 |
+| 2 | `src/mac/xfer_receive.c` | 与 Windows 同契约的 macOS receiver/writer 生产单元 | 2 |
 | 3 | `src/win/xfer.c` | transfer service / sender / scanner / ACK / rate / status adapter | 3 |
 | 4 | `src/mac/xfer.c` | 与 Windows 同业务契约的 macOS adapters | 3 |
 | 5 | `src/win/clipboard.c` | clipboard protocol / coordinator / image worker / Win32 adapter | 5 |
@@ -471,10 +480,10 @@ tests/
 | 基线核对 | 完成 | `68818b3f093af20385c3fba5785405eb4ac8d634` | 已核实 main HEAD、PR/分支状态；完成主要模块与函数簇审计附件。动态调用图、全量资源所有权追踪仍作为阶段 0 深度审计待办。 |
 | 阶段 0：深度审计 | 进行中 | `eaf8488b21c87201297aaf9edcdad2660bab76f2` | 已建立模块/函数簇和平台差异清单；仍需逐项追踪所有资源 owner、锁顺序、线程退出与回调迟到路径。PR 基线双平台 CI 已通过。 |
 | 阶段 1：构建与模块边界 | 进行中 | `6a994e691c844c60b3b15615f299633531283c13` | app 构建递归发现已完成；ACK Window、Transfer Tracking、RX Buffer Pool 已成为独立生产编译单元并接入两端测试。Core 平台 include 检查、显式 source manifest/重复源检查仍待完成。 |
-| 阶段 2：接收端/Writer | 进行中 | `54496ab83eb5f3caa61a5b3f5a6b7379a461c56e` | 在既有共享 RX Queue accounting 与平台 Writer IO adapter 之上，将队列容量/预留/忙碌写入/排空测试拆为独立 `tests/xfer_rx_queue_tests.c` 目标，并接入 macOS/Windows 测试脚本。Writer thread、队列同步和 receiver lifecycle 仍未拆完；本切片新增 CI 尚待运行。 |
+| 阶段 2：接收端/Writer | 代码、自动化和双机数据通道验收完成 | 见 PR #14 | 双平台连接所有权与 Receiver 分离。原生 TCP 回环、Writer 故障注入和物理双机续传、取消、大文件逐字节比对见后续记录。 |
 | 阶段 3：Sender/Service | 待完成 | — | 待实施。 |
 | 阶段 4：共享 Transfer Domain | 待完成 | — | 待实施。 |
-| 阶段 5：Clipboard | 待完成 | — | 待实施。 |
+| 阶段 5：Clipboard | 进行中 | `d7722d121892caf23d2707e019f8697886da786d` | Core 统一 Offer、入站 Request 准入、延迟写入身份校验与图片预算分类；暂时额度不足在释放后重试同一剪贴板版本，永久超限不重试。Windows/macOS CI 已通过；双机实测待验收。 |
 | 阶段 6：Connection | 待完成 | — | 待实施。 |
 | 阶段 7：Input | 待完成 | — | 待实施。 |
 | 阶段 8：UI | 待完成 | — | 待实施。 |
@@ -884,6 +893,31 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 真实双设备断线、取消、重连及长时间传输仍未执行，不得用 CI loopback 代替。
 
 
+### 2026-11-12：Receiver 独立生产编译单元（阶段 2，CI PASS）
+
+- 将 `src/win/xfer_receive.inc`、`src/mac/xfer_receive.inc` 通过 `git mv` 转为独立生产编译单元 `src/win/xfer_receive.c`、`src/mac/xfer_receive.c`；新增窄生命周期头 `xfer_receive.h`，只暴露 `xfer_receive_start`、`xfer_receive_stop`、`xfer_receive_owner_clean` 和原生 socket 线程入口。（**2026-11-12 更正**：该头文件此后已扩展到 24 个导出符号，混入 Transport 服务与状态/ACK 报告，不再是“只暴露生命周期”的窄接口；收敛计划见文末 P0 收口记录。）
+- Receiver 私有状态（writer 绑定、`xfer_rx_context`、batch/file/image staging、listener/client socket、取消与断线轮询）留在各自 receiver 单元；`xfer.c` 的 init/shutdown/owner audit 改为调用 receiver API，不再包含实现片段。
+- 发送端共享的 status 发布函数和 Windows `xfer_send_all` 通过 `xfer_sender_internal.h` 显式导出；macOS `temp_root` 移入 receiver；删除 receiver 内已无调用方的 `wq_push`、`wq_push_data`、`wq_drain`、`wq_error_get` 兼容包装，writer 操作统一走 `hop_writer_queue_*`。
+- 更新 `scripts/test-regressions.py`、`test-updates.py`、`test-mac-connection.py`、`test-ha.ps1` 与 `tests/session_transport_fixture.c.in`：生产源码路径、线程入口、shutdown 顺序、owner-clean 审计和 Windows `xfer_send_all` 测试替身均对齐新边界。
+- 本地验证：`sh scripts/build-mac.sh`、`python3 scripts/test-regressions.py`、`sh scripts/test-core.sh`、`python3 scripts/test-mac-connection.py`、`sh scripts/test-xfer-protocol.sh`、`sh scripts/test-network.sh` 通过；macOS 构建中 receiver 单元无 unused-function 警告。Windows 原生构建仅能通过本轮提交后的 GitHub Actions 验证。
+- 提交 `15ab5dc2621b57d1856c2985856894dd0faa7fcc` 的 [CI #1662](https://github.com/alex520lq/HopDesk/actions/runs/43166795395) 在 Windows 和 macOS 均通过原生构建、测试和打包。阶段 2 的故障覆盖和真实双机接收、断线、取消验收另行跟踪。
+
+### 2026-11-12：Receiver / Writer Queue 关闭顺序
+
+- 两端 Writer Queue 的 `stop` 先关闭入队准入，再执行有超时的 worker join。已接受的命令继续按顺序处理。在途 WRITE 的 Task RX 预算归还后才撤销队列预留，worker 在这些预留清零后关闭文件并退出。
+- Receiver 数据线程退出后才停止 Writer Queue。Writer 超时会保留队列、Task 和 staging 状态供下次关闭重试。成功 join 后才清理 Receiver Task 和 staging。队列 owner 等其他调用线程退出后销毁同步对象。
+- 双平台生产模块测试覆盖在途预留导致的关闭超时、拒绝后续命令、预算恰好归还一次、关闭重试，以及写入错误在后续写入成功后仍保留至显式重置。缓冲池分配失败注入验证 Task 与队列预留回滚后可重试同一 WRITE。关闭编排测试注入 Writer stop 失败，验证 Receiver reset 与最终资源审计均延后。
+- macOS 本地原生构建、`sh scripts/test-core.sh`、`python3 scripts/test-regressions.py`、传输协议、TCP 回环及 macOS 连接测试通过，Writer Queue 并发回归额外通过 ThreadSanitizer。真实慢盘/磁盘满、物理双机断线续传和取消、长时间资源测量尚待执行。
+
+### 2026-11-12：阶段 2 连接所有权与验收覆盖
+
+- 两端 `xfer.c` 持有原生数据连接、epoch 和认证状态，只把当前连接的帧和生命周期事件交给 Receiver。Receiver 的取消信号、批次、Task 与暂存目录留在 Receiver，平台连接和状态锁均由原模块持有。
+- Receiver 在首个会话绑定前初始化 Core 上下文与 Services。同一控制会话重连时，已 ACK 的文件留在交付列表。两端原生回环测试覆盖中途断线、只重传未确认文件、旧批次帧过滤、DONE 重放、取消后清理和预算归零。
+- Writer Queue 测试分别填满 slot 和 byte 上限，模拟阻塞写盘，验证关闭唤醒、已接收写入排空及预算归还。权限拒绝和磁盘满通过测试专用对象注入原生错误，正式应用沿用原生 I/O。macOS 生产链接用例运行 ASan/UBSan，队列并发用例额外运行 ThreadSanitizer。
+- 物理 Windows → macOS 在基线 `1d346fa` 上也会在 128 KiB 后停滞。共享限速器现在保留等待前已积累的额度，只有成功准入才扣减。Core 和生产 Sender chunk 测试均验证精确等待后可以发送。
+- 两台物理设备通过局域网运行生产数据通道、Sender、Receiver 和文件 I/O。48 MiB 文件双向中途断线续传并逐字节比对，两个方向的取消均完成且通过关闭时的资源对账。测试进程注入控制会话并观察剪贴板交付回调。桌面剪贴板实操、真实磁盘满/慢盘与长时间运行仍单列在手动验收表。
+- 同一双机配置再双向传输 1 GiB，接收端逐字节比对。64 KiB 分块、64 MiB/s 配置上限，Windows → macOS 约 16.2 秒，接收队列峰值为 8 槽、512 KiB。macOS → Windows 约 21.8 秒，接收队列峰值为 3 槽、192 KiB。按两端进程各自的系统指标，Windows Sender/Receiver 峰值工作集分别约 24.0/15.3 MiB，macOS Sender/Receiver 峰值 RSS 分别约 18.9/11.2 MiB。数值来自测试进程。
+
 
 ## 12. 新的重构执行协议（最高优先级，后续 Agent 必须遵守）
 
@@ -956,7 +990,7 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 
 **验收**：两端生产构建使用同一套事务规则；覆盖 Offer 替换/清除、重复/过期/迟到 Request、成功/失败 Paste、取消/断线、图片预算与重试、Task/Reservation exactly-once 释放；删除两端重复的事务状态机和旧包装；Windows/macOS 原生构建与相关测试通过。完成前不得开始 Connection、Input 或 UI 重构。
 
-**当前状态**：仅完成远程源码初步盘点，尚未完成本地完整调用链审计；不得标记为已实施或已验证。
+**当前状态**：共享 Core 已接管 Offer、入站 Paste Request 准入、延迟写入的请求身份校验与图片预算分类。macOS 主队列和 Windows 窗口消息、定时器携带请求身份到写入点。图片暂时额度不足时，两端都会在 Task/Reservation 释放后重试同一剪贴板版本；永久超限不再重试。共享事务回归覆盖重复完成、旧请求不能清除新 Offer，以及自身剪贴板版本推进；Windows 生产函数夹具覆盖锁重入、队列替换、原生剪贴板版本过期、旧回调隔离和图片准入/重试。[PR #14](https://github.com/alex520lq/HopDesk/pull/14) 的 `d7722d121892caf23d2707e019f8697886da786d` 已通过 [Windows/macOS CI](https://github.com/alex520lq/HopDesk/actions/runs/43144273368)。实际双机粘贴、剪贴板争用和关闭竞态仍待人工验证。
 
 
 ### Clipboard 完整重构实现记录（2026-11-11，等待 CI）
@@ -969,6 +1003,28 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 当前实现提交的 Windows/macOS CI 尚未执行；在精确提交 SHA 的 Actions 完成前不得标记验收通过。真实双设备 Paste、剪贴板争用和关闭竞态仍需单独实机验证。
 
 
+### 2026-11-12：Clipboard 图片预算延迟重试（CI PASS）
+
+- 新增共享 `hop_xfer_budget_image_conversion_fits()`，只判断图片输入与转换缓冲是否可能落在配置的图像/临时内存上限内，不读取当前占用；用于区分永久超限与暂时额度不足。
+- macOS：`send_image_data_async` 改为三态返回；仅当 Task/Reservation 清理完成时才回滚 `changeCount`，让同一剪贴板版本重试；清理未完成时保留 owner 供关闭审计/重试，避免重复回滚覆盖迟到的写入状态。转换额度不足仍设置 `budget_deferred`，在 worker 完成 Task 释放后回滚同一版本。
+- Windows：新增生产路径 `image_snapshot_prepare`，在分配 DIB 快照前先做共享预算分类，暂不可用时不再分配 owner/任务；`send_dib` 在转换预算预留失败时返回可重试状态；worker 仅在 Task 释放完成且剪贴板 sequence 未变化时重新投递 `WM_APP_CLIP`，停止中不重投。
+- 回归：共享分类器单测覆盖边界、NULL 与溢出；Windows 生产函数夹具覆盖暂不可用不分配、重试前释放、永久超限不重试、停止不重投；macOS 源码断言三态返回、Task 释放后再回滚、永久超限不回滚。
+- 本地验证：`sh scripts/test-core.sh`、`python3 scripts/test-regressions.py`、`sh scripts/build-mac.sh`、`sh scripts/test-xfer-protocol.sh`、`sh scripts/test-network.sh` 通过。
+- CI 证据：GitHub Actions Run #1658（ID `43144273368`，head `d7722d121892caf23d2707e019f8697886da786d`）Windows MSVC 与 macOS 全流程 PASS：应用构建、Core/regression（含共享图片预算分类和 Windows 生产准入夹具）、文件传输协议、TCP loopback、Windows native role/reconnect、macOS control/listener loopback、更新检查与双平台打包。Release 发布按 PR 流程跳过。
+- 真实双机粘贴、剪贴板争用与关闭竞态仍未验证；不能以 CI 结果替代物理双设备验收。
+
+
+### 2026-11-12：Receiver 帧准入 Core 化（CI PASS）
+
+- 新增 `src/core/xfer_rx_frame_gate.[ch]`，由共享 Core 统一决定 HELLO/token 校验、当前 session 绑定、未知类型拒绝、以及非当前批次 CHUNK/END 的丢弃。
+- Windows/macOS `on_data_frame_checked` 不再各自复制 `hop_xfer_hello_bound` + `hop_data_unwrap` + batch 比较；平台 Adapter 仅负责在锁内快照 session、调度准入后的 body，并在拒绝时 shutdown socket / 清除 `peer_ready`。
+- `on_data_msg` 只保留“已握手”检查与 typed handler dispatch，不再拥有 HELLO 分支。
+- 新增 `tests/xfer_rx_frame_gate_tests.c` 覆盖合法/错误 token、过期/外键 session、截断帧、未知类型、当前批次 CHUNK/END dispatch、旧批次 DROP、BEGIN 新批次 dispatch 和内部 batch 不一致拒绝；macOS/Windows Core test 脚本、Windows HA target 与 session transport fixture 均已链接新模块。
+- 本地验证：`sh scripts/test-core.sh`、`python3 scripts/test-regressions.py`、`sh scripts/build-mac.sh`、`sh scripts/test-xfer-protocol.sh`、`sh scripts/test-network.sh`、`python3 scripts/test-mac-connection.py` 通过。
+- CI 证据：GitHub Actions Run #1660（ID `43164543458`，head `9a210d4c44295222aa72436c4913b0fb6ba9d10f`）Windows MSVC 与 macOS 全流程 PASS：应用构建、Core/regression、文件传输协议、TCP loopback、Windows native role/reconnect、macOS control/listener loopback、更新检查和双平台打包。Release 发布按 PR 流程跳过。
+- 真实双机接收、断线重连和迟到帧验收仍未执行；不能以 CI 结果替代物理双设备测试。
+
+
 ### 2026-11-11：Sender Job Lifecycle 完整收口（实现分支，CI 待验）
 
 - 新增 `src/core/xfer_sender_job_lifecycle.{h,c}`，将 Submitter / Worker / Shutdown 的 Job 释放状态机、Task 终态选择、Reservation 释放顺序、Status 发布顺序和延迟回收决策收敛为唯一 Core 实现。
@@ -976,3 +1032,18 @@ Next execution remains the phase-2 P0 slice: extract the Windows Writer Queue be
 - 两端 `job_free()` 缩减为构造 borrowed view 并调用共享 Core；Owner enum 移至共享契约头。
 - 新增独立生命周期测试并接入 Windows/macOS Core test runner。
 - 验收门槛：双平台应用编译、完整 Core tests、源码回归、CI；失败时先修复，不合并。
+
+
+### 2026-11-12：P0 收口 —— 模块边界、验收范围与仓库状态核实
+
+**核实方式**：`git status` / `git fetch --prune` / `git branch -vv` / `git merge-base --is-ancestor` / `git diff origin/main main`，两端 `xfer_receive.h` 与 Clipboard `.inc` 全文比对，PR #11/#12/#13/#14 元数据与 check runs。以下为实测结论，不是推测。
+
+- **Clipboard `.inc` 实际是 4 个文件，不是 2 个**：`src/win|mac/clipboard_offer.inc` 与 `src/win|mac/clipboard_paste.inc`，分别由 `clipboard.c:73/727`、`clipboard.m:63/602` include。另有 4 个 `net_*.inc` 属网络层，不在 Clipboard 范围。
+- **`.inc` 的核心问题是重复业务编排，不是文件名**：两端 paste 片段中“协议解码 → Core 事务调用 → 发送/失败回执”的编排约七成相同，只有原生序列号/changeCount 采样、路径快照、Worker 启动和最终粘贴落地不同。因此 `git mv` 成 `.c` 不构成完成（§1.3），正确目标是提取 Clipboard Coordinator 并注入平台服务。
+- **`scripts/test-regressions.py` 已把 `.inc` 路径写死**：读取 `clipboard_paste.inc` / `clipboard_offer.inc`，并断言 `#include "clipboard_paste.inc"` 存在。拆分 `.inc` 必须在同一提交内更新这些源码断言，否则测试失败或退化为假通过。
+- **`xfer_receive.h` 已扩到 24 个导出符号**，混装三类契约：Receiver 自身生命周期与连接回调、Transport→Receiver 服务（`xfer_data_send_*`、`xfer_data_connection_shutdown`）、状态/ACK 报告（`status_*`、`ack_deliver`、`rate_now_ns`）。其中 `ack_deliver`、`status_begin`、`status_chunk_timed`、`rate_now_ns` 由 `xfer.c` / `xfer_sender.c` 实现，同时在 `xfer_sender_internal.h` 重复声明；两端 `xfer_receive.h` 除 `<windows.h>` 与 guard 外内容一致，说明它并非平台契约。重复声明不违反 C 语义，故 CI 仍为绿色——这是边界债，不是运行时缺陷。
+- **接口收敛不得作为“接口先行”提交**：按 §12.1 / §12.4，`xfer_receive.h` 拆分必须与 Receiver Services 注入、调用方迁移、重复声明删除在同一完整问题内完成。因此归入 P2，不作为 PR #14 的追加改动。
+- **PR #14 当前 CI 证据**：head `b694992f813be66708b2e312994c603d1cc4ae25` 的 [Run #43179307951](https://github.com/alex520lq/HopDesk/actions/runs/43179307951) 中，`Windows build, tests and package (MSVC)` 与 `macOS build, tests and package` 均 success，`Publish public update release` 按 PR 流程 skipped。此前记录的 `d7722d1` 已被 `1d346fa`、`b694992` supersede。
+- **验收范围需要分层**：`docs/MANUAL_TEST_RUNBOOK.md` 是通用清单（APP-/INPUT-/CLIP- 编号），没有 Receiver 专项用例，也不回指本文件的实机记录；本文件 2026-11-12 记录包含真实双机 48 MiB / 1 GiB 双向传输、逐字节比对、取消与资源对账（基线 `1d346fa`）。二者需建立交叉引用并补齐 RX-* 用例，避免把“已实机验证”与“通用清单未填”混为一谈。
+- **分支状态**：远端仅存 `main`、`refactor/architecture-modularization`（`f239774`，已是 `origin/main` 祖先）、`refactor/clipboard-request-admission`（`b694992`）。`refactor/sender-job-lifecycle` 与 `refactor/architecture-next` 已删除。前者可在获得明确授权后删除，删除本身不丢失内容。
+- **本地 `main` 与 `origin/main` 分歧（新增，优先级高于文档陈旧）**：本地 `main` @ `9a41a9e` 领先 `origin/main` 4 个提交（`9a41a9e` / `e6f4b1a` / `b5172b7` / `6243312`），但 `git diff origin/main main` 为空，即树内容完全一致。成因是 PR #12 分支 tip `e6f4b1a` 已被 squash 合并为 `ae85b55`，本地又把它合并回 `main`，形成重复历史。这不影响构建，但会让后续 Agent 的 `main` 基线判断出错。修正需 `git reset --hard origin/main`，属 §4 / §12.3 禁止的破坏性操作，必须取得明确授权后才能执行。

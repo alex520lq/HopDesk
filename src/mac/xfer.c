@@ -11,26 +11,9 @@
  * ===================================================================== */
 #include "mac_app.h"
 #include "xfer.h"
-#include "../core/hop.h"
-#include "xfer_rx_fs.h"
-#include "../core/xfer_rx_receipt.h"
-#include "../core/xfer_rx_lifecycle.h"
-#include "../core/xfer_rx_batch_rules.h"
-#include "../core/xfer_rx_entry_reservations.h"
-#include "../core/xfer_rx_file_state.h"
-#include "../core/xfer_rx_dispatch.h"
-#include "../core/xfer_rx_platform_dispatch.h"
-#include "../core/xfer_rx_services.h"
-#include "../core/xfer_rx_context.h"
-#include "../core/xfer_rx_message_handlers.h"
-#include "../core/xfer_rx_ack_handler.h"
-#include "../core/xfer_rx_protocol_adapter.h"
-#include "../core/xfer_rx_batch_state.h"
-#include "../core/xfer_rx_image_state.h"
-#include "../core/xfer_rx_image_buffer.h"
-#include "xfer_writer_queue.h"
-#include "../core/xfer_rx_queue.h"
+#include "xfer_receive.h"
 #include "../core/update_state.h"
+#include "../core/hop.h"
 #include "../core/xfer_budget.h"
 #include "../core/xfer_task.h"
 #include "../core/xfer_task_history.h"
@@ -169,7 +152,7 @@ static void history_save(void) {
 static hop_xfer_tracking *status_for(int direction) {
     return direction == HOP_XFER_DIR_SEND ? &s_send_status : &s_receive_status;
 }
-static int status_begin(uint32_t batch,int direction,uint32_t files,uint64_t bytes,const char *name,int phase) {
+int status_begin(uint32_t batch,int direction,uint32_t files,uint64_t bytes,const char *name,int phase) {
     int created=0;
     pthread_mutex_lock(&s_status_lock);
     hop_xfer_tracking *t = status_for(direction);
@@ -255,7 +238,7 @@ static void status_set_files(uint32_t batch,const xf_entry *entries,int n) {
     }
     pthread_mutex_unlock(&s_status_lock);
 }
-static void status_image(uint32_t batch,int direction,uint64_t size) {
+void status_image(uint32_t batch,int direction,uint64_t size) {
     pthread_mutex_lock(&s_status_lock);
     hop_xfer_tracking *t=status_for(direction);
     if(hop_xfer_tracking_matches(t,batch)) {
@@ -265,7 +248,7 @@ static void status_image(uint32_t batch,int direction,uint64_t size) {
     }
     pthread_mutex_unlock(&s_status_lock);
 }
-static void status_add_received_file(uint32_t batch,uint32_t id,const char *path,uint64_t size,int directory) {
+void status_add_received_file(uint32_t batch,uint32_t id,const char *path,uint64_t size,int directory) {
     pthread_mutex_lock(&s_status_lock);
     hop_xfer_tracking_file(&s_receive_status,batch,id,path,size,directory,HOP_XFER_FILE_RECEIVING);
     if(hop_xfer_tracking_matches(&s_receive_status,batch) && path)
@@ -446,30 +429,70 @@ int send_small(int fd, uint8_t type, const uint8_t *p,
     return send_small_with_context(&s_sender_context, fd, type, p, len, batch);
 }
 
+void status_receive_set_total(uint32_t total) {
+    pthread_mutex_lock(&s_status_lock);
+    s_receive_status.status.files_total = total;
+    pthread_mutex_unlock(&s_status_lock);
+}
+
+void status_receive_reset(void) {
+    pthread_mutex_lock(&s_status_lock);
+    memset(&s_receive_status, 0, sizeof(s_receive_status));
+    pthread_mutex_unlock(&s_status_lock);
+}
+
+static int xfer_data_connection_ready(void) {
+    pthread_mutex_lock(&s_x.slock);
+    int ready = s_x.sock >= 0 && s_x.peer_ready;
+    pthread_mutex_unlock(&s_x.slock);
+    return ready;
+}
+
+void xfer_data_connection_shutdown(void) {
+    pthread_mutex_lock(&s_x.slock);
+    int fd = s_x.sock;
+    if (fd >= 0) { s_x.peer_ready = 0; ++s_x.epoch; }
+    pthread_mutex_unlock(&s_x.slock);
+    if (fd >= 0) shutdown(fd, SHUT_RDWR);
+}
+
+void xfer_data_send_abort(uint32_t batch, uint8_t reason) {
+    pthread_mutex_lock(&s_x.slock);
+    int fd = s_x.sock;
+    pthread_mutex_unlock(&s_x.slock);
+    if (fd >= 0) {
+        uint8_t payload[6];
+        hop_put_be32(payload, batch);
+        payload[4] = reason; payload[5] = HOP_ABORT_TO_SENDER;
+        (void)send_small(fd, HOP_MSG_XFER_ABORT, payload, sizeof(payload), batch);
+    }
+}
+
+void xfer_data_send_file_ack(uint32_t batch, uint32_t id, int status) {
+    pthread_mutex_lock(&s_x.slock);
+    int fd = s_x.sock;
+    pthread_mutex_unlock(&s_x.slock);
+    if (fd >= 0) send_ack(fd, batch, id, status);
+}
+
+void xfer_data_send_done_ack(uint32_t batch, const uint8_t *payload, uint32_t length) {
+    pthread_mutex_lock(&s_x.slock);
+    int fd = s_x.sock;
+    pthread_mutex_unlock(&s_x.slock);
+    if (fd >= 0) (void)send_small(fd, HOP_MSG_XFER_DONE_ACK, payload, length, batch);
+}
+
+void xfer_data_record_peer_abort(uint32_t batch, uint8_t reason) {
+    pthread_mutex_lock(&s_x.qlock);
+    (void)hop_xfer_sender_active_job_record_peer_abort(&s_x.active_job, batch, reason);
+    pthread_mutex_unlock(&s_x.qlock);
+    sender_context_wake_ack();
+}
+
 /* 每块之后让一次 CPU。传输是后台工作，键鼠才是前台 ——
  * 真正起作用的保障是 send_thread 里的 QOS_CLASS_UTILITY，
  * 这里让一次是给同优先级的其他工作减压。 */
 void yield_cpu(void) { sched_yield(); }
-
-
-
-
-
-/* $TMPDIR 在 macOS 上带尾部斜杠（/var/folders/…/T/），直接拼 "/HopDesk"
- * 就得到 "T//HopDesk"。POSIX 下双斜杠无害，但日志和剪贴板里的路径
- * 会变成两个不同字符串表示同一个文件，排查时容易看花眼。去掉尾斜杠。 */
-static const char *temp_root(void) {
-    static char buf[1024];
-    const char *t = getenv("TMPDIR");
-    if (!t || !*t) return "/tmp";
-
-    size_t n = strlen(t);
-    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
-    memcpy(buf, t, n);
-    buf[n] = '\0';
-    while (n > 1 && buf[n - 1] == '/') buf[--n] = '\0';
-    return buf;
-}
 
 /* Relative path validation is shared in src/core/xfer_validate.c. */
 
@@ -481,8 +504,6 @@ static const char *temp_root(void) {
  * 数据直接读进发送缓冲的 CHUNK_HDR 处，省掉一次内存拷贝。
  * 每块带 CRC32：TCP 的 16 位校验和配合网卡 offload 有可能漏检，
  * GB 级传输漏检一次就是静默损坏。 */
-/* Receiver and disk writer share this translation unit and its private state. */
-#include "xfer_receive.inc"
 
 /* ---------------- 对外接口 ---------------- */
 
@@ -539,7 +560,7 @@ int xfer_init(const hop_config *cfg) {
     }
 
     /* 写盘线程要先起来，接收路径一进来就会往队列里塞 */
-    if (!wq_start()) {
+    if (!xfer_receive_start()) {
         hop_log(HOP_LOG_ERROR, "xfer: writer thread start failed");
         pthread_rwlock_unlock(&s_x_lifecycle_lock);
         if (!xfer_shutdown())
@@ -548,7 +569,7 @@ int xfer_init(const hop_config *cfg) {
     }
 
     if (!hop_mac_sender_threads_start(
-            &s_x.sender_threads, send_thread, conn_thread, NULL)) {
+            &s_x.sender_threads, send_thread, xfer_data_connection_thread, NULL)) {
         hop_log(HOP_LOG_ERROR, "xfer: sender/connection thread start failed");
         pthread_rwlock_unlock(&s_x_lifecycle_lock);
         if (!xfer_shutdown())
@@ -569,13 +590,7 @@ static int xfer_shutdown_task_audit(void) {
         s_x.shutdown_jobs == NULL &&
         !hop_xfer_sender_active_job_is_active(&s_x.active_job);
     pthread_mutex_unlock(&s_x.qlock);
-    static const hop_xfer_rx_entry_reservations empty_entry_reservations = {0};
-    int receiver_clean = s_wq == NULL && s_rx.writer == NULL &&
-        !s_rx.task.initialized && !s_rx.task.id &&
-        !s_rx.batch_state.active && !s_rx.cur_path &&
-        memcmp(&s_rx.entry_reservations, &empty_entry_reservations,
-               sizeof(empty_entry_reservations)) == 0 &&
-        !s_rx.image_buffer.data && !s_rx.tops && s_rx.ntop == 0;
+    int receiver_clean = xfer_receive_owner_clean();
     if (!sender_clean || !receiver_clean) {
         hop_log(HOP_LOG_ERROR,
                 "xfer: shutdown owner audit failed (sender_clean=%d receiver_clean=%d)",
@@ -643,8 +658,7 @@ int xfer_shutdown(void) {
         return 0;
     }
 
-    rx_reset(&s_rx);
-    if (!wq_stop()) {
+    if (!xfer_receive_stop()) {
         hop_log(HOP_LOG_WARN, "xfer: writer worker still owns receive resources; preserve shared state for retry");
         pthread_rwlock_unlock(&s_x_lifecycle_lock);
         return 0;
@@ -711,7 +725,7 @@ void xfer_cancel(void) {
         ? ((xf_job *)s_x.queue.head)->batch : 0;
     s_x.cancel_batch = hop_xfer_sender_active_job_cancel_target(
         &s_x.active_job, queued_batch);
-    __sync_lock_test_and_set(&s_x.cancel_rx, 1);
+    xfer_receive_cancel_request();
     pthread_cond_signal(&s_x.qcond);
     pthread_mutex_unlock(&s_x.qlock);
     sender_context_wake_ack();
@@ -734,5 +748,209 @@ int xfer_cancel_task(hop_xfer_task_id id) {
     }
     pthread_rwlock_unlock(&s_x_lifecycle_lock);
     return requested;
+}
+
+
+
+/* Native data-channel transport owner. */
+typedef struct {
+    hop_session_id session;
+    uint64_t epoch;
+    int socket;
+} xfer_data_frame_context;
+
+static int xfer_data_frame_current(const xfer_data_frame_context *frame) {
+    int current;
+    pthread_mutex_lock(&s_x.slock);
+    current = s_x.sock == frame->socket && s_x.epoch == frame->epoch;
+    pthread_mutex_unlock(&s_x.slock);
+    return current;
+}
+
+static void xfer_data_frame(void *opaque, uint8_t type, const uint8_t *payload, uint32_t length) {
+    xfer_data_frame_context *frame = (xfer_data_frame_context *)opaque;
+    if (!frame || !xfer_data_frame_current(frame)) return;
+    if (!hop_update_receive_enter()) {
+        pthread_mutex_lock(&s_x.slock);
+        if (s_x.sock == frame->socket && s_x.epoch == frame->epoch) {
+            s_x.peer_ready = 0; ++s_x.epoch; shutdown(frame->socket, SHUT_RDWR);
+        }
+        pthread_mutex_unlock(&s_x.slock);
+        return;
+    }
+    int guard = hop_watchdog_begin("data receive frame", 60000);
+    int authenticated;
+    pthread_mutex_lock(&s_x.slock);
+    authenticated = s_x.peer_ready;
+    pthread_mutex_unlock(&s_x.slock);
+    hop_rx_frame_action action = xfer_receive_process_frame(
+        &frame->session, g_mac.cfg.token, authenticated, type, payload, length);
+    pthread_mutex_lock(&s_x.slock);
+    if (s_x.sock == frame->socket && s_x.epoch == frame->epoch) {
+        if (action == HOP_RX_FRAME_HELLO_ACCEPT) s_x.peer_ready = 1;
+        else if (action == HOP_RX_FRAME_HELLO_REJECT || action == HOP_RX_FRAME_REJECT_PEER) {
+            s_x.peer_ready = 0; ++s_x.epoch;
+            shutdown(frame->socket, SHUT_RDWR);
+        }
+    }
+    pthread_mutex_unlock(&s_x.slock);
+    hop_watchdog_end(guard);
+    hop_update_work_leave();
+}
+
+static int do_connect(void) {
+    const char *host = g_mac.cfg.peer_host;
+    if (!host[0]) return -1;
+    uint16_t port = g_mac.cfg.data_port ? g_mac.cfg.data_port : HOP_DATA_PORT;
+    return net_connect_timeout(host, port, HOP_CONNECT_TIMEOUT_MS);
+}
+
+static int s_data_listener=-1;
+static int accept_data(const hop_session_id *expected){
+    if(s_data_listener<0){
+        s_data_listener=socket(AF_INET,SOCK_STREAM,0);if(s_data_listener<0)return -1;
+        int yes=1;setsockopt(s_data_listener,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(yes));
+        struct sockaddr_in a;memset(&a,0,sizeof(a));a.sin_family=AF_INET;a.sin_port=htons(g_mac.cfg.data_port);a.sin_addr.s_addr=htonl(INADDR_ANY);
+        if(bind(s_data_listener,(struct sockaddr*)&a,sizeof(a))||listen(s_data_listener,8)){
+            hop_log(HOP_LOG_WARN,"xfer: data port %u unavailable (errno=%d)",(unsigned)g_mac.cfg.data_port,errno);
+            close(s_data_listener);s_data_listener=-1;return -1;
+        }
+        hop_log(HOP_LOG_INFO,"xfer: listening on data port %u",(unsigned)g_mac.cfg.data_port);
+    }
+    while(!s_x.stop && hop_session_matches(expected)){
+        xfer_receive_poll_cancel(xfer_data_connection_ready());
+        fd_set rd;FD_ZERO(&rd);FD_SET(s_data_listener,&rd);struct timeval tv={0,200000};
+        int n=select(s_data_listener+1,&rd,NULL,NULL,&tv);
+        if(n>0){
+            int peer=accept(s_data_listener,NULL,NULL);
+            if(peer>=0){int yes=1;if(setsockopt(peer,SOL_SOCKET,SO_NOSIGPIPE,&yes,sizeof(yes))){close(peer);return -1;}}
+            return peer;
+        }
+        if(n<0&&errno!=EINTR){close(s_data_listener);s_data_listener=-1;return -1;}
+    }
+    return -1;
+}
+void *xfer_data_connection_thread(void *arg) {
+    (void)arg;
+    xfer_data_frame_context frame = {0};
+    hop_decoder *dec = hop_decoder_new(&frame, xfer_data_frame);
+    if (!dec) return NULL;
+
+    int backoff = 1;
+    while (!s_x.stop) {
+        xfer_receive_poll_cancel(xfer_data_connection_ready());
+        hop_session_id session;
+        if (!hop_session_current(&session)) { usleep(200000); continue; }
+        int s = g_mac.cfg.role==HOP_ROLE_SERVER?accept_data(&session):do_connect();
+        if (s < 0) {
+            if (!hop_session_matches(&session)) continue;
+            if (g_mac.cfg.role==HOP_ROLE_CLIENT && g_mac.cfg.peer_host[0])
+                hop_log(HOP_LOG_WARN,"xfer: TCP data connection failed: host=%s port=%u; check data port and firewall",
+                        g_mac.cfg.peer_host,(unsigned)g_mac.cfg.data_port);
+            /* 退避要能被 stop 打断 —— 否则退出时要等满 10 秒 */
+            for (int i = 0; i < backoff * 10 && !s_x.stop; ++i) {
+                xfer_receive_poll_cancel(xfer_data_connection_ready());
+                usleep(100 * 1000);
+            }
+            backoff = backoff < 10 ? backoff * 2 : 10;
+            continue;
+        }
+        if (!hop_session_matches(&session)) { close(s); continue; }
+        backoff = 1;
+
+        int bufsz = 4 * 1024 * 1024;
+        setsockopt(s, SOL_SOCKET, SO_RCVBUF, &bufsz, sizeof(bufsz));
+        setsockopt(s, SOL_SOCKET, SO_SNDBUF, &bufsz, sizeof(bufsz));
+
+        /* 数据通道空闲时间最长：不开 keepalive，链路中间设备丢掉空闲
+         * 连接表项后这条 socket 就变黑洞 —— 对端发来的字节永远到不了，
+         * 而本端 read 一直 EAGAIN，连"断开"都感知不到。 */
+        net_set_keepalive(s);
+
+        /* 发送超时：ABORT 是从接收线程发的，如果发送线程正卡在 write 里
+         * （对端窗口满），接收线程拿不到发送锁就会跟着卡死 —— 那是死锁。
+         * 给个上限，卡住就当作传输失败，别把整个通道拖死。
+         * 256 KB 块在 100 Mbps 链路上只要 20 ms，5 秒是极宽的余量。 */
+        struct timeval sndto;
+        sndto.tv_sec = 5;
+        sndto.tv_usec = 0;
+        setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &sndto, sizeof(sndto));
+
+        /* 接收超时不是错误处理，是给取消请求开一条唤醒通道：
+         * 对端暂停发送时 read 会一直阻塞，而 s_rx 只归本线程所有，
+         * 取消就只能干等 —— 用户点了"取消"，界面 30 秒没反应。
+         * 200 ms 醒一次，代价是空闲时每秒 5 次空转，可以忽略。 */
+        struct timeval rxto;
+        rxto.tv_sec = 0;
+        rxto.tv_usec = 200 * 1000;
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &rxto, sizeof(rxto));
+
+        pthread_mutex_lock(&s_x.slock);
+        s_x.sock = s;
+        s_x.session = session;
+        ++s_x.epoch;
+        s_x.peer_ready = 0;
+        uint64_t connection_epoch = s_x.epoch;
+        pthread_mutex_unlock(&s_x.slock);
+
+        pthread_mutex_lock(&s_x.qlock);
+        hop_xfer_sender_active_job_reset_peer_abort(&s_x.active_job); /* 新会话，清除上一轮 ABORT */
+        pthread_mutex_unlock(&s_x.qlock);
+
+        hop_decoder_reset(dec);
+        frame.session = session;
+        frame.epoch = connection_epoch;
+        frame.socket = s;
+        xfer_receive_bind_session(&session);
+
+        uint8_t hello[2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES];
+        uint32_t hello_len = hop_xfer_hello_encode(hello, g_mac.cfg.token, &session);
+        if (!hello_len || !send_small(s, HOP_MSG_XFER_HELLO, hello, hello_len, 0)) {
+            shutdown(s, SHUT_RDWR);
+        }
+        hop_log(HOP_LOG_INFO, "xfer: data channel connected; waiting for peer authentication");
+
+        uint64_t started = hop_monotonic_ms();
+        char buf[65536];
+        while (!s_x.stop && hop_session_matches(&session)) {
+            pthread_mutex_lock(&s_x.slock);
+            int authenticated = s_x.peer_ready;
+            pthread_mutex_unlock(&s_x.slock);
+            if (!authenticated && hop_handshake_expired(hop_monotonic_ms(), started)) break;
+            ssize_t r = read(s, buf, sizeof(buf));
+
+            if (r < 0) {
+                if (errno == EINTR) continue;
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    /* 不是断线，只是这 200 ms 没数据：借这次醒来处理取消请求 */
+                    xfer_receive_poll_cancel(xfer_data_connection_ready());
+                    continue;
+                }
+                break;
+            }
+            if (r == 0) break;                 /* 对端正常关闭 */
+
+            if (!hop_decoder_feed(dec, (const uint8_t *)buf, (uint32_t)r)) break;
+            xfer_receive_poll_cancel(xfer_data_connection_ready());
+        }
+
+        pthread_mutex_lock(&s_x.slock);
+        s_x.sock = -1;
+        ++s_x.epoch;
+        s_x.peer_ready = 0;
+        pthread_mutex_unlock(&s_x.slock);
+        shutdown(s, SHUT_RDWR);
+        pthread_mutex_lock(&s_txlock);
+        close(s);
+        pthread_mutex_unlock(&s_txlock);
+        /* 只关文件，不清批次：发送端会带着同一个 batch 号回来，
+         * 从断点条目继续发。这里清掉就变成"从头重传整批"了。 */
+        if (!s_x.stop) xfer_receive_disconnected();
+        if (!s_x.stop) hop_log(HOP_LOG_WARN, "xfer: data channel closed");
+    }
+
+    if(s_data_listener>=0){close(s_data_listener);s_data_listener=-1;}
+    hop_decoder_free(dec);
+    return NULL;
 }
 

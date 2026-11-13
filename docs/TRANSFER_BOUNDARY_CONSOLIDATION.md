@@ -41,3 +41,8 @@
 - Sender Engine Adapter 保留。它除接口转换外还负责文件和图片帧编码、ACK 结果映射以及文件发送与窗口策略的组合；仅将其挪进 Engine 文件不会消除这些职责。其中仅包着 `ops` 指针的 `sender_file_adapter_call` 已删除，File Ops 直接借用现有执行参数。`hop_xfer_sender_worker_job_view` 与 `hop_xfer_sender_worker_job` 分别是运行时借用视图和终态决策快照，不是两个 Job 所有者。
 - 此轮净删除两个共享包装接口（Receiver Protocol Adapter、Sender ACK Adapter）及 Receiver ABORT 执行回调表，三条生产路径各少一层转发；没有增加业务状态或 OS 抽象。工程维护时间和 CPU/RSS/包体的前后差值尚未测量，不能据源码删减宣称资源改善。
 - 本地已通过 `python3 scripts/test-regressions.py` 和 `bash scripts/test-core.sh`；Sender 改动后的 `bash scripts/build-mac.sh`、`bash scripts/test-xfer-protocol.sh`、`bash scripts/test-network.sh` 也通过。最终 Windows 原生构建与测试待本轮 PR 最新提交 CI；真实双机、剪贴板和弱网实测未执行。
+
+## 后续小范围审计：Sender Retry 与 Receiver ABORT
+
+- **Sender Retry：保留现状，问题仍存在。** Windows `xfer_job` 与 macOS `xf_job` 都独占 `attempt`、`retry_at`、`give_up_at`；Queue 读取其时间，Worker Flow 在断线时更新决策快照，再通过 `store_retry_state` 写回，随后才在平台队列锁内转移 Job 所有权。没有第二个长期 Job，但确有一次可变状态复制和回写。平台 `attempt` 是 `int`，Core 快照是 `uint32_t`；直接借用三个字段需要让 Core 持有可变平台指针并处理类型转换与有效期，或者同时改两端 Job 布局和 Queue 接口。它只消除一个写回回调，却增加指针契约或扩大重构范围，当前没有证明整体更简单。因此本项**未收敛**，不为消除复制而改代码。若未来统一 Job 中的重试状态布局，应再以所有权转移、类型范围、Shutdown 竞争和重入队行为为验收条件评估唯一视图。
+- **Receiver ABORT：补回生产路径顺序回归。** `receive_abort_fixture` 继续提取真实 `hop_xfer_rx_terminate_batch`，在两端平台服务回调及 Task 终态观察口记录顺序：取消 Paste → 发送 ABORT → 关闭 Writer → 清理 staging → Task 终态 → 发布状态；Task 观察口确认墓碑已建立，状态发布口确认 Batch 重置且 Task handle 已释放。另核对迟到 ABORT 只回执、不重复终结。测试覆盖了可观察副作用及关键状态边界，不代表真实双机、原生剪贴板或文件系统验证。

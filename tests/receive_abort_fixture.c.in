@@ -59,6 +59,16 @@ static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];static int s_his
 static int saved,closed,closes,discarded,applied,fail_directory,fail_alloc,fail_send,fail_write,fail_writer_io,fail_discard;
 static int notified, done_acks, last_done_status;static uint8_t last_reason;
 static int file_acks,last_file_ack;
+enum { ABORT_CANCEL_CLIPBOARD=1, ABORT_SEND, ABORT_CLOSE, ABORT_DISCARD,
+       ABORT_TASK_FINISH, ABORT_STATUS_END };
+static int abort_trace[8], abort_trace_count, tracing_abort;
+static uint32_t traced_batch;
+static void trace_abort(int event){
+    if (!tracing_abort) return;
+    assert(abort_trace_count < (int)(sizeof(abort_trace)/sizeof(abort_trace[0])));
+    abort_trace[abort_trace_count++]=event;
+}
+static void trace_task_terminal(const hop_xfer_task_snapshot *task);
 static void history_save(void);
 static int send_small(int fd,uint8_t type,const uint8_t*p,uint32_t n,uint32_t batch){(void)batch;
     (void)fd;
@@ -167,6 +177,13 @@ static void checked_free(void*p){if(p)assert(closed);free(p);}
 @CLEAR_STATE@
 #undef free
 static int rx_discard_dir(xfer_rx_context *rx){
+    if (tracing_abort) {
+        uint8_t dead_reason=0;
+        assert(closed && rx && rx->batch_state.active);
+        assert(!hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,traced_batch,&dead_reason));
+        assert(!hop_xfer_task_is_terminal(&rx->task));
+        trace_abort(ABORT_DISCARD);
+    }
     assert(closed);discarded++;
     if(fail_discard)return 0;
     if(rx){rx->dir[0]=0;rx->staging_cleanup_pending=0;}
@@ -249,6 +266,15 @@ static void assert_terminal(uint32_t batch,uint8_t reason,int before){
     assert(s_history[0].phase==(reason==HOP_ABORT_CANCEL?HOP_XFER_CANCELLED:HOP_XFER_FAILED));
     assert(s_send_status.status.active); /* receiving ABORT cannot end outgoing state */
 }
+static void trace_task_terminal(const hop_xfer_task_snapshot *task){
+    uint8_t reason=0;
+    assert(tracing_abort && task && task->transfer_id==traced_batch);
+    assert(task->state==HOP_XFER_TASK_CANCELLED);
+    assert(hop_xfer_rx_lifecycle_dead_reason(&s_rx_lifecycle,traced_batch,&reason));
+    assert(reason==HOP_ABORT_CANCEL && closed && discarded);
+    assert(s_rx.batch_state.active && s_rx.task.initialized);
+    trace_abort(ABORT_TASK_FINISH);
+}
 int main(void){
     s_x.sync_initialized=1;
     (void)&status_begin; (void)&status_end; (void)&clip_complete_remote_paste; (void)&clipboard_complete_remote_paste;
@@ -258,6 +284,27 @@ int main(void){
     hop_session_id initial_session={{1}};
     (void)hop_xfer_rx_lifecycle_bind_session(&s_rx_lifecycle,&initial_session);
     hop_xfer_tracking_begin(&s_send_status,999,HOP_XFER_DIR_SEND,1,0,"out",HOP_XFER_SENDING);
+    /* Observe the extracted production terminator through its real services and
+     * Task terminal sink. The sink proves tombstone precedes Task finish; the
+     * status callback proves reset/dispose precedes publication. */
+    traced_batch=HOP_XFER_PASTE_BATCH_FLAG | 401u;
+    int ordered_before=saved;
+    image_begin(traced_batch,1);seed_resources();
+    assert(hop_xfer_task_set_terminal_sink(trace_task_terminal));
+    tracing_abort=1;
+    rx_cancel_local();
+    tracing_abort=0;
+    assert(hop_xfer_task_set_terminal_sink(NULL));
+    const int expected_abort[]={ABORT_CANCEL_CLIPBOARD,ABORT_SEND,ABORT_CLOSE,
+        ABORT_DISCARD,ABORT_TASK_FINISH,ABORT_STATUS_END};
+    assert(abort_trace_count==(int)(sizeof(expected_abort)/sizeof(expected_abort[0])));
+    for (int i=0;i<abort_trace_count;i++) assert(abort_trace[i]==expected_abort[i]);
+    assert_terminal(traced_batch,HOP_ABORT_CANCEL,ordered_before);
+    int ordered_notices=notified;
+    hop_xfer_rx_terminate_batch(&s_rx,traced_batch,HOP_ABORT_CANCEL,1);
+    assert(notified==ordered_notices+1 && saved==ordered_before+1);
+    hop_xfer_rx_terminate_batch(&s_rx,traced_batch,HOP_ABORT_CANCEL,0);
+    assert(notified==ordered_notices+1 && saved==ordered_before+1);
     for(int scenario=0;scenario<9;scenario++){
         uint32_t batch=100u+(uint32_t)scenario*2u;int before=saved;
         image_begin(batch,1);assert(xfer_busy());seed_resources();

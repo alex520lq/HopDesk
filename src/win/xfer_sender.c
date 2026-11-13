@@ -1,7 +1,6 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include "xfer_sender_internal.h"
-#include "../core/xfer_sender_ack_adapter.h"
 #include "../core/xfer_sender_context_adapter.h"
 #include "../core/xfer_sender_engine.h"
 #include "../core/xfer_sender_scheduler.h"
@@ -214,14 +213,6 @@ void sender_context_init(void) {
     s_sender_context.is_batch_cancelled = sender_context_is_batch_cancelled;
     s_sender_context.peer_aborted = sender_context_peer_aborted;
     s_sender_context.request_reconnect = sender_context_request_reconnect;
-    s_sender_context.ack_register = hop_xfer_sender_ack_adapter_register;
-    s_sender_context.ack_mark_sent = hop_xfer_sender_ack_adapter_mark_sent;
-    s_sender_context.ack_set_deadline = hop_xfer_sender_ack_adapter_set_deadline;
-    s_sender_context.ack_wait_take = hop_xfer_sender_ack_adapter_wait_take;
-    s_sender_context.ack_unregister = hop_xfer_sender_ack_adapter_unregister;
-    s_sender_context.ack_unregister_batch = hop_xfer_sender_ack_adapter_unregister_batch;
-    s_sender_context.ack_deliver = hop_xfer_sender_ack_adapter_deliver;
-    s_sender_context.ack_wake = hop_xfer_sender_ack_adapter_wake;
     s_sender_context.session_current = sender_context_session_current;
     s_sender_context.snapshot_session = sender_context_snapshot_session;
     s_sender_context.write_frame = sender_context_write_frame;

@@ -66,25 +66,26 @@ static int send_done(void *user, intptr_t socket_handle, uint64_t epoch,
     f->last_batch = batch; f->last_ok = ok; f->last_total = total;
     return !f->fail_send_done;
 }
-static int ack_register(void *user, uint32_t batch, uint32_t slot) {
-    fake_commit *f = (fake_commit *)user;
+int hop_xfer_ack_coordinator_register(hop_xfer_ack_coordinator *coordinator, uint32_t batch, uint32_t slot) {
+    fake_commit *f = (fake_commit *)coordinator;
     assert(batch == 55 && slot == 99);
     ++f->register_calls; return !f->fail_register;
 }
-static int ack_mark(void *user, uint32_t batch, uint32_t slot) {
-    fake_commit *f = (fake_commit *)user;
+int hop_xfer_ack_coordinator_mark_sent(hop_xfer_ack_coordinator *coordinator, uint32_t batch, uint32_t slot, uint64_t sent_ns) {
+    fake_commit *f = (fake_commit *)coordinator;
+    (void)sent_ns;
     assert(batch == 55 && slot == 99);
     ++f->mark_calls; return !f->fail_mark;
 }
-static int ack_deadline(void *user, uint32_t batch, uint32_t slot,
+int hop_xfer_ack_coordinator_set_deadline(hop_xfer_ack_coordinator *coordinator, uint32_t batch, uint32_t slot,
                         uint64_t deadline) {
-    fake_commit *f = (fake_commit *)user;
+    fake_commit *f = (fake_commit *)coordinator;
     assert(batch == 55 && slot == 99);
     ++f->deadline_calls; f->last_deadline = deadline;
     return !f->fail_deadline;
 }
-static void ack_unregister(void *user, uint32_t batch, uint32_t slot) {
-    fake_commit *f = (fake_commit *)user;
+void hop_xfer_ack_coordinator_unregister(hop_xfer_ack_coordinator *coordinator, uint32_t batch, uint32_t slot) {
+    fake_commit *f = (fake_commit *)coordinator;
     assert(batch == 55 && slot == 99); ++f->unregister_calls;
 }
 static hop_xfer_sender_commit_ack_result wait_ack(void *user, uint32_t batch,
@@ -113,10 +114,7 @@ static hop_xfer_sender_commit_ops make_ops(fake_commit *f) {
     ops.session_matches = session_matches;
     ops.current_connection = current_connection;
     ops.send_done = send_done;
-    ops.ack_register = ack_register;
-    ops.ack_mark_sent = ack_mark;
-    ops.ack_set_deadline = ack_deadline;
-    ops.ack_unregister = ack_unregister;
+    ops.ack_coordinator = (hop_xfer_ack_coordinator *)f;
     ops.wait_ack = wait_ack;
     ops.wait_ms = wait_ms;
     return ops;

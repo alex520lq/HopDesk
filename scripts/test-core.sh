@@ -211,9 +211,10 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
   "$ROOT/src/core/xfer_sender_queue.c"
 "$BUILD/hopdesk-sender-worker-tests"
 
-clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-sender-engine-tests" \
   "$ROOT/tests/xfer_sender_engine_tests.c" "$ROOT/src/core/xfer_sender_engine.c" \
+  "$ROOT/src/mac/xfer_ack_coordinator.c" \
   "$ROOT/src/core/xfer_tracking.c" \
   "$ROOT/src/core/xfer_ack_window.c" "$ROOT/src/core/xfer_validate.c" \
   "$ROOT/src/core/protocol.c" "$ROOT/src/core/crc32.c"
@@ -228,9 +229,10 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
   "$ROOT/src/core/protocol.c" "$ROOT/src/core/crc32.c"
 "$BUILD/hopdesk-sender-engine-adapter-tests"
 
-clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-sender-image-tests" \
   "$ROOT/tests/xfer_sender_image_tests.c" "$ROOT/src/core/xfer_sender_engine.c" \
+  "$ROOT/src/mac/xfer_ack_coordinator.c" \
   "$ROOT/src/core/xfer_tracking.c" \
   "$ROOT/src/core/xfer_ack_window.c" "$ROOT/src/core/xfer_validate.c" \
   "$ROOT/src/core/protocol.c" "$ROOT/src/core/crc32.c"
@@ -253,11 +255,6 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
 "$BUILD/hopdesk-sender-commit-tests"
 
 
-clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
-  -I "$ROOT/src/core" -I "$ROOT/src/mac" -o "$BUILD/hopdesk-sender-ack-adapter-tests" \
-  "$ROOT/tests/xfer_sender_ack_adapter_tests.c" "$ROOT/src/core/xfer_sender_ack_adapter.c" \
-  "$ROOT/src/mac/xfer_ack_coordinator.c" "$ROOT/src/core/xfer_ack_window.c"
-"$BUILD/hopdesk-sender-ack-adapter-tests"
 clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-clipboard-txn-tests" \
   "$ROOT/tests/xfer_clipboard_txn_tests.c" "$ROOT/src/core/xfer_clipboard_txn.c"

@@ -115,25 +115,26 @@ static int send_chunk(void *user, uint32_t batch, uint32_t id,
     if (f->abort_after_chunk) f->aborted = 1;
     return !f->fail_chunk;
 }
-static int ack_register(void *user, uint32_t batch, uint32_t id) {
-    fake_file *f = (fake_file *)user;
+int hop_xfer_ack_coordinator_register(hop_xfer_ack_coordinator *coordinator, uint32_t batch, uint32_t id) {
+    fake_file *f = (fake_file *)coordinator;
     assert(batch == 77 && id == 3);
     ++f->ack_registers; return !f->fail_ack_register;
 }
-static int ack_mark(void *user, uint32_t batch, uint32_t id) {
-    fake_file *f = (fake_file *)user;
+int hop_xfer_ack_coordinator_mark_sent(hop_xfer_ack_coordinator *coordinator, uint32_t batch, uint32_t id, uint64_t sent_ns) {
+    fake_file *f = (fake_file *)coordinator;
+    (void)sent_ns;
     assert(batch == 77 && id == 3);
     ++f->ack_marks; return !f->fail_ack_mark;
 }
-static int ack_deadline(void *user, uint32_t batch, uint32_t id,
+int hop_xfer_ack_coordinator_set_deadline(hop_xfer_ack_coordinator *coordinator, uint32_t batch, uint32_t id,
                         uint64_t deadline) {
-    fake_file *f = (fake_file *)user;
+    fake_file *f = (fake_file *)coordinator;
     assert(batch == 77 && id == 3);
     ++f->ack_deadlines; f->deadline = deadline;
     return !f->fail_ack_deadline;
 }
-static void ack_unregister(void *user, uint32_t batch, uint32_t id) {
-    fake_file *f = (fake_file *)user;
+void hop_xfer_ack_coordinator_unregister(hop_xfer_ack_coordinator *coordinator, uint32_t batch, uint32_t id) {
+    fake_file *f = (fake_file *)coordinator;
     assert(batch == 77 && id == 3);
     ++f->ack_unregisters;
 }
@@ -163,10 +164,7 @@ static hop_xfer_sender_file_ops make_ops(fake_file *f) {
     ops.close_file = close_file;
     ops.send_message = send_message;
     ops.send_chunk = send_chunk;
-    ops.ack_register = ack_register;
-    ops.ack_mark_sent = ack_mark;
-    ops.ack_set_deadline = ack_deadline;
-    ops.ack_unregister = ack_unregister;
+    ops.ack_coordinator = (hop_xfer_ack_coordinator *)f;
     ops.now_ns = now_ns;
     ops.status_stage_time = status_stage_time;
     ops.yield_cpu = yield_cpu;

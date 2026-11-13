@@ -3,12 +3,9 @@
 #include "hop.h"
 #include "xfer_sender_ack_wait.h"
 #include "xfer_sender_context_adapter.h"
+#include "xfer_ack_coordinator.h"
 
 #include <string.h>
-
-typedef struct {
-    const hop_xfer_sender_engine_adapter_ops *ops;
-} sender_file_adapter_call;
 
 static int adapter_cancel_requested(void *user, uint32_t batch) {
     const hop_xfer_sender_engine_adapter_ops *ops =
@@ -37,124 +34,85 @@ static const char *adapter_entry_path(void *user, const void *entry) {
 }
 
 static int file_cancel_requested(void *user, uint32_t batch) {
-    const sender_file_adapter_call *call =
-        (const sender_file_adapter_call *)user;
-    return call ? adapter_cancel_requested((void *)call->ops, batch) : 0;
+    return user ? adapter_cancel_requested(user, batch) : 0;
 }
 
 static int file_peer_aborted(void *user, uint32_t batch) {
-    const sender_file_adapter_call *call =
-        (const sender_file_adapter_call *)user;
-    return call ? adapter_peer_aborted((void *)call->ops, batch) : 0;
+    return user ? adapter_peer_aborted(user, batch) : 0;
 }
 
 static int file_open(void *user, const void *entry, intptr_t *handle,
                      uint32_t *system_error) {
-    const sender_file_adapter_call *call =
-        (const sender_file_adapter_call *)user;
-    return call && call->ops->open_file
-        ? call->ops->open_file(call->ops->user, entry, handle, system_error) : 0;
+    const hop_xfer_sender_engine_adapter_ops *ops =
+        (const hop_xfer_sender_engine_adapter_ops *)user;
+    return ops && ops->open_file
+        ? ops->open_file(ops->user, entry, handle, system_error) : 0;
 }
 
 static hop_xfer_sender_read_result file_read(
     void *user, intptr_t handle, uint8_t *buffer, uint32_t request,
     uint32_t *bytes_read, uint32_t *system_error) {
-    const sender_file_adapter_call *call =
-        (const sender_file_adapter_call *)user;
-    return call && call->ops->read_file
-        ? call->ops->read_file(call->ops->user, handle, buffer, request,
+    const hop_xfer_sender_engine_adapter_ops *ops =
+        (const hop_xfer_sender_engine_adapter_ops *)user;
+    return ops && ops->read_file
+        ? ops->read_file(ops->user, handle, buffer, request,
                                bytes_read, system_error)
         : HOP_XFER_SENDER_READ_ERROR;
 }
 
 static void file_close(void *user, intptr_t handle) {
-    const sender_file_adapter_call *call =
-        (const sender_file_adapter_call *)user;
-    if (call && call->ops->close_file)
-        call->ops->close_file(call->ops->user, handle);
+    const hop_xfer_sender_engine_adapter_ops *ops =
+        (const hop_xfer_sender_engine_adapter_ops *)user;
+    if (ops && ops->close_file) ops->close_file(ops->user, handle);
 }
 
 static int file_send_message(void *user, uint8_t type,
                              const uint8_t *payload, uint32_t length,
                              uint32_t batch) {
-    const sender_file_adapter_call *call =
-        (const sender_file_adapter_call *)user;
-    return call && call->ops->send_message
-        ? call->ops->send_message(call->ops->user,
-            call->ops->socket_handle, type, payload, length, batch) : 0;
+    const hop_xfer_sender_engine_adapter_ops *ops =
+        (const hop_xfer_sender_engine_adapter_ops *)user;
+    return ops && ops->send_message
+        ? ops->send_message(ops->user, ops->socket_handle,
+            type, payload, length, batch) : 0;
 }
 
 static int file_send_chunk(void *user, uint32_t batch, uint32_t id,
                            uint64_t offset, const uint8_t *data,
                            uint32_t length, uint32_t crc,
                            uint64_t read_ns, uint64_t crc_ns) {
-    const sender_file_adapter_call *call =
-        (const sender_file_adapter_call *)user;
-    return call && call->ops->send_chunk
-        ? call->ops->send_chunk(call->ops->user,
-            call->ops->socket_handle, call->ops->tx_buffer, batch, id,
+    const hop_xfer_sender_engine_adapter_ops *ops =
+        (const hop_xfer_sender_engine_adapter_ops *)user;
+    return ops && ops->send_chunk
+        ? ops->send_chunk(ops->user,
+            ops->socket_handle, ops->tx_buffer, batch, id,
             offset, data, length, crc, read_ns, crc_ns) : 0;
 }
 
-static int file_ack_register(void *user, uint32_t batch, uint32_t id) {
-    const sender_file_adapter_call *call =
-        (const sender_file_adapter_call *)user;
-    const hop_xfer_sender_context *ctx = call ? call->ops->context : NULL;
-    return ctx && ctx->ack_user && ctx->ack_register
-        ? ctx->ack_register(ctx->ack_user, batch, id) : 0;
-}
-
-static int file_ack_mark_sent(void *user, uint32_t batch, uint32_t id) {
-    const sender_file_adapter_call *call =
-        (const sender_file_adapter_call *)user;
-    const hop_xfer_sender_context *ctx = call ? call->ops->context : NULL;
-    return ctx && ctx->ack_user && ctx->ack_mark_sent
-        ? ctx->ack_mark_sent(ctx->ack_user, batch, id) : 0;
-}
-
-static int file_ack_set_deadline(void *user, uint32_t batch, uint32_t id,
-                                 uint64_t deadline_ns) {
-    const sender_file_adapter_call *call =
-        (const sender_file_adapter_call *)user;
-    const hop_xfer_sender_context *ctx = call ? call->ops->context : NULL;
-    return ctx && ctx->ack_user && ctx->ack_set_deadline
-        ? ctx->ack_set_deadline(ctx->ack_user, batch, id, deadline_ns) : 0;
-}
-
-static void file_ack_unregister(void *user, uint32_t batch, uint32_t id) {
-    const sender_file_adapter_call *call =
-        (const sender_file_adapter_call *)user;
-    const hop_xfer_sender_context *ctx = call ? call->ops->context : NULL;
-    if (ctx && ctx->ack_user && ctx->ack_unregister)
-        ctx->ack_unregister(ctx->ack_user, batch, id);
-}
-
 static uint64_t file_now_ns(void *user) {
-    const sender_file_adapter_call *call =
-        (const sender_file_adapter_call *)user;
-    const hop_xfer_sender_context *ctx = call ? call->ops->context : NULL;
+    const hop_xfer_sender_engine_adapter_ops *ops =
+        (const hop_xfer_sender_engine_adapter_ops *)user;
+    const hop_xfer_sender_context *ctx = ops ? ops->context : NULL;
     return ctx && ctx->now_ns ? ctx->now_ns(ctx->user) : 0;
 }
 
 static void file_status_stage_time(void *user, uint32_t batch,
                                    int stage, uint64_t elapsed_ns) {
-    const sender_file_adapter_call *call =
-        (const sender_file_adapter_call *)user;
+    const hop_xfer_sender_engine_adapter_ops *ops =
+        (const hop_xfer_sender_engine_adapter_ops *)user;
     hop_xfer_sender_context_status_stage_time(
-        call ? call->ops->context : NULL, batch, stage, elapsed_ns);
+        ops ? ops->context : NULL, batch, stage, elapsed_ns);
 }
 
 static void file_yield_cpu(void *user) {
-    const sender_file_adapter_call *call =
-        (const sender_file_adapter_call *)user;
-    if (call && call->ops->yield_cpu)
-        call->ops->yield_cpu(call->ops->user);
+    const hop_xfer_sender_engine_adapter_ops *ops =
+        (const hop_xfer_sender_engine_adapter_ops *)user;
+    if (ops && ops->yield_cpu) ops->yield_cpu(ops->user);
 }
 
 static void file_log_message(void *user, int level, const char *message) {
-    const sender_file_adapter_call *call =
-        (const sender_file_adapter_call *)user;
-    hop_xfer_sender_context_logf(call ? call->ops->context : NULL,
+    const hop_xfer_sender_engine_adapter_ops *ops =
+        (const hop_xfer_sender_engine_adapter_ops *)user;
+    hop_xfer_sender_context_logf(ops ? ops->context : NULL,
                                   level, "%s", message ? message : "");
 }
 
@@ -176,10 +134,9 @@ static hop_xfer_sender_send_result adapter_send_entry(
     if (!entry.name || !entry.relative_path)
         return HOP_XFER_SENDER_SEND_RETRYABLE;
 
-    sender_file_adapter_call call = {ops};
     hop_xfer_sender_file_ops file_ops;
     memset(&file_ops, 0, sizeof(file_ops));
-    file_ops.user = &call;
+    file_ops.user = (void *)ops;
     file_ops.cancel_requested = file_cancel_requested;
     file_ops.peer_aborted = file_peer_aborted;
     file_ops.open_file = file_open;
@@ -187,10 +144,7 @@ static hop_xfer_sender_send_result adapter_send_entry(
     file_ops.close_file = file_close;
     file_ops.send_message = file_send_message;
     file_ops.send_chunk = file_send_chunk;
-    file_ops.ack_register = file_ack_register;
-    file_ops.ack_mark_sent = file_ack_mark_sent;
-    file_ops.ack_set_deadline = file_ack_set_deadline;
-    file_ops.ack_unregister = file_ack_unregister;
+    file_ops.ack_coordinator = ops->context->ack_coordinator;
     file_ops.now_ns = file_now_ns;
     file_ops.status_stage_time = file_status_stage_time;
     file_ops.yield_cpu = file_yield_cpu;
@@ -227,8 +181,8 @@ static void adapter_unregister_batch(void *user, uint32_t batch) {
     const hop_xfer_sender_engine_adapter_ops *ops =
         (const hop_xfer_sender_engine_adapter_ops *)user;
     const hop_xfer_sender_context *ctx = ops ? ops->context : NULL;
-    if (ctx && ctx->ack_user && ctx->ack_unregister_batch)
-        ctx->ack_unregister_batch(ctx->ack_user, batch);
+    if (ctx && ctx->ack_coordinator)
+        hop_xfer_ack_coordinator_unregister_batch(ctx->ack_coordinator, batch);
 }
 
 static void adapter_rate_feedback(void *user, uint64_t rtt_us) {
@@ -333,7 +287,7 @@ static int adapter_ops_valid(const hop_xfer_sender_engine_adapter_ops *ops) {
         !ops->chunk_header_size || !ops->send_message || !ops->send_chunk ||
         !ops->yield_cpu || !ctx->now_ns || !ctx->is_cancelled ||
         !ctx->is_batch_cancelled || !ctx->peer_aborted ||
-        !ctx->ack_user || !ctx->ack_unregister_batch)
+        !ctx->ack_coordinator)
         return 0;
     if (ops->is_image)
         return ops->image_pixels && ops->image_width && ops->image_height &&
@@ -342,8 +296,7 @@ static int adapter_ops_valid(const hop_xfer_sender_engine_adapter_ops *ops) {
         ops->ack_timeout_ns && ops->entry_at && ops->entry_name &&
         ops->entry_path && ops->entry_size && ops->entry_mtime &&
         ops->entry_flags && ops->open_file && ops->read_file &&
-        ops->close_file && ctx->ack_register && ctx->ack_mark_sent &&
-        ctx->ack_set_deadline && ctx->ack_wait_take && ctx->ack_unregister &&
+        ops->close_file &&
         ctx->session_current && ctx->wait_ns;
 }
 

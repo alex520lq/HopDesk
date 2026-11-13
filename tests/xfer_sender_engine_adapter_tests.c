@@ -20,14 +20,14 @@ static int cancelled(void *u,uint32_t b,uint64_t id){(void)u;(void)b;(void)id;re
 static int batch_cancelled(void *u,uint32_t b){(void)u;(void)b;return 0;}
 static int peer_aborted(void *u,uint32_t b){(void)u;(void)b;return 0;}
 static int session_current(void *u,intptr_t socket,uint64_t epoch){(void)u;return socket==7&&epoch==9;}
-static int ack_register(void *u,uint32_t b,uint32_t id){fixture *f=u;(void)b;(void)id;f->ack_registers++;return 1;}
-static int ack_mark(void *u,uint32_t b,uint32_t id){fixture *f=u;(void)b;(void)id;f->ack_marks++;return 1;}
-static int ack_deadline(void *u,uint32_t b,uint32_t id,uint64_t deadline){fixture *f=u;(void)b;(void)id;assert(deadline>0);f->ack_deadlines++;return 1;}
-static int ack_wait(void *u,uint32_t b,uint32_t id,uint32_t ms,int *status,uint64_t *rtt,int *expired){
-    (void)u;(void)b;(void)id;(void)ms;*status=HOP_FILE_ACK_OK;*rtt=0;*expired=0;return 1;
+int hop_xfer_ack_coordinator_register(hop_xfer_ack_coordinator *c,uint32_t b,uint32_t id){fixture *f=(fixture *)c;(void)b;(void)id;f->ack_registers++;return 1;}
+int hop_xfer_ack_coordinator_mark_sent(hop_xfer_ack_coordinator *c,uint32_t b,uint32_t id,uint64_t sent){fixture *f=(fixture *)c;(void)b;(void)id;(void)sent;f->ack_marks++;return 1;}
+int hop_xfer_ack_coordinator_set_deadline(hop_xfer_ack_coordinator *c,uint32_t b,uint32_t id,uint64_t deadline){fixture *f=(fixture *)c;(void)b;(void)id;assert(deadline>0);f->ack_deadlines++;return 1;}
+int hop_xfer_ack_coordinator_wait_take(hop_xfer_ack_coordinator *c,uint32_t b,uint32_t id,uint32_t ms,int *status,uint64_t *rtt,int *expired){
+    (void)c;(void)b;(void)id;(void)ms;*status=HOP_FILE_ACK_OK;*rtt=0;*expired=0;return 1;
 }
-static void ack_unregister(void *u,uint32_t b,uint32_t id){fixture *f=u;(void)b;(void)id;f->ack_unregisters++;}
-static void ack_unregister_batch(void *u,uint32_t b){fixture *f=u;(void)b;f->ack_batch_unregisters++;}
+void hop_xfer_ack_coordinator_unregister(hop_xfer_ack_coordinator *c,uint32_t b,uint32_t id){fixture *f=(fixture *)c;(void)b;(void)id;f->ack_unregisters++;}
+void hop_xfer_ack_coordinator_unregister_batch(hop_xfer_ack_coordinator *c,uint32_t b){fixture *f=(fixture *)c;(void)b;f->ack_batch_unregisters++;}
 static int send_message(void *u,intptr_t socket,uint8_t type,const uint8_t *payload,uint32_t len,uint32_t batch){
     fixture *f=u;(void)payload;(void)len;(void)batch;assert(socket==7);f->message_types[f->messages++]=type;return 1;
 }
@@ -51,12 +51,9 @@ static hop_xfer_sender_read_result read_file(void *u,intptr_t h,uint8_t *b,uint3
 static void close_file(void *u,intptr_t h){fixture *f=u;(void)h;f->closes++;}
 static void yield_cpu(void *u){((fixture *)u)->yields++;}
 static void init_context(fixture *f,hop_xfer_sender_context *c){
-    memset(c,0,sizeof(*c));c->user=f;c->ack_user=f;c->now_ns=now;c->wait_ns=wait_ns;
+    memset(c,0,sizeof(*c));c->user=f;c->ack_coordinator=(hop_xfer_ack_coordinator *)f;c->now_ns=now;c->wait_ns=wait_ns;
     c->is_stopping=stopping;c->is_cancelled=cancelled;c->is_batch_cancelled=batch_cancelled;
     c->peer_aborted=peer_aborted;c->session_current=session_current;
-    c->ack_register=ack_register;c->ack_mark_sent=ack_mark;c->ack_set_deadline=ack_deadline;
-    c->ack_wait_take=ack_wait;c->ack_unregister=ack_unregister;
-    c->ack_unregister_batch=ack_unregister_batch;
 }
 static void init_ops(fixture *f,hop_xfer_sender_context *c,hop_xfer_sender_engine_adapter_ops *o,
                      int *next,int *ok,uint8_t *tx){

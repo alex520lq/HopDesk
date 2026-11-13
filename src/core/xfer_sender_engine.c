@@ -1,6 +1,7 @@
 #include "xfer_sender_engine.h"
 
 #include "xfer_ack_window.h"
+#include "xfer_ack_coordinator.h"
 #include "xfer_status.h"
 #include "xfer_tracking.h"
 #include "hop.h"
@@ -310,7 +311,7 @@ static void sender_file_log(const hop_xfer_sender_file_ops *ops, int level,
 
 static void sender_file_unregister(const hop_xfer_sender_file_ops *ops,
                                    uint32_t batch, uint32_t id) {
-    ops->ack_unregister(ops->user, batch, id);
+    hop_xfer_ack_coordinator_unregister(ops->ack_coordinator, batch, id);
 }
 
 hop_xfer_sender_send_result hop_xfer_sender_send_file_entry(
@@ -325,8 +326,7 @@ hop_xfer_sender_send_result hop_xfer_sender_send_file_entry(
         !chunk_buffer || !chunk_size || !ack_timeout_ns || !ack_deadline_ns ||
         !ops->cancel_requested || !ops->peer_aborted || !ops->open_file ||
         !ops->read_file || !ops->close_file || !ops->send_message ||
-        !ops->send_chunk || !ops->ack_register || !ops->ack_mark_sent ||
-        !ops->ack_set_deadline || !ops->ack_unregister || !ops->now_ns) {
+        !ops->send_chunk || !ops->ack_coordinator || !ops->now_ns) {
         return HOP_XFER_SENDER_SEND_RETRYABLE;
     }
     *ack_deadline_ns = 0;
@@ -340,7 +340,7 @@ hop_xfer_sender_send_result hop_xfer_sender_send_file_entry(
     if (begin_length > begin_buffer_size || begin_length > UINT32_MAX)
         return HOP_XFER_SENDER_SEND_RETRYABLE;
 
-    if (!ops->ack_register(ops->user, batch, id))
+    if (!hop_xfer_ack_coordinator_register(ops->ack_coordinator, batch, id))
         return HOP_XFER_SENDER_SEND_RETRYABLE;
 
     uint32_t offset = 0;
@@ -501,7 +501,8 @@ hop_xfer_sender_send_result hop_xfer_sender_send_file_entry(
     hop_put_be32(end_payload, id);
     end_payload[4] = end_status;
     hop_put_be32(end_payload + 5, file_crc);
-    if (!ops->ack_mark_sent(ops->user, batch, id)) {
+    if (!hop_xfer_ack_coordinator_mark_sent(ops->ack_coordinator, batch, id,
+                                             ops->now_ns(ops->user))) {
         sender_file_unregister(ops, batch, id);
         return HOP_XFER_SENDER_SEND_RETRYABLE;
     }
@@ -515,7 +516,7 @@ hop_xfer_sender_send_result hop_xfer_sender_send_file_entry(
     uint64_t deadline = ack_timeout_ns > UINT64_MAX - now
         ? UINT64_MAX : now + ack_timeout_ns;
     *ack_deadline_ns = deadline;
-    if (!ops->ack_set_deadline(ops->user, batch, id, deadline)) {
+    if (!hop_xfer_ack_coordinator_set_deadline(ops->ack_coordinator, batch, id, deadline)) {
         sender_file_unregister(ops, batch, id);
         return HOP_XFER_SENDER_SEND_RETRYABLE;
     }
@@ -595,8 +596,7 @@ hop_xfer_sender_commit_result hop_xfer_sender_run_commit(
     if (!ops || !session || !batch || entry_count < 0 || ok_count < 0 ||
         !ops->now_ms || !ops->now_ns || !ops->is_stopping ||
         !ops->session_matches || !ops->current_connection || !ops->send_done ||
-        !ops->ack_register || !ops->ack_mark_sent || !ops->ack_set_deadline ||
-        !ops->ack_unregister || !ops->wait_ack || !ops->wait_ms ||
+        !ops->ack_coordinator || !ops->wait_ack || !ops->wait_ms ||
         !ack_timeout_ms || !reconnect_budget_ms || !retry_delay_ms) {
         return HOP_XFER_SENDER_COMMIT_UNKNOWN;
     }
@@ -629,15 +629,16 @@ hop_xfer_sender_commit_result hop_xfer_sender_run_commit(
             return HOP_XFER_SENDER_COMMIT_UNKNOWN;
         }
 
-        if (!ops->ack_register(ops->user, batch, done_ack_slot))
+        if (!hop_xfer_ack_coordinator_register(ops->ack_coordinator, batch, done_ack_slot))
             return HOP_XFER_SENDER_COMMIT_UNKNOWN;
-        if (!ops->ack_mark_sent(ops->user, batch, done_ack_slot)) {
-            ops->ack_unregister(ops->user, batch, done_ack_slot);
+        if (!hop_xfer_ack_coordinator_mark_sent(ops->ack_coordinator, batch, done_ack_slot,
+                                                 ops->now_ns(ops->user))) {
+            hop_xfer_ack_coordinator_unregister(ops->ack_coordinator, batch, done_ack_slot);
             return HOP_XFER_SENDER_COMMIT_UNKNOWN;
         }
         if (!ops->send_done(ops->user, socket_handle, epoch,
                             batch, (uint32_t)ok_count, total)) {
-            ops->ack_unregister(ops->user, batch, done_ack_slot);
+            hop_xfer_ack_coordinator_unregister(ops->ack_coordinator, batch, done_ack_slot);
             if (!ops->wait_ms(ops->user, retry_delay_ms))
                 return HOP_XFER_SENDER_COMMIT_UNKNOWN;
             continue;
@@ -645,7 +646,7 @@ hop_xfer_sender_commit_result hop_xfer_sender_run_commit(
 
         uint64_t now_ms = ops->now_ms(ops->user);
         if (now_ms >= until_ms) {
-            ops->ack_unregister(ops->user, batch, done_ack_slot);
+            hop_xfer_ack_coordinator_unregister(ops->ack_coordinator, batch, done_ack_slot);
             return HOP_XFER_SENDER_COMMIT_UNKNOWN;
         }
         uint64_t wait_ms = until_ms - now_ms;
@@ -654,9 +655,9 @@ hop_xfer_sender_commit_result hop_xfer_sender_run_commit(
         uint64_t wait_ns = wait_ms * 1000000ull;
         uint64_t deadline_ns = wait_ns > UINT64_MAX - now_ns
             ? UINT64_MAX : now_ns + wait_ns;
-        if (!ops->ack_set_deadline(ops->user, batch, done_ack_slot,
-                                   deadline_ns)) {
-            ops->ack_unregister(ops->user, batch, done_ack_slot);
+        if (!hop_xfer_ack_coordinator_set_deadline(ops->ack_coordinator, batch,
+                                                   done_ack_slot, deadline_ns)) {
+            hop_xfer_ack_coordinator_unregister(ops->ack_coordinator, batch, done_ack_slot);
             return HOP_XFER_SENDER_COMMIT_UNKNOWN;
         }
 

@@ -1,5 +1,7 @@
 # Sender / Transfer Service Refactor Contract
 
+> 本文保留历史切片和当时的接口记录；当前 Sender/Receiver 收敛结论以 [TRANSFER_BOUNDARY_CONSOLIDATION.md](TRANSFER_BOUNDARY_CONSOLIDATION.md) 为准。
+
 > Status: audit and extraction contract; no Sender behavior has been changed by this document.
 > Scope: Windows/macOS sender path only. Receiver is treated as a consumer of inbound ACK/ABORT events and is not reworked here.
 > Compatibility: preserve the existing wire protocol, ACK window capacity, retry timing, chunk format, Task/Reservation semantics, and public `xfer.h` API.

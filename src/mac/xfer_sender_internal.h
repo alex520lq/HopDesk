@@ -45,7 +45,7 @@ typedef struct {
 } hop_mac_xfer_state;
 typedef struct {
     pthread_mutex_t *session_lock,*queue_lock,*tx_lock; int *sock,*peer_ready;
-    void *ack_adapter; hop_session_id *session; unsigned long *epoch;
+    hop_xfer_ack_coordinator *ack_coordinator; hop_session_id *session; unsigned long *epoch;
     _Atomic int *stop; uint32_t *abort_batch,*cancel_batch;
 } sender_platform_context;
 extern hop_mac_xfer_state s_x;

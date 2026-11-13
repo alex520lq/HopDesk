@@ -66,36 +66,6 @@ static int sender_commit_current_connection(void *user, intptr_t *socket_handle,
     return ready;
 }
 
-static int sender_commit_ack_register(void *user, uint32_t batch, uint32_t slot) {
-    const xf_job *job = (const xf_job *)user;
-    const hop_xfer_sender_context *ctx = job ? &job->sender_context : NULL;
-    return ctx && ctx->ack_user && ctx->ack_register &&
-           ctx->ack_register(ctx->ack_user, batch, slot);
-}
-
-static int sender_commit_ack_mark_sent(void *user, uint32_t batch, uint32_t slot) {
-    const xf_job *job = (const xf_job *)user;
-    const hop_xfer_sender_context *ctx = job ? &job->sender_context : NULL;
-    return ctx && ctx->ack_user && ctx->ack_mark_sent &&
-           ctx->ack_mark_sent(ctx->ack_user, batch, slot);
-}
-
-static int sender_commit_ack_set_deadline(void *user, uint32_t batch,
-                                          uint32_t slot, uint64_t deadline_ns) {
-    const xf_job *job = (const xf_job *)user;
-    const hop_xfer_sender_context *ctx = job ? &job->sender_context : NULL;
-    return ctx && ctx->ack_user && ctx->ack_set_deadline &&
-           ctx->ack_set_deadline(ctx->ack_user, batch, slot, deadline_ns);
-}
-
-static void sender_commit_ack_unregister(void *user, uint32_t batch,
-                                         uint32_t slot) {
-    const xf_job *job = (const xf_job *)user;
-    const hop_xfer_sender_context *ctx = job ? &job->sender_context : NULL;
-    if (ctx && ctx->ack_user && ctx->ack_unregister)
-        ctx->ack_unregister(ctx->ack_user, batch, slot);
-}
-
 static hop_xfer_sender_commit_ack_result sender_commit_wait_ack(
     void *user, uint32_t batch, uint32_t slot, uint64_t deadline_ns) {
     const xf_job *job = (const xf_job *)user;
@@ -130,10 +100,7 @@ hop_xfer_sender_job_result sender_commit_adapter_run(const xf_job *job) {
     ops.session_matches = sender_commit_session_matches;
     ops.current_connection = sender_commit_current_connection;
     ops.send_done = sender_commit_send_done;
-    ops.ack_register = sender_commit_ack_register;
-    ops.ack_mark_sent = sender_commit_ack_mark_sent;
-    ops.ack_set_deadline = sender_commit_ack_set_deadline;
-    ops.ack_unregister = sender_commit_ack_unregister;
+    ops.ack_coordinator = job->sender_context.ack_coordinator;
     ops.wait_ack = sender_commit_wait_ack;
     ops.wait_ms = sender_commit_wait_ms;
 

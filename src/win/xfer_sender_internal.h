@@ -45,7 +45,7 @@ typedef struct {
 } hop_win_xfer_state;
 typedef struct {
     CRITICAL_SECTION *state_lock,*tx_lock; SOCKET *client; int *peer_ready;
-    void *ack_adapter; hop_session_id *session; unsigned long *epoch;
+    hop_xfer_ack_coordinator *ack_coordinator; hop_session_id *session; unsigned long *epoch;
     HANDLE *stop,*rate_timer; uint32_t *abort_batch,*cancel_batch;
 } sender_platform_context;
 extern hop_win_xfer_state s_x;

@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "xfer_ack_coordinator.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -117,11 +118,7 @@ typedef struct {
     int (*send_chunk)(void *user, uint32_t batch, uint32_t id,
                       uint64_t offset, const uint8_t *data, uint32_t length,
                       uint32_t crc, uint64_t read_ns, uint64_t crc_ns);
-    int (*ack_register)(void *user, uint32_t batch, uint32_t id);
-    int (*ack_mark_sent)(void *user, uint32_t batch, uint32_t id);
-    int (*ack_set_deadline)(void *user, uint32_t batch, uint32_t id,
-                            uint64_t deadline_ns);
-    void (*ack_unregister)(void *user, uint32_t batch, uint32_t id);
+    hop_xfer_ack_coordinator *ack_coordinator;
     uint64_t (*now_ns)(void *user);
     void (*status_stage_time)(void *user, uint32_t batch, int stage,
                               uint64_t elapsed_ns);
@@ -167,11 +164,7 @@ typedef struct {
                               size_t session_capacity);
     int (*send_done)(void *user, intptr_t socket_handle, uint64_t epoch,
                      uint32_t batch, uint32_t ok_count, uint32_t total_count);
-    int (*ack_register)(void *user, uint32_t batch, uint32_t slot);
-    int (*ack_mark_sent)(void *user, uint32_t batch, uint32_t slot);
-    int (*ack_set_deadline)(void *user, uint32_t batch, uint32_t slot,
-                            uint64_t deadline_ns);
-    void (*ack_unregister)(void *user, uint32_t batch, uint32_t slot);
+    hop_xfer_ack_coordinator *ack_coordinator;
     hop_xfer_sender_commit_ack_result (*wait_ack)(
         void *user, uint32_t batch, uint32_t slot, uint64_t deadline_ns);
     int (*wait_ms)(void *user, uint32_t duration_ms);

@@ -13,14 +13,15 @@ typedef struct {
 } fixture;
 
 static uint64_t now(void *u){return ((fixture *)u)->now_ns;}
-static int wait_take(void *u,uint32_t b,uint32_t id,uint32_t ms,int *status,
-                     uint64_t *rtt,int *expired){
-    fixture *f=u;f->waits++;f->last_wait_ms=ms;f->batch=b;f->id=id;
+int hop_xfer_ack_coordinator_wait_take(hop_xfer_ack_coordinator *coordinator,
+    uint32_t b,uint32_t id,uint32_t ms,int *status,uint64_t *rtt,int *expired){
+    fixture *f=(fixture *)coordinator;f->waits++;f->last_wait_ms=ms;f->batch=b;f->id=id;
     if(!f->hit){f->now_ns+=(uint64_t)ms*1000000ull;return 0;}
     *status=f->status;*rtt=f->rtt_ns;*expired=f->expired;return 1;
 }
-static void unregister_ack(void *u,uint32_t b,uint32_t id){
-    fixture *f=u;f->unregisters++;f->batch=b;f->id=id;
+void hop_xfer_ack_coordinator_unregister(hop_xfer_ack_coordinator *coordinator,
+    uint32_t b,uint32_t id){
+    fixture *f=(fixture *)coordinator;f->unregisters++;f->batch=b;f->id=id;
 }
 static int is_stopping(void *u){return ((fixture *)u)->stopping;}
 static int session_current(void *u,intptr_t s,uint64_t e){
@@ -36,8 +37,8 @@ static int peer_aborted(void *u,uint32_t b){
     fixture *f=u;(void)b;return f->peer_abort;
 }
 static hop_xfer_sender_context make_context(fixture *f){
-    hop_xfer_sender_context c;memset(&c,0,sizeof(c));c.user=f;c.ack_user=f;
-    c.now_ns=now;c.ack_wait_take=wait_take;c.ack_unregister=unregister_ack;
+    hop_xfer_sender_context c;memset(&c,0,sizeof(c));c.user=f;
+    c.ack_coordinator=(hop_xfer_ack_coordinator *)f;c.now_ns=now;
     c.is_stopping=is_stopping;c.session_current=session_current;
     c.is_cancelled=is_cancelled;c.is_batch_cancelled=is_batch_cancelled;
     c.peer_aborted=peer_aborted;return c;
@@ -77,7 +78,7 @@ static void test_send_dead_and_late_ack(void){
     assert(f.unregisters==0);
 }
 static void test_invalid_contract(void){
-    fixture f;init(&f);hop_xfer_sender_context c=make_context(&f);c.ack_wait_take=NULL;
+    fixture f;init(&f);hop_xfer_sender_context c=make_context(&f);c.ack_coordinator=NULL;
     assert(hop_xfer_sender_ack_wait(&c,7,9,12,99,3,99999999,100,NULL)==HOP_XFER_SENDER_ACK_WAIT_LOCAL_IO);
 }
 int main(void){

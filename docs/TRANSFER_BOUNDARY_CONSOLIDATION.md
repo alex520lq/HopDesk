@@ -36,6 +36,8 @@
 ## 本轮执行结论
 
 - Receiver 已删除 `xfer_rx_protocol_adapter.[ch]`、两端未使用的 adapter 全局对象，以及两端各一处重复的 `s_done_receipt` 声明。生产分发由 `Frame Gate → Protocol Adapter → Dispatch → Handler` 收敛为 `Frame Gate → Dispatch → Handler`；`Dispatch` 仍负责类型选择和缺失 handler 拒绝。没有增加新状态或公开接口。
-- Sender 本轮保留现有生产实现。`hop_xfer_sender_worker_job_view` 借用平台 Job 内的指针供运行中的 Worker 修改；`hop_xfer_sender_worker_job` 是交给 Worker Flow 作重试和终态决策的值快照，`completion_path`、`peer_cancelled` 在其决策路径中确实被读取。两者名称相近，但生命周期和访问权限不同，合并会扩大共享层对平台 Job 的可变访问，当前没有证据证明能减少维护成本。Sender 的平台桥接还承担锁、IO、状态交接；仅凭回调数量删除会破坏边界。
-- 因而本轮实际减少一个 Receiver 公开模块、一个生产调用层级和两端各一个无用全局对象；Sender 的概念数和调用层级没有变化。维护成本的准确工时变化没有基线数据，不作百分比宣称。后续只有找到能完整替代 Sender 某条生产路径且保持唯一状态所有者的设计，才继续动它。
-- 本地已通过 `python3 scripts/test-regressions.py`、`bash scripts/test-core.sh`、`bash scripts/build-mac.sh`、`bash scripts/test-xfer-protocol.sh`、`bash scripts/test-network.sh`。Windows 原生构建和测试待本轮 PR CI；真实双机、剪贴板及弱网实测未执行。
+- Sender 的独立 ACK Adapter 确认为纯包装：它持有平台 ACK Coordinator 和时钟，再把 Context 的八个 ACK 回调逐一转发给 Coordinator。现改为 Context 借用一个 `hop_xfer_ack_coordinator *`；Core 的文件、DONE commit 与 ACK wait 直接调用 Coordinator。两端仍各自持有锁、等待原语、创建/销毁和单调时钟采样。删除 `xfer_sender_ack_adapter.[ch]`、八个 Context 回调和 Engine/File/Commit 中对应的 ACK 回调字段；`Sender → ACK Adapter → Coordinator` 变为 `Sender → Coordinator`。Shutdown 仍先唤醒、join Worker、drain Job，最后销毁 Coordinator。
+- Receiver 的 ABORT 决策仍由共享 Batch Rules 提供，终结的有序副作用改由唯一持有 `xfer_rx_context` 的 Message Handlers 直接执行。删除 `hop_xfer_rx_abort_ops` 的七个回调、`hop_xfer_rx_abort_execute`、结果枚举和三处同文件转发函数；`Handler → Abort Executor → 七个回调 → Receiver services` 变为 `Handler → Receiver services`。先取消 Paste、再通知对端、关闭 Writer/清理 staging、立墓碑、结束 Task、清空 Batch、发布终态的顺序保持。
+- Sender Engine Adapter 保留。它除接口转换外还负责文件和图片帧编码、ACK 结果映射以及文件发送与窗口策略的组合；仅将其挪进 Engine 文件不会消除这些职责。其中仅包着 `ops` 指针的 `sender_file_adapter_call` 已删除，File Ops 直接借用现有执行参数。`hop_xfer_sender_worker_job_view` 与 `hop_xfer_sender_worker_job` 分别是运行时借用视图和终态决策快照，不是两个 Job 所有者。
+- 此轮净删除两个共享包装接口（Receiver Protocol Adapter、Sender ACK Adapter）及 Receiver ABORT 执行回调表，三条生产路径各少一层转发；没有增加业务状态或 OS 抽象。工程维护时间和 CPU/RSS/包体的前后差值尚未测量，不能据源码删减宣称资源改善。
+- 本地已通过 `python3 scripts/test-regressions.py` 和 `bash scripts/test-core.sh`；Sender 改动后的 `bash scripts/build-mac.sh`、`bash scripts/test-xfer-protocol.sh`、`bash scripts/test-network.sh` 也通过。最终 Windows 原生构建与测试待本轮 PR 最新提交 CI；真实双机、剪贴板和弱网实测未执行。

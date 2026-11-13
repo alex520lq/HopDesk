@@ -13,6 +13,7 @@
 #include "xfer_sender_chunk.h"
 #include "xfer_rx_receipt.h"
 #include "xfer_rx_lifecycle.h"
+#include "xfer_rx_batch_rules.h"
 #include "xfer_rx_services.h"
 #include "xfer_rx_context.h"
 #include "xfer_rx_batch_state.h"

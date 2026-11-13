@@ -787,7 +787,7 @@ int main(void){
         if platform=='win': common='#define FIXTURE_WINDOWS 1\n'+common
         sender_source=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         core_finish_source=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
-        run('image_'+platform,common+'\n'+extract(core_finish_source,'hop_xfer_rx_reset_batch_state')+'\n'+extract(core_finish_source,'rx_release_terminal_resources')+'\n'+extract(core_finish_source,'rx_abort_clear_state')+'\n'+extract(core_finish_source,'hop_xfer_rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_dispatch.c'],threads=True)
+        run('image_'+platform,common+'\n'+extract(core_finish_source,'hop_xfer_rx_reset_batch_state')+'\n'+extract(core_finish_source,'rx_release_terminal_resources')+'\n'+extract(core_finish_source,'hop_xfer_rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_dispatch.c'],threads=True)
     # Run the actual per-platform state wrappers, not only a reimplemented model.
     for platform in ['win','mac']:
         source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
@@ -952,9 +952,9 @@ int main(void){
         protocol_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
         context_header=(ROOT/'src/core/xfer_rx_context.h').read_text(encoding='utf-8')
         assert 'typedef struct xfer_rx_context' in context_header
-        state_contract='#include "xfer_rx_context.h"\n#include "xfer_rx_message_handlers.h"\nstatic xfer_rx_context s_rx;\nstatic void rx_release_terminal_resources(xfer_rx_context *rx, int close_writer, int discard_staging);\nstatic void rx_abort_clear_state(void *context);'
+        state_contract='#include "xfer_rx_context.h"\n#include "xfer_rx_message_handlers.h"\nstatic xfer_rx_context s_rx;\nstatic void rx_release_terminal_resources(xfer_rx_context *rx, int close_writer, int discard_staging);'
         dispatch_names=[]
-        dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_reserve_entry_budget','rx_handler_terminate','rx_handler_begin_batch','rx_handler_finish_batch','rx_ack_deliver_file','rx_ack_deliver_done','rx_now_ns','hop_xfer_rx_bind_session'])+'\n'+'\n'.join(extract(receiver,name) for name in ['hop_xfer_rx_handle_file_begin','hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_handle_file_end','hop_xfer_rx_dispatch_file_ack_message','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_dispatch_done_ack_message'])
+        dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_reserve_entry_budget','rx_ack_deliver_file','rx_ack_deliver_done','rx_now_ns','hop_xfer_rx_bind_session'])+'\n'+'\n'.join(extract(receiver,name) for name in ['hop_xfer_rx_handle_file_begin','hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_handle_file_end','hop_xfer_rx_dispatch_file_ack_message','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_dispatch_done_ack_message'])
         dispatch_handlers+='\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { hop_xfer_rx_handle_file_begin, hop_xfer_rx_handle_image_begin, hop_xfer_rx_handle_file_chunk, hop_xfer_rx_handle_file_end, hop_xfer_rx_dispatch_file_ack_message, hop_xfer_rx_handle_abort, hop_xfer_rx_handle_done, hop_xfer_rx_dispatch_done_ack_message };\n'
         fixture=(ROOT/'tests/receive_abort_fixture.c.in').read_text(encoding='utf-8')
         values={
@@ -962,7 +962,7 @@ int main(void){
             'WIRE_SEND':extract(sender,'send_abort_msg' if platform=='win' else 'send_abort'),
             'STATUS_FUNCTIONS':'\n'.join(extract(sender,n) for n in ['status_for','status_begin','status_end']),
             'CLEAR_STATE':extract(receiver,'hop_xfer_rx_reset_batch_state'),
-            'TERMINATE':'\n'.join(extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_release_terminal_resources','rx_abort_release_resources','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end'])+'\n'+extract(receiver,'hop_xfer_rx_terminate_batch'),
+            'TERMINATE':extract(receiver,'rx_release_terminal_resources')+'\n'+extract(receiver,'hop_xfer_rx_terminate_batch'),
             'BEGIN_BATCH':extract(receiver,'hop_xfer_rx_begin_batch'),
             'FINISH_BATCH':extract(receiver,'hop_xfer_rx_finish_batch'),
             'RX_SERVICE_CALLBACKS':'\n'.join([
@@ -1022,7 +1022,7 @@ int main(void){
             handler=extract(receiver,handler_name)
             assert 'xfer_rx_context *rx = (xfer_rx_context *)context;' in handler
             assert not any(token in handler for token in ['s_rx.', 's_x.', 's_ack.', 's_wq']), f'{platform} {handler_name} still reads receiver/platform globals'
-        assert 'rx_handler_begin_batch(rx, batch)' in extract(receiver,'hop_xfer_rx_handle_image_begin')
+        assert 'hop_xfer_rx_begin_batch(rx, batch)' in extract(receiver,'hop_xfer_rx_handle_image_begin')
         for core_handler in ['hop_xfer_rx_handle_file_begin','hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_handle_file_end','hop_xfer_rx_dispatch_file_ack_message','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_dispatch_done_ack_message']:
             handler=extract(receiver,core_handler)
             assert 'xfer_rx_context *rx = (xfer_rx_context *)context;' in handler
@@ -1049,7 +1049,7 @@ int main(void){
             assert 's_x.' not in extract(context_protocol,callback)
         for callback in ['sender_context_session_current','sender_context_write_frame','sender_context_snapshot_session']:
             assert 's_x.' not in extract(sender,callback)
-        functions='\n'.join([extract(sender,'sender_context_session_current'),extract(sender,'sender_context_write_frame'),extract(sender,'sender_context_snapshot_session'),extract(sender,'send_small_with_context'),extract(commit_adapter,'sender_commit_is_stopping'),extract(commit_adapter,'sender_commit_wait_ms'),extract(sender,'send_small'),extract(sender,'send_chunk')]+[extract(receiver,name) for name in ['rx_abort_send','rx_abort_cancel_clipboard','rx_release_terminal_resources','rx_abort_release_resources','rx_abort_mark_dead','rx_abort_finish_task','rx_abort_clear_state','rx_abort_status_end','hop_xfer_rx_reset_batch_state','hop_xfer_rx_terminate_batch','hop_xfer_rx_bind_session','rx_bind_session','rx_expire_stale_session']])
+        functions='\n'.join([extract(sender,'sender_context_session_current'),extract(sender,'sender_context_write_frame'),extract(sender,'sender_context_snapshot_session'),extract(sender,'send_small_with_context'),extract(commit_adapter,'sender_commit_is_stopping'),extract(commit_adapter,'sender_commit_wait_ms'),extract(sender,'send_small'),extract(sender,'send_chunk')]+[extract(receiver,name) for name in ['rx_release_terminal_resources','hop_xfer_rx_reset_batch_state','hop_xfer_rx_terminate_batch','hop_xfer_rx_bind_session','rx_bind_session','rx_expire_stale_session']])
         fixture=fixture.replace('@FUNCTIONS@',functions)
         if platform=='win': fixture='#define FIXTURE_WINDOWS 1\n'+fixture
         run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c','src/core/xfer_sender_chunk.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_task.c','src/core/xfer_budget.c','src/core/xfer_sender_context_adapter.c','src/core/xfer_rx_frame_gate.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c'],threads=True)
@@ -1111,13 +1111,13 @@ int main(void){
         assert 'static hop_xfer_ack_coordinator *s_ack' not in sender
         assert 'hop_xfer_ack_coordinator_' not in sender
         ack_platform=(ROOT/f'src/{platform}/xfer_sender_ack_platform_adapter.c').read_text(encoding='utf-8')
-        assert 'hop_xfer_sender_ack_adapter_create' in ack_platform
-        assert 'hop_xfer_sender_ack_adapter_register' in sender
-        assert 'context->ack_wait_take(context->ack_user' in ack_wait_core
+        assert 'hop_xfer_ack_coordinator_create()' in ack_platform
+        assert 's_sender_context.ack_coordinator = coordinator' in ack_platform
+        assert 'hop_xfer_ack_coordinator_wait_take(context->ack_coordinator' in ack_wait_core
         peer_abort_body=extract(sender,'sender_context_peer_aborted')
         assert '*ctx->abort_batch == batch' in peer_abort_body
         ack_deliver_body=extract(ack_platform,'ack_deliver')
-        assert 's_sender_context.ack_deliver(s_sender_context.ack_user' in ack_deliver_body
+        assert 'hop_xfer_ack_coordinator_deliver(coordinator, batch, id, status,' in ack_deliver_body
         platform_xfer=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
         assert 's_ack' not in platform_xfer
         assert 'sender_context_ack_create()' in platform_xfer
@@ -1129,7 +1129,8 @@ int main(void){
         assert 'hop_xfer_sender_run_image' in engine
         assert 'hop_crc32(0, pixels + offset, length)' in engine
         assert 'hop_xfer_sender_send_file_entry' in engine
-        assert 'ops->ack_register' in engine and 'ops->ack_mark_sent' in engine
+        assert 'hop_xfer_ack_coordinator_register(ops->ack_coordinator' in engine
+        assert 'hop_xfer_ack_coordinator_mark_sent(ops->ack_coordinator' in engine
         assert 'ops->read_file' in engine and 'ops->send_chunk' in engine
         assert 'hop_xfer_file_crc_step' in engine
 
@@ -1174,10 +1175,10 @@ int main(void){
         assert 'hop_xfer_rx_handle_file_ack(p, len, rx_ack_deliver_file, rx)' in file_ack_handler
         assert 'hop_xfer_rx_handle_done_ack(p, len, rx_ack_deliver_done, rx)' in done_ack_handler
         assert 'hop_xfer_rx_batch_abort_decide(' in core_message_handlers
-        assert 'hop_xfer_rx_abort_execute(' in core_message_handlers
-        abort_policy=(ROOT/'src/core/xfer_rx_lifecycle.c').read_text(encoding='utf-8')
-        assert 'HOP_RX_BATCH_ABORT_REPLY_ONLY' in abort_policy
-        assert 'HOP_RX_BATCH_ABORT_TERMINATE_ACTIVE' in abort_policy
+        terminate=extract(core_message_handlers,'hop_xfer_rx_terminate_batch')
+        assert 'HOP_RX_BATCH_ABORT_REPLY_ONLY' in terminate
+        assert 'rx_release_terminal_resources(rx, 1, 1)' in terminate
+        assert terminate.index('rx_release_terminal_resources(rx, 1, 1)') < terminate.index('hop_xfer_rx_reset_batch_state(rx)')
         assert 'hop_xfer_rx_batch_begin_decide(' in core_message_handlers
         assert 'hop_xfer_rx_batch_finish_decide(' in core_message_handlers
         for writer_call in ['reset_file_error','open_file','write_file_chunk','close_file','file_error']:
@@ -1258,7 +1259,7 @@ int main(void){
         reconnect=extract(connection_adapter,'sender_context_request_reconnect')
         assert '*ctx->peer_ready = 0' in reconnect and 'shutdown(' in reconnect
         ack_platform=(ROOT/f'src/{platform}/xfer_sender_ack_platform_adapter.c').read_text(encoding='utf-8')
-        assert 'hop_xfer_sender_ack_adapter_create' in ack_platform
+        assert 'hop_xfer_ack_coordinator_create()' in ack_platform
         assert 'void ack_deliver(' in ack_platform
         assert 'sender_context_ack_destroy' in ack_platform
         protocol_source=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')

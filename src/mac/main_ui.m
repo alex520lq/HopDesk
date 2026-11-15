@@ -594,7 +594,7 @@ static void build_pages(NSView *root) {
     s_xferFiles.editable=NO;s_xferFiles.font=[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
     scroll.documentView=s_xferFiles;[card addSubview:scroll];
     card=ui_card(p,NSMakeRect(20,24,840,180));
-    ui_label(card,@"历史记录（旧版）",NSMakeRect(22,144,780,22),13,YES);
+    ui_label(card,@"文件传输记录",NSMakeRect(22,144,780,22),13,YES);
     NSScrollView *histScroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(18,16,804,116)];
     histScroll.hasVerticalScroller=YES;histScroll.hasHorizontalScroller=YES;
     s_xferHistory=[[NSTextView alloc] initWithFrame:NSMakeRect(0,0,800,110)];

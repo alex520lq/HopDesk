@@ -143,6 +143,10 @@ static void paint_cards(HWND page,HDC dc,int scroll) {
     SelectObject(dc,old_font);SelectObject(dc,old_brush);SelectObject(dc,old_pen);DeleteObject(pen);
 }
 static LRESULT CALLBACK page_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if(m==WM_DRAWITEM){
+        DRAWITEMSTRUCT *item=(DRAWITEMSTRUCT*)l;
+        if(item && item->CtlType==ODT_BUTTON){paint_action_button(item);return TRUE;}
+    }
     if(m==WM_COMMAND){SendMessageW(GetParent(h),m,w,l);return 0;}
     if(m==WM_CTLCOLORSTATIC){SetTextColor((HDC)w,RGB(39,45,56));SetBkColor((HDC)w,RGB(255,255,255));return (LRESULT)s_canvas;}
     if(m==WM_SIZE){RECT r;GetClientRect(h,&r);SCROLLINFO si={sizeof(si),SIF_RANGE|SIF_PAGE,0,dip(h==s_pages[3]?1130:624),r.bottom,0,0};SetScrollInfo(h,SB_VERT,&si,TRUE);layout_nodes();return 0;}
@@ -641,7 +645,7 @@ static void create_pages(HWND h) {
     s_xfer_progress=child(p,PROGRESS_CLASSW,L"",PBS_SMOOTH,40,194,740,10,0);
     group(p,L"文件明细",20,210,800,159);
     s_xfer_files=child(p,L"LISTBOX",L"",LBS_NOTIFY|WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS|WS_TABSTOP,40,232,760,119,UI_ID_FILES);
-    group(p,L"历史记录（旧版）",20,386,800,175);
+    group(p,L"文件传输记录",20,386,800,175);
     s_xfer_history=child(p,L"LISTBOX",L"",WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS,40,410,760,135,0);
     s_xfer_retry_button=button(p,L"重试选中文件",500,572,140,34,UI_ID_XFER_RETRY);
     group(p,L"活动任务（选择后单独取消）",20,620,800,224);

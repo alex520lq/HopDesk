@@ -180,7 +180,6 @@ static int boxes,titles,fills,last_top,last_left,last_right,last_bottom,text_top
 static HPEN CreatePen(int style,int width,int color){(void)style;(void)width;(void)color;return 1;}
 static HBRUSH CreateSolidBrush(int color){(void)color;fills++;return 2;}
 static HGDIOBJ SelectObject(HDC dc,HGDIOBJ o){(void)dc;return o;}
-static HGDIOBJ GetStockObject(int n){return n;}
 static int SetBkMode(HDC dc,int mode){(void)dc;return mode;}
 static int SetTextColor(HDC dc,int color){(void)dc;return color;}
 static int RoundRect(HDC dc,int l,int t,int r,int b,int x,int y){(void)dc;(void)x;(void)y;boxes++;last_left=l;last_top=t;last_right=r;last_bottom=b;return 1;}

@@ -109,7 +109,7 @@ static HWND label(HWND p, const wchar_t *text, int x, int y, int w, int h) {
     return child(p, L"STATIC", text, SS_LEFT, x, y, w, h, 0);
 }
 static HWND button(HWND p, const wchar_t *text, int x, int y, int w, int h, int id) {
-    return child(p, L"BUTTON", text, BS_PUSHBUTTON | WS_TABSTOP, x, y, w, h, id);
+    return child(p, L"BUTTON", text, BS_OWNERDRAW | WS_TABSTOP, x, y, w, h, id);
 }
 static HWND edit(HWND p, const wchar_t *text, int x, int y, int w, int h, int id, int password) {
     return child(p, L"EDIT", text, WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP |
@@ -128,19 +128,57 @@ static HWND page_create(HWND parent, int index) {
         parent, NULL, g_app.inst, NULL);
 }
 static void paint_cards(HWND page,HDC dc,int scroll) {
-    HPEN pen=CreatePen(PS_SOLID,1,RGB(223,228,235));
-    HGDIOBJ old_pen=SelectObject(dc,pen);
-    HGDIOBJ old_brush=SelectObject(dc,GetStockObject(NULL_BRUSH));
+    HPEN pen=CreatePen(PS_SOLID,1,RGB(226,231,238));
+    HBRUSH fill=CreateSolidBrush(RGB(255,255,255));
+    HGDIOBJ old_pen=SelectObject(dc,pen),old_brush=SelectObject(dc,fill);
     HGDIOBJ old_font=SelectObject(dc,s_font);
-    SetBkMode(dc,TRANSPARENT);SetTextColor(dc,RGB(88,99,116));
+    SetBkMode(dc,TRANSPARENT);SetTextColor(dc,RGB(91,103,120));
     for(int i=0;i<s_card_count;++i){
         ui_card *c=&s_cards[i];if(c->page!=page)continue;
         int left=dip(c->x),top=dip(c->y)-scroll,right=dip(c->x+c->w),bottom=dip(c->y+c->h)-scroll;
-        RoundRect(dc,left,top,right-1,bottom-1,dip(10),dip(10));
-        RECT text={left+dip(16),top+dip(10),right-dip(16),top+dip(32)};
-        DrawTextW(dc,c->title,-1,&text,DT_SINGLELINE|DT_LEFT);
+        RoundRect(dc,left,top,right-1,bottom-1,dip(12),dip(12));
+        RECT text={left+dip(18),top+dip(12),right-dip(16),top+dip(34)};
+        DrawTextW(dc,c->title,-1,&text,DT_SINGLELINE|DT_LEFT|DT_VCENTER);
     }
-    SelectObject(dc,old_font);SelectObject(dc,old_brush);SelectObject(dc,old_pen);DeleteObject(pen);
+    SelectObject(dc,old_font);SelectObject(dc,old_brush);SelectObject(dc,old_pen);
+    DeleteObject(fill);DeleteObject(pen);
+}
+
+enum { UI_BUTTON_SECONDARY, UI_BUTTON_PRIMARY, UI_BUTTON_DANGER };
+static int button_variant(int id) {
+    if (id==UI_ID_SAVE || id==UI_ID_RECONNECT ||
+        id==UI_ID_OPEN_TRANSFERS || id==UI_ID_UPDATE) return UI_BUTTON_PRIMARY;
+    if (id==UI_ID_SEND_CANCEL || id==UI_ID_RECEIVE_CANCEL) return UI_BUTTON_DANGER;
+    return UI_BUTTON_SECONDARY;
+}
+static void paint_action_button(DRAWITEMSTRUCT *item) {
+    int variant=button_variant((int)item->CtlID);
+    int disabled=(item->itemState&ODS_DISABLED)!=0;
+    int pressed=(item->itemState&ODS_SELECTED)!=0;
+    COLORREF background,border,foreground;
+    if (disabled) {
+        background=RGB(244,246,249);border=RGB(232,235,240);foreground=RGB(160,168,178);
+    } else if (variant==UI_BUTTON_PRIMARY) {
+        background=pressed?RGB(27,91,177):RGB(39,112,216);border=background;foreground=RGB(255,255,255);
+    } else if (variant==UI_BUTTON_DANGER) {
+        background=pressed?RGB(255,226,224):RGB(255,242,241);
+        border=RGB(246,215,212);foreground=RGB(177,58,52);
+    } else {
+        background=pressed?RGB(229,235,243):RGB(242,245,249);
+        border=RGB(222,228,236);foreground=RGB(55,67,84);
+    }
+    HBRUSH brush=CreateSolidBrush(background);HPEN pen=CreatePen(PS_SOLID,1,border);
+    HGDIOBJ old_brush=SelectObject(item->hDC,brush),old_pen=SelectObject(item->hDC,pen);
+    RECT r=item->rcItem;
+    RoundRect(item->hDC,r.left+1,r.top+1,r.right-1,r.bottom-1,dip(9),dip(9));
+    SetBkMode(item->hDC,TRANSPARENT);SetTextColor(item->hDC,foreground);
+    HFONT old_font=(HFONT)SelectObject(item->hDC,s_font);
+    wchar_t text[160]={0};GetWindowTextW(item->hwndItem,text,(int)(sizeof(text)/sizeof(text[0])));
+    InflateRect(&r,-dip(8),-dip(2));
+    DrawTextW(item->hDC,text,-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+    if(item->itemState&ODS_FOCUS){InflateRect(&r,-dip(3),-dip(3));DrawFocusRect(item->hDC,&r);}
+    SelectObject(item->hDC,old_font);SelectObject(item->hDC,old_brush);SelectObject(item->hDC,old_pen);
+    DeleteObject(brush);DeleteObject(pen);
 }
 static LRESULT CALLBACK page_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if(m==WM_DRAWITEM){
@@ -148,7 +186,14 @@ static LRESULT CALLBACK page_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if(item && item->CtlType==ODT_BUTTON){paint_action_button(item);return TRUE;}
     }
     if(m==WM_COMMAND){SendMessageW(GetParent(h),m,w,l);return 0;}
-    if(m==WM_CTLCOLORSTATIC){SetTextColor((HDC)w,RGB(39,45,56));SetBkColor((HDC)w,RGB(255,255,255));return (LRESULT)s_canvas;}
+    if(m==WM_CTLCOLORSTATIC){
+        HWND control=(HWND)l;SetBkMode((HDC)w,TRANSPARENT);
+        if(control==s_header_status || control==s_overview_status)
+            SetTextColor((HDC)w,g_app.state==HOP_LINK_SHARING?RGB(36,111,190):
+                g_app.state==HOP_LINK_LOCAL?RGB(27,132,82):RGB(112,122,137));
+        else SetTextColor((HDC)w,RGB(48,58,73));
+        return (LRESULT)s_canvas;
+    }
     if(m==WM_SIZE){RECT r;GetClientRect(h,&r);SCROLLINFO si={sizeof(si),SIF_RANGE|SIF_PAGE,0,dip(h==s_pages[3]?1130:624),r.bottom,0,0};SetScrollInfo(h,SB_VERT,&si,TRUE);layout_nodes();return 0;}
     if(m==WM_VSCROLL || m==WM_MOUSEWHEEL){
         SCROLLINFO si={sizeof(si),SIF_ALL,0,0,0,0,0};GetScrollInfo(h,SB_VERT,&si);int pos=si.nPos;
@@ -608,19 +653,19 @@ static void create_pages(HWND h) {
     for(int i=0;i<UI_PAGE_COUNT;++i) s_pages[i]=page_create(h,i);
 
     HWND p=s_pages[0];
-    group(p,L"设备状态",20,18,800,145);
-    s_overview_status=label(p,L"等待连接",42,52,740,34); set_font(s_overview_status,s_font_title);
-    s_overview_peer=label(p,L"Windows 服务端",42,94,740,24);
-    s_overview_channels=label(p,L"控制通道：等待连接    数据通道：等待连接",42,124,740,24);
-    group(p,L"常用操作",20,185,800,145);
-    s_overview_sharing=label(p,L"键鼠共享：等待连接",42,218,740,24);
-    button(p,L"显示器切至 Mac",42,260,150,34,UI_ID_SWITCH_MAC);
-    button(p,L"显示器切至 Windows",210,260,160,34,UI_ID_SWITCH_WIN);
-    button(p,L"唤醒显示",388,260,120,34,UI_ID_WAKE);
-    button(p,L"显示睡眠",526,260,120,34,UI_ID_SLEEP);
-    group(p,L"快速入口",20,352,800,125);
-    button(p,L"打开传输管理",42,398,150,36,UI_ID_OPEN_TRANSFERS);
-    label(p,L"连接、设备设置、传输记录、运行日志和软件更新都集中在左侧导航中。",220,404,560,28);
+    group(p,L"连接概览",20,18,800,150);
+    s_overview_status=label(p,L"等待连接",42,50,740,34); set_font(s_overview_status,s_font_title);
+    s_overview_peer=label(p,L"Windows 服务端",42,91,740,22);
+    s_overview_channels=label(p,L"控制通道：等待连接    数据通道：等待连接",42,119,740,20);
+    group(p,L"显示器控制",20,190,800,160);
+    s_overview_sharing=label(p,L"键鼠共享：等待连接",42,225,740,24);
+    button(p,L"显示器切至 Mac",42,273,150,36,UI_ID_SWITCH_MAC);
+    button(p,L"显示器切至 Windows",208,273,160,36,UI_ID_SWITCH_WIN);
+    button(p,L"唤醒显示",384,273,120,36,UI_ID_WAKE);
+    button(p,L"显示睡眠",520,273,120,36,UI_ID_SLEEP);
+    group(p,L"常用入口",20,376,800,122);
+    button(p,L"打开传输管理",42,421,150,38,UI_ID_OPEN_TRANSFERS);
+    label(p,L"连接、设备设置、传输记录、运行日志和软件更新都集中在左侧导航中。",220,426,560,28);
 
     p=s_pages[1];
     group(p,L"连接状态",20,18,800,235);
@@ -642,7 +687,9 @@ static void create_pages(HWND h) {
     s_xfer_memory=label(p,L"内存 image 0/256 MiB · RX 0/8 slots",40,136,740,16);
     s_xfer_budget_stats=label(p,L"峰值与拒绝计数等待采样",40,156,740,16);
     s_xfer_budget_lifecycle=label(p,L"资源释放与图片缓冲转移等待采样",40,174,740,16);
-    s_xfer_progress=child(p,PROGRESS_CLASSW,L"",PBS_SMOOTH,40,194,740,10,0);
+    ShowWindow(s_xfer_budget,SW_HIDE);ShowWindow(s_xfer_memory,SW_HIDE);
+    ShowWindow(s_xfer_budget_stats,SW_HIDE);ShowWindow(s_xfer_budget_lifecycle,SW_HIDE);
+    s_xfer_progress=child(p,PROGRESS_CLASSW,L"",PBS_SMOOTH,40,126,740,12,0);
     group(p,L"文件明细",20,210,800,159);
     s_xfer_files=child(p,L"LISTBOX",L"",LBS_NOTIFY|WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS|WS_TABSTOP,40,232,760,119,UI_ID_FILES);
     group(p,L"文件传输记录",20,386,800,175);
@@ -731,15 +778,30 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_SIZE:
             layout_main(h); return 0;
-        case WM_CTLCOLORSTATIC:
-            SetTextColor((HDC)wp,RGB(39,45,56));SetBkColor((HDC)wp,RGB(255,255,255));return (LRESULT)s_canvas;
+        case WM_CTLCOLORSTATIC:{
+            HWND control=(HWND)lp;SetBkMode((HDC)wp,TRANSPARENT);
+            if(control==s_header_status || control==s_overview_status)
+                SetTextColor((HDC)wp,g_app.state==HOP_LINK_SHARING?RGB(36,111,190):
+                    g_app.state==HOP_LINK_LOCAL?RGB(27,132,82):RGB(112,122,137));
+            else SetTextColor((HDC)wp,RGB(48,58,73));
+            return (LRESULT)s_canvas;
+        }
         case WM_DRAWITEM:{
             DRAWITEMSTRUCT *d=(DRAWITEMSTRUCT*)lp;int index=(int)d->CtlID-UI_NAV_BASE;
-            if(index<0||index>=UI_PAGE_COUNT)break;
-            HBRUSH brush=CreateSolidBrush(index==s_page?RGB(229,242,252):RGB(247,249,252));FillRect(d->hDC,&d->rcItem,brush);DeleteObject(brush);
-            RECT r=d->rcItem;r.left+=dip(18);SetBkMode(d->hDC,TRANSPARENT);SetTextColor(d->hDC,index==s_page?RGB(30,105,181):RGB(65,76,92));SelectObject(d->hDC,s_font);DrawTextW(d->hDC,kPageNames[index],-1,&r,DT_LEFT|DT_SINGLELINE|DT_VCENTER);
-            if(d->itemState&ODS_FOCUS)DrawFocusRect(d->hDC,&d->rcItem);
-            return TRUE;
+            if(index>=0&&index<UI_PAGE_COUNT){
+                COLORREF bg=index==s_page?RGB(229,240,252):RGB(249,250,252);
+                HBRUSH brush=CreateSolidBrush(bg);HPEN pen=CreatePen(PS_SOLID,1,bg);
+                HGDIOBJ old_brush=SelectObject(d->hDC,brush),old_pen=SelectObject(d->hDC,pen);
+                RoundRect(d->hDC,d->rcItem.left+1,d->rcItem.top+1,d->rcItem.right-1,d->rcItem.bottom-1,dip(9),dip(9));
+                SelectObject(d->hDC,old_brush);SelectObject(d->hDC,old_pen);DeleteObject(brush);DeleteObject(pen);
+                RECT r=d->rcItem;r.left+=dip(18);SetBkMode(d->hDC,TRANSPARENT);
+                SetTextColor(d->hDC,index==s_page?RGB(30,101,180):RGB(75,86,103));
+                SelectObject(d->hDC,s_font);DrawTextW(d->hDC,kPageNames[index],-1,&r,DT_LEFT|DT_SINGLELINE|DT_VCENTER);
+                if(d->itemState&ODS_FOCUS)DrawFocusRect(d->hDC,&d->rcItem);
+                return TRUE;
+            }
+            if(d->CtlType==ODT_BUTTON){paint_action_button(d);return TRUE;}
+            break;
         }
         case WM_ERASEBKGND:{RECT r;GetClientRect(h,&r);FillRect((HDC)wp,&r,s_canvas);r.right=dip(216);FillRect((HDC)wp,&r,s_sidebar);return 1;}
         case WM_DPICHANGED:{
@@ -827,7 +889,7 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 void main_ui_show_page(int page) {
     if(!s_main){
         s_node_count=0;s_card_count=0;
-        s_draft=g_app.cfg;s_canvas=CreateSolidBrush(RGB(255,255,255));s_sidebar=CreateSolidBrush(RGB(247,249,252));
+        s_draft=g_app.cfg;s_canvas=CreateSolidBrush(RGB(246,248,251));s_sidebar=CreateSolidBrush(RGB(250,251,253));
         HDC dc=GetDC(NULL);s_dpi=(UINT)GetDeviceCaps(dc,LOGPIXELSX);ReleaseDC(NULL,dc);
         char addresses[512];local_addresses(addresses,sizeof(addresses));utf8_to_wide(addresses,s_addresses,512);
         WNDCLASSW wc; memset(&wc,0,sizeof(wc));

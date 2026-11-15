@@ -149,12 +149,42 @@ static NSTextField *ui_field(NSView *parent, NSString *value, NSRect frame, BOOL
     [parent addSubview:f];
     return f;
 }
-static NSButton *ui_button(NSView *parent, NSString *title, NSRect frame, id target, SEL action) {
+enum { UI_BUTTON_SECONDARY, UI_BUTTON_PRIMARY, UI_BUTTON_DANGER };
+static NSButton *ui_button_styled(NSView *parent, NSString *title, NSRect frame,
+                                  id target, SEL action, int style) {
     NSButton *b=[NSButton buttonWithTitle:title target:target action:action];
-    b.frame=frame;
-    b.bezelStyle=NSBezelStyleRounded;
-    [parent addSubview:b];
-    return b;
+    b.frame=frame;b.bezelStyle=NSBezelStyleRounded;
+    b.font=[NSFont systemFontOfSize:13 weight:style==UI_BUTTON_PRIMARY?NSFontWeightSemibold:NSFontWeightMedium];
+    if (style==UI_BUTTON_PRIMARY) {
+        b.bezelColor=[NSColor systemBlueColor];b.contentTintColor=[NSColor whiteColor];
+    } else if (style==UI_BUTTON_DANGER) {
+        b.bezelColor=[NSColor colorWithSRGBRed:1.0 green:0.93 blue:0.92 alpha:1.0];
+        b.contentTintColor=[NSColor systemRedColor];
+    } else {
+        b.bezelColor=[NSColor controlColor];b.contentTintColor=[NSColor labelColor];
+    }
+    [parent addSubview:b];return b;
+}
+static NSButton *ui_button(NSView *parent, NSString *title, NSRect frame, id target, SEL action) {
+    return ui_button_styled(parent,title,frame,target,action,UI_BUTTON_SECONDARY);
+}
+static NSButton *ui_primary_button(NSView *parent, NSString *title, NSRect frame, id target, SEL action) {
+    return ui_button_styled(parent,title,frame,target,action,UI_BUTTON_PRIMARY);
+}
+static NSButton *ui_danger_button(NSView *parent, NSString *title, NSRect frame, id target, SEL action) {
+    return ui_button_styled(parent,title,frame,target,action,UI_BUTTON_DANGER);
+}
+static void ui_apply_status_badge(NSTextField *field, BOOL connected, BOOL sharing) {
+    if (!field) return;
+    NSColor *foreground=sharing?[NSColor colorWithSRGBRed:0.12 green:0.38 blue:0.72 alpha:1.0]:
+        connected?[NSColor colorWithSRGBRed:0.10 green:0.48 blue:0.30 alpha:1.0]:[NSColor secondaryLabelColor];
+    NSColor *background=sharing?[NSColor colorWithSRGBRed:0.89 green:0.94 blue:1.0 alpha:1.0]:
+        connected?[NSColor colorWithSRGBRed:0.90 green:0.96 blue:0.92 alpha:1.0]:
+        [NSColor colorWithSRGBRed:0.94 green:0.95 blue:0.97 alpha:1.0];
+    field.wantsLayer=YES;field.layer.cornerRadius=9.0;field.layer.masksToBounds=YES;
+    field.layer.backgroundColor=background.CGColor;field.textColor=foreground;
+    field.alignment=NSTextAlignmentCenter;
+    field.font=[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
 }
 static NSView *ui_card(NSView *parent, NSRect frame) {
     NSView *v=[[NSView alloc] initWithFrame:frame];
@@ -482,6 +512,8 @@ static void refresh_connection_labels(void) {
     s_connectionPorts.stringValue=[NSString stringWithFormat:@"控制端口：%u    数据端口：%u",
         (unsigned)g_mac.cfg.port,(unsigned)g_mac.cfg.data_port];
     s_footer.stringValue=[NSString stringWithFormat:@"HopDesk  v%s    ·    %@",HOP_VERSION,status];
+    ui_apply_status_badge(s_headerStatus,s_connected,s_sharing);
+    ui_apply_status_badge(s_overviewStatus,s_connected,s_sharing);
 }
 static void show_page(int page) {
     if(page<0||page>=6)page=0;
@@ -535,7 +567,7 @@ static void build_settings_page(NSView *p) {
     ui_label(right,@"Mac 睡眠命令",NSMakeRect(18,36,160,20),12,NO);
     s_cfg[CFG_MAC_SLEEP]=ui_field(right,@"",NSMakeRect(18,6,360,28),NO);
     ui_label(p,@"输入源支持十六进制（例如 0x0F）。保存后，连接和认证参数将在重启后完整生效。",NSMakeRect(22,132,810,22),11,NO);
-    ui_button(p,@"保存设置",NSMakeRect(610,78,112,34),s_uiController,@selector(saveSettings:));
+    ui_primary_button(p,@"保存设置",NSMakeRect(610,78,112,34),s_uiController,@selector(saveSettings:));
     ui_button(p,@"恢复默认",NSMakeRect(738,78,112,34),s_uiController,@selector(resetSettings:));
     s_cfgNote=ui_label(p,@"修改配置后点击保存。",NSMakeRect(22,38,560,24),11,NO);
 }
@@ -544,7 +576,7 @@ static void build_pages(NSView *root) {
     NSView *p=s_pages[0];
     NSView *card=ui_card(p,NSMakeRect(20,492,840,150));
     ui_label(card,@"设备状态",NSMakeRect(22,108,780,22),13,YES);
-    s_overviewStatus=ui_label(card,@"等待连接",NSMakeRect(22,68,780,34),24,YES);
+    s_overviewStatus=ui_label(card,@"等待连接",NSMakeRect(22,68,250,34),15,YES);
     s_overviewPeer=ui_label(card,@"服务端地址",NSMakeRect(22,38,780,22),12,NO);
     s_overviewChannels=ui_label(card,@"控制通道：等待连接    数据通道：等待连接",NSMakeRect(22,12,780,20),11,NO);
     card=ui_card(p,NSMakeRect(20,296,840,172));
@@ -556,7 +588,7 @@ static void build_pages(NSView *root) {
     ui_button(card,@"显示睡眠",NSMakeRect(484,38,112,34),s_uiController,@selector(sleepDisplay:));
     card=ui_card(p,NSMakeRect(20,94,840,176));
     ui_label(card,@"快速入口",NSMakeRect(22,130,780,22),13,YES);
-    ui_button(card,@"打开传输管理",NSMakeRect(22,72,148,36),s_uiController,@selector(selectPage:)).tag=3;
+    ui_primary_button(card,@"打开传输管理",NSMakeRect(22,72,148,36),s_uiController,@selector(selectPage:)).tag=3;
     ui_label(card,@"连接、设备设置、传输记录、运行日志和软件更新都集中在左侧导航中。",
         NSMakeRect(190,76,620,28),12,NO);
 
@@ -567,7 +599,7 @@ static void build_pages(NSView *root) {
     s_connectionStatus=ui_label(card,@"等待连接",NSMakeRect(22,104,780,22),14,YES);
     s_connectionPeer=ui_label(card,@"服务端地址：未配置",NSMakeRect(22,70,780,22),12,NO);
     s_connectionPorts=ui_label(card,@"控制端口：24817    数据端口：24818",NSMakeRect(22,38,780,22),12,NO);
-    ui_button(card,@"重新连接",NSMakeRect(22,0,130,32),s_uiController,@selector(reconnect:));
+    ui_primary_button(card,@"重新连接",NSMakeRect(22,0,130,32),s_uiController,@selector(reconnect:));
     ui_label(p,@"HopDesk 会自动重连。点击“重新连接”会关闭当前控制连接，并立即尝试重新建立连接。",
         NSMakeRect(22,360,810,42),11,NO);
 
@@ -583,7 +615,10 @@ static void build_pages(NSView *root) {
     s_xferMemory=ui_label(card,@"内存 image 0/256 MB · RX 0/8 slots",NSMakeRect(22,60,780,16),9,NO);
     s_xferBudgetStats=ui_label(card,@"峰值与拒绝计数等待采样",NSMakeRect(22,40,780,16),9,NO);
     s_xferBudgetLifecycle=ui_label(card,@"资源释放与图片缓冲转移等待采样",NSMakeRect(22,20,780,16),9,NO);
-    s_xferProgress=[[NSProgressIndicator alloc] initWithFrame:NSMakeRect(22,4,780,10)];
+    /* Resource-budget counters remain available internally, not in the normal task view. */
+    s_xferBudget.hidden=YES;s_xferMemory.hidden=YES;
+    s_xferBudgetStats.hidden=YES;s_xferBudgetLifecycle.hidden=YES;
+    s_xferProgress=[[NSProgressIndicator alloc] initWithFrame:NSMakeRect(22,62,780,10)];
     s_xferProgress.minValue=0;s_xferProgress.maxValue=100;s_xferProgress.indeterminate=NO;
     [card addSubview:s_xferProgress];
     card=ui_card(p,NSMakeRect(20,220,840,220));
@@ -615,7 +650,7 @@ static void build_pages(NSView *root) {
         NSTableColumn *column=[[NSTableColumn alloc] initWithIdentifier:@"task"];
         column.width=360;[table addTableColumn:column];table.headerView=nil;table.dataSource=(id<NSTableViewDataSource>)s_uiController;
         table.allowsEmptySelection=YES;taskScroll.documentView=table;[card addSubview:taskScroll];s_taskTables[d]=table;
-        NSButton *cancel=ui_button(card,d?@"取消选中接收任务":@"取消选中发送任务",NSMakeRect(x,12,168,30),s_uiController,@selector(cancelTask:));cancel.tag=d;
+        NSButton *cancel=ui_danger_button(card,d?@"取消选中接收任务":@"取消选中发送任务",NSMakeRect(x,12,168,30),s_uiController,@selector(cancelTask:));cancel.tag=d;
     }
 
     /* Keep active tasks at the top; add session-only history below existing content. */
@@ -653,7 +688,7 @@ static void build_pages(NSView *root) {
     s_updateSource=ui_label(card,@"更新源：GitHub Releases",NSMakeRect(22,96,780,22),12,NO);
     ui_label(card,@"检查更新会读取公开更新清单。发现新版本后，可下载、校验并自动安装。",
         NSMakeRect(22,58,780,24),11,NO);
-    ui_button(card,@"检查更新",NSMakeRect(22,12,130,34),s_uiController,@selector(checkUpdates:));
+    ui_primary_button(card,@"检查更新",NSMakeRect(22,12,130,34),s_uiController,@selector(checkUpdates:));
     ui_label(p,@"如果更新源尚未发布 latest.txt，检查会明确提示读取失败，不会将其误报为“已是最新版本”。",
         NSMakeRect(22,360,820,42),11,NO);
     for(int i=0;i<6;++i)s_hosts[i].hidden=i!=0;
@@ -767,7 +802,7 @@ static void create_main_window(void) {
     }
     s_pageTitle=ui_label(root,@"概览",NSMakeRect(246,736,360,34),23,YES);
     s_pageTitle.autoresizingMask=NSViewMinYMargin;
-    s_headerStatus=ui_label(root,@"等待连接",NSMakeRect(850,742,250,22),12,YES);
+    s_headerStatus=ui_label(root,@"等待连接",NSMakeRect(830,742,270,24),12,YES);
     s_headerStatus.autoresizingMask=NSViewMinYMargin|NSViewMinXMargin;
     s_footer=ui_label(root,@"HopDesk",NSMakeRect(236,6,860,18),10,NO);
     build_pages(root);

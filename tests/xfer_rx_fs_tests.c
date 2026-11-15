@@ -63,6 +63,20 @@ int main(void) {
     assert(hop_xfer_rx_fs_remove_tree(temporary, "/__no_such_root_marker__/") == -2);
     free(path);
     assert(rmdir(parent_root) == 0);
+
+    /* Direct Finder paste owns the created top-level folder, not its parent. */
+    char direct_root[4096], direct_file[4096];
+    snprintf(direct_root, sizeof(direct_root), "%s/source-folder", temporary);
+    snprintf(direct_file, sizeof(direct_file), "%s/child.txt", direct_root);
+    assert(mkdir(direct_root, 0755) == 0);
+    file = fopen(direct_file, "wb");
+    assert(file != NULL);
+    assert(fwrite(payload, 1, sizeof(payload) - 1, file) == sizeof(payload) - 1);
+    assert(fclose(file) == 0);
+    assert(hop_xfer_rx_fs_remove_owned_tree(direct_root) == 0);
+    struct stat status;
+    assert(stat(direct_root, &status) != 0);
+    assert(stat(temporary, &status) == 0 && S_ISDIR(status.st_mode));
     assert(rmdir(temporary) == 0);
     puts("PASS: macOS receiver filesystem adapter path, mkdir and guarded cleanup");
     return 0;

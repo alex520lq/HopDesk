@@ -53,6 +53,8 @@ void clipboard_on_remote_file_offer_clear(const uint8_t *p, uint32_t len);
 void clipboard_on_paste_request(const uint8_t *p, uint32_t len);
 void clipboard_on_paste_failed(const uint8_t *p, uint32_t len);
 int  clipboard_request_remote_paste(void);
+int  clipboard_direct_paste_target(uint32_t batch, char *out, size_t capacity);
+void clipboard_complete_remote_direct_paste(uint32_t batch, int success);
 void clipboard_complete_remote_paste(uint32_t batch, const char *const *paths, int n, int success);
 void clipboard_apply(const char *utf8);   /* 收到对端文本 */
 /* 数据通道收完一批后回调：把落盘的顶层条目挂到剪贴板 */
@@ -76,7 +78,7 @@ void main_ui_show_page(int page);
 void main_ui_set_status(int connected, int sharing);
 void main_ui_refresh(void);
 void main_ui_shutdown(void);
-void mac_request_accessibility_permission(void); /* main queue: request and open the Accessibility settings pane */
+void mac_request_accessibility_permission(void); /* main queue: register app and request event permissions */
 void app_run(void);                 /* 启动 NSApplication 主循环 */
 
 #endif

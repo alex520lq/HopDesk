@@ -101,6 +101,13 @@ int main(void) {
   assert(hop_clipboard_link_state(&s, 1, 1, &version) && version == generation);
   assert(hop_clipboard_link_state(&s, 0, 1, &version) == 0 &&
          !s.remote_offer_origin);
+  assert(hop_clipboard_paste_request(&s, 900, local, generation, local, 1,
+                                     snapshot_ok, &snapshot) ==
+         HOP_CLIPBOARD_REQUEST_ACCEPTED);
+  hop_clipboard_txn_finish_paste_worker(&s);
+  assert(hop_clipboard_paste_request(&s, 900, local, generation, local, 1,
+                                     snapshot_ok, &snapshot) ==
+         HOP_CLIPBOARD_REQUEST_DUPLICATE);
   r = hop_clipboard_publish_local_offer(&s, &generation);
   assert(r.local_generation != 0 && r.notify == HOP_CLIP_NOTIFY_BOTH);
   assert(hop_clipboard_link_state(&s, 1, 2, &version) && version == generation);

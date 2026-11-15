@@ -58,13 +58,18 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 <key>CFBundleShortVersionString</key><string>$VERSION</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
+<key>NSAppleEventsUsageDescription</key><string>HopDesk 读取访达当前文件夹，以便在按下粘贴键的位置接收文件。</string>
 </dict></plist>
 PLIST
 
 cp "$ROOT/scripts/update-macos.command" "$RESOURCES/update-macos.command"
 chmod +x "$RESOURCES/update-macos.command"
 
-codesign --force --deep --sign - "$APP"
+SIGN_IDENTITY="${HOPDESK_CODESIGN_IDENTITY:--}"
+if [ "$SIGN_IDENTITY" = - ]; then
+    echo 'Note: ad-hoc signing ties macOS privacy grants to this build; set HOPDESK_CODESIGN_IDENTITY to a stable signing identity for installed builds.' >&2
+fi
+codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
 codesign --verify --deep --strict "$APP"
 plutil -lint "$CONTENTS/Info.plist"
 test -s "$RESOURCES/HopDesk.icns"

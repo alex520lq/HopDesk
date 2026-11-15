@@ -117,7 +117,8 @@ int main(int argc, char **argv) {
             (unsigned)strlen(g_mac.cfg.token));
 
     inject_init();
-    if(g_mac.cfg.role==HOP_ROLE_SERVER)mac_capture_init();
+    /* Client still needs the local Command+V tap for a remote file Offer. */
+    mac_capture_init();
     if (!xfer_init(&g_mac.cfg)) {
         hop_log(HOP_LOG_ERROR, "xfer: initialization failed; settling partial startup before exit");
         while (!xfer_shutdown()) usleep(100000);

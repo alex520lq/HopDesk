@@ -63,28 +63,36 @@ static BOOL s_accessibilityPermissionRequestStarted;
  * Cocoa and System Settings navigation are always performed on the main queue. */
 void mac_request_accessibility_permission(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (CGPreflightPostEventAccess()) {
-            hop_log(HOP_LOG_INFO, "permission: macOS event-posting access is already granted");
+        BOOL canPost = CGPreflightPostEventAccess();
+        BOOL canListen = CGPreflightListenEventAccess();
+        BOOL canAccess = AXIsProcessTrusted();
+        if (canPost && canListen && canAccess) {
+            hop_log(HOP_LOG_INFO, "permission: macOS event access is already granted");
             return;
         }
 
         if (s_accessibilityPermissionRequestStarted) return;
         s_accessibilityPermissionRequestStarted = YES;
 
-        hop_log(HOP_LOG_WARN, "permission: requesting macOS event-posting access");
-        if (CGRequestPostEventAccess() || CGPreflightPostEventAccess()) {
-            hop_log(HOP_LOG_INFO, "permission: macOS event-posting access granted");
+        /* AX registers this exact bundle in the Accessibility list. CoreGraphics
+         * PostEvent alone can leave the user staring at an empty list. */
+        if (!canAccess) {
+            NSDictionary *prompt = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES};
+            canAccess = AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)prompt);
+        }
+        if (!canPost) canPost = CGRequestPostEventAccess();
+        if (!canListen) canListen = CGRequestListenEventAccess();
+        if (canPost && canListen && canAccess) {
+            hop_log(HOP_LOG_INFO, "permission: macOS event access granted");
             return;
         }
 
-        NSURL *settingsURL = nil;
-        if (@available(macOS 13.0, *)) {
-            settingsURL = [NSURL URLWithString:
-                @"x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility"];
-        } else {
-            settingsURL = [NSURL URLWithString:
-                @"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"];
-        }
+        NSString *pane = (!canAccess || !canPost) ? @"Privacy_Accessibility" : @"Privacy_ListenEvent";
+        NSString *base = @"x-apple.systempreferences:com.apple.preference.security?";
+        if (@available(macOS 13.0, *))
+            base = @"x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?";
+        NSString *url = [base stringByAppendingString:pane];
+        NSURL *settingsURL = [NSURL URLWithString:url];
 
         BOOL opened = settingsURL && [NSWorkspace.sharedWorkspace openURL:settingsURL];
         if (!opened) {
@@ -95,7 +103,9 @@ void mac_request_accessibility_permission(void) {
 
         if (opened) {
             hop_log(HOP_LOG_WARN,
-                    "permission: opened System Settings > Privacy & Security > Accessibility; enable HopDesk, then relaunch it");
+                    "permission: opened privacy settings for %s; enable HopDesk at %s, then relaunch it",
+                    (!canAccess || !canPost) ? "Accessibility" : "Input Monitoring",
+                    NSBundle.mainBundle.bundlePath.UTF8String);
         } else {
             hop_log(HOP_LOG_ERROR,
                     "permission: unable to open the Accessibility settings pane; open System Settings > Privacy & Security > Accessibility manually");

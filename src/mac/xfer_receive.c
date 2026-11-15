@@ -32,10 +32,13 @@
 #include "../core/xfer_task.h"
 
 #include <errno.h>
+#include <fcntl.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 /* ---------------- 写盘队列 ----------------
  *
@@ -55,6 +58,32 @@ static void rx_context_configure(void);
 static hop_xfer_rx_lifecycle s_rx_lifecycle;
 static int s_rx_initialized;
 static hop_xfer_rx_done_receipt s_done_receipt;
+/* The receiver thread owns only the top-level entries it created for this
+ * Finder paste. The destination directory itself always belongs to the user. */
+static struct {
+    int active;
+    char *tops[HOP_CLIP_OFFER_MAX_ITEMS];
+    int count;
+} s_direct_paste;
+
+static void direct_paste_forget(void) {
+    for (int i = 0; i < s_direct_paste.count; ++i) free(s_direct_paste.tops[i]);
+    memset(&s_direct_paste, 0, sizeof(s_direct_paste));
+}
+
+static int direct_paste_owns(const char *path) {
+    for (int i = 0; i < s_direct_paste.count; ++i)
+        if (strcmp(s_direct_paste.tops[i], path) == 0) return 1;
+    return 0;
+}
+
+static int direct_paste_add(const char *path) {
+    if (s_direct_paste.count >= (int)HOP_CLIP_OFFER_MAX_ITEMS) return 0;
+    char *copy = strdup(path);
+    if (!copy) return 0;
+    s_direct_paste.tops[s_direct_paste.count++] = copy;
+    return 1;
+}
 
 static int wq_reserve_task_rx(void *context, void *owner, uint32_t bytes) {
     (void)context;
@@ -200,6 +229,19 @@ static int rx_context_create_staging_directory(void *context, const char *sessio
     if (!rx || !session_hex) return 0;
     /* Never overwrite the only record of a staging tree that failed cleanup. */
     if (rx->dir[0] && !rx_discard_dir(rx)) return 0;
+    if (batch & HOP_XFER_PASTE_BATCH_FLAG) {
+        char target[sizeof(rx->dir)];
+        struct stat st;
+        if (clipboard_direct_paste_target(batch, target, sizeof(target))) {
+            if (stat(target, &st) != 0 || !S_ISDIR(st.st_mode)) return 0;
+            size_t length = strlen(target);
+            while (length > 1 && target[length - 1] == '/') target[--length] = '\0';
+            memcpy(rx->dir, target, length + 1);
+            s_direct_paste.active = 1;
+            hop_log(HOP_LOG_INFO, "xfer: direct Finder receive into %s", rx->dir);
+            return 1;
+        }
+    }
     int length = snprintf(rx->dir, sizeof(rx->dir), "%s/HopDesk/%s/%u",
                           temp_root(), session_hex, batch);
     if (length <= 0 || (size_t)length >= sizeof(rx->dir)) {
@@ -280,9 +322,30 @@ static void *rx_context_build_path(void *context, const char *relative, uint32_t
     return path;
 }
 
+static int rx_context_is_top_level_path(void *context, const void *native_path);
+
 static int rx_context_prepare_file_path(void *context, const void *native_path, int is_directory) {
-    (void)context;
+    xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!native_path) return 0;
+    const char *path = (const char *)native_path;
+    if (s_direct_paste.active && rx_context_is_top_level_path(rx, path)) {
+        if (direct_paste_owns(path)) return 1; /* same-batch retry */
+        int created = 0;
+        if (is_directory) created = mkdir(path, 0755) == 0;
+        else {
+            int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644);
+            if (fd >= 0) { close(fd); created = 1; }
+        }
+        if (!created) {
+            hop_log(HOP_LOG_WARN, "xfer: target already exists or cannot be created: %s", path);
+            return 0;
+        }
+        if (!direct_paste_add(path)) {
+            if (is_directory) rmdir(path); else unlink(path);
+            return 0;
+        }
+        return 1;
+    }
     char *copy = strdup((const char *)native_path);
     if (!copy) return 0;
     int result;
@@ -359,12 +422,24 @@ static void rx_context_remove_top_path(void *context, const void *native_path) {
 }
 static void rx_context_cancel_clipboard(void *context, uint32_t batch) {
     (void)context;
-    clipboard_complete_remote_paste(batch, NULL, 0, 0);
+    if (s_direct_paste.active && (batch & HOP_XFER_PASTE_BATCH_FLAG))
+        clipboard_complete_remote_direct_paste(batch, 0);
+    else
+        clipboard_complete_remote_paste(batch, NULL, 0, 0);
 }
 static void rx_context_finish_clipboard(void *context, uint32_t batch,
         const void *image_data, uint32_t width, uint32_t height, uint32_t stride,
         int image_valid, const void *const *top_paths, int top_count, int allow_publish) {
-    (void)context;
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (s_direct_paste.active && (batch & HOP_XFER_PASTE_BATCH_FLAG)) {
+        if (!allow_publish || top_count <= 0) (void)rx_discard_dir(rx);
+        else {
+            direct_paste_forget(); /* keep files in the Finder target */
+            rx->dir[0] = '\0'; /* the next batch must never treat Finder as staging */
+        }
+        clipboard_complete_remote_direct_paste(batch, allow_publish && top_count > 0);
+        return;
+    }
     if (allow_publish && image_valid && image_data) {
         uint64_t started = rate_now_ns();
         clipboard_apply_image(image_data, (int)width, (int)height, (int)stride);
@@ -488,6 +563,24 @@ static void rx_expire_stale_session(void) {
  * 成功批次的文件就是产物本身，都不能删。 */
 static int rx_discard_dir(xfer_rx_context *rx) {
     if (!rx) return 0;
+    if (s_direct_paste.active) {
+        int removed = 1;
+        for (int i = 0; i < s_direct_paste.count; ++i) {
+            const char *path = s_direct_paste.tops[i];
+            struct stat st;
+            if (lstat(path, &st) != 0) {
+                if (errno != ENOENT) removed = 0;
+            } else if (S_ISDIR(st.st_mode)) {
+                if (hop_xfer_rx_fs_remove_owned_tree(path) != 0) removed = 0;
+            } else if (unlink(path) != 0) removed = 0;
+        }
+        if (removed) {
+            direct_paste_forget();
+            rx->dir[0] = '\0';
+            rx->staging_cleanup_pending = 0;
+        } else rx->staging_cleanup_pending = 1;
+        return removed;
+    }
     if (!rx->dir[0]) { rx->staging_cleanup_pending = 0; return 1; }
     int result = hop_xfer_rx_fs_remove_tree(rx->dir, "/HopDesk/");
     if (result == 0) {

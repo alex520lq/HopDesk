@@ -19,6 +19,9 @@ typedef int peer_socket;
 static uint8_t s_last_body[256];
 static uint32_t s_last_len;
 static atomic_int s_receive_publications;
+static atomic_int s_direct_completions;
+static char s_direct_target[4096];
+static const uint32_t s_direct_batch = HOP_XFER_PASTE_BATCH_FLAG | 703u;
 
 static int receive_publications(void) { return atomic_load(&s_receive_publications); }
 static void test_pause(void) { usleep(10000); }
@@ -125,6 +128,18 @@ void clipboard_complete_remote_paste(uint32_t batch, const char *const *paths, i
     assert(!"unexpected paste transaction");
 }
 
+int clipboard_direct_paste_target(uint32_t batch, char *out, size_t capacity) {
+    if (batch != s_direct_batch || !s_direct_target[0] ||
+        strlen(s_direct_target) >= capacity) return 0;
+    strcpy(out, s_direct_target);
+    return 1;
+}
+
+void clipboard_complete_remote_direct_paste(uint32_t batch, int success) {
+    assert(batch == s_direct_batch && success);
+    atomic_fetch_add(&s_direct_completions, 1);
+}
+
 void clipboard_apply_image(const uint8_t *bgra, int w, int h, int stride) {
     (void)bgra; (void)w; (void)h; (void)stride;
     assert(!"unexpected image transaction");
@@ -150,6 +165,31 @@ int main(void) {
     strcpy(g_mac.cfg.token, "receiver-loopback");
     assert(xfer_init(&g_mac.cfg));
     run_receive_transfer(&session, g_mac.cfg.token, g_mac.cfg.data_port);
+
+    const char *temp = getenv("TMPDIR");
+    assert(temp && *temp);
+    char destination[4096], received[4096];
+    assert(snprintf(destination, sizeof(destination), "%s/direct-target", temp) > 0);
+    assert(mkdir(destination, 0755) == 0);
+    assert(snprintf(s_direct_target, sizeof(s_direct_target), "%s/", destination) > 0);
+    peer_socket peer = connect_data_peer(g_mac.cfg.data_port, g_mac.cfg.token, &session);
+    receive_file_begin(peer, &session, s_direct_batch, 1, "direct.bin", sizeof(receive_first));
+    receive_file_complete(peer, &session, s_direct_batch, 1, receive_first, sizeof(receive_first));
+    uint8_t done[20];
+    hop_put_be32(done, s_direct_batch);
+    hop_put_be32(done + 4, 1);
+    hop_put_be32(done + 8, 1);
+    hop_put_be64(done + 12, sizeof(receive_first));
+    receive_send(peer, &session, s_direct_batch, HOP_MSG_XFER_DONE, done, sizeof(done));
+    const uint8_t *ack = receive_reply(peer, &session, s_direct_batch, HOP_MSG_XFER_DONE_ACK, 5);
+    assert(ack[4] == HOP_DONE_ACK_COMPLETE);
+    assert(atomic_load(&s_direct_completions) == 1);
+    assert(receive_publications() == 1);
+    assert(snprintf(received, sizeof(received), "%s/direct.bin", destination) > 0);
+    receive_expect_file(fopen(received, "rb"), receive_first, sizeof(receive_first));
+    close_peer(peer);
+    puts("PASS: native Finder direct paste normalizes trailing slash and keeps received file");
+
     assert(xfer_shutdown());
     hop_session_clear(&session);
     return 0;

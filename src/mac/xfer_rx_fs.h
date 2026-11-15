@@ -12,6 +12,8 @@ char *hop_xfer_rx_fs_path_for(const char *root, const char *relative_path);
 int hop_xfer_rx_fs_mkdir_p(const char *path);
 int hop_xfer_rx_fs_remove_file(const char *path);
 int hop_xfer_rx_fs_remove_tree(const char *path, const char *required_path_fragment);
+/* Call only for a top-level path this receiver created exclusively. */
+int hop_xfer_rx_fs_remove_owned_tree(const char *path);
 #endif
 
 #endif

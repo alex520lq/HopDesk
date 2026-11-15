@@ -18,17 +18,20 @@
  *  线程：轮询与写入都在主队列，s_last_change 无竞态。
  * ===================================================================== */
 #import <Cocoa/Cocoa.h>
+#import <ApplicationServices/ApplicationServices.h>
+#import <Carbon/Carbon.h>
 
 #include "mac_app.h"
 #include "xfer.h"
 #include "../core/xfer_task.h"
-#include "../core/xfer_clipboard_txn.h"
 #include "../core/xfer_clipboard_txn.h"
 #include "../core/xfer_budget.h"
 
 #include <stdlib.h>
 #include <limits.h>
 #include <string.h>
+#include <stdatomic.h>
+#include <unistd.h>
 
 static NSInteger         s_last_change;
 static dispatch_source_t s_timer;
@@ -42,6 +45,10 @@ static pthread_mutex_t s_offer_lock = PTHREAD_MUTEX_INITIALIZER;
 static dispatch_group_t s_paste_group;
 static int s_image_work_active;
 static hop_clipboard_txn s_clip_txn;
+/* Native Finder destination for the one active incoming Paste Request. */
+static uint32_t s_direct_paste_id;
+static char s_direct_paste_path[PATH_MAX];
+static _Atomic int s_finder_automation_granted;
 #define s_local_offer_sequence (s_clip_txn.local_offer_sequence)
 #define s_offer_request_seq (s_clip_txn.request_sequence)
 #define s_remote_offer_origin (s_clip_txn.remote_offer_origin)
@@ -435,6 +442,22 @@ void clipboard_init(void) {
     s_paste_group=dispatch_group_create();
     s_last_change = [[NSPasteboard generalPasteboard] changeCount];
     pthread_mutex_unlock(&s_offer_lock);
+
+    /* The system prompt can block; never request Finder automation from the
+     * event tap that consumes Command+V. */
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        const char bundle[] = "com.apple.finder";
+        AEAddressDesc target = {typeNull, NULL};
+        if (AECreateDesc(typeApplicationBundleID, bundle, sizeof(bundle) - 1, &target) != noErr)
+            return;
+        OSStatus status = AEDeterminePermissionToAutomateTarget(
+            &target, kAECoreSuite, kAEGetData, true);
+        AEDisposeDesc(&target);
+        atomic_store(&s_finder_automation_granted, status == noErr);
+        hop_log(status == noErr ? HOP_LOG_INFO : HOP_LOG_WARN,
+                "clip: Finder automation permission %s (%d)",
+                status == noErr ? "granted" : "unavailable", (int)status);
+    });
 
     s_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
                                      dispatch_get_main_queue());

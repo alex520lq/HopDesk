@@ -199,6 +199,11 @@ int main(void){
 
     # Mac edge entry must keep tracking drag events before sharing starts.
     capture=(ROOT/'src/mac/capture.c').read_text(encoding='utf-8')
+    mac_main=(ROOT/'src/mac/main.c').read_text(encoding='utf-8')
+    assert 'mac_capture_init();' in mac_main
+    assert 'if(g_mac.cfg.role==HOP_ROLE_SERVER)mac_capture_init();' not in mac_main
+    assert 'CGEventMask mask=CGEventMaskBit(kCGEventKeyDown)|CGEventMaskBit(kCGEventKeyUp)' in capture
+    assert 'if(g_mac.cfg.role==HOP_ROLE_SERVER)' in extract(capture,'mac_capture_init')
     edge_helper=extract(capture,'is_edge_motion_event')
     assert 'if(is_edge_motion_event(type))' in extract(capture,'capture_event')
     edge_preamble=r'''

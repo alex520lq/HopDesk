@@ -164,7 +164,7 @@ int main(void) {
 #include <stddef.h>
 #include <wchar.h>
 #include <stdio.h>
-typedef int HWND;typedef int HDC;typedef int HPEN;typedef int HGDIOBJ;
+typedef int HWND;typedef int HDC;typedef int HPEN;typedef int HBRUSH;typedef int HGDIOBJ;
 typedef struct {int left,top,right,bottom;} RECT;
 typedef struct {HWND page;const wchar_t *title;int x,y,w,h;} ui_card;
 static ui_card s_cards[32];static int s_card_count;static int s_font=3,scale=1;
@@ -174,9 +174,11 @@ static int dip(int n){return n*scale;}
 #define TRANSPARENT 1
 #define DT_SINGLELINE 1
 #define DT_LEFT 0
+#define DT_VCENTER 4
 #define RGB(r,g,b) 0
-static int boxes,titles,last_top,last_left,last_right,last_bottom,text_top;
+static int boxes,titles,fills,last_top,last_left,last_right,last_bottom,text_top;
 static HPEN CreatePen(int style,int width,int color){(void)style;(void)width;(void)color;return 1;}
+static HBRUSH CreateSolidBrush(int color){(void)color;fills++;return 2;}
 static HGDIOBJ SelectObject(HDC dc,HGDIOBJ o){(void)dc;return o;}
 static HGDIOBJ GetStockObject(int n){return n;}
 static int SetBkMode(HDC dc,int mode){(void)dc;return mode;}
@@ -188,10 +190,10 @@ static int DeleteObject(HGDIOBJ o){(void)o;return 1;}
     ui_main=r'''
 int main(void){
     group(1,L"first",20,18,800,145);group(2,L"other page",10,20,30,40);
-    paint_cards(1,0,30);assert(boxes==1 && titles==1);
-    assert(last_left==20 && last_top==-12 && last_right==819 && last_bottom==132 && text_top==-2);
-    boxes=titles=0;scale=2;paint_cards(2,0,10);assert(boxes==1 && titles==1);
-    assert(last_left==20 && last_top==30 && last_right==79 && last_bottom==109 && text_top==50);
+    paint_cards(1,0,30);assert(boxes==1 && titles==1 && fills==1);
+    assert(last_left==20 && last_top==-12 && last_right==819 && last_bottom==132 && text_top==0);
+    boxes=titles=fills=0;scale=2;paint_cards(2,0,10);assert(boxes==1 && titles==1 && fills==1);
+    assert(last_left==20 && last_top==30 && last_right==79 && last_bottom==109 && text_top==54);
     puts("PASS: Windows page card painting and scroll offsets (API doubles)");return 0;
 }
 '''

@@ -2,7 +2,9 @@
 
 客户端角色。
 
-- 键鼠注入：`CGEventCreate*` + `CGEventPost`（纯 C，需 Accessibility 权限）
+- 键鼠注入：`CGEventCreate*` + `CGEventPost`（纯 C，需 Accessibility/PostEvent 权限）；本地跨端文件粘贴快捷键还需 Input Monitoring。应用首次启动会请求权限并打开对应设置页。
+
+本地 `build-mac.sh` 默认使用 ad-hoc 签名，重建后 macOS 可能要求重新授权。安装版应通过 `HOPDESK_CODESIGN_IDENTITY` 指定稳定的代码签名身份；构建脚本不会绕过系统权限。
 - 显示唤醒：`IOPMAssertionCreateWithDescription`（纯 C IOKit）
 - 切源：`posix_spawn` 调 `m1ddc`
 - 剪贴板：`NSPasteboard`（ObjC 薄层）

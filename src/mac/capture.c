@@ -169,11 +169,15 @@ static void edge_tick(CFRunLoopTimerRef timer,void *ctx){
     if(hop_monotonic_ms()-edge_since>=(uint64_t)g_mac.cfg.switch_delay_ms)enter(p);
 }
 void mac_capture_init(void){
-    if(g_mac.cfg.role!=HOP_ROLE_SERVER)return;
-    CGEventMask mask=CGEventMaskBit(kCGEventMouseMoved)|CGEventMaskBit(kCGEventLeftMouseDragged)|CGEventMaskBit(kCGEventRightMouseDragged)|CGEventMaskBit(kCGEventOtherMouseDragged)|CGEventMaskBit(kCGEventLeftMouseDown)|CGEventMaskBit(kCGEventLeftMouseUp)|CGEventMaskBit(kCGEventRightMouseDown)|CGEventMaskBit(kCGEventRightMouseUp)|CGEventMaskBit(kCGEventOtherMouseDown)|CGEventMaskBit(kCGEventOtherMouseUp)|CGEventMaskBit(kCGEventScrollWheel)|CGEventMaskBit(kCGEventKeyDown)|CGEventMaskBit(kCGEventKeyUp)|CGEventMaskBit(kCGEventFlagsChanged);
+    CGEventMask mask=CGEventMaskBit(kCGEventKeyDown)|CGEventMaskBit(kCGEventKeyUp);
+    if(g_mac.cfg.role==HOP_ROLE_SERVER)
+        mask|=CGEventMaskBit(kCGEventMouseMoved)|CGEventMaskBit(kCGEventLeftMouseDragged)|CGEventMaskBit(kCGEventRightMouseDragged)|CGEventMaskBit(kCGEventOtherMouseDragged)|CGEventMaskBit(kCGEventLeftMouseDown)|CGEventMaskBit(kCGEventLeftMouseUp)|CGEventMaskBit(kCGEventRightMouseDown)|CGEventMaskBit(kCGEventRightMouseUp)|CGEventMaskBit(kCGEventOtherMouseDown)|CGEventMaskBit(kCGEventOtherMouseUp)|CGEventMaskBit(kCGEventScrollWheel)|CGEventMaskBit(kCGEventFlagsChanged);
     tap=CGEventTapCreate(kCGHIDEventTap,kCGHeadInsertEventTap,kCGEventTapOptionDefault,mask,capture_event,NULL);
-    if(!tap){hop_log(HOP_LOG_ERROR,"capture: grant Accessibility and Input Monitoring permissions, then restart HopDesk");return;}
+    if(!tap){hop_log(HOP_LOG_ERROR,"capture: grant Accessibility and Input Monitoring permissions, then restart HopDesk");mac_request_accessibility_permission();return;}
     CFRunLoopSourceRef source=CFMachPortCreateRunLoopSource(NULL,tap,0);CFRunLoopAddSource(CFRunLoopGetMain(),source,kCFRunLoopCommonModes);CFRelease(source);
-    CFRunLoopTimerRef timer=CFRunLoopTimerCreate(NULL,CFAbsoluteTimeGetCurrent()+.02,.02,0,0,edge_tick,NULL);
-    CFRunLoopAddTimer(CFRunLoopGetMain(),timer,kCFRunLoopCommonModes);CFRelease(timer);CGEventTapEnable(tap,true);
+    if(g_mac.cfg.role==HOP_ROLE_SERVER){
+        CFRunLoopTimerRef timer=CFRunLoopTimerCreate(NULL,CFAbsoluteTimeGetCurrent()+.02,.02,0,0,edge_tick,NULL);
+        CFRunLoopAddTimer(CFRunLoopGetMain(),timer,kCFRunLoopCommonModes);CFRelease(timer);
+    }
+    CGEventTapEnable(tap,true);
 }

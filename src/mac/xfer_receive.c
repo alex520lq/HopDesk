@@ -234,7 +234,9 @@ static int rx_context_create_staging_directory(void *context, const char *sessio
         struct stat st;
         if (clipboard_direct_paste_target(batch, target, sizeof(target))) {
             if (stat(target, &st) != 0 || !S_ISDIR(st.st_mode)) return 0;
-            memcpy(rx->dir, target, strlen(target) + 1);
+            size_t length = strlen(target);
+            while (length > 1 && target[length - 1] == '/') target[--length] = '\0';
+            memcpy(rx->dir, target, length + 1);
             s_direct_paste.active = 1;
             hop_log(HOP_LOG_INFO, "xfer: direct Finder receive into %s", rx->dir);
             return 1;

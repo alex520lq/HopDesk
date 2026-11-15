@@ -58,6 +58,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 <key>CFBundleShortVersionString</key><string>$VERSION</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
+<key>NSAppleEventsUsageDescription</key><string>HopDesk 读取访达当前文件夹，以便在按下粘贴键的位置接收文件。</string>
 </dict></plist>
 PLIST
 

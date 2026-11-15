@@ -53,6 +53,8 @@ void clipboard_on_remote_file_offer_clear(const uint8_t *p, uint32_t len);
 void clipboard_on_paste_request(const uint8_t *p, uint32_t len);
 void clipboard_on_paste_failed(const uint8_t *p, uint32_t len);
 int  clipboard_request_remote_paste(void);
+int  clipboard_direct_paste_target(uint32_t batch, char *out, size_t capacity);
+void clipboard_complete_remote_direct_paste(uint32_t batch, int success);
 void clipboard_complete_remote_paste(uint32_t batch, const char *const *paths, int n, int success);
 void clipboard_apply(const char *utf8);   /* 收到对端文本 */
 /* 数据通道收完一批后回调：把落盘的顶层条目挂到剪贴板 */

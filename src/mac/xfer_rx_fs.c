@@ -64,3 +64,8 @@ int hop_xfer_rx_fs_remove_tree(const char *path, const char *required_path_fragm
         !strstr(path, required_path_fragment)) return -2;
     return nftw(path, remove_tree_entry, 16, FTW_DEPTH | FTW_PHYS) == 0 ? 0 : -1;
 }
+
+int hop_xfer_rx_fs_remove_owned_tree(const char *path) {
+    if (!path || !*path || !strchr(path, '/')) return -1;
+    return nftw(path, remove_tree_entry, 16, FTW_DEPTH | FTW_PHYS) == 0 ? 0 : -1;
+}

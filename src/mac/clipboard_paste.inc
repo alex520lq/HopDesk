@@ -11,6 +11,10 @@ void clipboard_on_link(int connected) {
   pthread_mutex_lock(&s_offer_lock);
   int replay = hop_clipboard_link_state(&s_clip_txn, connected,
                                         s_local_offer_count, &generation);
+  if (!connected) {
+    s_direct_paste_id = 0;
+    s_direct_paste_path[0] = '\0';
+  }
   if (replay) {
     count = s_local_offer_count;
     for (int i = 0; i < count; ++i)
@@ -27,6 +31,57 @@ void clipboard_on_link(int connected) {
     hop_log(HOP_LOG_WARN, "clip: file offer resend failed");
   for (int i = 0; i < count; ++i)
     free(copies[i]);
+}
+static NSString *clip_finder_destination(void) {
+  NSRunningApplication *front = NSWorkspace.sharedWorkspace.frontmostApplication;
+  if (![front.bundleIdentifier isEqualToString:@"com.apple.finder"]) return nil;
+
+  AXUIElementRef finder = AXUIElementCreateApplication(front.processIdentifier);
+  CFTypeRef focused = NULL;
+  AXError focused_error = AXUIElementCopyAttributeValue(
+      finder, kAXFocusedWindowAttribute, &focused);
+  CFRelease(finder);
+  if (focused) CFRelease(focused);
+
+  NSString *path = nil;
+  if (focused_error == kAXErrorNoValue) {
+    path = NSSearchPathForDirectoriesInDomains(NSDesktopDirectory, NSUserDomainMask, YES).firstObject;
+  } else if (focused_error == kAXErrorSuccess) {
+    if (!atomic_load(&s_finder_automation_granted)) return nil;
+    NSAppleScript *script = [[NSAppleScript alloc] initWithSource:
+        @"tell application \"Finder\" to get POSIX path of (target of front Finder window as alias)"];
+    NSDictionary *error = nil;
+    path = [[script executeAndReturnError:&error] stringValue];
+    if (!path) hop_log(HOP_LOG_WARN, "clip: cannot read Finder destination (%s)",
+                       error.description.UTF8String ?: "unknown error");
+  }
+  BOOL directory = NO;
+  if (!path || ![NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&directory] ||
+      !directory || access(path.fileSystemRepresentation, W_OK) != 0) return nil;
+  return path;
+}
+
+int clipboard_direct_paste_target(uint32_t batch, char *out, size_t capacity) {
+  if (!out || !capacity) return 0;
+  pthread_mutex_lock(&s_offer_lock);
+  size_t length = batch == s_direct_paste_id ? strlen(s_direct_paste_path) : 0;
+  int found = length > 0 && length < capacity;
+  if (found) memcpy(out, s_direct_paste_path, length + 1);
+  pthread_mutex_unlock(&s_offer_lock);
+  return found;
+}
+
+void clipboard_complete_remote_direct_paste(uint32_t batch, int success) {
+  pthread_mutex_lock(&s_offer_lock);
+  hop_clipboard_txn_cancel_pending_paste(&s_clip_txn, batch);
+  if (s_direct_paste_id == batch) {
+    s_direct_paste_id = 0;
+    s_direct_paste_path[0] = '\0';
+  }
+  pthread_mutex_unlock(&s_offer_lock);
+  hop_log(success ? HOP_LOG_INFO : HOP_LOG_WARN,
+          success ? "clip: files placed in original Finder destination" :
+                    "clip: direct paste incomplete");
 }
 void clipboard_on_remote_file_offer(const uint8_t *p, uint32_t len) {
   hop_clip_file_offer_msg m;
@@ -66,6 +121,10 @@ int clipboard_request_remote_paste(void) {
     read_paste_context();
   else
     dispatch_sync(dispatch_get_main_queue(), read_paste_context);
+  pthread_mutex_lock(&s_offer_lock);
+  int has_remote_offer = s_remote_offer_generation != 0;
+  pthread_mutex_unlock(&s_offer_lock);
+  NSString *destination = has_remote_offer ? clip_finder_destination() : nil;
   uint32_t id = 0, origin = 0;
   uint64_t generation = 0, expected = 0;
   pthread_mutex_lock(&s_offer_lock);
@@ -77,6 +136,19 @@ int clipboard_request_remote_paste(void) {
     return 0;
   if (result == 2)
     return 1;
+  pthread_mutex_lock(&s_offer_lock);
+  s_direct_paste_id = 0;
+  s_direct_paste_path[0] = '\0';
+  if (destination) {
+    const char *path = destination.fileSystemRepresentation;
+    size_t length = path ? strlen(path) : 0;
+    if (length && length < sizeof(s_direct_paste_path)) {
+      memcpy(s_direct_paste_path, path, length + 1);
+      s_direct_paste_id = id;
+      hop_log(HOP_LOG_INFO, "clip: direct Finder paste target %s", path);
+    }
+  }
+  pthread_mutex_unlock(&s_offer_lock);
   uint8_t p[HOP_CLIP_PASTE_REQUEST_BYTES];
   int sent =
       hop_clip_paste_request_encode(p, id, origin, generation, expected) &&
@@ -84,6 +156,7 @@ int clipboard_request_remote_paste(void) {
   if (!sent) {
     pthread_mutex_lock(&s_offer_lock);
     hop_clipboard_txn_cancel_pending_paste(&s_clip_txn, id);
+    if (s_direct_paste_id == id) { s_direct_paste_id = 0; s_direct_paste_path[0] = '\0'; }
     pthread_mutex_unlock(&s_offer_lock);
     hop_log(HOP_LOG_WARN, "clip: paste request %u could not be sent", id);
   } else
@@ -97,6 +170,7 @@ void clipboard_on_paste_failed(const uint8_t *p, uint32_t len) {
     return;
   pthread_mutex_lock(&s_offer_lock);
   hop_clipboard_txn_cancel_pending_paste(&s_clip_txn, id);
+  if (s_direct_paste_id == id) { s_direct_paste_id = 0; s_direct_paste_path[0] = '\0'; }
   pthread_mutex_unlock(&s_offer_lock);
   hop_log(HOP_LOG_WARN, "clip: remote paste request %u failed (reason %u)", id,
           (unsigned)reason);

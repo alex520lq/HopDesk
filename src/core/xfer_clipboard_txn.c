@@ -310,6 +310,10 @@ int hop_clipboard_link_state(hop_clipboard_txn *txn, int connected,
     return 0;
   if (!connected) {
     (void)hop_clipboard_txn_clear_remote_offer(txn);
+    /* Request IDs restart with the peer process. A new control session must
+     * not mistake its first paste for a duplicate from the old session. */
+    memset(txn->seen_requests, 0, sizeof(txn->seen_requests));
+    txn->seen_next = 0;
     return 0;
   }
   if (!txn->local_offer_generation || local_offer_count <= 0)

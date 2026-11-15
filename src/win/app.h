@@ -31,7 +31,8 @@ typedef struct {
     NOTIFYICONDATAW nid;
     int            tray_added;
     hop_link_state state;
-    HICON          icons[3];      /* down / local / sharing */
+    HICON          icon_base;     /* immutable app icon resource */
+    HICON          tray_icon;     /* current dynamically rendered status icon */
     int            peer_w, peer_h; /* 客户端（Mac）屏幕尺寸，握手时取得 */
     char           config_path[1024]; /* UTF-8 canonical config path */
     char           log_path[1024];    /* UTF-8 active log path */

@@ -15,8 +15,10 @@
 /* ---- 退出动作的 target ----
  * 必须显式声明 NSMenuItemValidation：10.14 之后 NSMenu 只对声明了该协议的
  * target 调用 validateMenuItem:，否则"取消当前传输"永远是亮的。 */
+static void statusbar_handle_click(NSEvent *event);
 @interface HopController : NSObject
 - (void)doOpen:(id)sender;
+- (void)doStatusItemClick:(id)sender;
 - (void)doQuit:(id)sender;
 - (void)doWake:(id)sender;
 - (void)doInputWin:(id)sender;
@@ -34,6 +36,7 @@ static NSWindow *s_transferWindow;
 static NSTimer *s_transferTimer;
 @implementation HopController
 - (void)doOpen:(id)sender { (void)sender; statusbar_show_main(); }
+- (void)doStatusItemClick:(id)sender { (void)sender; statusbar_handle_click(NSApp.currentEvent); }
 - (void)doQuit:(id)sender {
     (void)sender;
     main_ui_shutdown();
@@ -69,8 +72,12 @@ static NSTimer *s_transferTimer;
 @end
 
 static NSStatusItem *s_item;
-static NSMenuItem   *s_state;
+static NSMenu *s_menu;
+static NSMenuItem *s_state;
 static HopController *s_ctrl;
+static int s_status_connected, s_status_sharing;
+static int s_last_icon_state = -1, s_last_icon_progress = -999;
+static int s_last_icon_direction = -1, s_last_icon_phase = -1;
 static NSTextField *s_transferTitle, *s_transferDetail, *s_transferCounts;
 static NSProgressIndicator *s_transferProgress;
 static NSTextView *s_transferHistory, *s_transferFiles;
@@ -144,29 +151,75 @@ void statusbar_notify_image_limit(void) {
     [[NSUserNotificationCenter defaultUserNotificationCenter] deliverNotification:note];
 }
 
-static void set_appearance(int connected, int sharing) {
-    NSString *sym;
-    NSColor  *color;
-    if (sharing) {
-        sym = @"computermouse.fill"; color = [NSColor systemGreenColor];
-    } else if (connected) {
-        sym = @"computermouse"; color = [NSColor systemBlueColor];
-    } else {
-        sym = @"circle"; color = [NSColor systemGrayColor];
+static NSImage *make_status_image(int connected, int sharing, int progress) {
+    NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(18.0, 18.0)];
+    NSColor *color = sharing
+        ? [NSColor colorWithSRGBRed:0.12 green:0.68 blue:0.40 alpha:1.0]
+        : connected
+            ? [NSColor colorWithSRGBRed:0.18 green:0.48 blue:0.92 alpha:1.0]
+            : [NSColor colorWithSRGBRed:0.55 green:0.58 blue:0.62 alpha:1.0];
+    [image lockFocus];
+    NSBezierPath *network = [NSBezierPath bezierPath];
+    network.lineWidth = 2.0;
+    network.lineCapStyle = NSLineCapStyleRound;
+    network.lineJoinStyle = NSLineJoinStyleRound;
+    [network moveToPoint:NSMakePoint(4.0, 4.0)];
+    [network lineToPoint:NSMakePoint(4.0, 14.0)];
+    [network moveToPoint:NSMakePoint(14.0, 4.0)];
+    [network lineToPoint:NSMakePoint(14.0, 14.0)];
+    [network moveToPoint:NSMakePoint(4.0, 9.0)];
+    [network lineToPoint:NSMakePoint(14.0, 9.0)];
+    [color setStroke]; [network stroke]; [color setFill];
+    for (int x = 0; x < 2; ++x) for (int y = 0; y < 2; ++y) {
+        CGFloat cx = x ? 14.0 : 4.0, cy = y ? 14.0 : 4.0;
+        [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(cx-1.8, cy-1.8, 3.6, 3.6)] fill];
     }
-    NSString *iconPath = [[NSBundle mainBundle] pathForResource:@"hopdesk" ofType:@"png"];
-    NSImage *base = iconPath ? [[NSImage alloc] initWithContentsOfFile:iconPath] : nil;
-    if (!base) {
-        base = [NSImage imageWithSystemSymbolName:sym accessibilityDescription:nil];
-        NSImageSymbolConfiguration *cfg =
-            [NSImageSymbolConfiguration configurationWithPaletteColors:@[color]];
-        base = [base imageWithSymbolConfiguration:cfg];
-    } else {
-        base.size = NSMakeSize(18.0, 18.0);
-        base.template = NO;
+    if (progress >= 0 || progress == -2) {
+        NSPoint center = NSMakePoint(14.0, 4.0); CGFloat radius = 3.25;
+        NSBezierPath *track = [NSBezierPath bezierPathWithOvalInRect:
+            NSMakeRect(center.x-radius, center.y-radius, radius*2.0, radius*2.0)];
+        track.lineWidth = 1.25;
+        [[NSColor colorWithSRGBRed:0.20 green:0.23 blue:0.28 alpha:0.75] setStroke]; [track stroke];
+        CGFloat fraction = progress == -2 ? 0.28 : (CGFloat)progress / 100.0;
+        NSBezierPath *arc = [NSBezierPath bezierPath];
+        [arc appendBezierPathWithArcWithCenter:center radius:radius startAngle:90.0
+            endAngle:90.0-360.0*fraction clockwise:YES];
+        arc.lineWidth = 1.5; arc.lineCapStyle = NSLineCapStyleRound;
+        [[NSColor colorWithSRGBRed:0.05 green:0.82 blue:0.96 alpha:1.0] setStroke]; [arc stroke];
     }
-    s_item.button.image = base;
+    [image unlockFocus]; image.template = NO; return image;
+}
 
+static void refresh_status_item(void) {
+    if (!s_item || !s_item.button) return;
+    hop_xfer_status_pair pair; memset(&pair, 0, sizeof(pair)); xfer_get_status_pair(&pair);
+    const hop_xfer_status *st = pair.primary_direction == HOP_XFER_DIR_SEND ? &pair.send : &pair.receive;
+    int busy = st->active || st->queued_count > 0, progress = -1;
+    if (busy) progress = st->bytes_total
+        ? (int)MIN(100.0, 100.0*(double)st->bytes_done/(double)st->bytes_total) : -2;
+    int state = s_status_sharing ? 2 : (s_status_connected ? 1 : 0);
+    int direction = busy ? st->direction : 0, phase = busy ? st->phase : 0;
+    if (state == s_last_icon_state && progress == s_last_icon_progress &&
+        direction == s_last_icon_direction && phase == s_last_icon_phase) return;
+    s_last_icon_state=state; s_last_icon_progress=progress;
+    s_last_icon_direction=direction; s_last_icon_phase=phase;
+    s_item.button.image = make_status_image(s_status_connected, s_status_sharing, progress);
+    s_item.button.imagePosition = NSImageLeft;
+    s_item.button.title = progress >= 0 ? [NSString stringWithFormat:@"%d%%",progress] : (progress == -2 ? @"…" : @"");
+    NSString *stateText = s_status_sharing ? @"键鼠共享中" : (s_status_connected ? @"已连接" : @"未连接");
+    if (progress >= 0) {
+        NSString *directionText = direction == HOP_XFER_DIR_SEND ? @"发送" : @"接收";
+        s_item.button.toolTip = [NSString stringWithFormat:@"HopDesk · 正在%@ · %d%%",directionText,progress];
+    } else if (progress == -2) s_item.button.toolTip = @"HopDesk · 正在准备传输";
+    else s_item.button.toolTip = [NSString stringWithFormat:@"HopDesk · %@",stateText];
+}
+
+static void statusbar_handle_click(NSEvent *event) {
+    if (event && event.type == NSEventTypeRightMouseDown) {
+        if (s_menu && s_item.button) [NSMenu popUpContextMenu:s_menu withEvent:event forView:s_item.button];
+        return;
+    }
+    statusbar_show_main();
 }
 
 
@@ -397,33 +450,33 @@ void statusbar_init(void) {
         s_item = [[NSStatusBar systemStatusBar]
                   statusItemWithLength:NSVariableStatusItemLength];
 
-        NSMenu *menu = [[NSMenu alloc] init];
-        NSMenuItem *open = [[NSMenuItem alloc] initWithTitle:@"打开"
-                                                      action:@selector(doOpen:)
-                                               keyEquivalent:@""];
-        open.target = s_ctrl;
-        [menu addItem:open];
-        [menu addItem:[NSMenuItem separatorItem]];
-        NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:@"退出"
-                                                      action:@selector(doQuit:)
-                                               keyEquivalent:@"q"];
-        quit.target = s_ctrl;
-        [menu addItem:quit];
-        s_item.menu = menu;
+        s_menu = [[NSMenu alloc] init];
+        NSMenuItem *open = [[NSMenuItem alloc] initWithTitle:@"打开" action:@selector(doOpen:) keyEquivalent:@""];
+        open.target = s_ctrl; [s_menu addItem:open];
+        [s_menu addItem:[NSMenuItem separatorItem]];
+        NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:@"退出" action:@selector(doQuit:) keyEquivalent:@"q"];
+        quit.target = s_ctrl; [s_menu addItem:quit];
 
-        set_appearance(0, 0);
+        /* Left click opens the main window; right click opens the context menu. */
+        s_item.button.target = s_ctrl;
+        s_item.button.action = @selector(doStatusItemClick:);
+        [s_item.button sendActionOn:(NSEventMaskLeftMouseUp | NSEventMaskRightMouseDown)];
+        refresh_status_item();
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
             (void)timer;
             hop_xfer_status snapshot; memset(&snapshot, 0, sizeof(snapshot));
             xfer_get_status(&snapshot);
             transfer_notify_if_terminal(&snapshot);
+            refresh_status_item();
         }];
     }
 }
 
 void statusbar_update(int connected, int sharing) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        set_appearance(connected, sharing);
+        s_status_connected = connected != 0;
+        s_status_sharing = sharing != 0;
+        refresh_status_item();
         mac_capture_connected(connected);
         main_ui_set_status(connected, sharing);
     });

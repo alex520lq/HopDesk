@@ -51,11 +51,11 @@ static HWND s_main;
 static HWND s_pages[UI_PAGE_COUNT];
 static HWND s_nav[UI_PAGE_COUNT];
 static HWND s_title, s_header_status, s_footer;
-static HWND s_overview_status, s_overview_peer, s_overview_channels, s_overview_sharing;
+static HWND s_overview_status, s_overview_peer, s_overview_control, s_overview_data, s_overview_sharing;
 static HWND s_connection_role, s_connection_status, s_connection_peer, s_connection_ports;
 static HWND s_cfg[CFG_COUNT], s_cfg_note;
-static HWND s_xfer_title, s_xfer_detail, s_xfer_counts, s_xfer_budget, s_xfer_memory, s_xfer_budget_stats, s_xfer_budget_lifecycle;
-static HWND s_xfer_progress, s_xfer_files, s_xfer_history, s_xfer_retry_button;
+static HWND s_xfer_title, s_xfer_detail, s_xfer_counts;
+static HWND s_xfer_progress, s_xfer_files, s_xfer_retry_button;
 static HWND s_task_lists[2];
 static HWND s_task_history, s_history_direction, s_history_state, s_history_order;
 static hop_xfer_task_id s_task_ids[2][UI_TASK_CAP];
@@ -191,10 +191,17 @@ static LRESULT CALLBACK page_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if(control==s_header_status || control==s_overview_status)
             SetTextColor((HDC)w,g_app.state==HOP_LINK_SHARING?RGB(36,111,190):
                 g_app.state==HOP_LINK_LOCAL?RGB(27,132,82):RGB(112,122,137));
+        else if(control==s_overview_control)
+            SetTextColor((HDC)w,g_app.state==HOP_LINK_DOWN?RGB(112,122,137):RGB(27,132,82));
+        else if(control==s_overview_data)
+            SetTextColor((HDC)w,xfer_connected()?RGB(27,132,82):RGB(112,122,137));
+        else if(control==s_overview_sharing)
+            SetTextColor((HDC)w,g_app.state==HOP_LINK_SHARING?RGB(36,111,190):
+                g_app.state==HOP_LINK_LOCAL?RGB(27,132,82):RGB(112,122,137));
         else SetTextColor((HDC)w,RGB(48,58,73));
         return (LRESULT)s_canvas;
     }
-    if(m==WM_SIZE){RECT r;GetClientRect(h,&r);SCROLLINFO si={sizeof(si),SIF_RANGE|SIF_PAGE,0,dip(h==s_pages[3]?1130:624),r.bottom,0,0};SetScrollInfo(h,SB_VERT,&si,TRUE);layout_nodes();return 0;}
+    if(m==WM_SIZE){RECT r;GetClientRect(h,&r);SCROLLINFO si={sizeof(si),SIF_RANGE|SIF_PAGE,0,dip(h==s_pages[3]?960:624),r.bottom,0,0};SetScrollInfo(h,SB_VERT,&si,TRUE);layout_nodes();return 0;}
     if(m==WM_VSCROLL || m==WM_MOUSEWHEEL){
         SCROLLINFO si={sizeof(si),SIF_ALL,0,0,0,0,0};GetScrollInfo(h,SB_VERT,&si);int pos=si.nPos;
         if(m==WM_MOUSEWHEEL)pos-=GET_WHEEL_DELTA_WPARAM(w)/WHEEL_DELTA*dip(48);
@@ -261,15 +268,19 @@ static void refresh_connection(void) {
     wchar_t b[512];
     set_text(s_header_status, link_state());
     set_text(s_overview_status, link_state());
-    swprintf(b, 512, L"%ls  ·  控制端口 %u  ·  数据端口 %u",
-             g_app.cfg.role==HOP_ROLE_SERVER?L"服务器 · 提供键鼠":L"客户端 · 接收键鼠",(unsigned)g_app.cfg.port, (unsigned)g_app.cfg.data_port);
-    set_text(s_overview_peer, b);
-    swprintf(b, 512, L"控制通道：%ls    数据通道：%ls",
-             g_app.state == HOP_LINK_DOWN ? L"等待连接" : L"已连接",
-             xfer_connected() ? L"已连接" : L"等待连接");
-    set_text(s_overview_channels, b);
-    set_text(s_overview_sharing, g_app.state == HOP_LINK_SHARING ? g_app.cfg.role==HOP_ROLE_SERVER?L"键鼠共享：已移交客户端":L"键鼠共享：正在接收服务器输入" :
-             g_app.state == HOP_LINK_LOCAL ? L"键鼠共享：已就绪 · 从配置边缘移交" : L"键鼠共享：等待连接");
+    if(g_app.cfg.role==HOP_ROLE_SERVER)
+        swprintf(b,512,L"服务器 · 本机 IP：%ls    控制端口 %u    数据端口 %u",
+            s_addresses,(unsigned)g_app.cfg.port,(unsigned)g_app.cfg.data_port);
+    else {
+        wchar_t host[128];utf8_to_wide(g_app.cfg.peer_host,host,128);
+        swprintf(b,512,L"客户端 · 服务器：%ls    控制端口 %u    数据端口 %u",
+            host[0]?host:L"未配置",(unsigned)g_app.cfg.port,(unsigned)g_app.cfg.data_port);
+    }
+    set_text(s_overview_peer,b);
+    set_text(s_overview_control,g_app.state==HOP_LINK_DOWN?L"等待连接":L"已连接");
+    set_text(s_overview_data,xfer_connected()?L"已连接":L"等待连接");
+    set_text(s_overview_sharing,g_app.state==HOP_LINK_SHARING?L"已移交":
+        g_app.state==HOP_LINK_LOCAL?L"已就绪 · 等待边缘移交":L"等待连接");
     set_text(s_connection_role,g_app.cfg.role==HOP_ROLE_SERVER?L"本机角色：服务器 · 提供键鼠":L"本机角色：客户端 · 接收键鼠");
     set_text(s_connection_status, link_state());
     if(g_app.cfg.role==HOP_ROLE_SERVER)swprintf(b,512,L"本机 IP：%ls",s_addresses);
@@ -440,8 +451,15 @@ static void refresh_task_lists(void) {
         hop_xfer_task_snapshot *t=&s_tasks_snapshot[i];
         int d=t->direction==HOP_XFER_DIR_SEND?0:t->direction==HOP_XFER_DIR_RECEIVE?1:-1;
         if(d<0 || s_task_counts[d]>=(int)UI_TASK_CAP)continue;
-        wchar_t row[180];swprintf(row,180,L"#%llu  ·  批次 %u  ·  %ls",
-            (unsigned long long)t->id,t->transfer_id,task_state_name(t));
+        if(t->state>=HOP_XFER_TASK_COMPLETED || t->kind==HOP_TASK_KIND_IMAGE_WORK)continue;
+        wchar_t name[HOP_XFER_STATUS_NAME],row[512];
+        utf8_to_wide(t->name,name,HOP_XFER_STATUS_NAME);
+        if(!name[0])swprintf(name,HOP_XFER_STATUS_NAME,L"任务 #%llu",(unsigned long long)t->id);
+        double progress=t->bytes_total?100.0*(double)t->bytes_done/(double)t->bytes_total:0.0;
+        swprintf(row,512,L"%ls  ·  %ls  ·  %.0f%%  ·  文件 %u/%u  ·  %llu/%llu MiB",
+            name,task_state_name(t),progress,t->files_done,t->files_total,
+            (unsigned long long)(t->bytes_done/1048576ULL),
+            (unsigned long long)(t->bytes_total/1048576ULL));
         LRESULT index=SendMessageW(s_task_lists[d],LB_ADDSTRING,0,(LPARAM)row);
         if(index==LB_ERR || index==LB_ERRSPACE)continue;
         s_task_ids[d][s_task_counts[d]++]=t->id;
@@ -471,11 +489,14 @@ static void refresh_task_history(void) {
     int top=(int)SendMessageW(s_task_history,LB_GETTOPINDEX,0,0);
     SendMessageW(s_task_history,LB_RESETCONTENT,0,0);
     for(int i=0;i<n;++i){
-        wchar_t row[180];const hop_xfer_task_history_record *t=&history[i];
+        wchar_t row[512],name[HOP_XFER_STATUS_NAME];const hop_xfer_task_history_record *t=&history[i];
         hop_xfer_task_snapshot display={0};display.state=(hop_xfer_task_state)t->state;
-        swprintf(row,180,L"#%llu  ·  %ls  ·  批次 %u  ·  %ls",
-                 (unsigned long long)t->record_id,t->direction==HOP_XFER_DIR_SEND?L"发送":L"接收",
-                 t->transfer_id,task_state_name(&display));
+        utf8_to_wide(t->name,name,HOP_XFER_STATUS_NAME);
+        if(!name[0])swprintf(name,HOP_XFER_STATUS_NAME,L"任务 #%llu",(unsigned long long)t->record_id);
+        swprintf(row,512,L"%ls  ·  %ls  ·  %ls  ·  文件 %u/%u  ·  %llu/%llu MiB",
+            t->direction==HOP_XFER_DIR_SEND?L"发送":L"接收",name,task_state_name(&display),
+            t->files_done,t->files_total,(unsigned long long)(t->bytes_done/1048576ULL),
+            (unsigned long long)(t->bytes_total/1048576ULL));
         SendMessageW(s_task_history,LB_ADDSTRING,0,(LPARAM)row);
     }
     if(top>0 && top<n)SendMessageW(s_task_history,LB_SETTOPINDEX,(WPARAM)top,0);
@@ -513,53 +534,20 @@ static void refresh_transfers(void) {
         st.direction==HOP_XFER_DIR_SEND?L"发送":st.direction==HOP_XFER_DIR_RECEIVE?L"接收":L"待机",
         phase,detail);
     set_text(s_xfer_detail, row);
-    swprintf(row, 1800, L"文件 %u / %u    排队 %u    数据 %llu / %llu MB",
-             st.files_done, st.files_total, st.queued_count,
-             (unsigned long long)(st.bytes_done / 1048576ULL),
-             (unsigned long long)(st.bytes_total / 1048576ULL));
-    if (pair.send.active && pair.receive.active)
-        swprintf(row,1800,L"同时进行：发送 %llu/%llu MiB · 接收 %llu/%llu MiB · 排队 %u",
+    int pct=st.bytes_total?(int)(100.0*(double)st.bytes_done/(double)st.bytes_total):
+        (st.phase==HOP_XFER_COMPLETED?100:0);
+    if(pct>100)pct=100;
+    swprintf(row,1800,L"%d%%  ·  文件 %u/%u    排队 %u    数据 %llu/%llu MiB",
+        pct,st.files_done,st.files_total,st.queued_count,
+        (unsigned long long)(st.bytes_done/1048576ULL),
+        (unsigned long long)(st.bytes_total/1048576ULL));
+    if(pair.send.active && pair.receive.active)
+        swprintf(row,1800,L"双向传输  ·  发送 %llu/%llu MiB  ·  接收 %llu/%llu MiB  ·  排队 %u",
             (unsigned long long)(pair.send.bytes_done/1048576ULL),
             (unsigned long long)(pair.send.bytes_total/1048576ULL),
             (unsigned long long)(pair.receive.bytes_done/1048576ULL),
             (unsigned long long)(pair.receive.bytes_total/1048576ULL),pair.send.queued_count);
-    set_text(s_xfer_counts, row);
-    hop_xfer_task_audit audit; memset(&audit,0,sizeof(audit)); hop_xfer_task_reconcile(&audit);
-    hop_xfer_budget_snapshot budget=audit.ledger;
-    swprintf(row,1800,L"预算  jobs %u/%u  ·  entries %u/%u  ·  待传输 %llu/%llu MiB",
-        budget.jobs,budget.limits.max_jobs,budget.entries,budget.limits.max_entries,
-        (unsigned long long)(budget.pending_bytes/1048576ULL),
-        (unsigned long long)(budget.limits.max_pending_bytes/1048576ULL));
-    set_text(s_xfer_budget,row);
-    swprintf(row,1800,L"内存  image %llu/%llu MiB (temp %llu/%llu MiB)  ·  RX %u/%u slots  ·  %llu/%llu MiB",
-        (unsigned long long)(budget.image_bytes/1048576ULL),
-        (unsigned long long)(budget.limits.max_image_bytes/1048576ULL),
-        (unsigned long long)(budget.image_temp_bytes/1048576ULL),
-        (unsigned long long)(budget.limits.max_image_temp_bytes/1048576ULL),
-        budget.rx_queue_slots,budget.limits.max_rx_queue_slots,
-        (unsigned long long)(budget.rx_queue_bytes/1048576ULL),
-        (unsigned long long)(budget.limits.max_rx_queue_bytes/1048576ULL));
-    set_text(s_xfer_memory,row);
-    uint64_t rejected=budget.rejected_jobs+budget.rejected_entries+budget.rejected_bytes+
-        budget.rejected_images+budget.rejected_rx_buffers+budget.rejected_image_temp_bytes+
-        budget.rejected_image_transfers;
-    swprintf(row,1800,L"峰值 jobs %u · entries %u · pending %llu MiB · image %llu MiB · RX %u slots/%llu MiB · 拒绝 %llu",
-        budget.jobs_high_water,budget.entries_high_water,
-        (unsigned long long)(budget.pending_bytes_high_water/1048576ULL),
-        (unsigned long long)(budget.image_bytes_high_water/1048576ULL),
-        budget.rx_queue_slots_high_water,
-        (unsigned long long)(budget.rx_queue_bytes_high_water/1048576ULL),
-        (unsigned long long)rejected);
-    set_text(s_xfer_budget_stats,row);
-    swprintf(row,1800,L"释放 tasks %llu · RX buffers %llu · image temp %llu MiB · image handoff %llu MiB · 账本异常 %llu · 对账 %ls (0x%X)",
-        (unsigned long long)budget.released_reservations,
-        (unsigned long long)budget.released_rx_buffers,
-        (unsigned long long)(budget.released_image_temp_bytes/1048576ULL),
-        (unsigned long long)(budget.transferred_image_temp_bytes/1048576ULL),
-        (unsigned long long)budget.accounting_errors,
-        audit.mismatches?L"异常":L"正常", (unsigned)audit.mismatches);
-    set_text(s_xfer_budget_lifecycle,row);
-    int pct = st.bytes_total ? (int)(100ULL * st.bytes_done / st.bytes_total) : (st.phase==HOP_XFER_COMPLETED ? 100 : 0);
+    set_text(s_xfer_counts,row);
     SendMessageW(s_xfer_progress, PBM_SETPOS, pct > 100 ? 100 : pct, 0);
     if (s_xfer_retry_button) EnableWindow(s_xfer_retry_button, st.direction == HOP_XFER_DIR_SEND);
 
@@ -598,74 +586,69 @@ static void refresh_transfers(void) {
         LRESULT idx=SendMessageW(s_xfer_files,LB_ADDSTRING,0,(LPARAM)row);
         if(idx!=LB_ERR){SendMessageW(s_xfer_files,LB_SETITEMDATA,(WPARAM)idx,(LPARAM)i);s_visible_indices[s_visible_count++]=i;if(i==oldSelectedIndex)SendMessageW(s_xfer_files,LB_SETCURSEL,(WPARAM)idx,0);}
     }
-    hop_xfer_history_entry hist[HOP_XFER_HISTORY_LIMIT];
-    int hn=xfer_get_history(hist,HOP_XFER_HISTORY_LIMIT);
-    SendMessageW(s_xfer_history,LB_RESETCONTENT,0,0);
-    for(int i=0;i<hn;++i){
-        wchar_t hname[HOP_XFER_STATUS_NAME];
-        utf8_to_wide(hist[i].name,hname,HOP_XFER_STATUS_NAME);
-        const wchar_t *d=hist[i].direction==HOP_XFER_DIR_SEND?L"发送":L"接收";
-        const wchar_t *p=hist[i].phase==HOP_XFER_COMPLETED?L"完成":hist[i].phase==HOP_XFER_PARTIAL?L"部分失败":
-            hist[i].phase==HOP_XFER_CANCELLED?L"已取消":L"失败";
-        swprintf(row,1800,L"%ls  ·  %ls  ·  %ls  ·  文件 %u/%u  ·  %llu MB",d,p,hname,
-            hist[i].files_done,hist[i].files_total,(unsigned long long)(hist[i].bytes_total/1048576ULL));
-        SendMessageW(s_xfer_history,LB_ADDSTRING,0,(LPARAM)row);
-    }
 }
 static void create_settings_page(HWND p) {
-    group(p,L"连接与身份",20,14,390,275);
-    label(p,L"设备名称",38,42,120,20); s_cfg[CFG_NAME]=edit(p,L"",160,38,225,26,0,0);
-    label(p,L"服务端地址",38,78,120,20); s_cfg[CFG_HOST]=edit(p,L"",160,74,225,26,0,0);
-    label(p,L"控制端口",38,114,120,20); s_cfg[CFG_PORT]=edit(p,L"",160,110,225,26,0,0);
-    label(p,L"数据端口",38,150,120,20); s_cfg[CFG_DATA_PORT]=edit(p,L"",160,146,225,26,0,0);
-    label(p,L"共享 Token",38,186,120,20); s_cfg[CFG_TOKEN]=edit(p,L"",160,182,225,26,0,1);
-    label(p,L"服务端边缘",38,222,120,20);
-    s_cfg[CFG_SERVER_EDGE]=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,160,218,225,120,0);
-    SendMessageW(s_cfg[CFG_SERVER_EDGE],CB_ADDSTRING,0,(LPARAM)L"左边缘"); SendMessageW(s_cfg[CFG_SERVER_EDGE],CB_ADDSTRING,0,(LPARAM)L"右边缘"); SendMessageW(s_cfg[CFG_SERVER_EDGE],CB_ADDSTRING,0,(LPARAM)L"上边缘"); SendMessageW(s_cfg[CFG_SERVER_EDGE],CB_ADDSTRING,0,(LPARAM)L"下边缘");
-    label(p,L"客户端边缘",38,258,120,20);
-    s_cfg[CFG_CLIENT_EDGE]=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,160,254,225,120,0);
-    SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_ADDSTRING,0,(LPARAM)L"左边缘"); SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_ADDSTRING,0,(LPARAM)L"右边缘"); SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_ADDSTRING,0,(LPARAM)L"上边缘"); SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_ADDSTRING,0,(LPARAM)L"下边缘");
-
-    group(p,L"交互与显示器",430,14,390,455);
-    label(p,L"边缘触发延迟（ms）",448,42,170,20); s_cfg[CFG_SWITCH_DELAY]=edit(p,L"",635,38,165,26,0,0);
-    label(p,L"切换冷却（ms）",448,78,170,20); s_cfg[CFG_COOLDOWN]=edit(p,L"",635,74,165,26,0,0);
-    label(p,L"边缘内缩（px）",448,114,170,20); s_cfg[CFG_MARGIN]=edit(p,L"",635,110,165,26,0,0);
-    label(p,L"Windows 输入源",448,150,170,20); s_cfg[CFG_DISP_WIN]=edit(p,L"",635,146,165,26,0,0);
-    label(p,L"Mac 输入源",448,186,170,20); s_cfg[CFG_DISP_MAC]=edit(p,L"",635,182,165,26,0,0);
-    label(p,L"唤醒时长（秒）",448,222,170,20); s_cfg[CFG_WAKE]=edit(p,L"",635,218,165,26,0,0);
-    label(p,L"传输分块（KB）",448,258,170,20); s_cfg[CFG_CHUNK]=edit(p,L"",635,254,165,26,0,0);
-    label(p,L"Mac 切源命令",448,294,170,20); s_cfg[CFG_MAC_INPUT]=edit(p,L"",448,318,352,26,0,0);
-    label(p,L"Mac 睡眠命令",448,354,170,20); s_cfg[CFG_MAC_SLEEP]=edit(p,L"",448,378,352,26,0,0);
-    label(p,L"输入源支持十六进制（例如 0x0F）。保存后，连接和认证参数将在重启后完整生效。",448,416,350,34);
-    label(p,L"服务器显示本机 IP；客户端填写对方地址。两端 Token 与端口需一致。",38,288,370,28);
-
-    group(p,L"运行角色",20,330,390,138);
-    label(p,L"本机角色",38,369,120,22);
-    s_cfg[CFG_ROLE]=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,160,363,225,120,UI_ROLE_ID);
+    group(p,L"设备与连接",20,18,390,450);
+    label(p,L"设备名称",38,54,112,20);s_cfg[CFG_NAME]=edit(p,L"",158,50,230,28,0,0);
+    label(p,L"本机角色",38,92,112,20);
+    s_cfg[CFG_ROLE]=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,158,88,230,120,UI_ROLE_ID);
     SendMessageW(s_cfg[CFG_ROLE],CB_ADDSTRING,0,(LPARAM)L"服务器 · 提供键鼠");
     SendMessageW(s_cfg[CFG_ROLE],CB_ADDSTRING,0,(LPARAM)L"客户端 · 接收键鼠");
-    label(p,L"角色与连接参数保存后重启生效。当前会话不受未保存的修改影响。",38,408,350,42);
-    button(p,L"保存设置",448,500,130,34,UI_ID_SAVE);
-    button(p,L"恢复默认",590,500,130,34,UI_ID_RESET);
-    s_cfg_note=label(p,L"修改后点击保存；网络参数将在重启后生效。",38,548,760,28);
-}
-static void create_pages(HWND h) {
+    label(p,L"服务端地址",38,130,112,20);s_cfg[CFG_HOST]=edit(p,L"",158,126,230,28,0,0);
+    label(p,L"控制端口",38,168,112,20);s_cfg[CFG_PORT]=edit(p,L"",158,164,230,28,0,0);
+    label(p,L"数据端口",38,206,112,20);s_cfg[CFG_DATA_PORT]=edit(p,L"",158,202,230,28,0,0);
+    label(p,L"共享 Token",38,244,112,20);s_cfg[CFG_TOKEN]=edit(p,L"",158,240,230,28,0,1);
+    label(p,L"服务端边缘",38,282,112,20);
+    s_cfg[CFG_SERVER_EDGE]=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,158,278,230,120,0);
+    SendMessageW(s_cfg[CFG_SERVER_EDGE],CB_ADDSTRING,0,(LPARAM)L"左边缘");SendMessageW(s_cfg[CFG_SERVER_EDGE],CB_ADDSTRING,0,(LPARAM)L"右边缘");
+    SendMessageW(s_cfg[CFG_SERVER_EDGE],CB_ADDSTRING,0,(LPARAM)L"上边缘");SendMessageW(s_cfg[CFG_SERVER_EDGE],CB_ADDSTRING,0,(LPARAM)L"下边缘");
+    label(p,L"客户端边缘",38,320,112,20);
+    s_cfg[CFG_CLIENT_EDGE]=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,158,316,230,120,0);
+    SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_ADDSTRING,0,(LPARAM)L"左边缘");SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_ADDSTRING,0,(LPARAM)L"右边缘");
+    SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_ADDSTRING,0,(LPARAM)L"上边缘");SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_ADDSTRING,0,(LPARAM)L"下边缘");
+    label(p,L"客户端填写服务器地址；两端使用相同的非空 Token。",38,366,350,42);
+
+    group(p,L"交互与显示器",430,18,390,450);
+    label(p,L"边缘触发延迟（ms）",448,54,170,20);s_cfg[CFG_SWITCH_DELAY]=edit(p,L"",628,50,172,28,0,0);
+    label(p,L"切换冷却（ms）",448,92,170,20);s_cfg[CFG_COOLDOWN]=edit(p,L"",628,88,172,28,0,0);
+    label(p,L"边缘内缩（px）",448,130,170,20);s_cfg[CFG_MARGIN]=edit(p,L"",628,126,172,28,0,0);
+    label(p,L"Windows 输入源",448,168,170,20);s_cfg[CFG_DISP_WIN]=edit(p,L"",628,164,172,28,0,0);
+    label(p,L"Mac 输入源",448,206,170,20);s_cfg[CFG_DISP_MAC]=edit(p,L"",628,202,172,28,0,0);
+    label(p,L"唤醒时长（秒）",448,244,170,20);s_cfg[CFG_WAKE]=edit(p,L"",628,240,172,28,0,0);
+    label(p,L"传输分块（KB）",448,282,170,20);s_cfg[CFG_CHUNK]=edit(p,L"",628,278,172,28,0,0);
+    label(p,L"Mac 切源命令",448,322,352,20);s_cfg[CFG_MAC_INPUT]=edit(p,L"",448,346,352,28,0,0);
+    label(p,L"Mac 睡眠命令",448,384,352,20);s_cfg[CFG_MAC_SLEEP]=edit(p,L"",448,408,352,28,0,0);
+    label(p,L"输入源支持十六进制；网络与认证参数保存后重启生效。",448,438,352,24);
+
+    group(p,L"应用设置",20,486,800,76);
+    label(p,L"草稿不会改变当前连接；保存失败时原配置保持不变。",38,512,520,22);
+    s_cfg_note=label(p,L"修改后点击保存设置。",38,538,520,20);
+    button(p,L"保存设置",610,506,120,36,UI_ID_SAVE);
+    button(p,L"恢复默认",744,506,112,36,UI_ID_RESET);
+}static void create_pages(HWND h) {
     for(int i=0;i<UI_PAGE_COUNT;++i) s_pages[i]=page_create(h,i);
 
     HWND p=s_pages[0];
     group(p,L"连接概览",20,18,800,150);
-    s_overview_status=label(p,L"等待连接",42,50,740,34); set_font(s_overview_status,s_font_title);
-    s_overview_peer=label(p,L"Windows 服务端",42,91,740,22);
-    s_overview_channels=label(p,L"控制通道：等待连接    数据通道：等待连接",42,119,740,20);
-    group(p,L"显示器控制",20,190,800,160);
-    s_overview_sharing=label(p,L"键鼠共享：等待连接",42,225,740,24);
-    button(p,L"显示器切至 Mac",42,273,150,36,UI_ID_SWITCH_MAC);
-    button(p,L"显示器切至 Windows",208,273,160,36,UI_ID_SWITCH_WIN);
-    button(p,L"唤醒显示",384,273,120,36,UI_ID_WAKE);
-    button(p,L"显示睡眠",520,273,120,36,UI_ID_SLEEP);
-    group(p,L"常用入口",20,376,800,122);
-    button(p,L"打开传输管理",42,421,150,38,UI_ID_OPEN_TRANSFERS);
-    label(p,L"连接、设备设置、传输记录、运行日志和软件更新都集中在左侧导航中。",220,426,560,28);
+    s_overview_status=label(p,L"等待连接",42,54,560,30);set_font(s_overview_status,s_font_title);
+    s_overview_peer=label(p,L"设备与对端信息",42,96,560,22);
+    button(p,L"重新连接",650,58,140,36,UI_ID_RECONNECT);
+
+    group(p,L"控制通道",20,188,250,104);
+    s_overview_control=label(p,L"等待连接",38,238,214,26);
+    group(p,L"数据通道",295,188,250,104);
+    s_overview_data=label(p,L"等待连接",313,238,214,26);
+    group(p,L"键鼠共享",570,188,250,104);
+    s_overview_sharing=label(p,L"等待连接",588,238,214,26);
+
+    group(p,L"显示器控制",20,310,800,160);
+    button(p,L"显示器切至 Mac",42,366,150,36,UI_ID_SWITCH_MAC);
+    button(p,L"显示器切至 Windows",208,366,160,36,UI_ID_SWITCH_WIN);
+    button(p,L"唤醒显示",384,366,120,36,UI_ID_WAKE);
+    button(p,L"显示睡眠",520,366,120,36,UI_ID_SLEEP);
+    group(p,L"常用入口",20,488,800,112);
+    button(p,L"打开传输管理",42,530,160,38,UI_ID_OPEN_TRANSFERS);
+    label(p,L"查看活动任务、实时进度、取消操作和历史记录。",228,536,540,24);
 
     p=s_pages[1];
     group(p,L"连接状态",20,18,800,235);
@@ -679,33 +662,29 @@ static void create_pages(HWND h) {
     p=s_pages[2]; create_settings_page(p);
 
     p=s_pages[3];
-    group(p,L"当前任务",20,14,800,194);
-    s_xfer_title=label(p,L"暂无传输任务",40,40,740,24); set_font(s_xfer_title,s_font_title);
-    s_xfer_detail=label(p,L"等待文件传输",40,68,740,18);
-    s_xfer_counts=label(p,L"文件 0 / 0    排队 0    数据 0 / 0 MB",40,92,740,18);
-    s_xfer_budget=label(p,L"预算 jobs 0/16 · entries 0/32768 · pending 0/8192 MiB",40,116,740,16);
-    s_xfer_memory=label(p,L"内存 image 0/256 MiB · RX 0/8 slots",40,136,740,16);
-    s_xfer_budget_stats=label(p,L"峰值与拒绝计数等待采样",40,156,740,16);
-    s_xfer_budget_lifecycle=label(p,L"资源释放与图片缓冲转移等待采样",40,174,740,16);
-    ShowWindow(s_xfer_budget,SW_HIDE);ShowWindow(s_xfer_memory,SW_HIDE);
-    ShowWindow(s_xfer_budget_stats,SW_HIDE);ShowWindow(s_xfer_budget_lifecycle,SW_HIDE);
-    s_xfer_progress=child(p,PROGRESS_CLASSW,L"",PBS_SMOOTH,40,126,740,12,0);
-    group(p,L"文件明细",20,210,800,159);
-    s_xfer_files=child(p,L"LISTBOX",L"",LBS_NOTIFY|WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS|WS_TABSTOP,40,232,760,119,UI_ID_FILES);
-    group(p,L"文件传输记录",20,386,800,175);
-    s_xfer_history=child(p,L"LISTBOX",L"",WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS,40,410,760,135,0);
-    s_xfer_retry_button=button(p,L"重试选中文件",500,572,140,34,UI_ID_XFER_RETRY);
-    group(p,L"活动任务（选择后单独取消）",20,620,800,224);
-    label(p,L"发送任务",40,650,340,22);
-    label(p,L"接收任务",430,650,340,22);
-    s_task_lists[0]=child(p,L"LISTBOX",L"",LBS_NOTIFY|WS_BORDER|WS_VSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS|WS_TABSTOP,40,676,350,100,UI_ID_SEND_TASKS);
-    s_task_lists[1]=child(p,L"LISTBOX",L"",LBS_NOTIFY|WS_BORDER|WS_VSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS|WS_TABSTOP,430,676,350,100,UI_ID_RECEIVE_TASKS);
-    button(p,L"取消选中发送任务",40,786,180,34,UI_ID_SEND_CANCEL);
-    button(p,L"取消选中接收任务",430,786,180,34,UI_ID_RECEIVE_CANCEL);
-    group(p,L"本次运行的任务历史（最多 256 条，重启后清空）",20,860,800,236);
-    s_history_direction=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,40,900,150,180,0);
-    s_history_state=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,205,900,170,200,0);
-    s_history_order=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,390,900,170,160,0);
+    group(p,L"当前传输",20,14,800,164);
+    s_xfer_title=label(p,L"暂无传输任务",40,42,740,26);set_font(s_xfer_title,s_font_title);
+    s_xfer_detail=label(p,L"等待文件传输",40,72,740,20);
+    s_xfer_counts=label(p,L"0%  ·  文件 0/0    排队 0    数据 0/0 MiB",40,98,740,20);
+    s_xfer_progress=child(p,PROGRESS_CLASSW,L"",PBS_SMOOTH,40,132,740,12,0);
+
+    group(p,L"活动任务",20,196,800,220);
+    label(p,L"发送任务",40,228,350,20);
+    label(p,L"接收任务",430,228,350,20);
+    s_task_lists[0]=child(p,L"LISTBOX",L"",LBS_NOTIFY|WS_BORDER|WS_VSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS|WS_TABSTOP,40,252,350,112,UI_ID_SEND_TASKS);
+    s_task_lists[1]=child(p,L"LISTBOX",L"",LBS_NOTIFY|WS_BORDER|WS_VSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS|WS_TABSTOP,430,252,350,112,UI_ID_RECEIVE_TASKS);
+    button(p,L"取消选中发送任务",40,374,180,34,UI_ID_SEND_CANCEL);
+    button(p,L"取消选中接收任务",430,374,180,34,UI_ID_RECEIVE_CANCEL);
+
+    group(p,L"文件明细",20,434,800,236);
+    s_xfer_files=child(p,L"LISTBOX",L"",LBS_NOTIFY|WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS|WS_TABSTOP,40,472,760,150,UI_ID_FILES);
+    button(p,L"展开/折叠目录",470,632,140,34,UI_ID_TOGGLE);
+    s_xfer_retry_button=button(p,L"重试选中文件",630,632,150,34,UI_ID_XFER_RETRY);
+
+    group(p,L"传输历史 · 最多保留 256 条",20,688,800,240);
+    s_history_direction=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,40,724,150,180,0);
+    s_history_state=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,205,724,170,200,0);
+    s_history_order=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,390,724,170,160,0);
     const wchar_t *directions[]={L"全部方向",L"发送",L"接收"};
     const wchar_t *states[]={L"全部状态",L"已完成",L"部分完成",L"失败",L"已取消",L"已中断"};
     const wchar_t *orders[]={L"最近完成优先",L"最早完成优先"};
@@ -713,9 +692,9 @@ static void create_pages(HWND h) {
     for(int i=0;i<6;++i)SendMessageW(s_history_state,CB_ADDSTRING,0,(LPARAM)states[i]);
     for(int i=0;i<2;++i)SendMessageW(s_history_order,CB_ADDSTRING,0,(LPARAM)orders[i]);
     SendMessageW(s_history_direction,CB_SETCURSEL,0,0);SendMessageW(s_history_state,CB_SETCURSEL,0,0);SendMessageW(s_history_order,CB_SETCURSEL,0,0);
-    s_task_history=child(p,L"LISTBOX",L"",WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS,40,935,760,140,0);
+    s_task_history=child(p,L"LISTBOX",L"",LBS_NOTIFY|WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS|WS_TABSTOP,40,760,760,148,0);
     RECT page_rect;GetClientRect(p,&page_rect);
-    SCROLLINFO task_scroll={sizeof(task_scroll),SIF_RANGE|SIF_PAGE,0,dip(1130),(UINT)page_rect.bottom,0,0};SetScrollInfo(p,SB_VERT,&task_scroll,TRUE);
+    SCROLLINFO task_scroll={sizeof(task_scroll),SIF_RANGE|SIF_PAGE,0,dip(960),(UINT)page_rect.bottom,0,0};SetScrollInfo(p,SB_VERT,&task_scroll,TRUE);
 
     p=s_pages[4];
     group(p,L"运行日志",20,14,800,590);
@@ -838,6 +817,15 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                         if(s_file_direction==HOP_XFER_DIR_SEND && index>=0 && !xfer_retry_file(s_file_batch,index))
                             MessageBoxW(s_main,L"无法重试：任务可能仍在进行、文件并非失败状态，或这是跨端粘贴任务。跨端粘贴请在目标设备确认剪贴板后重新发起粘贴。",L"无法重试",MB_OK|MB_ICONINFORMATION);
                     } return 0;
+                }
+                case UI_ID_TOGGLE:{
+                    int selected=(int)SendMessageW(s_xfer_files,LB_GETCURSEL,0,0);
+                    if(selected!=LB_ERR){
+                        int index=(int)SendMessageW(s_xfer_files,LB_GETITEMDATA,(WPARAM)selected,0);
+                        if(index>=0 && index<HOP_XFER_FILE_LIMIT && s_file_snapshot && s_file_snapshot[index].is_directory){
+                            s_collapsed[index]=!s_collapsed[index];refresh_transfers();
+                        }
+                    }return 0;
                 }
                 case UI_ID_FILES:
                     if(HIWORD(wp)==LBN_DBLCLK){

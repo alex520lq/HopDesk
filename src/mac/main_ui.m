@@ -31,14 +31,13 @@ static NSString *s_addresses;
 static BOOL s_saveBusy,s_logBusy;
 static NSButton *s_nav[6];
 static NSTextField *s_pageTitle, *s_headerStatus, *s_footer;
-static NSTextField *s_overviewStatus, *s_overviewPeer, *s_overviewChannels, *s_overviewSharing;
+static NSTextField *s_overviewStatus, *s_overviewPeer, *s_overviewControl, *s_overviewData, *s_overviewSharing;
 static NSTextField *s_connectionRole, *s_connectionStatus, *s_connectionPeer, *s_connectionPorts;
 static NSTextField *s_cfg[CFG_COUNT], *s_cfgNote;
 static NSPopUpButton *s_edgePopups[2];
 static NSTextField *s_xferTitle, *s_xferDetail, *s_xferCounts;
-static NSTextField *s_xferBudget, *s_xferMemory, *s_xferBudgetStats, *s_xferBudgetLifecycle;
 static NSProgressIndicator *s_xferProgress;
-static NSTextView *s_xferFiles, *s_xferHistory, *s_logView, *s_taskHistory;
+static NSTextView *s_xferFiles, *s_logView, *s_taskHistory;
 static NSPopUpButton *s_historyDirection, *s_historyState, *s_historyOrder;
 static NSButton *s_retryButton;
 static NSTableView *s_taskTables[2];
@@ -337,7 +336,13 @@ static void refresh_task_lists(void) {
         hop_xfer_task_snapshot *t=&s_tasksSnapshot[i];
         int d=t->direction==HOP_XFER_DIR_SEND?0:t->direction==HOP_XFER_DIR_RECEIVE?1:-1;
         if(d<0)continue;
-        NSString *text=[NSString stringWithFormat:@"#%llu  ·  批次 %u  ·  %@",(unsigned long long)t->id,t->transfer_id,task_state_name(t)];
+        if(t->state>=HOP_XFER_TASK_COMPLETED || t->kind==HOP_TASK_KIND_IMAGE_WORK)continue;
+        NSString *name=utf8(t->name);
+        if(!name.length)name=[NSString stringWithFormat:@"任务 #%llu",(unsigned long long)t->id];
+        double progress=t->bytes_total?MIN(100.0,100.0*(double)t->bytes_done/(double)t->bytes_total):0.0;
+        NSString *text=[NSString stringWithFormat:@"%@  ·  %@  ·  %.0f%%  ·  文件 %u/%u  ·  %@/%@",
+            name,task_state_name(t),progress,t->files_done,t->files_total,
+            byte_count(t->bytes_done),byte_count(t->bytes_total)];
         [rows[d] addObject:@{@"id":@(t->id),@"text":text}];
     }
     for(int d=0;d<2;++d){
@@ -362,8 +367,11 @@ static void refresh_task_history(void) {
     NSMutableString *rows=[NSMutableString string];
     for(int i=0;i<n;++i){const hop_xfer_task_history_record *t=&history[i];
         hop_xfer_task_snapshot display={0};display.state=(hop_xfer_task_state)t->state;
-        [rows appendFormat:@"#%llu  ·  %@  ·  批次 %u  ·  %@\n",(unsigned long long)t->record_id,
-         t->direction==HOP_XFER_DIR_SEND?@"发送":@"接收",t->transfer_id,task_state_name(&display)];
+        NSString *name=utf8(t->name);
+        if(!name.length)name=[NSString stringWithFormat:@"任务 #%llu",(unsigned long long)t->record_id];
+        [rows appendFormat:@"%@  ·  %@  ·  %@  ·  文件 %u/%u  ·  %@/%@\n",
+         t->direction==HOP_XFER_DIR_SEND?@"发送":@"接收",name,task_state_name(&display),
+         t->files_done,t->files_total,byte_count(t->bytes_done),byte_count(t->bytes_total)];
     }
     NSString *next=rows.length?rows:@"暂无符合条件的任务";
     if(![s_taskHistory.string isEqualToString:next])s_taskHistory.string=next;
@@ -392,38 +400,15 @@ static void refresh_transfer_page(void) {
     NSString *eta=speed?[NSString stringWithFormat:@"ETA %llus",(unsigned long long)st.eta_seconds]:@"ETA --";
     s_xferDetail.stringValue=[NSString stringWithFormat:@"%@  ·  %@  ·  %@  ·  %@  ·  %@",
         direction,phase,utf8(st.detail),rate,eta];
-    s_xferCounts.stringValue=[NSString stringWithFormat:@"文件 %u / %u    排队 %u    数据 %@ / %@",
-        st.files_done,st.files_total,st.queued_count,byte_count(st.bytes_done),byte_count(st.bytes_total)];
+    double progress=st.bytes_total?MIN(100.0,100.0*(double)st.bytes_done/(double)st.bytes_total):
+        (st.phase==HOP_XFER_COMPLETED?100.0:0.0);
+    s_xferCounts.stringValue=[NSString stringWithFormat:@"%.0f%%  ·  文件 %u / %u    排队 %u    数据 %@ / %@",
+        progress,st.files_done,st.files_total,st.queued_count,byte_count(st.bytes_done),byte_count(st.bytes_total)];
     if(pair.send.active && pair.receive.active)
-        s_xferCounts.stringValue=[NSString stringWithFormat:@"同时进行：发送 %@/%@ · 接收 %@/%@ · 排队 %u",
+        s_xferCounts.stringValue=[NSString stringWithFormat:@"双向传输  ·  发送 %@/%@  ·  接收 %@/%@  ·  排队 %u",
             byte_count(pair.send.bytes_done),byte_count(pair.send.bytes_total),
             byte_count(pair.receive.bytes_done),byte_count(pair.receive.bytes_total),pair.send.queued_count];
-    hop_xfer_task_audit audit; memset(&audit,0,sizeof(audit)); hop_xfer_task_reconcile(&audit);
-    hop_xfer_budget_snapshot budget=audit.ledger;
-    s_xferBudget.stringValue=[NSString stringWithFormat:@"预算  jobs %u/%u  ·  entries %u/%u  ·  待传输 %@/%@",
-        budget.jobs,budget.limits.max_jobs,budget.entries,budget.limits.max_entries,
-        byte_count(budget.pending_bytes),byte_count(budget.limits.max_pending_bytes)];
-    s_xferMemory.stringValue=[NSString stringWithFormat:@"内存  image %@/%@ (temp %@/ %@)  ·  RX %u/%u slots  ·  %@/%@",
-        byte_count(budget.image_bytes),byte_count(budget.limits.max_image_bytes),
-        byte_count(budget.image_temp_bytes),byte_count(budget.limits.max_image_temp_bytes),
-        budget.rx_queue_slots,budget.limits.max_rx_queue_slots,
-        byte_count(budget.rx_queue_bytes),byte_count(budget.limits.max_rx_queue_bytes)];
-    uint64_t rejected=budget.rejected_jobs+budget.rejected_entries+budget.rejected_bytes+
-        budget.rejected_images+budget.rejected_rx_buffers+budget.rejected_image_temp_bytes+
-        budget.rejected_image_transfers;
-    s_xferBudgetStats.stringValue=[NSString stringWithFormat:@"峰值 jobs %u · entries %u · 待传输 %@ · image %@ · RX %u slots/%@ · 拒绝 %llu",
-        budget.jobs_high_water,budget.entries_high_water,
-        byte_count(budget.pending_bytes_high_water),byte_count(budget.image_bytes_high_water),
-        budget.rx_queue_slots_high_water,byte_count(budget.rx_queue_bytes_high_water),
-        (unsigned long long)rejected];
-    s_xferBudgetLifecycle.stringValue=[NSString stringWithFormat:@"释放 tasks %llu · RX buffers %llu · image temp %@ · image handoff %@ · 账本异常 %llu · 对账 %@ (0x%X)",
-        (unsigned long long)budget.released_reservations,
-        (unsigned long long)budget.released_rx_buffers,
-        byte_count(budget.released_image_temp_bytes),
-        byte_count(budget.transferred_image_temp_bytes),
-        (unsigned long long)budget.accounting_errors,
-        audit.mismatches?@"异常":@"正常",(unsigned)audit.mismatches];
-    s_xferProgress.doubleValue=st.bytes_total?MIN(100.0,100.0*(double)st.bytes_done/(double)st.bytes_total):(st.phase==HOP_XFER_COMPLETED?100:0);
+    s_xferProgress.doubleValue=progress;
     s_retryButton.enabled=st.direction==HOP_XFER_DIR_SEND;
     if (!s_fileSnapshot) s_fileSnapshot=calloc(HOP_XFER_FILE_LIMIT,sizeof(*s_fileSnapshot));
     int count=s_fileSnapshot?xfer_get_files(st.direction,st.batch,s_fileSnapshot,HOP_XFER_FILE_LIMIT):0;
@@ -455,19 +440,6 @@ static void refresh_transfer_page(void) {
     }
     NSString *nextFiles=files.length?files:@"当前没有文件明细";
     if(![s_xferFiles.string isEqualToString:nextFiles])s_xferFiles.string=nextFiles;
-    hop_xfer_history_entry history[HOP_XFER_HISTORY_LIMIT];
-    int hn=xfer_get_history(history,HOP_XFER_HISTORY_LIMIT);
-    NSMutableString *rows=[NSMutableString string];
-    for(int i=0;i<hn;++i){
-        NSString *d=history[i].direction==HOP_XFER_DIR_SEND?@"发送":@"接收";
-        NSString *p=history[i].phase==HOP_XFER_COMPLETED?@"完成":
-            history[i].phase==HOP_XFER_PARTIAL?@"部分失败":
-            history[i].phase==HOP_XFER_CANCELLED?@"已取消":@"失败";
-        [rows appendFormat:@"%@  ·  %@  ·  %@  ·  文件 %u/%u  ·  %@\n",
-            d,p,utf8(history[i].name),history[i].files_done,history[i].files_total,byte_count(history[i].bytes_total)];
-    }
-    NSString *nextHistory=rows.length?rows:@"暂无传输历史";
-    if(![s_xferHistory.string isEqualToString:nextHistory])s_xferHistory.string=nextHistory;
 }
 static void refresh_logs(void) {
     if (!s_logView) return;
@@ -503,9 +475,11 @@ static void refresh_connection_labels(void) {
     s_overviewStatus.stringValue=status;
     s_overviewPeer.stringValue=[NSString stringWithFormat:@"%@  ·  %@  ·  控制端口 %u  ·  数据端口 %u",
         g_mac.cfg.role==HOP_ROLE_SERVER?@"服务器 · 提供键鼠":@"客户端 · 接收键鼠",g_mac.cfg.role==HOP_ROLE_SERVER?s_addresses:utf8(g_mac.cfg.peer_host), (unsigned)g_mac.cfg.port,(unsigned)g_mac.cfg.data_port];
-    s_overviewChannels.stringValue=[NSString stringWithFormat:@"控制通道：%@    数据通道：%@",
-        s_connected?@"已连接":@"等待连接",xfer_connected()?@"已连接":@"等待连接"];
-    s_overviewSharing.stringValue=s_sharing?(g_mac.cfg.role==HOP_ROLE_SERVER?@"键鼠共享：已移交客户端":@"键鼠共享：正在接收服务器输入"):@"键鼠共享：等待鼠标边缘切换";
+    s_overviewControl.stringValue=s_connected?@"已连接":@"等待连接";
+    s_overviewData.stringValue=xfer_connected()?@"已连接":@"等待连接";
+    s_overviewSharing.stringValue=s_sharing?
+        (g_mac.cfg.role==HOP_ROLE_SERVER?@"已移交客户端":@"正在接收输入"):
+        s_connected?@"已就绪 · 等待边缘移交":@"等待连接";
     s_connectionRole.stringValue=g_mac.cfg.role==HOP_ROLE_SERVER?@"本机角色：服务器 · 提供键鼠":@"本机角色：客户端 · 接收键鼠";
     s_connectionStatus.stringValue=status;
     s_connectionPeer.stringValue=g_mac.cfg.role==HOP_ROLE_SERVER?[NSString stringWithFormat:@"本机 IP：%@",s_addresses]:[NSString stringWithFormat:@"服务器 IP：%@",utf8(g_mac.cfg.peer_host)];
@@ -514,6 +488,9 @@ static void refresh_connection_labels(void) {
     s_footer.stringValue=[NSString stringWithFormat:@"HopDesk  v%s    ·    %@",HOP_VERSION,status];
     ui_apply_status_badge(s_headerStatus,s_connected,s_sharing);
     ui_apply_status_badge(s_overviewStatus,s_connected,s_sharing);
+    ui_apply_status_badge(s_overviewControl,s_connected,s_sharing);
+    ui_apply_status_badge(s_overviewData,xfer_connected(),NO);
+    ui_apply_status_badge(s_overviewSharing,s_connected,s_sharing);
 }
 static void show_page(int page) {
     if(page<0||page>=6)page=0;
@@ -536,61 +513,72 @@ static NSView *add_page(NSView *root) {
 static void build_settings_page(NSView *p) {
     NSView *left=ui_card(p,NSMakeRect(20,180,400,470));
     NSView *right=ui_card(p,NSMakeRect(440,180,400,470));
-    ui_label(left,@"连接与身份",NSMakeRect(18,424,360,24),15,YES);
-    const CGFloat y[]={380,334,288,242,196,150,104};
-    NSString *labels[]={@"设备名称",@"服务端地址",@"控制端口",@"数据端口",@"共享 Token",@"服务端边缘",@"客户端边缘"};
-    for(int i=0;i<5;++i){
-        ui_label(left,labels[i],NSMakeRect(18,y[i]+8,112,22),12,NO);
-        s_cfg[i]=ui_field(left,@"",NSMakeRect(136,y[i],242,30),i==CFG_TOKEN);
+    ui_label(left,@"设备与连接",NSMakeRect(18,424,360,24),15,YES);
+    const CGFloat y[]={380,340,300,260,220,180,140,100};
+    const int ids[]={CFG_NAME,CFG_ROLE,CFG_HOST,CFG_PORT,CFG_DATA_PORT,CFG_TOKEN,CFG_SERVER_EDGE,CFG_CLIENT_EDGE};
+    NSString *labels[]={@"设备名称",@"本机角色",@"服务端地址",@"控制端口",@"数据端口",@"共享 Token",@"服务端边缘",@"客户端边缘"};
+    for(int i=0;i<8;++i){
+        ui_label(left,labels[i],NSMakeRect(18,y[i]+7,112,22),12,NO);
+        if(ids[i]==CFG_ROLE){
+            s_rolePopup=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(136,y[i],242,30) pullsDown:NO];
+            [s_rolePopup addItemsWithTitles:@[@"服务器 · 提供键鼠",@"客户端 · 接收键鼠"]];
+            s_rolePopup.target=s_uiController;s_rolePopup.action=@selector(roleChanged:);
+            [left addSubview:s_rolePopup];
+        } else if(ids[i]==CFG_SERVER_EDGE || ids[i]==CFG_CLIENT_EDGE){
+            int edge=ids[i]==CFG_SERVER_EDGE?0:1;
+            NSPopUpButton *pop=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(136,y[i],242,30) pullsDown:NO];
+            [pop addItemsWithTitles:@[@"左边缘",@"右边缘",@"上边缘",@"下边缘"]];
+            [left addSubview:pop];s_edgePopups[edge]=pop;
+        } else s_cfg[ids[i]]=ui_field(left,@"",NSMakeRect(136,y[i],242,30),ids[i]==CFG_TOKEN);
     }
-    for(int i=0;i<2;++i){
-        ui_label(left,labels[5+i],NSMakeRect(18,y[5+i]+8,112,22),12,NO);
-        NSPopUpButton *pop=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(136,y[5+i],242,30) pullsDown:NO];
-        [pop addItemsWithTitles:@[@"左边缘",@"右边缘",@"上边缘",@"下边缘"]];
-        [left addSubview:pop]; s_edgePopups[i]=pop;
-    }
-    ui_label(left,@"本机角色",NSMakeRect(18,68,112,22),12,NO);
-    s_rolePopup=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(136,60,242,30) pullsDown:NO];
-    [s_rolePopup addItemsWithTitles:@[@"服务器 · 提供键鼠",@"客户端 · 接收键鼠"]];
-    s_rolePopup.target=s_uiController;s_rolePopup.action=@selector(roleChanged:);[left addSubview:s_rolePopup];
-    ui_label(left,@"角色与连接参数保存后重启生效。",NSMakeRect(18,22,360,22),11,NO);
+    ui_label(left,@"客户端填写服务器地址；两端必须使用相同的非空 Token。",NSMakeRect(18,22,360,34),11,NO);
+
     ui_label(right,@"交互与显示器",NSMakeRect(18,424,360,24),15,YES);
-    const int ids[]={CFG_SWITCH_DELAY,CFG_COOLDOWN,CFG_MARGIN,CFG_DISP_WIN,CFG_DISP_MAC,CFG_WAKE,CFG_CHUNK};
+    const int settingIDs[]={CFG_SWITCH_DELAY,CFG_COOLDOWN,CFG_MARGIN,CFG_DISP_WIN,CFG_DISP_MAC,CFG_WAKE,CFG_CHUNK};
     NSString *names[]={@"边缘触发延迟（ms）",@"切换冷却（ms）",@"边缘内缩（px）",@"Windows 输入源",@"Mac 输入源",@"唤醒时长（秒）",@"传输分块（KB）"};
     const CGFloat ry[]={380,340,300,260,220,180,140};
     for(int i=0;i<7;++i){
-        ui_label(right,names[i],NSMakeRect(18,ry[i]+8,170,22),12,NO);
-        s_cfg[ids[i]]=ui_field(right,@"",NSMakeRect(190,ry[i],190,30),NO);
+        ui_label(right,names[i],NSMakeRect(18,ry[i]+7,170,22),12,NO);
+        s_cfg[settingIDs[i]]=ui_field(right,@"",NSMakeRect(190,ry[i],190,30),NO);
     }
     ui_label(right,@"Mac 切源命令",NSMakeRect(18,96,160,20),12,NO);
     s_cfg[CFG_MAC_INPUT]=ui_field(right,@"",NSMakeRect(18,64,360,28),NO);
     ui_label(right,@"Mac 睡眠命令",NSMakeRect(18,36,160,20),12,NO);
     s_cfg[CFG_MAC_SLEEP]=ui_field(right,@"",NSMakeRect(18,6,360,28),NO);
-    ui_label(p,@"输入源支持十六进制（例如 0x0F）。保存后，连接和认证参数将在重启后完整生效。",NSMakeRect(22,132,810,22),11,NO);
-    ui_primary_button(p,@"保存设置",NSMakeRect(610,78,112,34),s_uiController,@selector(saveSettings:));
-    ui_button(p,@"恢复默认",NSMakeRect(738,78,112,34),s_uiController,@selector(resetSettings:));
-    s_cfgNote=ui_label(p,@"修改配置后点击保存。",NSMakeRect(22,38,560,24),11,NO);
+    ui_label(p,@"输入源支持十六进制；角色、网络与认证参数保存后重启生效。",NSMakeRect(22,146,810,20),11,NO);
+
+    NSView *actions=ui_card(p,NSMakeRect(20,22,840,104));
+    ui_label(actions,@"设置草稿不会改变当前连接。保存失败时原配置保持不变。",NSMakeRect(18,68,560,20),11,NO);
+    s_cfgNote=ui_label(actions,@"修改后点击保存设置。",NSMakeRect(18,28,560,22),11,NO);
+    ui_primary_button(actions,@"保存设置",NSMakeRect(610,38,112,34),s_uiController,@selector(saveSettings:));
+    ui_button(actions,@"恢复默认",NSMakeRect(738,38,92,34),s_uiController,@selector(resetSettings:));
 }
 static void build_pages(NSView *root) {
     for(int i=0;i<6;++i)s_pages[i]=add_page(root);
     NSView *p=s_pages[0];
-    NSView *card=ui_card(p,NSMakeRect(20,492,840,150));
-    ui_label(card,@"设备状态",NSMakeRect(22,108,780,22),13,YES);
-    s_overviewStatus=ui_label(card,@"等待连接",NSMakeRect(22,68,250,34),15,YES);
-    s_overviewPeer=ui_label(card,@"服务端地址",NSMakeRect(22,38,780,22),12,NO);
-    s_overviewChannels=ui_label(card,@"控制通道：等待连接    数据通道：等待连接",NSMakeRect(22,12,780,20),11,NO);
-    card=ui_card(p,NSMakeRect(20,296,840,172));
+    NSView *card=ui_card(p,NSMakeRect(20,470,840,172));
+    ui_label(card,@"连接概览",NSMakeRect(22,140,780,22),13,YES);
+    s_overviewStatus=ui_label(card,@"等待连接",NSMakeRect(22,100,260,30),16,YES);
+    s_overviewPeer=ui_label(card,@"设备与对端信息",NSMakeRect(22,64,600,22),12,NO);
+    ui_primary_button(card,@"重新连接",NSMakeRect(680,88,130,36),s_uiController,@selector(reconnect:));
+
+    card=ui_card(p,NSMakeRect(20,330,268,120));
+    ui_label(card,@"控制通道",NSMakeRect(18,82,230,20),12,YES);
+    s_overviewControl=ui_label(card,@"等待连接",NSMakeRect(18,42,230,26),14,YES);
+    card=ui_card(p,NSMakeRect(306,330,268,120));
+    ui_label(card,@"数据通道",NSMakeRect(18,82,230,20),12,YES);
+    s_overviewData=ui_label(card,@"等待连接",NSMakeRect(18,42,230,26),14,YES);
+    card=ui_card(p,NSMakeRect(592,330,268,120));
+    ui_label(card,@"键鼠共享",NSMakeRect(18,82,230,20),12,YES);
+    s_overviewSharing=ui_label(card,@"等待连接",NSMakeRect(18,42,230,26),13,YES);
+
+    card=ui_card(p,NSMakeRect(20,142,840,164));
     ui_label(card,@"显示器控制",NSMakeRect(22,128,780,22),13,YES);
-    s_overviewSharing=ui_label(card,@"键鼠共享：等待鼠标边缘切换",NSMakeRect(22,98,780,22),12,NO);
-    ui_button(card,@"切换到 Mac 显示",NSMakeRect(22,38,148,34),s_uiController,@selector(switchMac:));
-    ui_button(card,@"切回 Windows 显示",NSMakeRect(184,38,160,34),s_uiController,@selector(switchWin:));
-    ui_button(card,@"唤醒显示",NSMakeRect(358,38,112,34),s_uiController,@selector(wakeDisplay:));
-    ui_button(card,@"显示睡眠",NSMakeRect(484,38,112,34),s_uiController,@selector(sleepDisplay:));
-    card=ui_card(p,NSMakeRect(20,94,840,176));
-    ui_label(card,@"快速入口",NSMakeRect(22,130,780,22),13,YES);
-    ui_primary_button(card,@"打开传输管理",NSMakeRect(22,72,148,36),s_uiController,@selector(selectPage:)).tag=3;
-    ui_label(card,@"连接、设备设置、传输记录、运行日志和软件更新都集中在左侧导航中。",
-        NSMakeRect(190,76,620,28),12,NO);
+    ui_button(card,@"切换到 Mac 显示",NSMakeRect(22,54,148,36),s_uiController,@selector(switchMac:));
+    ui_button(card,@"切回 Windows 显示",NSMakeRect(184,54,160,36),s_uiController,@selector(switchWin:));
+    ui_button(card,@"唤醒显示",NSMakeRect(358,54,112,36),s_uiController,@selector(wakeDisplay:));
+    ui_button(card,@"显示睡眠",NSMakeRect(484,54,112,36),s_uiController,@selector(sleepDisplay:));
+    ui_primary_button(card,@"打开传输管理",NSMakeRect(610,54,170,36),s_uiController,@selector(selectPage:)).tag=3;
 
     p=s_pages[1];
     card=ui_card(p,NSMakeRect(20,420,840,220));
@@ -606,67 +594,53 @@ static void build_pages(NSView *root) {
     p=s_pages[2]; build_settings_page(p);
 
     p=s_pages[3];
-    card=ui_card(p,NSMakeRect(20,438,840,204));
-    ui_label(card,@"当前任务",NSMakeRect(22,178,780,18),12,YES);
-    s_xferTitle=ui_label(card,@"暂无传输任务",NSMakeRect(22,150,780,24),16,YES);
-    s_xferDetail=ui_label(card,@"等待文件传输",NSMakeRect(22,126,780,18),10,NO);
-    s_xferCounts=ui_label(card,@"文件 0 / 0    排队 0    数据 0 B / 0 B",NSMakeRect(22,102,780,18),10,NO);
-    s_xferBudget=ui_label(card,@"预算 jobs 0/16 · entries 0/32768 · pending 0 B/8 GB",NSMakeRect(22,80,780,16),9,NO);
-    s_xferMemory=ui_label(card,@"内存 image 0/256 MB · RX 0/8 slots",NSMakeRect(22,60,780,16),9,NO);
-    s_xferBudgetStats=ui_label(card,@"峰值与拒绝计数等待采样",NSMakeRect(22,40,780,16),9,NO);
-    s_xferBudgetLifecycle=ui_label(card,@"资源释放与图片缓冲转移等待采样",NSMakeRect(22,20,780,16),9,NO);
-    /* Resource-budget counters remain available internally, not in the normal task view. */
-    s_xferBudget.hidden=YES;s_xferMemory.hidden=YES;
-    s_xferBudgetStats.hidden=YES;s_xferBudgetLifecycle.hidden=YES;
-    s_xferProgress=[[NSProgressIndicator alloc] initWithFrame:NSMakeRect(22,62,780,10)];
+    [p setFrameSize:NSMakeSize(880,960)];
+    card=ui_card(p,NSMakeRect(20,760,840,180));
+    ui_label(card,@"当前传输",NSMakeRect(22,146,780,20),13,YES);
+    s_xferTitle=ui_label(card,@"暂无传输任务",NSMakeRect(22,112,780,26),17,YES);
+    s_xferDetail=ui_label(card,@"等待文件传输",NSMakeRect(22,84,780,20),11,NO);
+    s_xferCounts=ui_label(card,@"0%  ·  文件 0 / 0    排队 0    数据 0 B / 0 B",NSMakeRect(22,56,780,18),11,NO);
+    s_xferProgress=[[NSProgressIndicator alloc] initWithFrame:NSMakeRect(22,28,780,10)];
     s_xferProgress.minValue=0;s_xferProgress.maxValue=100;s_xferProgress.indeterminate=NO;
     [card addSubview:s_xferProgress];
-    card=ui_card(p,NSMakeRect(20,220,840,220));
-    ui_label(card,@"文件明细",NSMakeRect(22,184,780,22),13,YES);
-    NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(18,16,804,158)];
-    scroll.hasVerticalScroller=YES;scroll.hasHorizontalScroller=YES;
-    s_xferFiles=[[NSTextView alloc] initWithFrame:NSMakeRect(0,0,800,150)];
-    s_xferFiles.editable=NO;s_xferFiles.font=[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
-    scroll.documentView=s_xferFiles;[card addSubview:scroll];
-    card=ui_card(p,NSMakeRect(20,24,840,180));
-    ui_label(card,@"文件传输记录",NSMakeRect(22,144,780,22),13,YES);
-    NSScrollView *histScroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(18,16,804,116)];
-    histScroll.hasVerticalScroller=YES;histScroll.hasHorizontalScroller=YES;
-    s_xferHistory=[[NSTextView alloc] initWithFrame:NSMakeRect(0,0,800,110)];
-    s_xferHistory.editable=NO;s_xferHistory.font=[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
-    histScroll.documentView=s_xferHistory;[card addSubview:histScroll];
-    ui_button(p,@"展开/折叠目录",NSMakeRect(510,0,130,30),s_uiController,@selector(toggleFolder:));
-    s_retryButton=ui_button(p,@"重试选中文件",NSMakeRect(650,0,112,30),s_uiController,@selector(retryFile:));
-    /* Live Task Manager entries, separate from legacy file and history detail. */
-    [p setFrameSize:NSMakeSize(880,890)];
-    card=ui_card(p,NSMakeRect(20,660,840,210));
-    ui_label(card,@"活动任务（选择后单独取消）",NSMakeRect(22,180,780,20),13,YES);
+
+    card=ui_card(p,NSMakeRect(20,530,840,210));
+    ui_label(card,@"活动任务",NSMakeRect(22,180,780,20),13,YES);
     for(int d=0;d<2;++d){
         CGFloat x=d?430:22;
-        ui_label(card,d?@"接收任务":@"发送任务",NSMakeRect(x,154,370,20),11,YES);
-        NSScrollView *taskScroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(x,52,370,96)];
+        ui_label(card,d?@"接收任务":@"发送任务",NSMakeRect(x,150,370,20),11,YES);
+        NSScrollView *taskScroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(x,48,370,96)];
         taskScroll.hasVerticalScroller=YES;taskScroll.borderType=NSBezelBorder;
         NSTableView *table=[[NSTableView alloc] initWithFrame:NSMakeRect(0,0,370,96)];
         NSTableColumn *column=[[NSTableColumn alloc] initWithIdentifier:@"task"];
-        column.width=360;[table addTableColumn:column];table.headerView=nil;table.dataSource=(id<NSTableViewDataSource>)s_uiController;
-        table.allowsEmptySelection=YES;taskScroll.documentView=table;[card addSubview:taskScroll];s_taskTables[d]=table;
-        NSButton *cancel=ui_danger_button(card,d?@"取消选中接收任务":@"取消选中发送任务",NSMakeRect(x,12,168,30),s_uiController,@selector(cancelTask:));cancel.tag=d;
+        column.width=360;[table addTableColumn:column];table.headerView=nil;
+        table.dataSource=(id<NSTableViewDataSource>)s_uiController;table.allowsEmptySelection=YES;
+        taskScroll.documentView=table;[card addSubview:taskScroll];s_taskTables[d]=table;
+        NSButton *cancel=ui_danger_button(card,d?@"取消选中接收任务":@"取消选中发送任务",
+            NSMakeRect(x,8,168,30),s_uiController,@selector(cancelTask:));cancel.tag=d;
     }
 
-    /* Keep active tasks at the top; add session-only history below existing content. */
-    for(NSView *v in p.subviews){NSRect frame=v.frame;frame.origin.y+=230;v.frame=frame;}
-    [p setFrameSize:NSMakeSize(880,1120)];
-    card=ui_card(p,NSMakeRect(20,10,840,210));
-    ui_label(card,@"本次运行的任务历史（最多 256 条，重启后清空）",NSMakeRect(22,180,780,20),13,YES);
-    s_historyDirection=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(22,146,150,26) pullsDown:NO];
+    card=ui_card(p,NSMakeRect(20,270,840,240));
+    ui_label(card,@"文件明细",NSMakeRect(22,204,780,22),13,YES);
+    NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(18,48,804,142)];
+    scroll.hasVerticalScroller=YES;scroll.hasHorizontalScroller=YES;
+    s_xferFiles=[[NSTextView alloc] initWithFrame:NSMakeRect(0,0,800,136)];
+    s_xferFiles.editable=NO;s_xferFiles.font=[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+    scroll.documentView=s_xferFiles;[card addSubview:scroll];
+    ui_button(card,@"展开/折叠目录",NSMakeRect(500,8,140,30),s_uiController,@selector(toggleFolder:));
+    s_retryButton=ui_button(card,@"重试选中文件",NSMakeRect(654,8,150,30),s_uiController,@selector(retryFile:));
+
+    card=ui_card(p,NSMakeRect(20,20,840,230));
+    ui_label(card,@"传输历史 · 最多保留 256 条",NSMakeRect(22,198,780,20),13,YES);
+    s_historyDirection=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(22,160,150,28) pullsDown:NO];
     [s_historyDirection addItemsWithTitles:@[@"全部方向",@"发送",@"接收"]];[card addSubview:s_historyDirection];
-    s_historyState=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(185,146,160,26) pullsDown:NO];
+    s_historyState=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(185,160,160,28) pullsDown:NO];
     [s_historyState addItemsWithTitles:@[@"全部状态",@"已完成",@"部分完成",@"失败",@"已取消",@"已中断"]];[card addSubview:s_historyState];
-    s_historyOrder=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(358,146,160,26) pullsDown:NO];
+    s_historyOrder=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(358,160,160,28) pullsDown:NO];
     [s_historyOrder addItemsWithTitles:@[@"最近完成优先",@"最早完成优先"]];[card addSubview:s_historyOrder];
-    NSScrollView *taskHistoryScroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(18,14,804,122)];
+    NSScrollView *taskHistoryScroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(18,14,804,132)];
     taskHistoryScroll.hasVerticalScroller=YES;taskHistoryScroll.hasHorizontalScroller=YES;
-    s_taskHistory=[[NSTextView alloc] initWithFrame:NSMakeRect(0,0,800,116)];
+    s_taskHistory=[[NSTextView alloc] initWithFrame:NSMakeRect(0,0,800,126)];
     s_taskHistory.editable=NO;s_taskHistory.font=[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
     taskHistoryScroll.documentView=s_taskHistory;[card addSubview:taskHistoryScroll];
 

@@ -198,6 +198,23 @@ int main(void){
 '''
     run('win_ui_cards',ui_preamble+group_fn+'\n'+extract(ui,'paint_cards')+ui_main)
 
+    # The two native front ends expose the same operational dashboard,
+    # consistent settings groups, and one task-history surface.
+    mac_ui=(ROOT/'src/mac/main_ui.m').read_text(encoding='utf-8')
+    win_ui=(ROOT/'src/win/main_ui.c').read_text(encoding='utf-8')
+    assert all(x in mac_ui for x in ['s_overviewControl','s_overviewData','s_overviewSharing'])
+    assert all(x in win_ui for x in ['s_overview_control','s_overview_data','s_overview_sharing'])
+    for source,active,history,cancel in [
+        (mac_ui,'s_taskTables','s_taskHistory','cancelTask:'),
+        (win_ui,'s_task_lists','s_task_history','cancel_selected_task')
+    ]:
+        assert active in source and history in source and cancel in source
+        assert 'bytes_done' in source and 'files_done' in source
+        assert '传输历史' in source and '活动任务' in source
+    assert 's_xferHistory' not in mac_ui and 's_xfer_history' not in win_ui
+    assert all(x in mac_ui for x in ['CFG_ROLE','CFG_HOST','CFG_TOKEN','保存设置'])
+    assert all(x in win_ui for x in ['CFG_ROLE','CFG_HOST','CFG_TOKEN','UI_ID_SAVE'])
+
     # Mac edge entry must keep tracking drag events before sharing starts.
     capture=(ROOT/'src/mac/capture.c').read_text(encoding='utf-8')
     mac_main=(ROOT/'src/mac/main.c').read_text(encoding='utf-8')
@@ -1529,6 +1546,7 @@ static LRESULT SendMessageW(HWND h,int op,WPARAM w,LPARAM l){(void)l;
 }
 static int MessageBoxW(HWND h,const wchar_t *text,const wchar_t *title,int flags){(void)h;(void)text;(void)title;(void)flags;return answer;}
 static int xfer_connected(void){return connected;}
+static void utf8_to_wide(const char *src,wchar_t *dst,size_t cap){(void)src;if(cap)dst[0]=0;}
 static int xfer_cancel_task(hop_xfer_task_id id){calls++;return hop_xfer_task_request_cancel(id);}
 static void refresh_transfers(void){}
 """

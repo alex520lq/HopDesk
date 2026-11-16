@@ -80,6 +80,6 @@ int main(void){
     history.top=1;refresh_task_history();assert(history.top==1);
     order.selection=1;refresh_task_history();assert(wcsstr(history.rows[0],L"已完成"));
     direction.selection=2;state.selection=4;refresh_task_history();assert(history.count==1 && wcsstr(history.rows[0],L"已取消"));
-    state.selection=1;refresh_task_history();assert(history.count==0);
+    state.selection=1;refresh_task_history();assert(history.count==1 && wcscmp(history.rows[0],L"暂无符合条件的传输记录")==0);
     puts("PASS: Windows task history filters, sort, terminal labels and scroll (UI doubles)");return 0;
 }

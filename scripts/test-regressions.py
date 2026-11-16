@@ -226,6 +226,24 @@ int main(void){
         assert '设置已保存' in source and '有未保存的更改' in source
     assert 'NSAlert' not in extract(mac_ui,'save_settings')
     assert 'MessageBoxW' not in extract(win_ui,'save_settings')
+    # Selecting a live task must drive the matching detail snapshot and file batch.
+    assert all(x in mac_ui for x in ['tableViewSelectionDidChange',
+        'hop_xfer_task_get_snapshot(selectedId,&selectedSnapshot)',
+        'xfer_get_files(fileDirection,fileBatch', 'selected_visible_file_index',
+        'NSAlertSecondButtonReturn', 's_cancelTaskButtons[d].enabled=canCancel'])
+    assert all(x in win_ui for x in ['UI_ID_SEND_TASKS', 'UI_ID_RECEIVE_TASKS',
+        'hop_xfer_task_get_snapshot(selected_id,&selected_snapshot)',
+        'xfer_get_files(file_direction,file_batch', 'selected_visible_file_index',
+        'MB_DEFBUTTON2', 's_cancel_task_buttons[d]'])
+    assert '此任务的实时文件明细暂不可用' in mac_ui and '此任务的实时文件明细暂不可用' in win_ui
+    assert '暂无活动的发送任务' in mac_ui and '暂无活动的发送任务' in win_ui
+    assert 's_fileBatchActive=hasSelected?(hasTaskStatus && st.active):st.active' in mac_ui
+    assert 's_file_batch_active=has_selected?(has_task_status&&st.active):st.active' in win_ui
+    assert 'currentBatch=t->transfer_id && current.batch==t->transfer_id' in mac_ui
+    assert 'current_batch=t->transfer_id && current.batch==t->transfer_id' in win_ui
+    assert '等待开始' in mac_ui and '等待开始' in win_ui
+    assert '!(s_fileBatch & HOP_XFER_PASTE_BATCH_FLAG)' in mac_ui
+    assert '!(s_file_batch & HOP_XFER_PASTE_BATCH_FLAG)' in win_ui
 
     # Mac edge entry must keep tracking drag events before sharing starts.
     capture=(ROOT/'src/mac/capture.c').read_text(encoding='utf-8')
@@ -1529,6 +1547,7 @@ int main(void){
 #include <stdio.h>
 #include <wchar.h>
 #include <stdint.h>
+#include <string.h>
 #define UI_TASK_CAP HOP_TASK_MANAGER_MAX_LIVE
 #define LB_ERR (-1)
 #define LB_ERRSPACE (-2)
@@ -1540,6 +1559,7 @@ int main(void){
 #define MB_YESNO 1
 #define MB_ICONINFORMATION 2
 #define MB_ICONWARNING 4
+#define MB_DEFBUTTON2 256
 #define IDYES 6
 typedef intptr_t LPARAM;typedef uintptr_t WPARAM;typedef intptr_t LRESULT;
 typedef struct {int count,selected;} list;typedef list* HWND;
@@ -1547,6 +1567,8 @@ static list lists[2]={{0,-1},{0,-1}};
 static HWND s_task_lists[2]={&lists[0],&lists[1]},s_main;
 static hop_xfer_task_id s_task_ids[2][UI_TASK_CAP];static int s_task_counts[2];
 static hop_xfer_task_snapshot *s_tasks_snapshot;
+static hop_xfer_status_pair test_status_pair;
+static void xfer_get_status_pair(hop_xfer_status_pair *out){*out=test_status_pair;}
 uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
 static int connected=1,answer=IDYES,calls;
 static LRESULT SendMessageW(HWND h,int op,WPARAM w,LPARAM l){(void)l;

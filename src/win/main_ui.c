@@ -57,7 +57,7 @@ static HWND s_cfg[CFG_COUNT], s_cfg_note, s_host_label, s_host_hint;
 static HWND s_cfg_save_button, s_cfg_reset_button;
 static HWND s_xfer_title, s_xfer_detail, s_xfer_counts;
 static HWND s_xfer_progress, s_xfer_files, s_xfer_retry_button;
-static HWND s_task_lists[2];
+static HWND s_task_lists[2], s_cancel_task_buttons[2];
 static HWND s_task_history, s_history_direction, s_history_state, s_history_order;
 static hop_xfer_task_id s_task_ids[2][UI_TASK_CAP];
 static int s_task_counts[2];
@@ -89,7 +89,7 @@ static int s_collapsed[HOP_XFER_FILE_LIMIT];
 static int s_visible_indices[HOP_XFER_FILE_LIMIT];
 static int s_visible_count;
 static uint32_t s_file_batch;
-static int s_file_direction;
+static int s_file_direction,s_file_batch_active;
 
 static void refresh_transfers(void);
 static void refresh_logs(void);
@@ -509,32 +509,56 @@ static void refresh_task_lists(void) {
     hop_xfer_task_id selected[2]={selected_task(0),selected_task(1)};
     int total=0,n=hop_xfer_task_list(s_tasks_snapshot,UI_TASK_CAP,&total);
     if(n<0)return;
+    hop_xfer_status_pair pair;memset(&pair,0,sizeof(pair));xfer_get_status_pair(&pair);
     for(int d=0;d<2;++d){s_task_counts[d]=0;SendMessageW(s_task_lists[d],LB_RESETCONTENT,0,0);}
     for(int i=0;i<n;++i){
         hop_xfer_task_snapshot *t=&s_tasks_snapshot[i];
         int d=t->direction==HOP_XFER_DIR_SEND?0:t->direction==HOP_XFER_DIR_RECEIVE?1:-1;
         if(d<0 || s_task_counts[d]>=(int)UI_TASK_CAP)continue;
         if(t->state>=HOP_XFER_TASK_COMPLETED || t->kind==HOP_TASK_KIND_IMAGE_WORK)continue;
+        hop_xfer_status current=d==0?pair.send:pair.receive;
+        int current_batch=t->transfer_id && current.batch==t->transfer_id;
         wchar_t name[HOP_XFER_STATUS_NAME],row[512];
         utf8_to_wide(t->name,name,HOP_XFER_STATUS_NAME);
+        if(!name[0] && current_batch)utf8_to_wide(current.name,name,HOP_XFER_STATUS_NAME);
         if(!name[0])swprintf(name,HOP_XFER_STATUS_NAME,L"任务 #%llu",(unsigned long long)t->id);
-        double progress=t->bytes_total?100.0*(double)t->bytes_done/(double)t->bytes_total:0.0;
-        swprintf(row,512,L"%ls  ·  %ls  ·  %.0f%%  ·  文件 %u/%u  ·  %llu/%llu MiB",
-            name,task_state_name(t),progress,t->files_done,t->files_total,
-            (unsigned long long)(t->bytes_done/1048576ULL),
-            (unsigned long long)(t->bytes_total/1048576ULL));
+        uint32_t done=current_batch?current.files_done:t->files_done;
+        uint32_t count=current_batch?current.files_total:t->files_total;
+        uint64_t bytes_done=current_batch?current.bytes_done:t->bytes_done;
+        uint64_t bytes_total=current_batch?current.bytes_total:t->bytes_total;
+        double progress=bytes_total?100.0*(double)bytes_done/(double)bytes_total:0.0;
+        if(current_batch||bytes_total)
+            swprintf(row,512,L"%ls  ·  %ls  ·  %.0f%%  ·  文件 %u/%u  ·  %llu/%llu MiB",
+                name,task_state_name(t),progress,done,count,
+                (unsigned long long)(bytes_done/1048576ULL),(unsigned long long)(bytes_total/1048576ULL));
+        else
+            swprintf(row,512,L"%ls  ·  %ls  ·  %ls",name,task_state_name(t),
+                t->state==HOP_XFER_TASK_SCANNING?L"正在准备":L"等待开始");
         LRESULT index=SendMessageW(s_task_lists[d],LB_ADDSTRING,0,(LPARAM)row);
         if(index==LB_ERR || index==LB_ERRSPACE)continue;
         s_task_ids[d][s_task_counts[d]++]=t->id;
         if(t->id==selected[d])SendMessageW(s_task_lists[d],LB_SETCURSEL,(WPARAM)index,0);
     }
+    for(int d=0;d<2;++d)if(s_task_counts[d]==0)
+        SendMessageW(s_task_lists[d],LB_ADDSTRING,0,(LPARAM)(d?L"暂无活动的接收任务":L"暂无活动的发送任务"));
     (void)total;
 }
 static void cancel_selected_task(int direction) {
     hop_xfer_task_id id=selected_task(direction);
-    if(!id){MessageBoxW(s_main,L"请先选择要取消的任务。",L"取消任务",MB_OK|MB_ICONINFORMATION);return;}
-    if(!xfer_connected() && MessageBoxW(s_main,L"数据通道未连接。取消后对端的临时文件可能要等待对端连接恢复或断线超时后清理。仍要取消吗？",L"取消任务",MB_YESNO|MB_ICONWARNING)!=IDYES)return;
-    if(!xfer_cancel_task(id))MessageBoxW(s_main,L"任务已经结束或正在完成，无法取消。",L"取消任务",MB_OK|MB_ICONINFORMATION);
+    hop_xfer_task_snapshot task;
+    if(!id || !hop_xfer_task_get_snapshot(id,&task))return;
+    wchar_t name[HOP_XFER_STATUS_NAME],prompt[768];
+    utf8_to_wide(task.name,name,HOP_XFER_STATUS_NAME);
+    if(!name[0])swprintf(name,HOP_XFER_STATUS_NAME,L"任务 #%llu",(unsigned long long)id);
+    if(xfer_connected())
+        swprintf(prompt,768,L"确定取消“%ls”？\n\n当前状态：%ls。\n取消请求不可撤销；已经完成的文件不会回滚。",
+            name,task_state_name(&task));
+    else
+        swprintf(prompt,768,L"确定取消“%ls”？\n\n当前状态：%ls。\n数据通道未连接，对端临时文件可能要等连接恢复或断线超时后清理。已经完成的文件不会回滚。",
+            name,task_state_name(&task));
+    if(MessageBoxW(s_main,prompt,L"取消传输任务",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2)!=IDYES)return;
+    if(!xfer_cancel_task(id))
+        MessageBoxW(s_main,L"任务已结束或正在完成，无法取消。",L"取消任务",MB_OK|MB_ICONINFORMATION);
     refresh_transfers();
 }
 static void refresh_task_history(void) {
@@ -562,82 +586,145 @@ static void refresh_task_history(void) {
             (unsigned long long)(t->bytes_total/1048576ULL));
         SendMessageW(s_task_history,LB_ADDSTRING,0,(LPARAM)row);
     }
+    if(n==0)SendMessageW(s_task_history,LB_ADDSTRING,0,(LPARAM)L"暂无符合条件的传输记录");
     if(top>0 && top<n)SendMessageW(s_task_history,LB_SETTOPINDEX,(WPARAM)top,0);
     (void)total;
 }
+static int selected_visible_file_index(void) {
+    int selected=s_xfer_files?(int)SendMessageW(s_xfer_files,LB_GETCURSEL,0,0):LB_ERR;
+    if(selected==LB_ERR)return -1;
+    int index=(int)SendMessageW(s_xfer_files,LB_GETITEMDATA,(WPARAM)selected,0);
+    return index>=0 && index<HOP_XFER_FILE_LIMIT?index:-1;
+}
+static void update_transfer_actions(void) {
+    int index=selected_visible_file_index();
+    int can_retry=s_file_direction==HOP_XFER_DIR_SEND && !s_file_batch_active &&
+        !(s_file_batch & HOP_XFER_PASTE_BATCH_FLAG) &&
+        index>=0 && s_file_snapshot &&
+        s_file_snapshot[index].phase==HOP_XFER_FILE_FAILED && !s_file_snapshot[index].is_directory;
+    if(s_xfer_retry_button)EnableWindow(s_xfer_retry_button,can_retry);
+    for(int d=0;d<2;++d){
+        int can_cancel=0;
+        hop_xfer_task_snapshot task;
+        hop_xfer_task_id id=selected_task(d);
+        if(id && hop_xfer_task_get_snapshot(id,&task))
+            can_cancel=task.state<HOP_XFER_TASK_COMPLETED && !task.cancel_requested && !task.completing;
+        if(s_cancel_task_buttons[d])EnableWindow(s_cancel_task_buttons[d],can_cancel);
+    }
+}
 static void refresh_transfers(void) {
-    if (!s_xfer_title) return;
+    if(!s_xfer_title)return;
     refresh_task_lists();
     refresh_task_history();
-    hop_xfer_status_pair pair; memset(&pair, 0, sizeof(pair)); xfer_get_status_pair(&pair);
-    hop_xfer_status st = pair.primary_direction==HOP_XFER_DIR_SEND ? pair.send : pair.receive;
-    wchar_t name[HOP_XFER_STATUS_NAME], detail[HOP_XFER_STATUS_DETAIL], row[1800], path[1024];
-    utf8_to_wide(st.name, name, HOP_XFER_STATUS_NAME);
-    const wchar_t *phase = L"空闲";
-    switch (st.phase) {
-        case HOP_XFER_QUEUED: phase=L"排队中"; break;
-        case HOP_XFER_SCANNING: phase=L"扫描中"; break;
-        case HOP_XFER_SENDING: phase=L"发送中"; break;
-        case HOP_XFER_RECEIVING: phase=L"接收中"; break;
-        case HOP_XFER_VERIFYING: phase=L"校验中"; break;
-        case HOP_XFER_COMPLETED: phase=L"已完成"; break;
-        case HOP_XFER_PARTIAL: phase=L"部分失败"; break;
-        case HOP_XFER_FAILED: phase=L"失败"; break;
-        case HOP_XFER_CANCELLED: phase=L"已取消"; break;
-    }
-    swprintf(row, 1800, L"%ls", name[0] ? name : L"暂无传输任务"); set_text(s_xfer_title, row);
-    utf8_to_wide(st.detail, detail, HOP_XFER_STATUS_DETAIL);
-    uint64_t now_ms=hop_monotonic_ms();
-    uint64_t speed=st.speed_bytes_per_sec;
-    if(!st.last_progress_ms || now_ms<st.last_progress_ms || now_ms-st.last_progress_ms>2000) speed=0;
-    if(speed) swprintf(row,1800,L"%ls  ·  %ls  ·  %ls  ·  %.1f MiB/s  ·  ETA %llus",
-        st.direction==HOP_XFER_DIR_SEND?L"发送":st.direction==HOP_XFER_DIR_RECEIVE?L"接收":L"待机",
-        phase,detail,(double)speed/1048576.0,(unsigned long long)st.eta_seconds);
-    else swprintf(row,1800,L"%ls  ·  %ls  ·  %ls  ·  速率 --  ·  ETA --",
-        st.direction==HOP_XFER_DIR_SEND?L"发送":st.direction==HOP_XFER_DIR_RECEIVE?L"接收":L"待机",
-        phase,detail);
-    set_text(s_xfer_detail, row);
-    int pct=st.bytes_total?(int)(100.0*(double)st.bytes_done/(double)st.bytes_total):
-        (st.phase==HOP_XFER_COMPLETED?100:0);
-    if(pct>100)pct=100;
-    swprintf(row,1800,L"%d%%  ·  文件 %u/%u    排队 %u    数据 %llu/%llu MiB",
-        pct,st.files_done,st.files_total,st.queued_count,
-        (unsigned long long)(st.bytes_done/1048576ULL),
-        (unsigned long long)(st.bytes_total/1048576ULL));
-    if(pair.send.active && pair.receive.active)
-        swprintf(row,1800,L"双向传输  ·  发送 %llu/%llu MiB  ·  接收 %llu/%llu MiB  ·  排队 %u",
-            (unsigned long long)(pair.send.bytes_done/1048576ULL),
-            (unsigned long long)(pair.send.bytes_total/1048576ULL),
-            (unsigned long long)(pair.receive.bytes_done/1048576ULL),
-            (unsigned long long)(pair.receive.bytes_total/1048576ULL),pair.send.queued_count);
-    set_text(s_xfer_counts,row);
-    SendMessageW(s_xfer_progress, PBM_SETPOS, pct > 100 ? 100 : pct, 0);
-    if (s_xfer_retry_button) EnableWindow(s_xfer_retry_button, st.direction == HOP_XFER_DIR_SEND);
+    hop_xfer_status_pair pair;memset(&pair,0,sizeof(pair));xfer_get_status_pair(&pair);
 
-    if (!s_file_snapshot) s_file_snapshot = (hop_xfer_file_status *)calloc(HOP_XFER_FILE_LIMIT, sizeof(*s_file_snapshot));
-    int n = s_file_snapshot ? xfer_get_files(st.direction, st.batch, s_file_snapshot, HOP_XFER_FILE_LIMIT) : 0;
-    if (s_file_batch != st.batch || s_file_direction != st.direction) {
-        memset(s_collapsed, 0, sizeof(s_collapsed)); s_file_batch = st.batch; s_file_direction = st.direction;
-    }
-    int oldSelected = (int)SendMessageW(s_xfer_files, LB_GETCURSEL, 0, 0);
-    int oldSelectedIndex = oldSelected == LB_ERR ? -1 : (int)SendMessageW(s_xfer_files, LB_GETITEMDATA, (WPARAM)oldSelected, 0);
-    SendMessageW(s_xfer_files, LB_RESETCONTENT, 0, 0);
-    s_visible_count = 0;
-    for (int i=0; i<n; ++i) {
-        int hidden = 0;
-        for (int p=0; p<i; ++p) {
-            if (!s_collapsed[p] || !s_file_snapshot[p].is_directory) continue;
-            size_t len = strlen(s_file_snapshot[p].relative_path);
-            if (!strncmp(s_file_snapshot[i].relative_path,s_file_snapshot[p].relative_path,len) &&
-                s_file_snapshot[i].relative_path[len]=='/') { hidden=1; break; }
+    hop_xfer_task_snapshot selected_snapshot;memset(&selected_snapshot,0,sizeof(selected_snapshot));
+    hop_xfer_task_id selected_id=selected_task(0);
+    if(!selected_id)selected_id=selected_task(1);
+    int has_selected=selected_id && hop_xfer_task_get_snapshot(selected_id,&selected_snapshot);
+    int has_task_status=0;
+    hop_xfer_status st=pair.primary_direction==HOP_XFER_DIR_SEND?pair.send:pair.receive;
+    if(has_selected){
+        hop_xfer_status candidate=selected_snapshot.direction==HOP_XFER_DIR_SEND?pair.send:pair.receive;
+        if(selected_snapshot.transfer_id && candidate.batch==selected_snapshot.transfer_id){
+            st=candidate;has_task_status=1;
+        }else{
+            memset(&st,0,sizeof(st));st.direction=selected_snapshot.direction;
         }
-        if (hidden) continue;
-        utf8_to_wide(s_file_snapshot[i].relative_path, path, 1024);
-        int depth=0; for (const char *p=s_file_snapshot[i].relative_path; *p; ++p) if (*p=='/') ++depth;
-        wchar_t indent[64]; int spaces=depth*2; if(spaces>24)spaces=24;
-        for(int j=0;j<spaces;++j)indent[j]=L' ';
-        indent[spaces]=0;
-        const wchar_t *state = s_file_snapshot[i].phase==HOP_XFER_FILE_COMPLETED?L"完成":
+    }
+
+    wchar_t name[HOP_XFER_STATUS_NAME],detail[HOP_XFER_STATUS_DETAIL],row[1800],path[1024];
+    if(has_selected){
+        utf8_to_wide(selected_snapshot.name,name,HOP_XFER_STATUS_NAME);
+        if(!name[0] && has_task_status)utf8_to_wide(st.name,name,HOP_XFER_STATUS_NAME);
+        if(!name[0])swprintf(name,HOP_XFER_STATUS_NAME,L"%ls任务 #%llu",
+            selected_snapshot.direction==HOP_XFER_DIR_SEND?L"发送":L"接收",(unsigned long long)selected_id);
+    }else{
+        utf8_to_wide(st.name,name,HOP_XFER_STATUS_NAME);
+        if(!name[0])wcscpy(name,L"暂无传输任务");
+    }
+    const wchar_t *phase=L"空闲";
+    switch(st.phase){
+        case HOP_XFER_QUEUED:phase=L"排队中";break;
+        case HOP_XFER_SCANNING:phase=L"扫描中";break;
+        case HOP_XFER_SENDING:phase=L"发送中";break;
+        case HOP_XFER_RECEIVING:phase=L"接收中";break;
+        case HOP_XFER_VERIFYING:phase=L"校验中";break;
+        case HOP_XFER_COMPLETED:phase=L"已完成";break;
+        case HOP_XFER_PARTIAL:phase=L"部分失败";break;
+        case HOP_XFER_FAILED:phase=L"失败";break;
+        case HOP_XFER_CANCELLED:phase=L"已取消";break;
+    }
+    if(has_selected && !has_task_status)phase=task_state_name(&selected_snapshot);
+    const wchar_t *direction=has_selected?
+        (selected_snapshot.direction==HOP_XFER_DIR_SEND?L"发送":L"接收"):
+        (st.direction==HOP_XFER_DIR_SEND?L"发送":st.direction==HOP_XFER_DIR_RECEIVE?L"接收":L"待机");
+    utf8_to_wide(has_task_status?st.detail:(has_selected?selected_snapshot.detail:""),detail,HOP_XFER_STATUS_DETAIL);
+    if(!detail[0])wcscpy(detail,has_selected&&!has_task_status?L"实时进度将在任务开始后显示":L"");
+    uint64_t now_ms=hop_monotonic_ms(),speed=has_task_status?st.speed_bytes_per_sec:0;
+    if(!st.last_progress_ms || now_ms<st.last_progress_ms || now_ms-st.last_progress_ms>2000)speed=0;
+    if(speed)swprintf(row,1800,L"%ls  ·  %ls  ·  %ls  ·  %.1f MiB/s  ·  ETA %llus",
+        direction,phase,detail,(double)speed/1048576.0,(unsigned long long)st.eta_seconds);
+    else swprintf(row,1800,L"%ls  ·  %ls  ·  %ls  ·  速率 --  ·  ETA --",direction,phase,detail);
+    set_text(s_xfer_title,name);set_text(s_xfer_detail,row);
+
+    uint32_t files_done=0,files_total=0,queued=0;
+    uint64_t bytes_done=0,bytes_total=0;
+    if(has_task_status){
+        files_done=st.files_done;files_total=st.files_total;queued=st.queued_count;
+        bytes_done=st.bytes_done;bytes_total=st.bytes_total;
+    }else if(has_selected){
+        files_done=selected_snapshot.files_done;files_total=selected_snapshot.files_total;
+        bytes_done=selected_snapshot.bytes_done;bytes_total=selected_snapshot.bytes_total;
+    }else{
+        files_done=st.files_done;files_total=st.files_total;queued=st.queued_count;
+        bytes_done=st.bytes_done;bytes_total=st.bytes_total;
+    }
+    int pct=bytes_total?(int)(100.0*(double)bytes_done/(double)bytes_total):
+        (has_task_status&&st.phase==HOP_XFER_COMPLETED?100:0);
+    if(pct>100)pct=100;
+    if(has_selected&&!has_task_status&&!bytes_total&&!files_total)
+        set_text(s_xfer_counts,L"任务正在准备或排队，开始后显示实时进度");
+    else{
+        swprintf(row,1800,L"%d%%  ·  文件 %u/%u    排队 %u    数据 %llu/%llu MiB",
+            pct,files_done,files_total,queued,(unsigned long long)(bytes_done/1048576ULL),
+            (unsigned long long)(bytes_total/1048576ULL));
+        if(!has_selected && pair.send.active && pair.receive.active)
+            swprintf(row,1800,L"双向传输  ·  发送 %llu/%llu MiB  ·  接收 %llu/%llu MiB  ·  排队 %u",
+                (unsigned long long)(pair.send.bytes_done/1048576ULL),
+                (unsigned long long)(pair.send.bytes_total/1048576ULL),
+                (unsigned long long)(pair.receive.bytes_done/1048576ULL),
+                (unsigned long long)(pair.receive.bytes_total/1048576ULL),pair.send.queued_count);
+        set_text(s_xfer_counts,row);
+    }
+    SendMessageW(s_xfer_progress,PBM_SETPOS,pct,0);
+
+    int file_direction=has_selected?selected_snapshot.direction:st.direction;
+    uint32_t file_batch=has_selected?selected_snapshot.transfer_id:st.batch;
+    s_file_batch_active=has_selected?(has_task_status&&st.active):st.active;
+    if(!s_file_snapshot)s_file_snapshot=(hop_xfer_file_status*)calloc(HOP_XFER_FILE_LIMIT,sizeof(*s_file_snapshot));
+    int n=s_file_snapshot&&file_direction!=HOP_XFER_DIR_NONE&&file_batch?
+        xfer_get_files(file_direction,file_batch,s_file_snapshot,HOP_XFER_FILE_LIMIT):0;
+    if(s_file_batch!=file_batch || s_file_direction!=file_direction){
+        memset(s_collapsed,0,sizeof(s_collapsed));s_file_batch=file_batch;s_file_direction=file_direction;
+    }
+    int old_selected=(int)SendMessageW(s_xfer_files,LB_GETCURSEL,0,0);
+    int old_selected_index=old_selected==LB_ERR?-1:(int)SendMessageW(s_xfer_files,LB_GETITEMDATA,(WPARAM)old_selected,0);
+    SendMessageW(s_xfer_files,LB_RESETCONTENT,0,0);s_visible_count=0;
+    for(int i=0;i<n;++i){
+        int hidden=0;
+        for(int p=0;p<i;++p){
+            if(!s_collapsed[p]||!s_file_snapshot[p].is_directory)continue;
+            size_t len=strlen(s_file_snapshot[p].relative_path);
+            if(!strncmp(s_file_snapshot[i].relative_path,s_file_snapshot[p].relative_path,len) &&
+               s_file_snapshot[i].relative_path[len]=='/'){hidden=1;break;}
+        }
+        if(hidden)continue;
+        utf8_to_wide(s_file_snapshot[i].relative_path,path,1024);
+        int depth=0;for(const char *p=s_file_snapshot[i].relative_path;*p;++p)if(*p=='/')++depth;
+        wchar_t indent[64];int spaces=depth*2;if(spaces>24)spaces=24;
+        for(int j=0;j<spaces;++j)indent[j]=L' ';indent[spaces]=0;
+        const wchar_t *state=s_file_snapshot[i].phase==HOP_XFER_FILE_COMPLETED?L"完成":
             s_file_snapshot[i].phase==HOP_XFER_FILE_FAILED?L"失败":
             s_file_snapshot[i].phase==HOP_XFER_FILE_SENDING?L"发送中":
             s_file_snapshot[i].phase==HOP_XFER_FILE_RECEIVING?L"接收中":
@@ -647,8 +734,20 @@ static void refresh_transfers(void) {
             path,(unsigned long long)s_file_snapshot[i].bytes_done,
             (unsigned long long)s_file_snapshot[i].bytes_total,state);
         LRESULT idx=SendMessageW(s_xfer_files,LB_ADDSTRING,0,(LPARAM)row);
-        if(idx!=LB_ERR){SendMessageW(s_xfer_files,LB_SETITEMDATA,(WPARAM)idx,(LPARAM)i);s_visible_indices[s_visible_count++]=i;if(i==oldSelectedIndex)SendMessageW(s_xfer_files,LB_SETCURSEL,(WPARAM)idx,0);}
+        if(idx!=LB_ERR && idx!=LB_ERRSPACE){
+            SendMessageW(s_xfer_files,LB_SETITEMDATA,(WPARAM)idx,(LPARAM)i);
+            s_visible_indices[s_visible_count++]=i;
+            if(i==old_selected_index)SendMessageW(s_xfer_files,LB_SETCURSEL,(WPARAM)idx,0);
+        }
     }
+    if(s_visible_count==0){
+        const wchar_t *empty=has_selected?
+            (selected_snapshot.state<=HOP_XFER_TASK_QUEUED?L"任务正在准备或排队，开始后显示文件明细":L"此任务的实时文件明细暂不可用"):
+            L"当前没有文件明细";
+        LRESULT idx=SendMessageW(s_xfer_files,LB_ADDSTRING,0,(LPARAM)empty);
+        if(idx!=LB_ERR && idx!=LB_ERRSPACE)SendMessageW(s_xfer_files,LB_SETITEMDATA,(WPARAM)idx,(LPARAM)-1);
+    }
+    update_transfer_actions();
 }
 static void create_settings_page(HWND p) {
     group(p,L"设备与连接",20,18,390,450);
@@ -739,13 +838,15 @@ static void create_pages(HWND h) {
     label(p,L"接收任务",430,228,350,20);
     s_task_lists[0]=child(p,L"LISTBOX",L"",LBS_NOTIFY|WS_BORDER|WS_VSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS|WS_TABSTOP,40,252,350,112,UI_ID_SEND_TASKS);
     s_task_lists[1]=child(p,L"LISTBOX",L"",LBS_NOTIFY|WS_BORDER|WS_VSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS|WS_TABSTOP,430,252,350,112,UI_ID_RECEIVE_TASKS);
-    button(p,L"取消选中发送任务",40,374,180,34,UI_ID_SEND_CANCEL);
-    button(p,L"取消选中接收任务",430,374,180,34,UI_ID_RECEIVE_CANCEL);
+    s_cancel_task_buttons[0]=button(p,L"取消选中发送任务",40,374,180,34,UI_ID_SEND_CANCEL);
+    s_cancel_task_buttons[1]=button(p,L"取消选中接收任务",430,374,180,34,UI_ID_RECEIVE_CANCEL);
+    EnableWindow(s_cancel_task_buttons[0],FALSE);EnableWindow(s_cancel_task_buttons[1],FALSE);
 
     group(p,L"文件明细",20,434,800,236);
     s_xfer_files=child(p,L"LISTBOX",L"",LBS_NOTIFY|WS_BORDER|WS_VSCROLL|WS_HSCROLL|LBS_NOINTEGRALHEIGHT|LBS_HASSTRINGS|WS_TABSTOP,40,472,760,150,UI_ID_FILES);
     button(p,L"展开/折叠目录",470,632,140,34,UI_ID_TOGGLE);
     s_xfer_retry_button=button(p,L"重试选中文件",630,632,150,34,UI_ID_XFER_RETRY);
+    EnableWindow(s_xfer_retry_button,FALSE);
 
     group(p,L"传输历史 · 最多保留 256 条",20,688,800,240);
     s_history_direction=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,40,724,150,180,0);
@@ -884,24 +985,27 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 case UI_ID_RECONNECT: if(g_app.net)net_server_drop(g_app.net); return 0;
                 case UI_ID_SEND_CANCEL: cancel_selected_task(0); return 0;
                 case UI_ID_RECEIVE_CANCEL: cancel_selected_task(1); return 0;
+                case UI_ID_SEND_TASKS:
+                    if(HIWORD(wp)==LBN_SELCHANGE){SendMessageW(s_task_lists[1],LB_SETCURSEL,(WPARAM)-1,0);refresh_transfers();}
+                    return 0;
+                case UI_ID_RECEIVE_TASKS:
+                    if(HIWORD(wp)==LBN_SELCHANGE){SendMessageW(s_task_lists[0],LB_SETCURSEL,(WPARAM)-1,0);refresh_transfers();}
+                    return 0;
                 case UI_ID_XFER_RETRY:{
-                    int selected=(int)SendMessageW(s_xfer_files,LB_GETCURSEL,0,0);
-                    if(selected!=LB_ERR){
-                        int index=(int)SendMessageW(s_xfer_files,LB_GETITEMDATA,(WPARAM)selected,0);
-                        if(s_file_direction==HOP_XFER_DIR_SEND && index>=0 && !xfer_retry_file(s_file_batch,index))
-                            MessageBoxW(s_main,L"无法重试：任务可能仍在进行、文件并非失败状态，或这是跨端粘贴任务。跨端粘贴请在目标设备确认剪贴板后重新发起粘贴。",L"无法重试",MB_OK|MB_ICONINFORMATION);
-                    } return 0;
+                    int index=selected_visible_file_index();
+                    if(index>=0 && s_file_direction==HOP_XFER_DIR_SEND && !xfer_retry_file(s_file_batch,index))
+                        MessageBoxW(s_main,L"无法重试：任务可能仍在进行、文件并非失败状态，或这是跨端粘贴任务。跨端粘贴请在目标设备确认剪贴板后重新发起粘贴。",L"无法重试",MB_OK|MB_ICONINFORMATION);
+                    return 0;
                 }
                 case UI_ID_TOGGLE:{
-                    int selected=(int)SendMessageW(s_xfer_files,LB_GETCURSEL,0,0);
-                    if(selected!=LB_ERR){
-                        int index=(int)SendMessageW(s_xfer_files,LB_GETITEMDATA,(WPARAM)selected,0);
-                        if(index>=0 && index<HOP_XFER_FILE_LIMIT && s_file_snapshot && s_file_snapshot[index].is_directory){
-                            s_collapsed[index]=!s_collapsed[index];refresh_transfers();
-                        }
-                    }return 0;
+                    int index=selected_visible_file_index();
+                    if(index>=0 && s_file_snapshot && s_file_snapshot[index].is_directory){
+                        s_collapsed[index]=!s_collapsed[index];refresh_transfers();
+                    }
+                    return 0;
                 }
                 case UI_ID_FILES:
+                    if(HIWORD(wp)==LBN_SELCHANGE){update_transfer_actions();return 0;}
                     if(HIWORD(wp)==LBN_DBLCLK){
                         int selected=(int)SendMessageW(s_xfer_files,LB_GETCURSEL,0,0);
                         if(selected!=LB_ERR){

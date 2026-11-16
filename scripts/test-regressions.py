@@ -214,6 +214,18 @@ int main(void){
     assert 's_xferHistory' not in mac_ui and 's_xfer_history' not in win_ui
     assert all(x in mac_ui for x in ['CFG_ROLE','CFG_HOST','CFG_TOKEN','保存设置'])
     assert all(x in win_ui for x in ['CFG_ROLE','CFG_HOST','CFG_TOKEN','UI_ID_SAVE'])
+    assert all(x in mac_ui for x in ['s_settingsDirty','NSControlTextDidChangeNotification',
+        'settings_validation_error','set_settings_editors_enabled','s_saveSettingsButton.enabled=s_settingsDirty&&!s_saveBusy'])
+    assert all(x in win_ui for x in ['s_settings_dirty','HIWORD(wp)==EN_CHANGE',
+        'settings_validation_error','set_settings_editors_enabled','s_cfg_save_button,s_settings_dirty&&!s_save_busy'])
+    assert 'update_settings_role_fields' in mac_ui and 'update_settings_role_fields' in win_ui
+    for source in [mac_ui,win_ui]:
+        save=extract(source,'save_settings')
+        assert 'settings_validation_error' in save
+        assert '正在保存设置' in save
+        assert '设置已保存' in source and '有未保存的更改' in source
+    assert 'NSAlert' not in extract(mac_ui,'save_settings')
+    assert 'MessageBoxW' not in extract(win_ui,'save_settings')
 
     # Mac edge entry must keep tracking drag events before sharing starts.
     capture=(ROOT/'src/mac/capture.c').read_text(encoding='utf-8')

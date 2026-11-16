@@ -28,12 +28,13 @@ static NSScrollView *s_hosts[6];static int s_hostCount;
 static NSPopUpButton *s_rolePopup;
 static hop_config s_draft;
 static NSString *s_addresses;
-static BOOL s_saveBusy,s_logBusy;
+static BOOL s_saveBusy,s_logBusy,s_settingsDirty,s_populatingSettings;
 static NSButton *s_nav[6];
 static NSTextField *s_pageTitle, *s_headerStatus, *s_footer;
 static NSTextField *s_overviewStatus, *s_overviewPeer, *s_overviewControl, *s_overviewData, *s_overviewSharing;
 static NSTextField *s_connectionRole, *s_connectionStatus, *s_connectionPeer, *s_connectionPorts;
-static NSTextField *s_cfg[CFG_COUNT], *s_cfgNote;
+static NSTextField *s_cfg[CFG_COUNT], *s_cfgNote, *s_hostLabel, *s_hostHint;
+static NSButton *s_saveSettingsButton, *s_resetSettingsButton;
 static NSPopUpButton *s_edgePopups[2];
 static NSTextField *s_xferTitle, *s_xferDetail, *s_xferCounts;
 static NSProgressIndicator *s_xferProgress;
@@ -118,6 +119,8 @@ static NSString *const kPageNames[6] = {@"概览",@"连接",@"设置",@"传输",
 - (void)selectPage:(id)sender;
 - (void)saveSettings:(id)sender;
 - (void)roleChanged:(id)sender;
+- (void)settingsChanged:(id)sender;
+- (void)settingsTextDidChange:(NSNotification *)notification;
 - (void)resetSettings:(id)sender;
 - (void)reconnect:(id)sender;
 - (void)switchMac:(id)sender;
@@ -221,10 +224,47 @@ static unsigned long parse_cfg_number(NSString *value, unsigned long fallback) {
     unsigned long n=strtoul(s,&end,(s[0]=='0'&&(s[1]=='x'||s[1]=='X'))?16:10);
     return end==s || *end || s[0]=='-' ? 0xFFFFFFFFUL : n;
 }
+static void set_settings_note(NSString *message, BOOL error) {
+    if(!s_cfgNote)return;
+    s_cfgNote.stringValue=message ?: @"";
+    s_cfgNote.textColor=error?[NSColor systemRedColor]:[NSColor secondaryLabelColor];
+}
+static void update_settings_actions(void) {
+    if(s_saveSettingsButton)s_saveSettingsButton.enabled=s_settingsDirty&&!s_saveBusy;
+    if(s_resetSettingsButton)s_resetSettingsButton.enabled=!s_saveBusy;
+}
+static void mark_settings_dirty(void) {
+    if(s_populatingSettings||s_saveBusy)return;
+    s_settingsDirty=YES;
+    set_settings_note(@"有未保存的更改。网络与认证设置保存后需要重启生效。",NO);
+    update_settings_actions();
+}
+static void settings_validation_error(int field, NSString *message) {
+    s_settingsDirty=YES;
+    set_settings_note(message,YES);
+    update_settings_actions();
+    if(field>=0 && field<CFG_COUNT && s_cfg[field])
+        [s_mainWindow makeFirstResponder:s_cfg[field]];
+}
+static void update_settings_role_fields(void) {
+    BOOL client=s_rolePopup.indexOfSelectedItem==1;
+    s_cfg[CFG_HOST].enabled=client;
+    s_cfg[CFG_HOST].placeholderString=client?@"例如 192.168.1.20":@"服务器模式无需填写";
+    s_hostLabel.stringValue=@"服务器地址";
+    s_hostHint.stringValue=client?
+        @"客户端模式：填写服务器 IP 地址或主机名。":
+        @"服务器模式：无需填写地址，等待客户端连接。";
+}
+static void set_settings_editors_enabled(BOOL enabled) {
+    for(int i=0;i<CFG_COUNT;++i)if(s_cfg[i])s_cfg[i].enabled=enabled;
+    if(s_rolePopup)s_rolePopup.enabled=enabled;
+    for(int i=0;i<2;++i)if(s_edgePopups[i])s_edgePopups[i].enabled=enabled;
+    if(enabled)update_settings_role_fields();
+}
 static void populate_settings(void) {
     hop_config *c=&s_draft;
+    s_populatingSettings=YES;
     [s_rolePopup selectItemAtIndex:c->role==HOP_ROLE_CLIENT?1:0];
-    s_cfg[CFG_HOST].enabled=c->role==HOP_ROLE_CLIENT;
     set_cfg_text(CFG_NAME,utf8(c->device_name));
     set_cfg_text(CFG_HOST,utf8(c->peer_host));
     set_cfg_text(CFG_PORT,[NSString stringWithFormat:@"%u",(unsigned)c->port]);
@@ -241,22 +281,35 @@ static void populate_settings(void) {
     set_cfg_text(CFG_CHUNK,[NSString stringWithFormat:@"%d",c->xfer_chunk_kb]);
     set_cfg_text(CFG_MAC_INPUT,utf8(c->mac_input_cmd));
     set_cfg_text(CFG_MAC_SLEEP,utf8(c->mac_sleep_cmd));
+    update_settings_role_fields();
+    s_populatingSettings=NO;
+    s_settingsDirty=NO;
+    set_settings_note(@"设置已加载。修改后保存；网络与认证参数将在重启后生效。",NO);
+    update_settings_actions();
 }
 static void save_settings(void) {
     hop_config next=s_draft;
-    if(s_saveBusy)return;
+    if(s_saveBusy||!s_settingsDirty)return;
     next.role=s_rolePopup.indexOfSelectedItem==1?HOP_ROLE_CLIENT:HOP_ROLE_SERVER;
     const char *name=s_cfg[CFG_NAME].stringValue.UTF8String ?: "";
     const char *host=s_cfg[CFG_HOST].stringValue.UTF8String ?: "";
     const char *token=s_cfg[CFG_TOKEN].stringValue.UTF8String ?: "";
     const char *input=s_cfg[CFG_MAC_INPUT].stringValue.UTF8String ?: "";
     const char *sleep=s_cfg[CFG_MAC_SLEEP].stringValue.UTF8String ?: "";
-    if (!name[0] || !token[0] || (next.role==HOP_ROLE_CLIENT&&!host[0]) || strlen(name)>=sizeof(next.device_name) || strlen(host)>=sizeof(next.peer_host) ||
-        strlen(token)>=sizeof(next.token) || strlen(input)>=sizeof(next.mac_input_cmd) ||
-        strlen(sleep)>=sizeof(next.mac_sleep_cmd)) {
-        NSAlert *a=[[NSAlert alloc] init]; a.messageText=@"设置无效";
-        a.informativeText=@"设备名称和共享 Token 不能为空；客户端地址、Token 和命令长度也必须在允许范围内。两端必须设置相同 Token。";
-        [a runModal]; return;
+    if(!name[0]||strlen(name)>=sizeof(next.device_name)){
+        settings_validation_error(CFG_NAME,@"设备名称不能为空，且长度不能超过 31 个字节。");return;
+    }
+    if(strlen(host)>=sizeof(next.peer_host)||(next.role==HOP_ROLE_CLIENT&&!host[0])){
+        settings_validation_error(CFG_HOST,@"客户端模式需要填写服务器 IP 地址或主机名。");return;
+    }
+    if(!token[0]||strlen(token)>=sizeof(next.token)){
+        settings_validation_error(CFG_TOKEN,@"共享 Token 不能为空，且不能超过 128 个字节；两台设备必须使用相同 Token。");return;
+    }
+    if(strlen(input)>=sizeof(next.mac_input_cmd)){
+        settings_validation_error(CFG_MAC_INPUT,@"Mac 切源命令过长。");return;
+    }
+    if(strlen(sleep)>=sizeof(next.mac_sleep_cmd)){
+        settings_validation_error(CFG_MAC_SLEEP,@"Mac 睡眠命令过长。");return;
     }
     snprintf(next.device_name,sizeof(next.device_name),"%s",name);
     snprintf(next.peer_host,sizeof(next.peer_host),"%s",host);
@@ -270,30 +323,45 @@ static void save_settings(void) {
     unsigned long macInput=parse_cfg_number(s_cfg[CFG_DISP_MAC].stringValue,0x11);
     unsigned long wake=parse_cfg_number(s_cfg[CFG_WAKE].stringValue,60);
     unsigned long chunk=parse_cfg_number(s_cfg[CFG_CHUNK].stringValue,256);
-    if (!port || port>65535 || !dataPort || dataPort>65535 || port==dataPort ||
-        delay>5000 || cooldown>10000 || margin>1000 || winInput>65535 ||
-        macInput>65535 || wake>3600 || chunk<64 || chunk>4096) {
-        NSAlert *a=[[NSAlert alloc] init]; a.messageText=@"设置无效";
-        a.informativeText=@"请检查端口、边缘参数、显示器输入源和传输分块范围。";
-        [a runModal]; return;
+    if(!port||port>65535){
+        settings_validation_error(CFG_PORT,@"控制端口必须在 1–65535 之间。");return;
     }
-    next.port=(uint16_t)port; next.data_port=(uint16_t)dataPort;
+    if(!dataPort||dataPort>65535||dataPort==port){
+        settings_validation_error(CFG_DATA_PORT,@"数据端口必须在 1–65535 之间，且不能与控制端口相同。");return;
+    }
+    if(delay>5000){settings_validation_error(CFG_SWITCH_DELAY,@"边缘触发延迟不能超过 5000 ms。");return;}
+    if(cooldown>10000){settings_validation_error(CFG_COOLDOWN,@"切换冷却不能超过 10000 ms。");return;}
+    if(margin>1000){settings_validation_error(CFG_MARGIN,@"边缘内缩不能超过 1000 px。");return;}
+    if(winInput>65535){settings_validation_error(CFG_DISP_WIN,@"Windows 输入源必须是 0–65535 的十进制或十六进制数值。");return;}
+    if(macInput>65535){settings_validation_error(CFG_DISP_MAC,@"Mac 输入源必须是 0–65535 的十进制或十六进制数值。");return;}
+    if(wake>3600){settings_validation_error(CFG_WAKE,@"唤醒时长不能超过 3600 秒。");return;}
+    if(chunk<64||chunk>4096){settings_validation_error(CFG_CHUNK,@"传输分块必须在 64–4096 KB 之间。");return;}
+    next.port=(uint16_t)port;next.data_port=(uint16_t)dataPort;
     next.server_edge=(int)s_edgePopups[0].indexOfSelectedItem;
     next.client_edge=(int)s_edgePopups[1].indexOfSelectedItem;
-    next.switch_delay_ms=(int)delay; next.switch_cooldown_ms=(int)cooldown;
-    next.edge_margin_px=(int)margin; next.disp_win_input=(uint16_t)winInput;
-    next.disp_mac_input=(uint16_t)macInput; next.disp_wake_sec=(int)wake;
+    next.switch_delay_ms=(int)delay;next.switch_cooldown_ms=(int)cooldown;
+    next.edge_margin_px=(int)margin;next.disp_win_input=(uint16_t)winInput;
+    next.disp_mac_input=(uint16_t)macInput;next.disp_wake_sec=(int)wake;
     next.xfer_chunk_kb=(int)chunk;
     snprintf(next.mac_input_cmd,sizeof(next.mac_input_cmd),"%s",input);
     snprintf(next.mac_sleep_cmd,sizeof(next.mac_sleep_cmd),"%s",sleep);
     s_saveBusy=YES;
-    s_cfgNote.stringValue=@"正在保存…";
+    set_settings_editors_enabled(NO);
+    set_settings_note(@"正在保存设置…",NO);
+    update_settings_actions();
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
         int ok=hop_config_save_atomic(&next,g_mac.config_path);
         dispatch_async(dispatch_get_main_queue(), ^{
             s_saveBusy=NO;
-            if(ok){s_draft=next;s_cfgNote.stringValue=@"设置已保存；重启 HopDesk 后生效。";}
-            else s_cfgNote.stringValue=@"保存失败；原配置未改变，请检查权限和磁盘空间。";
+            set_settings_editors_enabled(YES);
+            if(ok){
+                s_draft=next;s_settingsDirty=NO;
+                set_settings_note(@"设置已保存。网络与认证参数将在重启 HopDesk 后生效。",NO);
+            } else {
+                s_settingsDirty=YES;
+                set_settings_note(@"保存失败；原配置未改变。请检查文件权限和磁盘空间后重试。",YES);
+            }
+            update_settings_actions();
         });
     });
 }
@@ -302,7 +370,9 @@ static void reset_settings(void) {
     hop_config_defaults(&s_draft);
     snprintf(s_draft.device_name,sizeof(s_draft.device_name),"%s","Mac");
     populate_settings();
-    s_cfgNote.stringValue=@"已恢复默认值；点击“保存设置”写入配置文件。";
+    s_settingsDirty=YES;
+    set_settings_note(@"已恢复默认值，但尚未写入配置文件。确认后点击“保存设置”。",NO);
+    update_settings_actions();
 }
 static NSString *task_state_name(const hop_xfer_task_snapshot *t) {
     if(t->state<=HOP_XFER_TASK_ACTIVE && t->cancel_requested)return @"取消中";
@@ -514,44 +584,65 @@ static void build_settings_page(NSView *p) {
     NSView *left=ui_card(p,NSMakeRect(20,180,400,470));
     NSView *right=ui_card(p,NSMakeRect(440,180,400,470));
     ui_label(left,@"设备与连接",NSMakeRect(18,424,360,24),15,YES);
-    const CGFloat y[]={380,340,300,260,220,180,140,100};
+    ui_label(left,@"设置本机身份、连接目标和两端共用的认证信息。",NSMakeRect(18,398,360,18),11,NO);
+    const CGFloat y[]={360,320,280,240,200,160,120,80};
     const int ids[]={CFG_NAME,CFG_ROLE,CFG_HOST,CFG_PORT,CFG_DATA_PORT,CFG_TOKEN,CFG_SERVER_EDGE,CFG_CLIENT_EDGE};
-    NSString *labels[]={@"设备名称",@"本机角色",@"服务端地址",@"控制端口",@"数据端口",@"共享 Token",@"服务端边缘",@"客户端边缘"};
+    NSString *labels[]={@"设备名称",@"本机角色",@"服务器地址",@"控制端口",@"数据端口",@"共享 Token",@"服务端边缘",@"客户端边缘"};
     for(int i=0;i<8;++i){
-        ui_label(left,labels[i],NSMakeRect(18,y[i]+7,112,22),12,NO);
-        if(ids[i]==CFG_ROLE){
-            s_rolePopup=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(136,y[i],242,30) pullsDown:NO];
-            [s_rolePopup addItemsWithTitles:@[@"服务器 · 提供键鼠",@"客户端 · 接收键鼠"]];
-            s_rolePopup.target=s_uiController;s_rolePopup.action=@selector(roleChanged:);
-            [left addSubview:s_rolePopup];
-        } else if(ids[i]==CFG_SERVER_EDGE || ids[i]==CFG_CLIENT_EDGE){
-            int edge=ids[i]==CFG_SERVER_EDGE?0:1;
-            NSPopUpButton *pop=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(136,y[i],242,30) pullsDown:NO];
-            [pop addItemsWithTitles:@[@"左边缘",@"右边缘",@"上边缘",@"下边缘"]];
-            [left addSubview:pop];s_edgePopups[edge]=pop;
-        } else s_cfg[ids[i]]=ui_field(left,@"",NSMakeRect(136,y[i],242,30),ids[i]==CFG_TOKEN);
+        if(ids[i]==CFG_HOST){
+            s_hostLabel=ui_label(left,labels[i],NSMakeRect(18,y[i]+7,112,22),12,NO);
+            s_cfg[CFG_HOST]=ui_field(left,@"",NSMakeRect(136,y[i],242,30),NO);
+            s_cfg[CFG_HOST].placeholderString=@"服务器模式无需填写";
+            [[NSNotificationCenter defaultCenter] addObserver:s_uiController selector:@selector(settingsTextDidChange:)
+                name:NSControlTextDidChangeNotification object:s_cfg[CFG_HOST]];
+        } else {
+            ui_label(left,labels[i],NSMakeRect(18,y[i]+7,112,22),12,NO);
+            if(ids[i]==CFG_ROLE){
+                s_rolePopup=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(136,y[i],242,30) pullsDown:NO];
+                [s_rolePopup addItemsWithTitles:@[@"服务器 · 提供键鼠",@"客户端 · 接收键鼠"]];
+                s_rolePopup.target=s_uiController;s_rolePopup.action=@selector(roleChanged:);
+                [left addSubview:s_rolePopup];
+            } else if(ids[i]==CFG_SERVER_EDGE || ids[i]==CFG_CLIENT_EDGE){
+                int edge=ids[i]==CFG_SERVER_EDGE?0:1;
+                NSPopUpButton *pop=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(136,y[i],242,30) pullsDown:NO];
+                [pop addItemsWithTitles:@[@"左边缘",@"右边缘",@"上边缘",@"下边缘"]];
+                pop.target=s_uiController;pop.action=@selector(settingsChanged:);
+                [left addSubview:pop];s_edgePopups[edge]=pop;
+            } else {
+                s_cfg[ids[i]]=ui_field(left,@"",NSMakeRect(136,y[i],242,30),ids[i]==CFG_TOKEN);
+                if(ids[i]==CFG_TOKEN)s_cfg[ids[i]].placeholderString=@"两台设备必须使用相同 Token";
+                [[NSNotificationCenter defaultCenter] addObserver:s_uiController selector:@selector(settingsTextDidChange:)
+                    name:NSControlTextDidChangeNotification object:s_cfg[ids[i]]];
+            }
+        }
     }
-    ui_label(left,@"客户端填写服务器地址；两端必须使用相同的非空 Token。",NSMakeRect(18,22,360,34),11,NO);
+    s_hostHint=ui_label(left,@"服务器模式：无需填写地址，等待客户端连接。",NSMakeRect(18,22,360,34),11,NO);
 
     ui_label(right,@"交互与显示器",NSMakeRect(18,424,360,24),15,YES);
+    ui_label(right,@"按需调整跨屏切换行为；输入源编号支持十六进制。",NSMakeRect(18,398,360,18),11,NO);
     const int settingIDs[]={CFG_SWITCH_DELAY,CFG_COOLDOWN,CFG_MARGIN,CFG_DISP_WIN,CFG_DISP_MAC,CFG_WAKE,CFG_CHUNK};
     NSString *names[]={@"边缘触发延迟（ms）",@"切换冷却（ms）",@"边缘内缩（px）",@"Windows 输入源",@"Mac 输入源",@"唤醒时长（秒）",@"传输分块（KB）"};
-    const CGFloat ry[]={380,340,300,260,220,180,140};
+    const CGFloat ry[]={360,320,280,240,200,160,120};
     for(int i=0;i<7;++i){
         ui_label(right,names[i],NSMakeRect(18,ry[i]+7,170,22),12,NO);
         s_cfg[settingIDs[i]]=ui_field(right,@"",NSMakeRect(190,ry[i],190,30),NO);
+        [[NSNotificationCenter defaultCenter] addObserver:s_uiController selector:@selector(settingsTextDidChange:)
+            name:NSControlTextDidChangeNotification object:s_cfg[settingIDs[i]]];
     }
     ui_label(right,@"Mac 切源命令",NSMakeRect(18,96,160,20),12,NO);
     s_cfg[CFG_MAC_INPUT]=ui_field(right,@"",NSMakeRect(18,64,360,28),NO);
+    [[NSNotificationCenter defaultCenter] addObserver:s_uiController selector:@selector(settingsTextDidChange:)
+        name:NSControlTextDidChangeNotification object:s_cfg[CFG_MAC_INPUT]];
     ui_label(right,@"Mac 睡眠命令",NSMakeRect(18,36,160,20),12,NO);
     s_cfg[CFG_MAC_SLEEP]=ui_field(right,@"",NSMakeRect(18,6,360,28),NO);
-    ui_label(p,@"输入源支持十六进制；角色、网络与认证参数保存后重启生效。",NSMakeRect(22,146,810,20),11,NO);
+    [[NSNotificationCenter defaultCenter] addObserver:s_uiController selector:@selector(settingsTextDidChange:)
+        name:NSControlTextDidChangeNotification object:s_cfg[CFG_MAC_SLEEP]];
 
     NSView *actions=ui_card(p,NSMakeRect(20,22,840,104));
-    ui_label(actions,@"设置草稿不会改变当前连接。保存失败时原配置保持不变。",NSMakeRect(18,68,560,20),11,NO);
-    s_cfgNote=ui_label(actions,@"修改后点击保存设置。",NSMakeRect(18,28,560,22),11,NO);
-    ui_primary_button(actions,@"保存设置",NSMakeRect(610,38,112,34),s_uiController,@selector(saveSettings:));
-    ui_button(actions,@"恢复默认",NSMakeRect(738,38,92,34),s_uiController,@selector(resetSettings:));
+    ui_label(actions,@"保存会写入配置文件；网络监听和认证参数需要重启后生效。",NSMakeRect(18,68,560,20),11,NO);
+    s_cfgNote=ui_label(actions,@"设置已加载。修改后保存。",NSMakeRect(18,28,560,22),11,NO);
+    s_saveSettingsButton=ui_primary_button(actions,@"保存设置",NSMakeRect(610,38,112,34),s_uiController,@selector(saveSettings:));
+    s_resetSettingsButton=ui_button(actions,@"恢复默认",NSMakeRect(738,38,92,34),s_uiController,@selector(resetSettings:));
 }
 static void build_pages(NSView *root) {
     for(int i=0;i<6;++i)s_pages[i]=add_page(root);
@@ -675,7 +766,9 @@ static void build_pages(NSView *root) {
     if ([sender isKindOfClass:[NSButton class]] && page==0 && [sender title].length==0) page=0;
     show_page((int)page);
 }
-- (void)roleChanged:(id)sender {(void)sender;s_cfg[CFG_HOST].enabled=s_rolePopup.indexOfSelectedItem==1;}
+- (void)roleChanged:(id)sender {(void)sender;update_settings_role_fields();mark_settings_dirty();}
+- (void)settingsChanged:(id)sender {(void)sender;mark_settings_dirty();}
+- (void)settingsTextDidChange:(NSNotification *)notification {(void)notification;mark_settings_dirty();}
 - (void)saveSettings:(id)sender {(void)sender;save_settings();}
 - (void)resetSettings:(id)sender {(void)sender;reset_settings();}
 - (void)reconnect:(id)sender {(void)sender;net_request_reconnect();}

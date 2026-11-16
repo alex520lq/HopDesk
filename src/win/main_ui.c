@@ -53,7 +53,8 @@ static HWND s_nav[UI_PAGE_COUNT];
 static HWND s_title, s_header_status, s_footer;
 static HWND s_overview_status, s_overview_peer, s_overview_control, s_overview_data, s_overview_sharing;
 static HWND s_connection_role, s_connection_status, s_connection_peer, s_connection_ports;
-static HWND s_cfg[CFG_COUNT], s_cfg_note;
+static HWND s_cfg[CFG_COUNT], s_cfg_note, s_host_label, s_host_hint;
+static HWND s_cfg_save_button, s_cfg_reset_button;
 static HWND s_xfer_title, s_xfer_detail, s_xfer_counts;
 static HWND s_xfer_progress, s_xfer_files, s_xfer_retry_button;
 static HWND s_task_lists[2];
@@ -67,6 +68,7 @@ static HFONT s_font, s_font_title, s_font_small;
 static int s_page;
 static hop_config s_draft;
 static int s_pending_restart,s_save_busy,s_log_busy;
+static int s_settings_dirty,s_populating_settings,s_cfg_note_error;
 static UINT s_dpi=96;
 static HBRUSH s_canvas,s_sidebar;
 static wchar_t s_addresses[512];
@@ -198,6 +200,8 @@ static LRESULT CALLBACK page_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         else if(control==s_overview_sharing)
             SetTextColor((HDC)w,g_app.state==HOP_LINK_SHARING?RGB(36,111,190):
                 g_app.state==HOP_LINK_LOCAL?RGB(27,132,82):RGB(112,122,137));
+        else if(control==s_cfg_note)
+            SetTextColor((HDC)w,s_cfg_note_error?RGB(180,55,50):RGB(91,103,120));
         else SetTextColor((HDC)w,RGB(48,58,73));
         return (LRESULT)s_canvas;
     }
@@ -343,78 +347,137 @@ static void refresh_logs(void){
     s_log_busy=1;HANDLE t=CreateThread(NULL,0,log_worker,s_main,0,NULL);
     if(t)CloseHandle(t);else{s_log_busy=0;set_text(s_log_edit,L"无法启动日志读取。");}
 }
+static void set_settings_note(const wchar_t *message,int error) {
+    s_cfg_note_error=error;
+    set_text(s_cfg_note,message);
+    if(s_cfg_note)InvalidateRect(s_cfg_note,NULL,TRUE);
+}
+static void update_settings_actions(void) {
+    if(s_cfg_save_button)EnableWindow(s_cfg_save_button,s_settings_dirty&&!s_save_busy);
+    if(s_cfg_reset_button)EnableWindow(s_cfg_reset_button,!s_save_busy);
+}
+static void mark_settings_dirty(void) {
+    if(s_populating_settings||s_save_busy)return;
+    s_settings_dirty=1;
+    set_settings_note(L"有未保存的更改。网络与认证设置保存后需要重启生效。",0);
+    update_settings_actions();
+}
+static void settings_validation_error(int field,const wchar_t *message) {
+    s_settings_dirty=1;
+    set_settings_note(message,1);
+    update_settings_actions();
+    if(field>=0&&field<CFG_COUNT&&s_cfg[field])SetFocus(s_cfg[field]);
+}
+static void update_settings_role_fields(void) {
+    int client=SendMessageW(s_cfg[CFG_ROLE],CB_GETCURSEL,0,0)==1;
+    EnableWindow(s_cfg[CFG_HOST],client);
+    set_text(s_host_label,L"服务器地址");
+    set_text(s_host_hint,client?
+        L"客户端模式：填写服务器 IP 地址或主机名。":
+        L"服务器模式：无需填写地址，等待客户端连接。");
+    SendMessageW(s_cfg[CFG_HOST],EM_SETCUEBANNER,TRUE,
+        (LPARAM)(client?L"例如 192.168.1.20":L"服务器模式无需填写"));
+}
+static void set_settings_editors_enabled(int enabled) {
+    for(int i=0;i<CFG_COUNT;++i)if(s_cfg[i])EnableWindow(s_cfg[i],enabled);
+    if(enabled)update_settings_role_fields();
+    else if(s_cfg[CFG_HOST])EnableWindow(s_cfg[CFG_HOST],FALSE);
+}
 static void populate_settings(void) {
-    hop_config *c = &s_draft;
+    hop_config *c=&s_draft;
     wchar_t b[128];
+    s_populating_settings=1;
     SendMessageW(s_cfg[CFG_ROLE],CB_SETCURSEL,c->role==HOP_ROLE_CLIENT?1:0,0);
-    EnableWindow(s_cfg[CFG_HOST],c->role==HOP_ROLE_CLIENT);
-    utf8_to_wide(c->device_name, b, 128); set_text(s_cfg[CFG_NAME], b);
-    if (c->peer_host[0]) { utf8_to_wide(c->peer_host, b, 128); set_text(s_cfg[CFG_HOST], b); }
-    else set_text(s_cfg[CFG_HOST], L"");
-    set_int(s_cfg[CFG_PORT], c->port);
-    set_int(s_cfg[CFG_DATA_PORT], c->data_port);
-    utf8_to_wide(c->token, b, 128); set_text(s_cfg[CFG_TOKEN], b);
-    SendMessageW(s_cfg[CFG_SERVER_EDGE], CB_SETCURSEL, c->server_edge >= HOP_EDGE_LEFT && c->server_edge <= HOP_EDGE_BOTTOM ? c->server_edge : HOP_EDGE_LEFT, 0);
-    SendMessageW(s_cfg[CFG_CLIENT_EDGE], CB_SETCURSEL, c->client_edge >= HOP_EDGE_LEFT && c->client_edge <= HOP_EDGE_BOTTOM ? c->client_edge : HOP_EDGE_RIGHT, 0);
-    set_int(s_cfg[CFG_SWITCH_DELAY], c->switch_delay_ms);
-    set_int(s_cfg[CFG_COOLDOWN], c->switch_cooldown_ms);
-    set_int(s_cfg[CFG_MARGIN], c->edge_margin_px);
-    swprintf(b, 128, L"0x%02X", (unsigned)c->disp_win_input); set_text(s_cfg[CFG_DISP_WIN], b);
-    swprintf(b, 128, L"0x%02X", (unsigned)c->disp_mac_input); set_text(s_cfg[CFG_DISP_MAC], b);
-    set_int(s_cfg[CFG_WAKE], c->disp_wake_sec);
-    set_int(s_cfg[CFG_CHUNK], c->xfer_chunk_kb);
-    utf8_to_wide(c->mac_input_cmd, b, 128); set_text(s_cfg[CFG_MAC_INPUT], b);
-    utf8_to_wide(c->mac_sleep_cmd, b, 128); set_text(s_cfg[CFG_MAC_SLEEP], b);
+    utf8_to_wide(c->device_name,b,128);set_text(s_cfg[CFG_NAME],b);
+    if(c->peer_host[0]){utf8_to_wide(c->peer_host,b,128);set_text(s_cfg[CFG_HOST],b);}
+    else set_text(s_cfg[CFG_HOST],L"");
+    set_int(s_cfg[CFG_PORT],c->port);
+    set_int(s_cfg[CFG_DATA_PORT],c->data_port);
+    utf8_to_wide(c->token,b,128);set_text(s_cfg[CFG_TOKEN],b);
+    SendMessageW(s_cfg[CFG_SERVER_EDGE],CB_SETCURSEL,
+        c->server_edge>=HOP_EDGE_LEFT&&c->server_edge<=HOP_EDGE_BOTTOM?c->server_edge:HOP_EDGE_LEFT,0);
+    SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_SETCURSEL,
+        c->client_edge>=HOP_EDGE_LEFT&&c->client_edge<=HOP_EDGE_BOTTOM?c->client_edge:HOP_EDGE_RIGHT,0);
+    set_int(s_cfg[CFG_SWITCH_DELAY],c->switch_delay_ms);
+    set_int(s_cfg[CFG_COOLDOWN],c->switch_cooldown_ms);
+    set_int(s_cfg[CFG_MARGIN],c->edge_margin_px);
+    swprintf(b,128,L"0x%02X",(unsigned)c->disp_win_input);set_text(s_cfg[CFG_DISP_WIN],b);
+    swprintf(b,128,L"0x%02X",(unsigned)c->disp_mac_input);set_text(s_cfg[CFG_DISP_MAC],b);
+    set_int(s_cfg[CFG_WAKE],c->disp_wake_sec);
+    set_int(s_cfg[CFG_CHUNK],c->xfer_chunk_kb);
+    utf8_to_wide(c->mac_input_cmd,b,128);set_text(s_cfg[CFG_MAC_INPUT],b);
+    utf8_to_wide(c->mac_sleep_cmd,b,128);set_text(s_cfg[CFG_MAC_SLEEP],b);
+    update_settings_role_fields();
+    s_populating_settings=0;
+    s_settings_dirty=0;
+    set_settings_note(L"设置已加载。修改后保存；网络与认证参数将在重启后生效。",0);
+    update_settings_actions();
 }
 static void reset_settings(void) {
     if(s_save_busy)return;
     hop_config_defaults(&s_draft);
-    snprintf(s_draft.device_name, sizeof(s_draft.device_name), "%s", "Windows");
+    snprintf(s_draft.device_name,sizeof(s_draft.device_name),"%s","Windows");
     populate_settings();
-    set_text(s_cfg_note, L"已恢复默认值；点击“保存设置”写入配置文件。");
+    s_settings_dirty=1;
+    set_settings_note(L"已恢复默认值，但尚未写入配置文件。确认后点击“保存设置”。",0);
+    update_settings_actions();
 }
 static void save_settings(void) {
-    hop_config next = s_draft;
-    if(s_save_busy)return;
+    hop_config next=s_draft;
+    if(s_save_busy||!s_settings_dirty)return;
     next.role=SendMessageW(s_cfg[CFG_ROLE],CB_GETCURSEL,0,0)==1?HOP_ROLE_CLIENT:HOP_ROLE_SERVER;
     char utf8[256];
-    if(!wide_to_utf8(s_cfg[CFG_HOST],utf8,sizeof(utf8)) || strlen(utf8)>=sizeof(next.peer_host) || (next.role==HOP_ROLE_CLIENT&&!utf8[0])){MessageBoxW(s_main,L"客户端需要填写服务器 IP 或主机名。",L"连接设置",MB_OK|MB_ICONWARNING);return;}
+    if(!wide_to_utf8(s_cfg[CFG_HOST],utf8,sizeof(utf8))||strlen(utf8)>=sizeof(next.peer_host)||
+        (next.role==HOP_ROLE_CLIENT&&!utf8[0])){
+        settings_validation_error(CFG_HOST,L"客户端模式需要填写服务器 IP 地址或主机名。");return;
+    }
     memcpy(next.peer_host,utf8,strlen(utf8)+1);
-    if (!wide_to_utf8(s_cfg[CFG_NAME], utf8, sizeof(utf8)) || !utf8[0] || strlen(utf8) >= sizeof(next.device_name)) {
-        MessageBoxW(s_main, L"设备名称不能为空，且长度不能超过 31 个字节。", L"HopDesk 设置", MB_OK | MB_ICONWARNING); return;
+    if(!wide_to_utf8(s_cfg[CFG_NAME],utf8,sizeof(utf8))||!utf8[0]||strlen(utf8)>=sizeof(next.device_name)){
+        settings_validation_error(CFG_NAME,L"设备名称不能为空，且长度不能超过 31 个字节。");return;
     }
     memcpy(next.device_name,utf8,strlen(utf8)+1);
-    if (!wide_to_utf8(s_cfg[CFG_TOKEN], utf8, sizeof(utf8)) || !utf8[0] || strlen(utf8) >= sizeof(next.token)) {
-        MessageBoxW(s_main, L"共享 Token 不能为空，且不能超过 128 个字节；两端必须设置相同 Token。", L"HopDesk 设置", MB_OK | MB_ICONWARNING); return;
+    if(!wide_to_utf8(s_cfg[CFG_TOKEN],utf8,sizeof(utf8))||!utf8[0]||strlen(utf8)>=sizeof(next.token)){
+        settings_validation_error(CFG_TOKEN,L"共享 Token 不能为空，且不能超过 128 个字节；两台设备必须使用相同 Token。");return;
     }
     memcpy(next.token,utf8,strlen(utf8)+1);
-    unsigned long port = parse_number(s_cfg[CFG_PORT], 0), data_port = parse_number(s_cfg[CFG_DATA_PORT], 0);
-    unsigned long delay = parse_number(s_cfg[CFG_SWITCH_DELAY], 250), cooldown = parse_number(s_cfg[CFG_COOLDOWN], 300);
-    unsigned long margin = parse_number(s_cfg[CFG_MARGIN], 40), win_input = parse_number(s_cfg[CFG_DISP_WIN], 0x0F);
-    unsigned long mac_input = parse_number(s_cfg[CFG_DISP_MAC], 0x11), wake = parse_number(s_cfg[CFG_WAKE], 60);
-    unsigned long chunk = parse_number(s_cfg[CFG_CHUNK], 256);
-    if (!port || port > 65535 || !data_port || data_port > 65535 || port == data_port ||
-        delay > 5000 || cooldown > 10000 || margin > 1000 ||
-        win_input > 65535 || mac_input > 65535 || wake > 3600 || chunk < 64 || chunk > 4096) {
-        MessageBoxW(s_main, L"请检查端口、边缘参数、显示器输入源和传输分块范围。", L"HopDesk 设置", MB_OK | MB_ICONWARNING); return;
-    }
-    next.port=(uint16_t)port; next.data_port=(uint16_t)data_port;
+    unsigned long port=parse_number(s_cfg[CFG_PORT],0),data_port=parse_number(s_cfg[CFG_DATA_PORT],0);
+    unsigned long delay=parse_number(s_cfg[CFG_SWITCH_DELAY],250),cooldown=parse_number(s_cfg[CFG_COOLDOWN],300);
+    unsigned long margin=parse_number(s_cfg[CFG_MARGIN],40),win_input=parse_number(s_cfg[CFG_DISP_WIN],0x0F);
+    unsigned long mac_input=parse_number(s_cfg[CFG_DISP_MAC],0x11),wake=parse_number(s_cfg[CFG_WAKE],60);
+    unsigned long chunk=parse_number(s_cfg[CFG_CHUNK],256);
+    if(!port||port>65535){settings_validation_error(CFG_PORT,L"控制端口必须在 1–65535 之间。");return;}
+    if(!data_port||data_port>65535||data_port==port){settings_validation_error(CFG_DATA_PORT,L"数据端口必须在 1–65535 之间，且不能与控制端口相同。");return;}
+    if(delay>5000){settings_validation_error(CFG_SWITCH_DELAY,L"边缘触发延迟不能超过 5000 ms。");return;}
+    if(cooldown>10000){settings_validation_error(CFG_COOLDOWN,L"切换冷却不能超过 10000 ms。");return;}
+    if(margin>1000){settings_validation_error(CFG_MARGIN,L"边缘内缩不能超过 1000 px。");return;}
+    if(win_input>65535){settings_validation_error(CFG_DISP_WIN,L"Windows 输入源必须是 0–65535 的十进制或十六进制数值。");return;}
+    if(mac_input>65535){settings_validation_error(CFG_DISP_MAC,L"Mac 输入源必须是 0–65535 的十进制或十六进制数值。");return;}
+    if(wake>3600){settings_validation_error(CFG_WAKE,L"唤醒时长不能超过 3600 秒。");return;}
+    if(chunk<64||chunk>4096){settings_validation_error(CFG_CHUNK,L"传输分块必须在 64–4096 KB 之间。");return;}
+    next.port=(uint16_t)port;next.data_port=(uint16_t)data_port;
     next.server_edge=(int)SendMessageW(s_cfg[CFG_SERVER_EDGE],CB_GETCURSEL,0,0);
     next.client_edge=(int)SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_GETCURSEL,0,0);
-    next.switch_delay_ms=(int)delay; next.switch_cooldown_ms=(int)cooldown; next.edge_margin_px=(int)margin;
-    next.disp_win_input=(uint16_t)win_input; next.disp_mac_input=(uint16_t)mac_input;
-    next.disp_wake_sec=(int)wake; next.xfer_chunk_kb=(int)chunk;
-    if (!wide_to_utf8(s_cfg[CFG_MAC_INPUT], utf8, sizeof(utf8))) utf8[0]=0;
-    if(strlen(utf8)>=sizeof(next.mac_input_cmd)){MessageBoxW(s_main,L"Mac 切源命令过长。",L"设置",MB_OK|MB_ICONWARNING);return;}
+    next.switch_delay_ms=(int)delay;next.switch_cooldown_ms=(int)cooldown;next.edge_margin_px=(int)margin;
+    next.disp_win_input=(uint16_t)win_input;next.disp_mac_input=(uint16_t)mac_input;
+    next.disp_wake_sec=(int)wake;next.xfer_chunk_kb=(int)chunk;
+    if(!wide_to_utf8(s_cfg[CFG_MAC_INPUT],utf8,sizeof(utf8)))utf8[0]=0;
+    if(strlen(utf8)>=sizeof(next.mac_input_cmd)){settings_validation_error(CFG_MAC_INPUT,L"Mac 切源命令过长。");return;}
     memcpy(next.mac_input_cmd,utf8,strlen(utf8)+1);
-    if (!wide_to_utf8(s_cfg[CFG_MAC_SLEEP], utf8, sizeof(utf8))) utf8[0]=0;
-    if(strlen(utf8)>=sizeof(next.mac_sleep_cmd)){MessageBoxW(s_main,L"Mac 睡眠命令过长。",L"设置",MB_OK|MB_ICONWARNING);return;}
+    if(!wide_to_utf8(s_cfg[CFG_MAC_SLEEP],utf8,sizeof(utf8)))utf8[0]=0;
+    if(strlen(utf8)>=sizeof(next.mac_sleep_cmd)){settings_validation_error(CFG_MAC_SLEEP,L"Mac 睡眠命令过长。");return;}
     memcpy(next.mac_sleep_cmd,utf8,strlen(utf8)+1);
     save_result *result=calloc(1,sizeof(*result));
-    if(!result){set_text(s_cfg_note,L"内存不足。");return;}
-    result->config=next;s_save_busy=1;set_text(s_cfg_note,L"正在保存…");
+    if(!result){settings_validation_error(-1,L"内存不足，无法保存设置。");return;}
+    result->config=next;s_save_busy=1;
+    set_settings_editors_enabled(0);
+    set_settings_note(L"正在保存设置…",0);update_settings_actions();
     HANDLE t=CreateThread(NULL,0,save_worker,result,0,NULL);
-    if(t)CloseHandle(t);else{free(result);s_save_busy=0;set_text(s_cfg_note,L"无法启动配置保存。");}
+    if(t)CloseHandle(t);
+    else{
+        free(result);s_save_busy=0;s_settings_dirty=1;
+        set_settings_editors_enabled(1);
+        set_settings_note(L"无法启动配置保存，请重试。",1);update_settings_actions();
+    }
 }
 /* Snapshot only: selection stores Task ID, never a pointer into manager state. */
 static hop_xfer_task_id selected_task(int direction) {
@@ -594,7 +657,9 @@ static void create_settings_page(HWND p) {
     s_cfg[CFG_ROLE]=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,158,88,230,120,UI_ROLE_ID);
     SendMessageW(s_cfg[CFG_ROLE],CB_ADDSTRING,0,(LPARAM)L"服务器 · 提供键鼠");
     SendMessageW(s_cfg[CFG_ROLE],CB_ADDSTRING,0,(LPARAM)L"客户端 · 接收键鼠");
-    label(p,L"服务端地址",38,130,112,20);s_cfg[CFG_HOST]=edit(p,L"",158,126,230,28,0,0);
+    s_host_label=label(p,L"服务器地址",38,130,112,20);
+    s_cfg[CFG_HOST]=edit(p,L"",158,126,230,28,0,0);
+    SendMessageW(s_cfg[CFG_HOST],EM_SETCUEBANNER,TRUE,(LPARAM)L"服务器模式无需填写");
     label(p,L"控制端口",38,168,112,20);s_cfg[CFG_PORT]=edit(p,L"",158,164,230,28,0,0);
     label(p,L"数据端口",38,206,112,20);s_cfg[CFG_DATA_PORT]=edit(p,L"",158,202,230,28,0,0);
     label(p,L"共享 Token",38,244,112,20);s_cfg[CFG_TOKEN]=edit(p,L"",158,240,230,28,0,1);
@@ -606,7 +671,7 @@ static void create_settings_page(HWND p) {
     s_cfg[CFG_CLIENT_EDGE]=child(p,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,158,316,230,120,0);
     SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_ADDSTRING,0,(LPARAM)L"左边缘");SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_ADDSTRING,0,(LPARAM)L"右边缘");
     SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_ADDSTRING,0,(LPARAM)L"上边缘");SendMessageW(s_cfg[CFG_CLIENT_EDGE],CB_ADDSTRING,0,(LPARAM)L"下边缘");
-    label(p,L"客户端填写服务器地址；两端使用相同的非空 Token。",38,366,350,42);
+    s_host_hint=label(p,L"服务器模式：无需填写地址，等待客户端连接。",38,366,350,42);
 
     group(p,L"交互与显示器",430,18,390,450);
     label(p,L"边缘触发延迟（ms）",448,54,170,20);s_cfg[CFG_SWITCH_DELAY]=edit(p,L"",628,50,172,28,0,0);
@@ -618,14 +683,15 @@ static void create_settings_page(HWND p) {
     label(p,L"传输分块（KB）",448,282,170,20);s_cfg[CFG_CHUNK]=edit(p,L"",628,278,172,28,0,0);
     label(p,L"Mac 切源命令",448,322,352,20);s_cfg[CFG_MAC_INPUT]=edit(p,L"",448,346,352,28,0,0);
     label(p,L"Mac 睡眠命令",448,384,352,20);s_cfg[CFG_MAC_SLEEP]=edit(p,L"",448,408,352,28,0,0);
-    label(p,L"输入源支持十六进制；网络与认证参数保存后重启生效。",448,438,352,24);
+    label(p,L"输入源编号支持十进制或十六进制；网络参数保存后重启生效。",448,438,352,24);
 
     group(p,L"应用设置",20,486,800,76);
-    label(p,L"草稿不会改变当前连接；保存失败时原配置保持不变。",38,512,520,22);
-    s_cfg_note=label(p,L"修改后点击保存设置。",38,538,520,20);
-    button(p,L"保存设置",610,506,120,36,UI_ID_SAVE);
-    button(p,L"恢复默认",744,506,112,36,UI_ID_RESET);
-}static void create_pages(HWND h) {
+    label(p,L"保存只写入配置文件，不会中断当前连接；网络和认证参数重启后生效。",38,512,540,22);
+    s_cfg_note=label(p,L"设置已加载。修改后保存。",38,538,540,20);
+    s_cfg_save_button=button(p,L"保存设置",610,506,120,36,UI_ID_SAVE);
+    s_cfg_reset_button=button(p,L"恢复默认",744,506,112,36,UI_ID_RESET);
+}
+static void create_pages(HWND h) {
     for(int i=0;i<UI_PAGE_COUNT;++i) s_pages[i]=page_create(h,i);
 
     HWND p=s_pages[0];
@@ -802,7 +868,15 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         case WM_COMMAND:{
             int id=LOWORD(wp);
-            if(id==UI_ROLE_ID && HIWORD(wp)==CBN_SELCHANGE){EnableWindow(s_cfg[CFG_HOST],SendMessageW(s_cfg[CFG_ROLE],CB_GETCURSEL,0,0)==1);return 0;}
+            HWND source=(HWND)lp;
+            if(id==UI_ROLE_ID && HIWORD(wp)==CBN_SELCHANGE){
+                update_settings_role_fields();mark_settings_dirty();return 0;
+            }
+            if(!s_populating_settings && HIWORD(wp)==EN_CHANGE){
+                for(int i=0;i<CFG_COUNT;++i)if(source&&source==s_cfg[i]){mark_settings_dirty();break;}
+            }
+            if(!s_populating_settings && HIWORD(wp)==CBN_SELCHANGE &&
+                (source==s_cfg[CFG_SERVER_EDGE]||source==s_cfg[CFG_CLIENT_EDGE]))mark_settings_dirty();
             if(id>=UI_NAV_BASE && id<UI_NAV_BASE+UI_PAGE_COUNT){show_page(id-UI_NAV_BASE);return 0;}
             switch(id){
                 case UI_ID_SAVE: save_settings(); return 0;
@@ -854,8 +928,15 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             s_log_busy=0;set_text(s_log_edit,lp?(wchar_t*)lp:L"读取日志失败。");free((void*)lp);return 0;
         case UI_SAVE_RESULT:{
             save_result *result=(save_result*)lp;s_save_busy=0;
-            if(result->ok){s_draft=result->config;s_pending_restart=1;set_text(s_cfg_note,L"设置已保存；重启 HopDesk 后生效。");}
-            else set_text(s_cfg_note,L"保存失败；原配置未改变，请检查权限和磁盘空间。");
+            set_settings_editors_enabled(1);
+            if(result->ok){
+                s_draft=result->config;s_pending_restart=1;s_settings_dirty=0;
+                set_settings_note(L"设置已保存。网络与认证参数将在重启 HopDesk 后生效。",0);
+            } else {
+                s_settings_dirty=1;
+                set_settings_note(L"保存失败；原配置未改变。请检查文件权限和磁盘空间后重试。",1);
+            }
+            update_settings_actions();
             free(result);refresh_connection();return 0;
         }
         case WM_CLOSE:

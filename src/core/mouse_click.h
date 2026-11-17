@@ -23,8 +23,7 @@ uint8_t hop_mouse_click_next(hop_mouse_click_tracker *tracker,
                              uint32_t double_click_ms,
                              uint32_t double_click_width,
                              uint32_t double_click_height);
-void hop_mouse_click_complete(hop_mouse_click_tracker *tracker,
-                              void);
+void hop_mouse_click_complete(hop_mouse_click_tracker *tracker);
 
 #ifdef __cplusplus
 }

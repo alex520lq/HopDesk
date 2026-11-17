@@ -3,7 +3,7 @@
 #include <assert.h>
 #include <stdio.h>
 
-static uint8_t down(hop_mouse_click_tracker *t, uint64_t now,
+static uint8_t down(hop_mouse_click_tracker *t, uint32_t now,
                     int x, int y, uint32_t interval) {
     return hop_mouse_click_next(t, now, x, y, interval, 4, 4);
 }

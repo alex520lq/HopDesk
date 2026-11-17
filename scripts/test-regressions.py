@@ -310,6 +310,7 @@ int main(void){
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include "mouse_click.h"
 typedef uint8_t BYTE;typedef uint32_t DWORD;typedef struct {int x,y;} POINT;
 typedef struct {int server_edge,edge_margin_px,switch_cooldown_ms,screen_w,screen_h;} cfg_t;
 typedef struct {cfg_t cfg;int peer_w,peer_h,state;void *net;} app_t;
@@ -319,6 +320,8 @@ enum {HOP_EDGE_LEFT=0,HOP_EDGE_RIGHT=1,HOP_EDGE_TOP=2,HOP_EDGE_BOTTOM=3,
       HOP_MSG_MOUSE_BUTTON=11,HOP_MSG_MOUSE_ENTER=14,HOP_MSG_KEY_DOWN=20};
 enum {SM_CYVIRTUALSCREEN=1,SM_CXVIRTUALSCREEN=2,SM_CYSCREEN=3,SM_CXSCREEN=4};
 static int s_sharing,s_have_last,s_physical_buttons[3],s_buttons[3],event_count,fail_enter,local_releases;
+static hop_mouse_click_tracker s_click_trackers[3];
+static BYTE s_button_click_count[3];
 static POINT s_anchor,s_last;static DWORD s_cooldown_until;static uint8_t events[16];
 static int net_server_send(void *net,uint8_t type,const void *p,uint32_t len){
     (void)net;(void)p;(void)len;events[event_count++]=type;

@@ -43,7 +43,7 @@ static void mac_capture_return(void){}
 static void inject_set_peer_geometry(uint32_t w,uint32_t h){(void)w;(void)h;}
 static void inject_enter(int n){(void)n;}
 static void inject_move(int x,int y){(void)x;(void)y;}
-static void inject_button(int b,int d){(void)b;(void)d;}
+static void inject_button(int b,int d,int click_count){(void)b;(void)d;(void)click_count;}
 static void inject_wheel(int x,int y){(void)x;(void)y;}
 static void inject_key(uint16_t k,int d){(void)k;(void)d;}
 static void inject_reset(void){}

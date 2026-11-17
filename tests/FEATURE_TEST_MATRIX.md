@@ -52,8 +52,9 @@ A green compile is not evidence that those manual/device cases passed.
 | ID | Feature | Cases |
 |---|---|---|
 | INPUT-001 | Keyboard | Down/up, modifiers, repeats, caps, release-all on disconnect |
-| INPUT-002 | Mouse | Relative move, buttons, wheel, multi-monitor coordinates |
+| INPUT-002 | Mouse | Relative move, single/double/triple click, down/up pairing, drag, wheel, multi-monitor coordinates |
 | INPUT-003 | Edge handoff | Delay, cooldown, both edges, return, corners |
+| INPUT-004 | Remote click semantics | Windows→macOS single/double/triple click count; timing and double-click rectangle; left/right/middle independent sequences; disconnect/re-entry resets click history |
 | CLIP-001 | Text clipboard | Unicode, multiline, empty/large, bidirectional loop suppression |
 | CLIP-002 | File clipboard | Single/multiple, folders, empty folders, actual Ctrl+C/Ctrl+V |
 | CLIP-003 | Image clipboard | PNG/TIFF/DIB, alpha, orientation, large/unsupported formats |

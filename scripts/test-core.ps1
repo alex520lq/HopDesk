@@ -572,3 +572,14 @@ if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
 if ($LASTEXITCODE -ne 0) { throw "Sender Job Lifecycle test compilation failed ($LASTEXITCODE)" }
 & $jobLifecycle
 if ($LASTEXITCODE -ne 0) { throw "Sender Job Lifecycle tests failed ($LASTEXITCODE)" }
+
+$mouseClick = Join-Path $build 'hopdesk-mouse-click-tests.exe'
+$mouseClickSources = @((Join-Path $root 'tests/mouse_click_tests.c'), (Join-Path $root 'src/core/mouse_click.c'))
+if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$mouseClick @mouseClickSources
+} else {
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $mouseClick @mouseClickSources
+}
+if ($LASTEXITCODE -ne 0) { throw "Mouse click tests compilation failed ($LASTEXITCODE)" }
+& $mouseClick
+if ($LASTEXITCODE -ne 0) { throw "Mouse click tests failed ($LASTEXITCODE)" }

@@ -2198,3 +2198,20 @@ int main(void) {
         assert 's_seen_paste_requests' not in paste and 's_offer_request_seq' not in paste
 
     print('All targeted regressions passed.',flush=True)
+
+# Mouse click-state regression: the shared tracker is used by the Windows
+# low-level hook, and the Quartz injector must preserve the count end-to-end.
+mouse_core = (ROOT / 'src/core/mouse_click.c').read_text(encoding='utf-8')
+mouse_header = (ROOT / 'src/core/mouse_click.h').read_text(encoding='utf-8')
+win_mouse = (ROOT / 'src/win/mouse_capture.c').read_text(encoding='utf-8')
+mac_capture = (ROOT / 'src/mac/capture.c').read_text(encoding='utf-8')
+mac_inject = (ROOT / 'src/mac/inject.c').read_text(encoding='utf-8')
+mac_protocol = (ROOT / 'src/mac/net_client_protocol.inc').read_text(encoding='utf-8')
+assert 'hop_mouse_click_next' in win_mouse and 'hop_mouse_click_complete' in win_mouse
+assert 'GetDoubleClickTime()' in win_mouse and 'SM_CXDOUBLECLK' in win_mouse and 'SM_CYDOUBLECLK' in win_mouse
+assert 'uint8_t p[3]' in win_mouse and 'net_server_send(g_app.net, HOP_MSG_MOUSE_BUTTON, p, 3)' in win_mouse
+assert 'kCGMouseEventClickState' in mac_capture and 'uint8_t p[3]' in mac_capture
+assert 'CGEventSetIntegerValueField(e, kCGMouseEventClickState, click_count)' in mac_inject
+assert 'len >= 3 ? p[2] : 1' in mac_protocol
+assert 'click_count < 1 || click_count > 3' in mac_inject
+assert 'click_count' in mouse_core and 'hop_mouse_click_tracker' in mouse_header

@@ -8,6 +8,7 @@
  *  边缘启用条件：枚举显示器，没有 X<0 的屏（左屏已切给 Mac，Windows 单屏）。
  * ===================================================================== */
 #include "app.h"
+#include "mouse_click.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -16,8 +17,10 @@ static HHOOK   s_hook;
 static DWORD s_hook_tick, s_last_reinstall;
 static int s_buttons[3];             /* remote buttons currently held */
 static BYTE s_physical_buttons[3];   /* physical buttons, including while sharing */
+static hop_mouse_click_tracker s_click_trackers[3];
+static BYTE s_button_click_count[3];
 #define HOP_LOCAL_MOUSE_TAG ((ULONG_PTR)0x484F5044u)
-static void send_button(int btn, int down);
+static void send_button(int btn, int down, int click_count);
 static void inject_local_button(int btn,int down) {
     static const DWORD dn[]={MOUSEEVENTF_LEFTDOWN,MOUSEEVENTF_MIDDLEDOWN,MOUSEEVENTF_RIGHTDOWN};
     static const DWORD up[]={MOUSEEVENTF_LEFTUP,MOUSEEVENTF_MIDDLEUP,MOUSEEVENTF_RIGHTUP};
@@ -111,6 +114,8 @@ static void enter_sharing(POINT trigger) {
         return;
     }
 
+    memset(s_click_trackers, 0, sizeof(s_click_trackers));
+    memset(s_button_click_count, 0, sizeof(s_button_click_count));
     s_anchor = anchor;
     s_last = s_anchor;
     s_have_last = 1;
@@ -118,7 +123,8 @@ static void enter_sharing(POINT trigger) {
     g_app.state = HOP_LINK_SHARING;
     kbd_begin_sharing();
     for (int i = 0; i < 3; ++i) if (s_physical_buttons[i]) {
-        send_button(i, 1);
+        s_button_click_count[i] = 1;
+        send_button(i, 1, 1);
         inject_local_button(i, 0);
     }
     SetCursorPos(s_anchor.x, s_anchor.y);
@@ -132,7 +138,10 @@ static void enter_local(void) {
     POINT p;
 
     /* Release the peer first, then restore still-physical input locally. */
-    for (int i = 0; i < 3; ++i) if (s_buttons[i]) send_button(i, 0);
+    for (int i = 0; i < 3; ++i) if (s_buttons[i])
+        send_button(i, 0, s_button_click_count[i] ? s_button_click_count[i] : 1);
+    memset(s_click_trackers, 0, sizeof(s_click_trackers));
+    memset(s_button_click_count, 0, sizeof(s_button_click_count));
     s_sharing = 0;
     g_app.state = HOP_LINK_LOCAL;
     kbd_end_sharing();
@@ -182,10 +191,31 @@ static void send_move(int dx, int dy) {
     hop_put_be16(p + 2, (uint16_t)(int16_t)dy);
     net_server_send(g_app.net, HOP_MSG_MOUSE_MOVE, p, 4);
 }
-static void send_button(int btn, int down) {
-    uint8_t p[2] = { (uint8_t)btn, (uint8_t)down };
-    if (btn >= 0 && btn < 3) s_buttons[btn] = down;
-    net_server_send(g_app.net, HOP_MSG_MOUSE_BUTTON, p, 2);
+static void send_button(int btn, int down, int click_count) {
+    uint8_t p[3];
+    if (btn < 0 || btn >= 3) return;
+    if (click_count < 1 || click_count > 3) click_count = 1;
+    p[0] = (uint8_t)btn; p[1] = (uint8_t)down; p[2] = (uint8_t)click_count;
+    s_buttons[btn] = down;
+    net_server_send(g_app.net, HOP_MSG_MOUSE_BUTTON, p, 3);
+}
+static void capture_button(int btn, int down, const MSLLHOOKSTRUCT *event) {
+    if (btn < 0 || btn >= 3 || !event) return;
+    if (down) {
+        int width = GetSystemMetrics(SM_CXDOUBLECLK);
+        int height = GetSystemMetrics(SM_CYDOUBLECLK);
+        if (width < 1) width = 1;
+        if (height < 1) height = 1;
+        s_button_click_count[btn] = hop_mouse_click_next(
+            &s_click_trackers[btn], (uint64_t)event->time, event->pt.x, event->pt.y,
+            (uint32_t)GetDoubleClickTime(), (uint32_t)width, (uint32_t)height);
+        send_button(btn, 1, s_button_click_count[btn]);
+    } else {
+        int click_count = s_button_click_count[btn] ? s_button_click_count[btn] : 1;
+        hop_mouse_click_complete(&s_click_trackers[btn], (uint64_t)event->time);
+        s_button_click_count[btn] = 0;
+        send_button(btn, 0, click_count);
+    }
 }
 static void send_wheel(int dx, int dy) {
     uint8_t p[4];
@@ -226,12 +256,12 @@ static LRESULT CALLBACK mouse_proc_hook(int code, WPARAM wp, LPARAM lp) {
                 }
                 return 1;   /* 吞掉 */
             }
-            case WM_LBUTTONDOWN: send_button(HOP_BTN_LEFT, 1); return 1;
-            case WM_LBUTTONUP:   send_button(HOP_BTN_LEFT, 0); return 1;
-            case WM_RBUTTONDOWN: send_button(HOP_BTN_RIGHT, 1); return 1;
-            case WM_RBUTTONUP:   send_button(HOP_BTN_RIGHT, 0); return 1;
-            case WM_MBUTTONDOWN: send_button(HOP_BTN_MIDDLE, 1); return 1;
-            case WM_MBUTTONUP:   send_button(HOP_BTN_MIDDLE, 0); return 1;
+            case WM_LBUTTONDOWN: capture_button(HOP_BTN_LEFT, 1, m); return 1;
+            case WM_LBUTTONUP:   capture_button(HOP_BTN_LEFT, 0, m); return 1;
+            case WM_RBUTTONDOWN: capture_button(HOP_BTN_RIGHT, 1, m); return 1;
+            case WM_RBUTTONUP:   capture_button(HOP_BTN_RIGHT, 0, m); return 1;
+            case WM_MBUTTONDOWN: capture_button(HOP_BTN_MIDDLE, 1, m); return 1;
+            case WM_MBUTTONUP:   capture_button(HOP_BTN_MIDDLE, 0, m); return 1;
             case WM_MOUSEWHEEL: {
                 short wz = GET_WHEEL_DELTA_WPARAM(m->mouseData);
                 send_wheel(0, (int)wz);
@@ -322,6 +352,8 @@ void capture_init(win_app *app) {
     s_have_last = 0;
     s_edge_pending = 0;
     s_cooldown_until = 0;
+    memset(s_click_trackers, 0, sizeof(s_click_trackers));
+    memset(s_button_click_count, 0, sizeof(s_button_click_count));
     s_physical_buttons[HOP_BTN_LEFT]=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0;
     s_physical_buttons[HOP_BTN_MIDDLE]=(GetAsyncKeyState(VK_MBUTTON)&0x8000)!=0;
     s_physical_buttons[HOP_BTN_RIGHT]=(GetAsyncKeyState(VK_RBUTTON)&0x8000)!=0;

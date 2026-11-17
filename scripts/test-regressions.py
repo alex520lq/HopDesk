@@ -202,6 +202,34 @@ int main(void){
     # consistent settings groups, and one task-history surface.
     mac_ui=(ROOT/'src/mac/main_ui.m').read_text(encoding='utf-8')
     win_ui=(ROOT/'src/win/main_ui.c').read_text(encoding='utf-8')
+    # Both native clients expose exactly four top-level destinations in the
+    # same order. Logs and updates remain reachable inside the Settings page.
+    page_enum='enum { UI_PAGE_OVERVIEW, UI_PAGE_DEVICE, UI_PAGE_TRANSFER, UI_PAGE_SETTINGS, UI_PAGE_COUNT };'
+    assert page_enum in mac_ui and page_enum in win_ui
+    assert 'static NSString *const kPageNames[UI_PAGE_COUNT] = {@"概览",@"设备",@"传输",@"设置"};' in mac_ui
+    assert 'L"概览", L"设备", L"传输", L"设置"' in win_ui
+    assert 'static NSView *s_pages[UI_PAGE_COUNT];' in mac_ui
+    assert 'static NSScrollView *s_hosts[UI_PAGE_COUNT];' in mac_ui
+    assert 'static NSButton *s_nav[UI_PAGE_COUNT];' in mac_ui
+    assert 'static HWND s_pages[UI_PAGE_COUNT];' in win_ui
+    assert 's_pages[4]' not in mac_ui and 's_pages[5]' not in mac_ui
+    assert 's_pages[4]' not in win_ui and 's_pages[5]' not in win_ui
+    assert 'p=s_pages[UI_PAGE_TRANSFER];' in mac_ui and 'p=s_pages[UI_PAGE_SETTINGS];' in mac_ui
+    assert 'p=s_pages[UI_PAGE_TRANSFER];' in win_ui and 'p=s_pages[UI_PAGE_SETTINGS]; create_settings_page(p);' in win_ui
+    assert 'build_settings_page(settingsForm)' in mac_ui and '[p setFrameSize:NSMakeSize(880,1400)]' in mac_ui
+    assert 'ui_label(card,@"运行日志"' in mac_ui and 'ui_label(card,@"软件更新"' in mac_ui
+    assert 'group(p,L"运行日志",20,620,800,590)' in win_ui
+    assert 'group(p,L"软件更新",20,1240,800,300)' in win_ui
+    assert 'if(page==UI_PAGE_TRANSFER)refresh_transfer_page();' in mac_ui
+    assert 'if(page==UI_PAGE_SETTINGS)refresh_logs();' in mac_ui
+    assert 'if(s_page==UI_PAGE_TRANSFER)refresh_transfer_page();' in mac_ui
+    assert 'if (page == UI_PAGE_TRANSFER) refresh_transfers();' in win_ui
+    assert 'if (page == UI_PAGE_SETTINGS) refresh_logs();' in win_ui
+    assert 's_page==UI_PAGE_TRANSFER' in win_ui and 'show_page(UI_PAGE_TRANSFER)' in win_ui
+    assert 'h==s_pages[UI_PAGE_SETTINGS]?1580' in win_ui
+    ui_contract=(ROOT/'docs/MAIN_UI.md').read_text(encoding='utf-8')
+    assert '四个入口，顺序与两端实现一致：**概览、设备、传输、设置**。' in ui_contract
+    assert '#### 运行日志' in ui_contract and '#### 软件更新' in ui_contract
     assert all(x in mac_ui for x in ['s_overviewControl','s_overviewData','s_overviewSharing'])
     assert all(x in win_ui for x in ['s_overview_control','s_overview_data','s_overview_sharing'])
     for source,active,history,cancel in [

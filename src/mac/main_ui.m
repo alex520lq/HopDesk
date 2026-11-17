@@ -22,14 +22,16 @@ enum {
     CFG_MAC_INPUT, CFG_MAC_SLEEP, CFG_ROLE, CFG_COUNT
 };
 
+enum { UI_PAGE_OVERVIEW, UI_PAGE_DEVICE, UI_PAGE_TRANSFER, UI_PAGE_SETTINGS, UI_PAGE_COUNT };
+
 static NSWindow *s_mainWindow;
-static NSView *s_pages[6];
-static NSScrollView *s_hosts[6];static int s_hostCount;
+static NSView *s_pages[UI_PAGE_COUNT];
+static NSScrollView *s_hosts[UI_PAGE_COUNT];static int s_hostCount;
 static NSPopUpButton *s_rolePopup;
 static hop_config s_draft;
 static NSString *s_addresses;
 static BOOL s_saveBusy,s_logBusy,s_settingsDirty,s_populatingSettings;
-static NSButton *s_nav[6];
+static NSButton *s_nav[UI_PAGE_COUNT];
 static NSTextField *s_pageTitle, *s_headerStatus, *s_footer;
 static NSTextField *s_overviewStatus, *s_overviewPeer, *s_overviewControl, *s_overviewData, *s_overviewSharing;
 static NSTextField *s_connectionRole, *s_connectionStatus, *s_connectionPeer, *s_connectionPorts;
@@ -114,7 +116,7 @@ void mac_request_accessibility_permission(void) {
     });
 }
 
-static NSString *const kPageNames[6] = {@"概览",@"连接",@"设置",@"传输",@"日志",@"更新"};
+static NSString *const kPageNames[UI_PAGE_COUNT] = {@"概览",@"设备",@"传输",@"设置"};
 
 @interface HopDeskMainController : NSObject <NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate>
 - (void)selectPage:(id)sender;
@@ -652,9 +654,9 @@ static void refresh_connection_labels(void) {
     ui_apply_status_badge(s_overviewSharing,s_connected,s_sharing);
 }
 static void show_page(int page) {
-    if(page<0||page>=6)page=0;
+    if(page<0||page>=UI_PAGE_COUNT)page=UI_PAGE_OVERVIEW;
     s_page=page;
-    for(int i=0;i<6;++i){
+    for(int i=0;i<UI_PAGE_COUNT;++i){
         s_hosts[i].hidden=i!=page;
         s_nav[i].layer.backgroundColor=(i==page?[NSColor colorWithSRGBRed:.90 green:.95 blue:.99 alpha:1]:[NSColor clearColor]).CGColor;
         s_nav[i].contentTintColor=i==page?[NSColor systemBlueColor]:[NSColor labelColor];
@@ -662,8 +664,8 @@ static void show_page(int page) {
     }
     s_pageTitle.stringValue=kPageNames[page];
     NSClipView *clip=s_hosts[page].contentView;[clip scrollToPoint:NSMakePoint(0,MAX(0,s_pages[page].frame.size.height-clip.bounds.size.height))];[s_hosts[page] reflectScrolledClipView:clip];
-    if(page==3)refresh_transfer_page();
-    if(page==4)refresh_logs();
+    if(page==UI_PAGE_TRANSFER)refresh_transfer_page();
+    if(page==UI_PAGE_SETTINGS)refresh_logs();
 }
 static NSView *add_page(NSView *root) {
     NSView *v=ui_page(root);
@@ -734,8 +736,8 @@ static void build_settings_page(NSView *p) {
     s_resetSettingsButton=ui_button(actions,@"恢复默认",NSMakeRect(738,38,92,34),s_uiController,@selector(resetSettings:));
 }
 static void build_pages(NSView *root) {
-    for(int i=0;i<6;++i)s_pages[i]=add_page(root);
-    NSView *p=s_pages[0];
+    for(int i=0;i<UI_PAGE_COUNT;++i)s_pages[i]=add_page(root);
+    NSView *p=s_pages[UI_PAGE_OVERVIEW];
     NSView *card=ui_card(p,NSMakeRect(20,470,840,172));
     ui_label(card,@"连接概览",NSMakeRect(22,140,780,22),13,YES);
     s_overviewStatus=ui_label(card,@"等待连接",NSMakeRect(22,100,260,30),16,YES);
@@ -758,9 +760,9 @@ static void build_pages(NSView *root) {
     ui_button(card,@"切回 Windows 显示",NSMakeRect(184,54,160,36),s_uiController,@selector(switchWin:));
     ui_button(card,@"唤醒显示",NSMakeRect(358,54,112,36),s_uiController,@selector(wakeDisplay:));
     ui_button(card,@"显示睡眠",NSMakeRect(484,54,112,36),s_uiController,@selector(sleepDisplay:));
-    ui_primary_button(card,@"打开传输管理",NSMakeRect(610,54,170,36),s_uiController,@selector(selectPage:)).tag=3;
+    ui_primary_button(card,@"打开传输管理",NSMakeRect(610,54,170,36),s_uiController,@selector(selectPage:)).tag=UI_PAGE_TRANSFER;
 
-    p=s_pages[1];
+    p=s_pages[UI_PAGE_DEVICE];
     card=ui_card(p,NSMakeRect(20,420,840,220));
     ui_label(card,@"连接状态",NSMakeRect(22,176,780,22),13,YES);
     s_connectionRole=ui_label(card,@"本机角色：macOS 客户端",NSMakeRect(22,138,780,22),12,NO);
@@ -771,9 +773,7 @@ static void build_pages(NSView *root) {
     ui_label(p,@"HopDesk 会自动重连。点击“重新连接”会关闭当前控制连接，并立即尝试重新建立连接。",
         NSMakeRect(22,360,810,42),11,NO);
 
-    p=s_pages[2]; build_settings_page(p);
-
-    p=s_pages[3];
+    p=s_pages[UI_PAGE_TRANSFER];
     [p setFrameSize:NSMakeSize(880,960)];
     card=ui_card(p,NSMakeRect(20,760,840,180));
     ui_label(card,@"当前传输",NSMakeRect(22,146,780,20),13,YES);
@@ -826,28 +826,31 @@ static void build_pages(NSView *root) {
     s_taskHistory.editable=NO;s_taskHistory.font=[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
     taskHistoryScroll.documentView=s_taskHistory;[card addSubview:taskHistoryScroll];
 
-    p=s_pages[4];
-    card=ui_card(p,NSMakeRect(20,70,840,570));
-    ui_label(card,@"运行日志",NSMakeRect(22,526,780,22),13,YES);
-    NSScrollView *logScroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(18,60,804,450)];
+    p=s_pages[UI_PAGE_SETTINGS];
+    [p setFrameSize:NSMakeSize(880,1400)];
+    NSView *settingsForm=[[NSView alloc] initWithFrame:NSMakeRect(0,700,880,680)];
+    [p addSubview:settingsForm];
+    build_settings_page(settingsForm);
+
+    card=ui_card(p,NSMakeRect(20,240,840,430));
+    ui_label(card,@"运行日志",NSMakeRect(22,390,780,22),13,YES);
+    NSScrollView *logScroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(18,58,804,310)];
     logScroll.hasVerticalScroller=YES;logScroll.hasHorizontalScroller=YES;
-    s_logView=[[NSTextView alloc] initWithFrame:NSMakeRect(0,0,800,440)];
+    s_logView=[[NSTextView alloc] initWithFrame:NSMakeRect(0,0,800,300)];
     s_logView.editable=NO;s_logView.font=[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
     logScroll.documentView=s_logView;[card addSubview:logScroll];
     ui_button(card,@"刷新日志",NSMakeRect(584,12,108,32),s_uiController,@selector(refreshLogs:));
     ui_button(card,@"复制日志",NSMakeRect(710,12,108,32),s_uiController,@selector(copyLogs:));
 
-    p=s_pages[5];
-    card=ui_card(p,NSMakeRect(20,420,840,220));
-    ui_label(card,@"软件更新",NSMakeRect(22,176,780,22),13,YES);
-    s_updateVersion=ui_label(card,[NSString stringWithFormat:@"当前版本：v%s",HOP_VERSION],NSMakeRect(22,132,780,30),20,YES);
-    s_updateSource=ui_label(card,@"更新源：GitHub Releases",NSMakeRect(22,96,780,22),12,NO);
-    ui_label(card,@"检查更新会读取公开更新清单。发现新版本后，可下载、校验并自动安装。",
-        NSMakeRect(22,58,780,24),11,NO);
-    ui_primary_button(card,@"检查更新",NSMakeRect(22,12,130,34),s_uiController,@selector(checkUpdates:));
-    ui_label(p,@"如果更新源尚未发布 latest.txt，检查会明确提示读取失败，不会将其误报为“已是最新版本”。",
-        NSMakeRect(22,360,820,42),11,NO);
-    for(int i=0;i<6;++i)s_hosts[i].hidden=i!=0;
+    card=ui_card(p,NSMakeRect(20,20,840,190));
+    ui_label(card,@"软件更新",NSMakeRect(22,150,780,22),13,YES);
+    s_updateVersion=ui_label(card,[NSString stringWithFormat:@"当前版本：v%s",HOP_VERSION],NSMakeRect(22,112,780,26),18,YES);
+    s_updateSource=ui_label(card,@"更新源：GitHub Releases",NSMakeRect(22,80,780,20),12,NO);
+    ui_primary_button(card,@"检查更新",NSMakeRect(22,18,130,34),s_uiController,@selector(checkUpdates:));
+    ui_label(card,@"更新会校验清单与文件哈希；失败时会明确提示，不会误报为已是最新版本。",
+        NSMakeRect(180,20,620,30),11,NO);
+
+    for(int i=0;i<UI_PAGE_COUNT;++i)s_hosts[i].hidden=i!=UI_PAGE_OVERVIEW;
     populate_settings();
 }
 
@@ -965,7 +968,7 @@ static void create_main_window(void) {
     NSTextField *brand=ui_label(sidebar,@"HopDesk",NSMakeRect(24,740,160,32),22,YES);
     brand.autoresizingMask=NSViewMinYMargin;
     ui_label(sidebar,@"跨设备协作",NSMakeRect(26,714,150,20),11,NO).autoresizingMask=NSViewMinYMargin;
-    for(int i=0;i<6;++i){
+    for(int i=0;i<UI_PAGE_COUNT;++i){
         NSButton *b=[NSButton buttonWithTitle:kPageNames[i] target:s_uiController action:@selector(selectPage:)];
         b.frame=NSMakeRect(18,620-i*52,174,38);b.bordered=NO;b.wantsLayer=YES;b.layer.cornerRadius=8;b.autoresizingMask=NSViewMinYMargin;
         [b setButtonType:NSButtonTypePushOnPushOff];
@@ -1013,7 +1016,7 @@ void main_ui_set_status(int connected,int sharing) {
 void main_ui_refresh(void) {
     if(!s_mainWindow)return;
     refresh_connection_labels();
-    if(s_page==3)refresh_transfer_page();
+    if(s_page==UI_PAGE_TRANSFER)refresh_transfer_page();
 }
 void main_ui_shutdown(void) {
     [s_mainTimer invalidate];s_mainTimer=nil;

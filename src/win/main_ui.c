@@ -16,7 +16,7 @@
 #include <string.h>
 #include <wchar.h>
 
-#define UI_PAGE_COUNT 6
+enum { UI_PAGE_OVERVIEW, UI_PAGE_DEVICE, UI_PAGE_TRANSFER, UI_PAGE_SETTINGS, UI_PAGE_COUNT };
 #define UI_TIMER 31
 #define UI_NAV_BASE 5000
 #define UI_ID_SAVE 5100
@@ -95,7 +95,7 @@ static void refresh_transfers(void);
 static void refresh_logs(void);
 
 static const wchar_t *const kPageNames[UI_PAGE_COUNT] = {
-    L"概览", L"连接", L"设置", L"传输", L"日志", L"更新"
+    L"概览", L"设备", L"传输", L"设置"
 };
 
 static HWND child(HWND parent, const wchar_t *klass, const wchar_t *text,
@@ -205,7 +205,7 @@ static LRESULT CALLBACK page_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         else SetTextColor((HDC)w,RGB(48,58,73));
         return (LRESULT)s_canvas;
     }
-    if(m==WM_SIZE){RECT r;GetClientRect(h,&r);SCROLLINFO si={sizeof(si),SIF_RANGE|SIF_PAGE,0,dip(h==s_pages[3]?960:624),r.bottom,0,0};SetScrollInfo(h,SB_VERT,&si,TRUE);layout_nodes();return 0;}
+    if(m==WM_SIZE){RECT r;GetClientRect(h,&r);int content_height=h==s_pages[UI_PAGE_TRANSFER]?960:h==s_pages[UI_PAGE_SETTINGS]?1580:624;SCROLLINFO si={sizeof(si),SIF_RANGE|SIF_PAGE,0,dip(content_height),r.bottom,0,0};SetScrollInfo(h,SB_VERT,&si,TRUE);layout_nodes();return 0;}
     if(m==WM_VSCROLL || m==WM_MOUSEWHEEL){
         SCROLLINFO si={sizeof(si),SIF_ALL,0,0,0,0,0};GetScrollInfo(h,SB_VERT,&si);int pos=si.nPos;
         if(m==WM_MOUSEWHEEL)pos-=GET_WHEEL_DELTA_WPARAM(w)/WHEEL_DELTA*dip(48);
@@ -250,7 +250,7 @@ static unsigned long parse_number(HWND h, unsigned long fallback) {
     return end == b || *end || b[0]==L'-' ? 0xFFFFFFFFUL : v;
 }
 static void show_page(int page) {
-    if (page < 0 || page >= UI_PAGE_COUNT) page = 0;
+    if (page < 0 || page >= UI_PAGE_COUNT) page = UI_PAGE_OVERVIEW;
     s_page = page;
     /* Hide every host first: no old page may repaint over the selected one. */
     for(int i=0;i<UI_PAGE_COUNT;++i)if(s_pages[i])ShowWindow(s_pages[i],SW_HIDE);
@@ -258,8 +258,8 @@ static void show_page(int page) {
     for(int i=0;i<UI_PAGE_COUNT;++i)if(s_nav[i])InvalidateRect(s_nav[i],NULL,TRUE);
     RedrawWindow(s_main,NULL,NULL,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);
     set_text(s_title, kPageNames[page]);
-    if (page == 3) refresh_transfers();
-    if (page == 4) refresh_logs();
+    if (page == UI_PAGE_TRANSFER) refresh_transfers();
+    if (page == UI_PAGE_SETTINGS) refresh_logs();
 }
 static const wchar_t *link_state(void) {
     if (!g_app.net) return L"网络服务未启动";
@@ -792,8 +792,7 @@ static void create_settings_page(HWND p) {
 }
 static void create_pages(HWND h) {
     for(int i=0;i<UI_PAGE_COUNT;++i) s_pages[i]=page_create(h,i);
-
-    HWND p=s_pages[0];
+    HWND p=s_pages[UI_PAGE_OVERVIEW];
     group(p,L"连接概览",20,18,800,150);
     s_overview_status=label(p,L"等待连接",42,54,560,30);set_font(s_overview_status,s_font_title);
     s_overview_peer=label(p,L"设备与对端信息",42,96,560,22);
@@ -815,7 +814,7 @@ static void create_pages(HWND h) {
     button(p,L"打开传输管理",42,530,160,38,UI_ID_OPEN_TRANSFERS);
     label(p,L"查看活动任务、实时进度、取消操作和历史记录。",228,536,540,24);
 
-    p=s_pages[1];
+    p=s_pages[UI_PAGE_DEVICE];
     group(p,L"连接状态",20,18,800,235);
     s_connection_role=label(p,L"本机角色：Windows 服务端",42,58,720,24);
     s_connection_status=label(p,L"服务状态：等待连接",42,98,720,24);
@@ -824,9 +823,7 @@ static void create_pages(HWND h) {
     button(p,L"重新连接",42,210,130,34,UI_ID_RECONNECT);
     label(p,L"HopDesk 会自动重连。点击“重新连接”会关闭当前控制连接，并立即尝试重新建立连接。",42,280,760,40);
 
-    p=s_pages[2]; create_settings_page(p);
-
-    p=s_pages[3];
+    p=s_pages[UI_PAGE_TRANSFER];
     group(p,L"当前传输",20,14,800,164);
     s_xfer_title=label(p,L"暂无传输任务",40,42,740,26);set_font(s_xfer_title,s_font_title);
     s_xfer_detail=label(p,L"等待文件传输",40,72,740,20);
@@ -863,21 +860,20 @@ static void create_pages(HWND h) {
     RECT page_rect;GetClientRect(p,&page_rect);
     SCROLLINFO task_scroll={sizeof(task_scroll),SIF_RANGE|SIF_PAGE,0,dip(960),(UINT)page_rect.bottom,0,0};SetScrollInfo(p,SB_VERT,&task_scroll,TRUE);
 
-    p=s_pages[4];
-    group(p,L"运行日志",20,14,800,590);
-    s_log_edit=child(p,L"EDIT",L"",WS_BORDER|ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL|ES_AUTOHSCROLL|WS_VSCROLL|WS_HSCROLL,40,40,760,500,0);
+    p=s_pages[UI_PAGE_SETTINGS]; create_settings_page(p);
+    group(p,L"运行日志",20,620,800,590);
+    s_log_edit=child(p,L"EDIT",L"",WS_BORDER|ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL|ES_AUTOHSCROLL|WS_VSCROLL|WS_HSCROLL,40,654,760,500,0);
     SendMessageW(s_log_edit,EM_SETLIMITTEXT,512*1024,0);
-    button(p,L"刷新日志",560,552,110,34,UI_ID_LOG_REFRESH);
-    button(p,L"复制日志",690,552,110,34,UI_ID_LOG_COPY);
+    button(p,L"刷新日志",560,1160,110,34,UI_ID_LOG_REFRESH);
+    button(p,L"复制日志",690,1160,110,34,UI_ID_LOG_COPY);
 
-    p=s_pages[5];
-    group(p,L"软件更新",20,18,800,260);
+    group(p,L"软件更新",20,1240,800,300);
     wchar_t version[80];swprintf(version,80,L"当前版本：v%hs",HOP_VERSION);
-    s_update_version=label(p,version,42,58,740,28); set_font(s_update_version,s_font_title);
-    s_update_source=label(p,L"更新源：GitHub Releases",42,104,740,24);
-    label(p,L"检查更新会读取公开更新清单。发现新版本后，可下载、校验并自动安装。",42,152,740,44);
-    button(p,L"检查更新",42,220,140,36,UI_ID_UPDATE);
-    label(p,L"如果更新源尚未发布 latest.txt，检查会明确提示读取失败，不会将其误报为“已是最新版本”。",42,300,740,48);
+    s_update_version=label(p,version,42,1280,740,28);set_font(s_update_version,s_font_title);
+    s_update_source=label(p,L"更新源：GitHub Releases",42,1324,740,24);
+    label(p,L"检查更新会读取公开更新清单。发现新版本后，可下载、校验并自动安装。",42,1368,740,44);
+    button(p,L"检查更新",42,1430,140,36,UI_ID_UPDATE);
+    label(p,L"如果更新源尚未发布 latest.txt，检查会明确提示读取失败，不会将其误报为“已是最新版本”。",42,1480,740,48);
 
     for(int i=0;i<UI_PAGE_COUNT;++i) ShowWindow(s_pages[i],SW_HIDE);
     populate_settings();
@@ -965,7 +961,7 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_TIMER:
-            if(wp==UI_TIMER){refresh_connection(); if(s_page==3)refresh_transfers(); return 0;}
+            if(wp==UI_TIMER){refresh_connection(); if(s_page==UI_PAGE_TRANSFER)refresh_transfers(); return 0;}
             break;
         case WM_COMMAND:{
             int id=LOWORD(wp);
@@ -1020,7 +1016,7 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     if(s_log_edit){SendMessageW(s_log_edit,EM_SETSEL,0,-1);SendMessageW(s_log_edit,WM_COPY,0,0);}
                     return 0;
                 case UI_ID_UPDATE: update_check_async(s_main); return 0;
-                case UI_ID_OPEN_TRANSFERS: show_page(3); return 0;
+                case UI_ID_OPEN_TRANSFERS: show_page(UI_PAGE_TRANSFER); return 0;
                 case UI_ID_SWITCH_MAC: SendMessageW(g_app.hwnd,WM_COMMAND,1003,0); return 0;
                 case UI_ID_SWITCH_WIN: SendMessageW(g_app.hwnd,WM_COMMAND,1004,0); return 0;
                 case UI_ID_WAKE: SendMessageW(g_app.hwnd,WM_COMMAND,1009,0); return 0;

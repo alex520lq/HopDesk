@@ -12,7 +12,7 @@ void hop_mouse_click_reset(hop_mouse_click_tracker *tracker) {
 }
 
 uint8_t hop_mouse_click_next(hop_mouse_click_tracker *tracker,
-                             uint64_t now_ms, int32_t x, int32_t y,
+                             uint32_t now_ms, int32_t x, int32_t y,
                              uint32_t double_click_ms,
                              uint32_t double_click_width,
                              uint32_t double_click_height) {
@@ -27,14 +27,14 @@ uint8_t hop_mouse_click_next(hop_mouse_click_tracker *tracker,
     if (half_h == 0) half_h = 1;
 
     if (double_click_ms > 0 && tracker->completed && !tracker->down &&
-        now_ms >= tracker->last_up_ms &&
-        now_ms - tracker->last_up_ms <= double_click_ms &&
+        (uint32_t)(now_ms - tracker->last_down_ms) <= double_click_ms &&
         distance(x, tracker->last_x) <= half_w &&
         distance(y, tracker->last_y) <= half_h) {
         count = tracker->click_count < 3u
               ? (uint8_t)(tracker->click_count + 1u) : 1u;
     }
 
+    tracker->last_down_ms = now_ms;
     tracker->last_x = x;
     tracker->last_y = y;
     tracker->click_count = count;
@@ -43,10 +43,8 @@ uint8_t hop_mouse_click_next(hop_mouse_click_tracker *tracker,
     return count;
 }
 
-void hop_mouse_click_complete(hop_mouse_click_tracker *tracker,
-                              uint64_t now_ms) {
+void hop_mouse_click_complete(hop_mouse_click_tracker *tracker) {
     if (!tracker || !tracker->down) return;
     tracker->down = 0;
     tracker->completed = 1;
-    tracker->last_up_ms = now_ms;
 }

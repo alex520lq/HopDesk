@@ -212,7 +212,7 @@ static void capture_button(int btn, int down, const MSLLHOOKSTRUCT *event) {
         send_button(btn, 1, s_button_click_count[btn]);
     } else {
         int click_count = s_button_click_count[btn] ? s_button_click_count[btn] : 1;
-        hop_mouse_click_complete(&s_click_trackers[btn], (uint64_t)event->time);
+        hop_mouse_click_complete(&s_click_trackers[btn]);
         s_button_click_count[btn] = 0;
         send_button(btn, 0, click_count);
     }

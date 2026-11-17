@@ -10,7 +10,7 @@ extern "C" {
 /* Tracks one physical mouse button's click sequence. All coordinates are in
  * the source desktop's coordinate space; timestamps are monotonic milliseconds. */
 typedef struct {
-    uint64_t last_up_ms;
+    uint32_t last_down_ms;
     int32_t last_x, last_y;
     uint8_t click_count;
     uint8_t down;
@@ -19,12 +19,12 @@ typedef struct {
 
 void hop_mouse_click_reset(hop_mouse_click_tracker *tracker);
 uint8_t hop_mouse_click_next(hop_mouse_click_tracker *tracker,
-                             uint64_t now_ms, int32_t x, int32_t y,
+                             uint32_t now_ms, int32_t x, int32_t y,
                              uint32_t double_click_ms,
                              uint32_t double_click_width,
                              uint32_t double_click_height);
 void hop_mouse_click_complete(hop_mouse_click_tracker *tracker,
-                              uint64_t now_ms);
+                              void);
 
 #ifdef __cplusplus
 }

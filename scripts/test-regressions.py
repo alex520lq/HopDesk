@@ -228,6 +228,7 @@ int main(void){
     assert 's_page==UI_PAGE_TRANSFER' in win_ui and 'show_page(UI_PAGE_TRANSFER)' in win_ui
     assert 'h==s_pages[UI_PAGE_SETTINGS]?1580' in win_ui
     ui_contract=(ROOT/'docs/MAIN_UI.md').read_text(encoding='utf-8')
+    assert '四个一级入口及顺序：概览、设备、传输、设置。' in ui_contract
     assert '四个入口，顺序与两端实现一致：**概览、设备、传输、设置**。' in ui_contract
     assert '#### 运行日志' in ui_contract and '#### 软件更新' in ui_contract
     assert all(x in mac_ui for x in ['s_overviewControl','s_overviewData','s_overviewSharing'])

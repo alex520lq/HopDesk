@@ -41,6 +41,8 @@ static NSPopUpButton *s_edgePopups[2];
 static NSTextField *s_xferTitle, *s_xferDetail, *s_xferCounts;
 static NSProgressIndicator *s_xferProgress;
 static NSTextView *s_xferFiles, *s_logView, *s_taskHistory;
+static NSTextField *s_logNote;
+static BOOL s_fileSelectionValid;
 static NSPopUpButton *s_historyDirection, *s_historyState, *s_historyOrder;
 static NSButton *s_retryButton, *s_cancelTaskButtons[2];
 static BOOL s_refreshingTransfers, s_syncTaskSelection, s_fileBatchActive;
@@ -432,12 +434,19 @@ static void refresh_task_lists(void) {
     }
     for(int d=0;d<2;++d)if(rows[d].count==0)
         [rows[d] addObject:@{@"id":@0,@"text":d?@"暂无活动的接收任务":@"暂无活动的发送任务"}];
+    NSPoint scrollOrigins[2]={NSZeroPoint,NSZeroPoint};
     for(int d=0;d<2;++d){
+        NSScrollView *scroll=s_taskTables[d].enclosingScrollView;
+        if(scroll)scrollOrigins[d]=scroll.contentView.bounds.origin;
         s_taskRows[d]=[rows[d] copy];[s_taskTables[d] reloadData];[s_taskTables[d] deselectAll:nil];
         if(selected[d])for(NSUInteger i=0;i<s_taskRows[d].count;++i)
             if([s_taskRows[d][i][@"id"] unsignedLongLongValue]==selected[d]){
                 [s_taskTables[d] selectRowIndexes:[NSIndexSet indexSetWithIndex:i] byExtendingSelection:NO];break;
             }
+        if(scroll){
+            NSClipView *clip=scroll.contentView;[clip scrollToPoint:scrollOrigins[d]];
+            [scroll reflectScrolledClipView:clip];
+        }
     }
     (void)total;
 }
@@ -461,11 +470,16 @@ static void refresh_task_history(void) {
          t->files_done,t->files_total,byte_count(t->bytes_done),byte_count(t->bytes_total)];
     }
     NSString *next=rows.length?rows:@"暂无符合条件的任务";
-    if(![s_taskHistory.string isEqualToString:next])s_taskHistory.string=next;
+    if(![s_taskHistory.string isEqualToString:next]){
+        NSScrollView *scroll=s_taskHistory.enclosingScrollView;
+        NSPoint origin=scroll?scroll.contentView.bounds.origin:NSZeroPoint;
+        s_taskHistory.string=next;
+        if(scroll){NSClipView *clip=scroll.contentView;[clip scrollToPoint:origin];[scroll reflectScrolledClipView:clip];}
+    }
     (void)total;
 }
 static int selected_visible_file_index(void) {
-    if(!s_xferFiles || !s_fileSnapshot)return -1;
+    if(!s_fileSelectionValid || !s_xferFiles || !s_fileSnapshot)return -1;
     NSString *text=s_xferFiles.string ?: @"";
     NSUInteger location=MIN(s_xferFiles.selectedRange.location,text.length),line=0;
     for(NSUInteger i=0;i<location;++i)if([text characterAtIndex:i]=='\n')line++;
@@ -490,6 +504,10 @@ static void update_transfer_actions(void) {
 }
 static void refresh_transfer_page(void) {
     if(!s_xferTitle || s_refreshingTransfers)return;
+    int oldSelectedFileIndex=selected_visible_file_index();
+    uint32_t oldFileBatch=s_fileBatch;int oldFileDirection=s_fileDirection;
+    NSScrollView *fileScroll=s_xferFiles.enclosingScrollView;
+    NSPoint oldFileScrollOrigin=fileScroll?fileScroll.contentView.bounds.origin:NSZeroPoint;
     s_refreshingTransfers=YES;
     refresh_task_lists();
     refresh_task_history();
@@ -598,31 +616,86 @@ static void refresh_transfer_page(void) {
     }
     NSString *nextFiles=files.length?files:
         (hasSelected?(selectedSnapshot.state<=HOP_XFER_TASK_QUEUED?@"任务正在准备或排队，开始后显示文件明细":@"此任务的实时文件明细暂不可用"):@"当前没有文件明细");
-    if(![s_xferFiles.string isEqualToString:nextFiles])s_xferFiles.string=nextFiles;
+    BOOL sameFileContext=oldFileBatch==fileBatch&&oldFileDirection==fileDirection;
+    if(![s_xferFiles.string isEqualToString:nextFiles]){
+        s_xferFiles.string=nextFiles;
+        s_fileSelectionValid=NO;
+        if(sameFileContext&&oldSelectedFileIndex>=0){
+            for(int line=0;line<s_visibleFileCount;++line)if(s_visibleFileIndices[line]==oldSelectedFileIndex){
+                NSUInteger start=0;
+                for(int row=0;row<line;++row){
+                    NSRange newline=[nextFiles rangeOfString:@"\n" options:0
+                        range:NSMakeRange(start,nextFiles.length-start)];
+                    if(newline.location==NSNotFound){start=nextFiles.length;break;}
+                    start=NSMaxRange(newline);
+                }
+                NSRange newline=[nextFiles rangeOfString:@"\n" options:0
+                    range:NSMakeRange(start,nextFiles.length-start)];
+                NSUInteger end=newline.location==NSNotFound?nextFiles.length:newline.location;
+                if(end>start){[s_xferFiles setSelectedRange:NSMakeRange(start,end-start)];s_fileSelectionValid=YES;}
+                break;
+            }
+        }
+    }else if(!sameFileContext){
+        [s_xferFiles setSelectedRange:NSMakeRange(0,0)];s_fileSelectionValid=NO;
+    }
+    if(fileScroll){
+        NSClipView *clip=fileScroll.contentView;
+        if(sameFileContext)[clip scrollToPoint:oldFileScrollOrigin];
+        else [s_xferFiles scrollRangeToVisible:NSMakeRange(0,0)];
+        [fileScroll reflectScrolledClipView:clip];
+    }
     update_transfer_actions();
     s_refreshingTransfers=NO;
+}
+static BOOL log_result_is_error(NSString *text) {
+    return !text || [text hasPrefix:@"读取"] || [text hasPrefix:@"无法"] ||
+        [text hasPrefix:@"日志路径"] || [text hasPrefix:@"日志编码"] ||
+        [text hasPrefix:@"内存不足"];
+}
+static void set_log_note(NSString *message, BOOL error) {
+    if(!s_logNote)return;
+    s_logNote.stringValue=message ?: @"";
+    s_logNote.textColor=error?[NSColor systemRedColor]:[NSColor secondaryLabelColor];
 }
 static void refresh_logs(void) {
     if (!s_logView) return;
     if(s_logBusy)return;
-    s_logBusy=YES;
+    s_logBusy=YES;set_log_note(@"正在读取日志…",NO);
     NSString *path=utf8(g_mac.log_path);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
         @autoreleasepool {
             NSString *text=@"暂无日志记录。";
             @try {
-                NSFileHandle *file=[NSFileHandle fileHandleForReadingAtPath:path];
-                if(file){unsigned long long size=[file seekToEndOfFile];
-                    [file seekToFileOffset:size>262144?size-262144:0];
-                    NSData *data=[file readDataToEndOfFile];[file closeFile];
-                    /* A tail may begin in the middle of a UTF-8 sequence. */
-                    if(size>262144){const unsigned char *p=data.bytes;NSUInteger i=0;
-                        while(i<data.length&&p[i]!='\n')++i;
-                        if(i<data.length)data=[data subdataWithRange:NSMakeRange(i+1,data.length-i-1)];}
-                    text=[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"日志编码无法识别。";
+                if(!path.length)text=@"日志路径尚未初始化。";
+                else {
+                    NSFileHandle *file=[NSFileHandle fileHandleForReadingAtPath:path];
+                    if(!file){
+                        text=[[NSFileManager defaultManager] fileExistsAtPath:path]?
+                            @"读取日志失败：无法打开日志文件。":@"暂无日志记录。";
+                    } else {
+                        @try {
+                            unsigned long long size=[file seekToEndOfFile];
+                            if(size>0){
+                                [file seekToFileOffset:size>262144?size-262144:0];
+                                NSData *data=[file readDataToEndOfFile];
+                                /* A tail may begin in the middle of a UTF-8 sequence. */
+                                if(size>262144){const unsigned char *p=data.bytes;NSUInteger i=0;
+                                    while(i<data.length&&p[i]!='\n')++i;
+                                    if(i<data.length)data=[data subdataWithRange:NSMakeRange(i+1,data.length-i-1)];}
+                                if(data.length)
+                                    text=[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"日志编码无法识别。";
+                            }
+                        } @finally {[file closeFile];}
+                    }
                 }
-            } @catch(NSException *exception){text=exception.reason ?: @"读取日志失败。";}
-            dispatch_async(dispatch_get_main_queue(), ^{s_logBusy=NO;s_logView.string=text;});
+            } @catch(NSException *exception){text=[NSString stringWithFormat:@"读取日志失败：%@",exception.reason ?: @"未知错误"];}
+            dispatch_async(dispatch_get_main_queue(), ^{
+                s_logBusy=NO;s_logView.string=text;
+                if([text isEqualToString:@"暂无日志记录。"])set_log_note(@"暂无日志记录",NO);
+                else if(log_result_is_error(text))set_log_note(@"读取失败，请重试",YES);
+                else set_log_note(@"日志已更新",NO);
+            });
         }
     });
 }
@@ -730,8 +803,9 @@ static void build_settings_page(NSView *p) {
         name:NSControlTextDidChangeNotification object:s_cfg[CFG_MAC_SLEEP]];
 
     NSView *actions=ui_card(p,NSMakeRect(20,22,840,104));
-    ui_label(actions,@"保存会写入配置文件；网络监听和认证参数需要重启后生效。",NSMakeRect(18,68,560,20),11,NO);
-    s_cfgNote=ui_label(actions,@"设置已加载。修改后保存。",NSMakeRect(18,28,560,22),11,NO);
+    ui_label(actions,@"应用设置",NSMakeRect(18,82,360,20),13,YES);
+    ui_label(actions,@"保存会写入配置文件；网络监听和认证参数需要重启后生效。",NSMakeRect(18,56,560,18),11,NO);
+    s_cfgNote=ui_label(actions,@"设置已加载。修改后保存。",NSMakeRect(18,28,560,18),11,NO);
     s_saveSettingsButton=ui_primary_button(actions,@"保存设置",NSMakeRect(610,38,112,34),s_uiController,@selector(saveSettings:));
     s_resetSettingsButton=ui_button(actions,@"恢复默认",NSMakeRect(738,38,92,34),s_uiController,@selector(resetSettings:));
 }
@@ -834,6 +908,7 @@ static void build_pages(NSView *root) {
 
     card=ui_card(p,NSMakeRect(20,240,840,430));
     ui_label(card,@"运行日志",NSMakeRect(22,390,780,22),13,YES);
+    s_logNote=ui_label(card,@"尚未读取",NSMakeRect(620,390,198,22),11,NO);
     NSScrollView *logScroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(18,58,804,310)];
     logScroll.hasVerticalScroller=YES;logScroll.hasHorizontalScroller=YES;
     s_logView=[[NSTextView alloc] initWithFrame:NSMakeRect(0,0,800,300)];
@@ -893,7 +968,9 @@ static void build_pages(NSView *root) {
     refresh_transfer_page();
 }
 - (void)textViewDidChangeSelection:(NSNotification *)notification {
-    if(notification.object==s_xferFiles && !s_refreshingTransfers)update_transfer_actions();
+    if(notification.object==s_xferFiles && !s_refreshingTransfers){
+        s_fileSelectionValid=YES;update_transfer_actions();
+    }
 }
 - (void)cancelTask:(id)sender {
     int d=[sender tag]==1?1:0;hop_xfer_task_id id=selected_task(d);
@@ -935,7 +1012,8 @@ static void build_pages(NSView *root) {
 - (void)copyLogs:(id)sender {
     (void)sender;
     NSPasteboard *pb=[NSPasteboard generalPasteboard];[pb clearContents];
-    [pb setString:s_logView.string ?: @"" forType:NSPasteboardTypeString];
+    BOOL copied=[pb setString:s_logView.string ?: @"" forType:NSPasteboardTypeString];
+    set_log_note(copied?@"日志已复制到剪贴板":@"复制失败，请重试",!copied);
 }
 - (void)checkUpdates:(id)sender {(void)sender;statusbar_check_updates();}
 - (BOOL)windowShouldClose:(NSWindow *)sender {

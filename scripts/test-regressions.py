@@ -1587,6 +1587,8 @@ int main(void){
 #define LB_RESETCONTENT 2
 #define LB_ADDSTRING 3
 #define LB_SETCURSEL 4
+#define LB_GETTOPINDEX 5
+#define LB_SETTOPINDEX 6
 #define MB_OK 0
 #define MB_YESNO 1
 #define MB_ICONINFORMATION 2
@@ -1594,8 +1596,8 @@ int main(void){
 #define MB_DEFBUTTON2 256
 #define IDYES 6
 typedef intptr_t LPARAM;typedef uintptr_t WPARAM;typedef intptr_t LRESULT;
-typedef struct {int count,selected;} list;typedef list* HWND;
-static list lists[2]={{0,-1},{0,-1}};
+typedef struct {int count,selected,top;} list;typedef list* HWND;
+static list lists[2]={{0,-1,0},{0,-1,0}};
 static HWND s_task_lists[2]={&lists[0],&lists[1]},s_main;
 static hop_xfer_task_id s_task_ids[2][UI_TASK_CAP];static int s_task_counts[2];
 static hop_xfer_task_snapshot *s_tasks_snapshot;
@@ -1605,9 +1607,11 @@ uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
 static int connected=1,answer=IDYES,calls;
 static LRESULT SendMessageW(HWND h,int op,WPARAM w,LPARAM l){(void)l;
     if(op==LB_GETCURSEL)return h->selected;
-    if(op==LB_RESETCONTENT){h->count=0;h->selected=-1;return 0;}
+    if(op==LB_GETTOPINDEX)return h->top;
+    if(op==LB_RESETCONTENT){h->count=0;h->selected=-1;h->top=0;return 0;}
     if(op==LB_ADDSTRING)return h->count++;
     if(op==LB_SETCURSEL){h->selected=(int)w;return 0;}
+    if(op==LB_SETTOPINDEX){h->top=(int)w;return 0;}
     assert(0);return LB_ERR;
 }
 static int MessageBoxW(HWND h,const wchar_t *text,const wchar_t *title,int flags){(void)h;(void)text;(void)title;(void)flags;return answer;}
@@ -1623,16 +1627,17 @@ int main(void){
  assert(hop_xfer_task_init_classified(&b,0,0,2,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
  assert(hop_xfer_task_init_classified(&rx,0,0,2,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_FILES));
  refresh_task_lists();assert(s_task_counts[0]==2&&s_task_counts[1]==1);
- for(int i=0;i<s_task_counts[0];i++)if(s_task_ids[0][i]==a.id)lists[0].selected=i;
- assert(selected_task(0)==a.id);
+ for(int i=0;i<s_task_counts[0];i++)if(s_task_ids[0][i]==b.id)lists[0].selected=i;
+ lists[0].top=1;
+ assert(selected_task(0)==b.id);
  assert(hop_xfer_task_init_classified(&c,0,0,3,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
- refresh_task_lists();assert(selected_task(0)==a.id);
- connected=0;answer=0;cancel_selected_task(0);assert(!calls && !hop_xfer_task_cancel_requested(a.id));
- answer=IDYES;cancel_selected_task(0);assert(calls==1 && hop_xfer_task_cancel_requested(a.id));
- assert(!hop_xfer_task_cancel_requested(b.id) && !hop_xfer_task_cancel_requested(c.id) && !hop_xfer_task_cancel_requested(rx.id));
- hop_xfer_task_dispose(&a);refresh_task_lists();assert(!selected_task(0));
+ refresh_task_lists();assert(selected_task(0)==b.id && lists[0].top==1);
+ connected=0;answer=0;cancel_selected_task(0);assert(!calls && !hop_xfer_task_cancel_requested(b.id));
+ answer=IDYES;cancel_selected_task(0);assert(calls==1 && hop_xfer_task_cancel_requested(b.id));
+ assert(!hop_xfer_task_cancel_requested(a.id) && !hop_xfer_task_cancel_requested(c.id) && !hop_xfer_task_cancel_requested(rx.id));
+ hop_xfer_task_dispose(&b);refresh_task_lists();assert(!selected_task(0) && lists[0].top==1);
  cancel_selected_task(0);assert(calls==1);
- hop_xfer_task_dispose(&b);hop_xfer_task_dispose(&c);hop_xfer_task_dispose(&rx);free(s_tasks_snapshot);
+ hop_xfer_task_dispose(&a);hop_xfer_task_dispose(&c);hop_xfer_task_dispose(&rx);free(s_tasks_snapshot);
  puts("PASS: task list preserves Task ID through reordering and cancels only selection");return 0;
 }
 """

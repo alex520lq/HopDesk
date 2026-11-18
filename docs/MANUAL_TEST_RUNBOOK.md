@@ -123,6 +123,17 @@ Run every case in both directions (Windows→Mac and Mac→Windows).
 | STAB-004 | Repeatedly cancel and restart transfers | Queue and clipboard state reset correctly |
 | STAB-005 | Revoke Accessibility permission while connected | Injection failure is safe; app recovers after permission restored |
 
+## Main window UI
+
+| ID | Steps | Expected result |
+|---|---|---|
+| UI-001 | Open each of the four pages; resize/minimize/restore the main window | Navigation, page title, status header and footer remain visible; no stale page paints over the active page |
+| UI-002 | On Windows, move the window between 100%, 125%, 150% and 200% DPI displays; on macOS, test minimum/default/maximum window sizes | Controls remain legible and clickable; no overlap, clipping or inaccessible primary actions |
+| UI-003 | While a transfer is active, scroll both task lists and file details away from the top, select a task/file, and wait through several refresh cycles | Scroll positions and selected task/file remain stable; cancel/retry actions continue to target the selected item |
+| UI-004 | Open Settings and refresh logs with a missing/empty file, a normal log, and an unreadable log; copy the result | Loading, updated, empty, failure and copied feedback are clear; the UI remains responsive |
+| UI-005 | Use only Tab, Shift+Tab, Enter and Space to navigate and operate settings/transfer controls | Focus is visible and follows a predictable order; validation failure focuses the invalid setting |
+| UI-006 | Filter history to a state with no records and open Transfers with no active tasks | Empty states are explicit and no stale task/file details are shown |
+
 ## Current status
 
 The GitHub-hosted CI covers portable core validation and TCP loopback only.

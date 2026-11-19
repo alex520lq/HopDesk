@@ -136,19 +136,37 @@ pwsh scripts/build-win.ps1 -Compiler msvc
 
 ### macOS
 
+#### 从 GitHub Actions 安装
+
+1. 登录有权访问源码仓库的 GitHub 账号，打开 [Build HopDesk](https://github.com/alex520lq/HopDesk/actions/workflows/build.yml)，选择 `main` 上最近一次成功的构建，在 **Artifacts** 下载 `hopdesk-macos`。
+2. 解压下载的文件，再解压里面的 `HopDesk-macOS.zip`。进入包含 `HopDesk.app` 和 `install-macos.command` 的目录。
+3. 如果 HopDesk 正在运行，先从 macOS 菜单栏选择「退出」，然后执行以下命令。安装器会将 App 安装到 `~/Applications/HopDesk.app` 并启动，配置和日志保存在 `~/Library/Application Support/HopDesk`。
+
+   ```sh
+   bash ./install-macos.command
+   ```
+
+4. 首次使用远端键鼠时，在「系统设置 → 隐私与安全性 → 辅助功能」中为这份 HopDesk 授权并重新启动。需要 HopDesk 监听本机键鼠或粘贴快捷键时，按系统提示开启「输入监控」。
+
+#### 已配置固定签名的 Mac 从 CI 更新
+
+如果这台 Mac 已配置 `~/.local/bin/hopdesk-update-local`，并且 `/Applications/HopDesk.app` 已用本机固定证书签名，先确认 GitHub CLI（`gh`）已登录有权访问源码仓库的账号。退出 HopDesk 后运行以下命令。
+
+```sh
+~/.local/bin/hopdesk-update-local --ci
+```
+
+命令会下载 `main` 最近一次成功构建的 Mac 包，校验后用钥匙串里的同一张证书签名，备份旧版、覆盖安装并启动。直接使用 CI 编译好的程序，可以沿用该签名身份已获授予的辅助功能权限。这条命令是单独配置的本机工具，首次安装走上面的安装步骤。
+
+#### 从源码构建
+
 需要 macOS、Xcode Command Line Tools 和 Apple Clang。
 
 ```sh
 sh scripts/build-mac.sh
 ```
 
-脚本输出：
-
-```text
-build/hopdesk
-```
-
-首次使用键鼠注入时，需要在 macOS「系统设置 → 隐私与安全性 → 辅助功能」中为 HopDesk 授权。
+构建产物为 `build/HopDesk.app`、`build/HopDesk-macOS.zip` 和 `build/hopdesk`。安装时可按上面的步骤解压 `build/HopDesk-macOS.zip`。
 
 ## 自动更新
 

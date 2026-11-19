@@ -18,7 +18,6 @@ typedef enum {
 
 typedef struct {
     hop_xfer_status status;
-    hop_xfer_file_status files[HOP_XFER_FILE_LIMIT];
     int count;
     uint64_t revision;
     uint64_t sample_ms;
@@ -26,6 +25,8 @@ typedef struct {
     /* Per-batch cumulative wall time by stage; durations may overlap across
      * receive parsing and the asynchronous disk writer. */
     uint64_t stage_ns[HOP_XFER_TIME_COUNT];
+    /* Keep resettable metadata above this table. Only the first count entries are visible. */
+    hop_xfer_file_status files[HOP_XFER_FILE_LIMIT];
 } hop_xfer_tracking;
 
 #ifdef __cplusplus
@@ -35,6 +36,8 @@ extern "C" {
 uint32_t hop_xfer_job_total(int image, int entries);
 
 int hop_xfer_tracking_matches(const hop_xfer_tracking *t, uint32_t batch);
+
+void hop_xfer_tracking_reset(hop_xfer_tracking *t);
 
 void hop_xfer_tracking_add_time(hop_xfer_tracking *t, uint32_t batch,
         int stage, uint64_t elapsed_ns);

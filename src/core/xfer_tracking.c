@@ -1,4 +1,5 @@
 #include "xfer_tracking.h"
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -8,6 +9,10 @@ uint32_t hop_xfer_job_total(int image, int entries) {
 
 int hop_xfer_tracking_matches(const hop_xfer_tracking *t, uint32_t batch) {
     return t->status.active && t->status.batch == batch;
+}
+
+void hop_xfer_tracking_reset(hop_xfer_tracking *t) {
+    memset(t, 0, offsetof(hop_xfer_tracking, files));
 }
 
 void hop_xfer_tracking_add_time(hop_xfer_tracking *t, uint32_t batch,
@@ -20,7 +25,7 @@ void hop_xfer_tracking_add_time(hop_xfer_tracking *t, uint32_t batch,
 
 void hop_xfer_tracking_begin(hop_xfer_tracking *t, uint32_t batch,
         int direction, uint32_t files, uint64_t bytes, const char *name, int phase) {
-    memset(t, 0, sizeof(*t));
+    hop_xfer_tracking_reset(t);
     t->status.batch = batch; t->status.direction = direction;
     t->status.active = 1; t->status.phase = phase;
     t->status.files_total = files; t->status.bytes_total = bytes;
@@ -31,6 +36,7 @@ void hop_xfer_tracking_file(hop_xfer_tracking *t, uint32_t batch,
         uint32_t id, const char *path, uint64_t size, int directory, int phase) {
     if (!hop_xfer_tracking_matches(t, batch) || id == 0 || id > HOP_XFER_FILE_LIMIT) return;
     int i = (int)id - 1;
+    int first = i;
     hop_xfer_file_status *f = &t->files[i];
     if (i < t->count) {
         /* Re-registering an existing id is a retry: roll back only that
@@ -44,9 +50,12 @@ void hop_xfer_tracking_file(hop_xfer_tracking *t, uint32_t batch,
         t->status.speed_bytes_per_sec = 0;
         t->status.last_progress_ms = 0;
         t->status.eta_seconds = 0;
+    } else {
+        /* Clear any gap before exposing it through the file snapshot. */
+        first = t->count;
+        t->count = i + 1;
     }
-    if (t->count < (int)id) t->count = (int)id;
-    memset(f, 0, sizeof(*f));
+    memset(&t->files[first], 0, (size_t)(i - first + 1) * sizeof(*f));
     f->index = (uint32_t)i; f->phase = phase;
     f->is_directory = directory; f->bytes_total = size;
     if (path) snprintf(f->relative_path, sizeof(f->relative_path), "%s", path);

@@ -58,7 +58,10 @@ static int sender_worker_status_should_start(void *u,uint32_t batch){
     ReleaseSRWLockShared(&s_status_lock);return show;
 }
 static void sender_worker_status_reset(void *u){
-    (void)u;AcquireSRWLockExclusive(&s_status_lock);memset(&s_send_status,0,sizeof(s_send_status));ReleaseSRWLockExclusive(&s_status_lock);
+    (void)u;
+    AcquireSRWLockExclusive(&s_status_lock);
+    hop_xfer_tracking_reset(&s_send_status);
+    ReleaseSRWLockExclusive(&s_status_lock);
 }
 static void sender_worker_clear_active_adapter(void *u,uint32_t batch,uint64_t task){
     (void)u;EnterCriticalSection(&s_x.lock);(void)hop_xfer_sender_active_job_clear_if_matches(&s_x.active_job,batch,task);

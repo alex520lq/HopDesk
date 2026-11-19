@@ -164,7 +164,7 @@ int main(void) {
 #include <stddef.h>
 #include <wchar.h>
 #include <stdio.h>
-typedef int HWND;typedef int HDC;typedef int HPEN;typedef int HGDIOBJ;
+typedef int HWND;typedef int HDC;typedef int HPEN;typedef int HBRUSH;typedef int HGDIOBJ;
 typedef struct {int left,top,right,bottom;} RECT;
 typedef struct {HWND page;const wchar_t *title;int x,y,w,h;} ui_card;
 static ui_card s_cards[32];static int s_card_count;static int s_font=3,scale=1;
@@ -174,11 +174,12 @@ static int dip(int n){return n*scale;}
 #define TRANSPARENT 1
 #define DT_SINGLELINE 1
 #define DT_LEFT 0
+#define DT_VCENTER 4
 #define RGB(r,g,b) 0
-static int boxes,titles,last_top,last_left,last_right,last_bottom,text_top;
+static int boxes,titles,fills,last_top,last_left,last_right,last_bottom,text_top;
 static HPEN CreatePen(int style,int width,int color){(void)style;(void)width;(void)color;return 1;}
+static HBRUSH CreateSolidBrush(int color){(void)color;fills++;return 2;}
 static HGDIOBJ SelectObject(HDC dc,HGDIOBJ o){(void)dc;return o;}
-static HGDIOBJ GetStockObject(int n){return n;}
 static int SetBkMode(HDC dc,int mode){(void)dc;return mode;}
 static int SetTextColor(HDC dc,int color){(void)dc;return color;}
 static int RoundRect(HDC dc,int l,int t,int r,int b,int x,int y){(void)dc;(void)x;(void)y;boxes++;last_left=l;last_top=t;last_right=r;last_bottom=b;return 1;}
@@ -188,14 +189,90 @@ static int DeleteObject(HGDIOBJ o){(void)o;return 1;}
     ui_main=r'''
 int main(void){
     group(1,L"first",20,18,800,145);group(2,L"other page",10,20,30,40);
-    paint_cards(1,0,30);assert(boxes==1 && titles==1);
-    assert(last_left==20 && last_top==-12 && last_right==819 && last_bottom==132 && text_top==-2);
-    boxes=titles=0;scale=2;paint_cards(2,0,10);assert(boxes==1 && titles==1);
-    assert(last_left==20 && last_top==30 && last_right==79 && last_bottom==109 && text_top==50);
+    paint_cards(1,0,30);assert(boxes==1 && titles==1 && fills==1);
+    assert(last_left==20 && last_top==-12 && last_right==819 && last_bottom==132 && text_top==0);
+    boxes=titles=fills=0;scale=2;paint_cards(2,0,10);assert(boxes==1 && titles==1 && fills==1);
+    assert(last_left==20 && last_top==30 && last_right==79 && last_bottom==109 && text_top==54);
     puts("PASS: Windows page card painting and scroll offsets (API doubles)");return 0;
 }
 '''
     run('win_ui_cards',ui_preamble+group_fn+'\n'+extract(ui,'paint_cards')+ui_main)
+
+    # The two native front ends expose the same operational dashboard,
+    # consistent settings groups, and one task-history surface.
+    mac_ui=(ROOT/'src/mac/main_ui.m').read_text(encoding='utf-8')
+    win_ui=(ROOT/'src/win/main_ui.c').read_text(encoding='utf-8')
+    # Both native clients expose exactly four top-level destinations in the
+    # same order. Logs and updates remain reachable inside the Settings page.
+    page_enum='enum { UI_PAGE_OVERVIEW, UI_PAGE_DEVICE, UI_PAGE_TRANSFER, UI_PAGE_SETTINGS, UI_PAGE_COUNT };'
+    assert page_enum in mac_ui and page_enum in win_ui
+    assert 'static NSString *const kPageNames[UI_PAGE_COUNT] = {@"概览",@"设备",@"传输",@"设置"};' in mac_ui
+    assert 'L"概览", L"设备", L"传输", L"设置"' in win_ui
+    assert 'static NSView *s_pages[UI_PAGE_COUNT];' in mac_ui
+    assert 'static NSScrollView *s_hosts[UI_PAGE_COUNT];' in mac_ui
+    assert 'static NSButton *s_nav[UI_PAGE_COUNT];' in mac_ui
+    assert 'static HWND s_pages[UI_PAGE_COUNT];' in win_ui
+    assert 's_pages[4]' not in mac_ui and 's_pages[5]' not in mac_ui
+    assert 's_pages[4]' not in win_ui and 's_pages[5]' not in win_ui
+    assert 'p=s_pages[UI_PAGE_TRANSFER];' in mac_ui and 'p=s_pages[UI_PAGE_SETTINGS];' in mac_ui
+    assert 'p=s_pages[UI_PAGE_TRANSFER];' in win_ui and 'p=s_pages[UI_PAGE_SETTINGS]; create_settings_page(p);' in win_ui
+    assert 'build_settings_page(settingsForm)' in mac_ui and '[p setFrameSize:NSMakeSize(880,1400)]' in mac_ui
+    assert 'ui_label(card,@"运行日志"' in mac_ui and 'ui_label(card,@"软件更新"' in mac_ui
+    assert 'group(p,L"运行日志",20,620,800,590)' in win_ui
+    assert 'group(p,L"软件更新",20,1240,800,300)' in win_ui
+    assert 'if(page==UI_PAGE_TRANSFER)refresh_transfer_page();' in mac_ui
+    assert 'if(page==UI_PAGE_SETTINGS)refresh_logs();' in mac_ui
+    assert 'if(s_page==UI_PAGE_TRANSFER)refresh_transfer_page();' in mac_ui
+    assert 'if (page == UI_PAGE_TRANSFER) refresh_transfers();' in win_ui
+    assert 'if (page == UI_PAGE_SETTINGS) refresh_logs();' in win_ui
+    assert 's_page==UI_PAGE_TRANSFER' in win_ui and 'show_page(UI_PAGE_TRANSFER)' in win_ui
+    assert 'h==s_pages[UI_PAGE_SETTINGS]?1580' in win_ui
+    ui_contract=(ROOT/'docs/MAIN_UI.md').read_text(encoding='utf-8')
+    assert '四个一级入口及顺序：概览、设备、传输、设置。' in ui_contract
+    assert '四个入口，顺序与两端实现一致：**概览、设备、传输、设置**。' in ui_contract
+    assert '#### 运行日志' in ui_contract and '#### 软件更新' in ui_contract
+    assert all(x in mac_ui for x in ['s_overviewControl','s_overviewData','s_overviewSharing'])
+    assert all(x in win_ui for x in ['s_overview_control','s_overview_data','s_overview_sharing'])
+    for source,active,history,cancel in [
+        (mac_ui,'s_taskTables','s_taskHistory','cancelTask:'),
+        (win_ui,'s_task_lists','s_task_history','cancel_selected_task')
+    ]:
+        assert active in source and history in source and cancel in source
+        assert 'bytes_done' in source and 'files_done' in source
+        assert '传输历史' in source and '活动任务' in source
+    assert 's_xferHistory' not in mac_ui and 's_xfer_history' not in win_ui
+    assert all(x in mac_ui for x in ['CFG_ROLE','CFG_HOST','CFG_TOKEN','保存设置'])
+    assert all(x in win_ui for x in ['CFG_ROLE','CFG_HOST','CFG_TOKEN','UI_ID_SAVE'])
+    assert all(x in mac_ui for x in ['s_settingsDirty','NSControlTextDidChangeNotification',
+        'settings_validation_error','set_settings_editors_enabled','s_saveSettingsButton.enabled=s_settingsDirty&&!s_saveBusy'])
+    assert all(x in win_ui for x in ['s_settings_dirty','HIWORD(wp)==EN_CHANGE',
+        'settings_validation_error','set_settings_editors_enabled','s_cfg_save_button,s_settings_dirty&&!s_save_busy'])
+    assert 'update_settings_role_fields' in mac_ui and 'update_settings_role_fields' in win_ui
+    for source in [mac_ui,win_ui]:
+        save=extract(source,'save_settings')
+        assert 'settings_validation_error' in save
+        assert '正在保存设置' in save
+        assert '设置已保存' in source and '有未保存的更改' in source
+    assert 'NSAlert' not in extract(mac_ui,'save_settings')
+    assert 'MessageBoxW' not in extract(win_ui,'save_settings')
+    # Selecting a live task must drive the matching detail snapshot and file batch.
+    assert all(x in mac_ui for x in ['tableViewSelectionDidChange',
+        'hop_xfer_task_get_snapshot(selectedId,&selectedSnapshot)',
+        'xfer_get_files(fileDirection,fileBatch', 'selected_visible_file_index',
+        'NSAlertSecondButtonReturn', 's_cancelTaskButtons[d].enabled=canCancel'])
+    assert all(x in win_ui for x in ['UI_ID_SEND_TASKS', 'UI_ID_RECEIVE_TASKS',
+        'hop_xfer_task_get_snapshot(selected_id,&selected_snapshot)',
+        'xfer_get_files(file_direction,file_batch', 'selected_visible_file_index',
+        'MB_DEFBUTTON2', 's_cancel_task_buttons[d]'])
+    assert '此任务的实时文件明细暂不可用' in mac_ui and '此任务的实时文件明细暂不可用' in win_ui
+    assert '暂无活动的发送任务' in mac_ui and '暂无活动的发送任务' in win_ui
+    assert 's_fileBatchActive=hasSelected?(hasTaskStatus && st.active):st.active' in mac_ui
+    assert 's_file_batch_active=has_selected?(has_task_status&&st.active):st.active' in win_ui
+    assert 'currentBatch=t->transfer_id && current.batch==t->transfer_id' in mac_ui
+    assert 'current_batch=t->transfer_id && current.batch==t->transfer_id' in win_ui
+    assert '等待开始' in mac_ui and '等待开始' in win_ui
+    assert '!(s_fileBatch & HOP_XFER_PASTE_BATCH_FLAG)' in mac_ui
+    assert '!(s_file_batch & HOP_XFER_PASTE_BATCH_FLAG)' in win_ui
 
     # Mac edge entry must keep tracking drag events before sharing starts.
     capture=(ROOT/'src/mac/capture.c').read_text(encoding='utf-8')
@@ -233,6 +310,7 @@ int main(void){
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include "mouse_click.h"
 typedef uint8_t BYTE;typedef uint32_t DWORD;typedef struct {int x,y;} POINT;
 typedef struct {int server_edge,edge_margin_px,switch_cooldown_ms,screen_w,screen_h;} cfg_t;
 typedef struct {cfg_t cfg;int peer_w,peer_h,state;void *net;} app_t;
@@ -242,6 +320,8 @@ enum {HOP_EDGE_LEFT=0,HOP_EDGE_RIGHT=1,HOP_EDGE_TOP=2,HOP_EDGE_BOTTOM=3,
       HOP_MSG_MOUSE_BUTTON=11,HOP_MSG_MOUSE_ENTER=14,HOP_MSG_KEY_DOWN=20};
 enum {SM_CYVIRTUALSCREEN=1,SM_CXVIRTUALSCREEN=2,SM_CYSCREEN=3,SM_CXSCREEN=4};
 static int s_sharing,s_have_last,s_physical_buttons[3],s_buttons[3],event_count,fail_enter,local_releases;
+static hop_mouse_click_tracker s_click_trackers[3];
+static BYTE s_button_click_count[3];
 static POINT s_anchor,s_last;static DWORD s_cooldown_until;static uint8_t events[16];
 static int net_server_send(void *net,uint8_t type,const void *p,uint32_t len){
     (void)net;(void)p;(void)len;events[event_count++]=type;
@@ -340,10 +420,10 @@ int main(void){
     # Server return must follow all remote release frames.
     mac_return=extract(capture,'mac_capture_return')
     assert mac_return.index('send_key(k, 0)') < mac_return.index('net_send(HOP_MSG_EDGE_LEAVE, NULL, 0)')
-    assert mac_return.index('send_button(b, 0)') < mac_return.index('net_send(HOP_MSG_EDGE_LEAVE, NULL, 0)')
+    assert mac_return.index('send_button(b, 0,') < mac_return.index('net_send(HOP_MSG_EDGE_LEAVE, NULL, 0)')
     win_return=extract(mouse,'enter_local')
     assert win_return.index('kbd_end_sharing()') < win_return.index('net_server_send(g_app.net, HOP_MSG_EDGE_LEAVE, NULL, 0)')
-    assert win_return.index('send_button(i, 0)') < win_return.index('net_server_send(g_app.net, HOP_MSG_EDGE_LEAVE, NULL, 0)')
+    assert win_return.index('send_button(i, 0,') < win_return.index('net_server_send(g_app.net, HOP_MSG_EDGE_LEAVE, NULL, 0)')
 
 
     clip=(ROOT/'src/win/clipboard.c').read_text(encoding='utf-8')+'\n'+(ROOT/'src/win/clipboard_offer.inc').read_text(encoding='utf-8')+'\n'+(ROOT/'src/win/clipboard_paste.inc').read_text(encoding='utf-8')
@@ -1499,6 +1579,7 @@ int main(void){
 #include <stdio.h>
 #include <wchar.h>
 #include <stdint.h>
+#include <string.h>
 #define UI_TASK_CAP HOP_TASK_MANAGER_MAX_LIVE
 #define LB_ERR (-1)
 #define LB_ERRSPACE (-2)
@@ -1506,28 +1587,36 @@ int main(void){
 #define LB_RESETCONTENT 2
 #define LB_ADDSTRING 3
 #define LB_SETCURSEL 4
+#define LB_GETTOPINDEX 5
+#define LB_SETTOPINDEX 6
 #define MB_OK 0
 #define MB_YESNO 1
 #define MB_ICONINFORMATION 2
 #define MB_ICONWARNING 4
+#define MB_DEFBUTTON2 256
 #define IDYES 6
 typedef intptr_t LPARAM;typedef uintptr_t WPARAM;typedef intptr_t LRESULT;
-typedef struct {int count,selected;} list;typedef list* HWND;
-static list lists[2]={{0,-1},{0,-1}};
+typedef struct {int count,selected,top;} list;typedef list* HWND;
+static list lists[2]={{0,-1,0},{0,-1,0}};
 static HWND s_task_lists[2]={&lists[0],&lists[1]},s_main;
 static hop_xfer_task_id s_task_ids[2][UI_TASK_CAP];static int s_task_counts[2];
 static hop_xfer_task_snapshot *s_tasks_snapshot;
+static hop_xfer_status_pair test_status_pair;
+static void xfer_get_status_pair(hop_xfer_status_pair *out){*out=test_status_pair;}
 uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
 static int connected=1,answer=IDYES,calls;
 static LRESULT SendMessageW(HWND h,int op,WPARAM w,LPARAM l){(void)l;
     if(op==LB_GETCURSEL)return h->selected;
-    if(op==LB_RESETCONTENT){h->count=0;h->selected=-1;return 0;}
+    if(op==LB_GETTOPINDEX)return h->top;
+    if(op==LB_RESETCONTENT){h->count=0;h->selected=-1;h->top=0;return 0;}
     if(op==LB_ADDSTRING)return h->count++;
     if(op==LB_SETCURSEL){h->selected=(int)w;return 0;}
+    if(op==LB_SETTOPINDEX){h->top=(int)w;return 0;}
     assert(0);return LB_ERR;
 }
 static int MessageBoxW(HWND h,const wchar_t *text,const wchar_t *title,int flags){(void)h;(void)text;(void)title;(void)flags;return answer;}
 static int xfer_connected(void){return connected;}
+static void utf8_to_wide(const char *src,wchar_t *dst,size_t cap){(void)src;if(cap)dst[0]=0;}
 static int xfer_cancel_task(hop_xfer_task_id id){calls++;return hop_xfer_task_request_cancel(id);}
 static void refresh_transfers(void){}
 """
@@ -1538,16 +1627,17 @@ int main(void){
  assert(hop_xfer_task_init_classified(&b,0,0,2,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
  assert(hop_xfer_task_init_classified(&rx,0,0,2,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_FILES));
  refresh_task_lists();assert(s_task_counts[0]==2&&s_task_counts[1]==1);
- for(int i=0;i<s_task_counts[0];i++)if(s_task_ids[0][i]==a.id)lists[0].selected=i;
- assert(selected_task(0)==a.id);
+ for(int i=0;i<s_task_counts[0];i++)if(s_task_ids[0][i]==b.id)lists[0].selected=i;
+ lists[0].top=1;
+ assert(selected_task(0)==b.id);
  assert(hop_xfer_task_init_classified(&c,0,0,3,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
- refresh_task_lists();assert(selected_task(0)==a.id);
- connected=0;answer=0;cancel_selected_task(0);assert(!calls && !hop_xfer_task_cancel_requested(a.id));
- answer=IDYES;cancel_selected_task(0);assert(calls==1 && hop_xfer_task_cancel_requested(a.id));
- assert(!hop_xfer_task_cancel_requested(b.id) && !hop_xfer_task_cancel_requested(c.id) && !hop_xfer_task_cancel_requested(rx.id));
- hop_xfer_task_dispose(&a);refresh_task_lists();assert(!selected_task(0));
+ refresh_task_lists();assert(selected_task(0)==b.id && lists[0].top==1);
+ connected=0;answer=0;cancel_selected_task(0);assert(!calls && !hop_xfer_task_cancel_requested(b.id));
+ answer=IDYES;cancel_selected_task(0);assert(calls==1 && hop_xfer_task_cancel_requested(b.id));
+ assert(!hop_xfer_task_cancel_requested(a.id) && !hop_xfer_task_cancel_requested(c.id) && !hop_xfer_task_cancel_requested(rx.id));
+ hop_xfer_task_dispose(&b);refresh_task_lists();assert(!selected_task(0) && lists[0].top==1);
  cancel_selected_task(0);assert(calls==1);
- hop_xfer_task_dispose(&b);hop_xfer_task_dispose(&c);hop_xfer_task_dispose(&rx);free(s_tasks_snapshot);
+ hop_xfer_task_dispose(&a);hop_xfer_task_dispose(&c);hop_xfer_task_dispose(&rx);free(s_tasks_snapshot);
  puts("PASS: task list preserves Task ID through reordering and cancels only selection");return 0;
 }
 """
@@ -2116,3 +2206,20 @@ int main(void) {
         assert 's_seen_paste_requests' not in paste and 's_offer_request_seq' not in paste
 
     print('All targeted regressions passed.',flush=True)
+
+# Mouse click-state regression: the shared tracker is used by the Windows
+# low-level hook, and the Quartz injector must preserve the count end-to-end.
+mouse_core = (ROOT / 'src/core/mouse_click.c').read_text(encoding='utf-8')
+mouse_header = (ROOT / 'src/core/mouse_click.h').read_text(encoding='utf-8')
+win_mouse = (ROOT / 'src/win/mouse_capture.c').read_text(encoding='utf-8')
+mac_capture = (ROOT / 'src/mac/capture.c').read_text(encoding='utf-8')
+mac_inject = (ROOT / 'src/mac/inject.c').read_text(encoding='utf-8')
+mac_protocol = (ROOT / 'src/mac/net_client_protocol.inc').read_text(encoding='utf-8')
+assert 'hop_mouse_click_next' in win_mouse and 'hop_mouse_click_complete' in win_mouse
+assert 'GetDoubleClickTime()' in win_mouse and 'SM_CXDOUBLECLK' in win_mouse and 'SM_CYDOUBLECLK' in win_mouse
+assert 'uint8_t p[3]' in win_mouse and 'net_server_send(g_app.net, HOP_MSG_MOUSE_BUTTON, p, 3)' in win_mouse
+assert 'kCGMouseEventClickState' in mac_capture and 'uint8_t p[3]' in mac_capture
+assert 'CGEventSetIntegerValueField(e, kCGMouseEventClickState, click_count)' in mac_inject
+assert 'len >= 3 ? p[2] : 1' in mac_protocol
+assert 'click_count < 1 || click_count > 3' in mac_inject
+assert 'click_count' in mouse_core and 'hop_mouse_click_tracker' in mouse_header

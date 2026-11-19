@@ -16,7 +16,7 @@
 #include <ApplicationServices/ApplicationServices.h>
 
 static struct {
-    int sharing, btn_held[3];
+    int sharing, btn_held[3], btn_click_count[3];
     double mouse_x, mouse_y, peer_w, peer_h;
 } s_input; /* control-dispatch owner; never read by UI/data threads */
 void inject_set_peer_geometry(uint32_t w, uint32_t h) { s_input.peer_w = w; s_input.peer_h = h; }
@@ -155,8 +155,12 @@ void inject_release_all(void) {
                                i == HOP_BTN_MIDDLE ? kCGMouseButtonCenter : kCGMouseButtonLeft;
         CGEventType type = i == HOP_BTN_RIGHT ? kCGEventRightMouseUp :
                            i == HOP_BTN_MIDDLE ? kCGEventOtherMouseUp : kCGEventLeftMouseUp;
-        post_mouse(CGEventCreateMouseEvent(NULL, type, pt, button));
+        CGEventRef release = CGEventCreateMouseEvent(NULL, type, pt, button);
+        if (release) CGEventSetIntegerValueField(release, kCGMouseEventClickState,
+                                                  s_input.btn_click_count[i] ? s_input.btn_click_count[i] : 1);
+        post_mouse(release);
         s_input.btn_held[i] = 0;
+        s_input.btn_click_count[i] = 0;
     }
 
     for (i = 0; i < 4; ++i) {
@@ -182,7 +186,7 @@ void inject_reset(void) {
     s_over = 0;
     s_input.mouse_x = 0;
     s_input.mouse_y = 0;
-    for (int i = 0; i < 3; ++i) s_input.btn_held[i] = 0;
+    for (int i = 0; i < 3; ++i) { s_input.btn_held[i] = 0; s_input.btn_click_count[i] = 0; }
 }
 
 /* 按住左键移动必须发 LeftMouseDragged，否则在 Mac 上拖不动东西 */
@@ -258,13 +262,17 @@ void inject_move(int dx, int dy) {
     post_move(CGPointMake(s_input.mouse_x, s_input.mouse_y), kCGMouseButtonLeft);
 }
 
-void inject_button(int button, int down) {
+void inject_button(int button, int down, int click_count) {
     CGPoint pt;
     CGMouseButton b;
     CGEventType t;
     CGEventRef e;
 
     if (button < 0 || button >= 3) return;
+    if (click_count < 1 || click_count > 3) click_count = 1;
+    if (!down && s_input.btn_click_count[button] >= 1 &&
+        s_input.btn_click_count[button] <= 3 && click_count == 1)
+        click_count = s_input.btn_click_count[button];
     if (!s_input.sharing && down) inject_enter((int)(s_h / 2));
     pt = CGPointMake(s_input.mouse_x, s_input.mouse_y);
 
@@ -279,10 +287,13 @@ void inject_button(int button, int down) {
     else
         t = down ? kCGEventLeftMouseDown : kCGEventLeftMouseUp;
 
-    if (button >= 0 && button < 3) s_input.btn_held[button] = down;
+    s_input.btn_held[button] = down;
+    if (down) s_input.btn_click_count[button] = click_count;
 
     e = CGEventCreateMouseEvent(NULL, t, pt, b);
+    if (e) CGEventSetIntegerValueField(e, kCGMouseEventClickState, click_count);
     post_mouse(e);
+    if (!down) s_input.btn_click_count[button] = 0;
 }
 
 void inject_wheel(int dx, int dy) {

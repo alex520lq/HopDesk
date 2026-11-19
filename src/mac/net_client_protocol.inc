@@ -65,7 +65,7 @@ static void dispatch_message(void *user, uint8_t type, const uint8_t *p, uint32_
                            (int16_t)hop_get_be16(p + 2));
             break;
         case HOP_MSG_MOUSE_BUTTON:
-            if (len >= 2) inject_button(p[0], p[1]);
+            if (len >= 2) inject_button(p[0], p[1], len >= 3 ? p[2] : 1);
             break;
         case HOP_MSG_MOUSE_WHEEL:
             if (len >= 4)

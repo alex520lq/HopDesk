@@ -47,7 +47,7 @@ typedef enum {
     HOP_MSG_PONG         = 4,
 
     HOP_MSG_MOUSE_MOVE   = 10,  /* S -> C: dx,dy (int16 x2)        */
-    HOP_MSG_MOUSE_BUTTON = 11,  /* S -> C: button(uint8),down(uint8) */
+    HOP_MSG_MOUSE_BUTTON = 11,  /* S -> C: button(uint8),down(uint8),click_count(uint8, optional) */
     HOP_MSG_MOUSE_WHEEL  = 12,  /* S -> C: dx,dy (int16 x2)        */
     HOP_MSG_EDGE_LEAVE   = 13,  /* C -> S: edge(uint8); S -> C: empty = sharing ended */
     HOP_MSG_MOUSE_ENTER  = 14,  /* S -> C: y(uint16, client 坐标)  */

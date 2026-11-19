@@ -37,7 +37,7 @@ void inject_init(void);
 void inject_set_peer_geometry(uint32_t w, uint32_t h);
 void inject_enter(int y);          /* 服务端移交：在边缘对应 y 进入 */
 void inject_move(int dx, int dy);
-void inject_button(int button, int down);
+void inject_button(int button, int down, int click_count);
 void inject_wheel(int dx, int dy);
 void inject_reset(void);
 void inject_key(uint16_t kc, int down);   /* 阶段 2：映射后的 Mac 键码 */

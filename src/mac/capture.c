@@ -10,7 +10,7 @@ static double peer_w,peer_h;
 static uint64_t edge_since,cooldown;
 static CGPoint anchor;
 static int have_last;
-static unsigned char held[128],buttons[3];
+static unsigned char held[128],buttons[3],button_clicks[3];
 #define HOP_CAPTURE_EVENT_TAG INT64_C(0x484F504445534B)
 static CGEventFlags physical_flags(void){return CGEventSourceFlagsState(kCGEventSourceStateHIDSystemState);}
 static CGMouseButton cg_button(int b){return b==0?kCGMouseButtonLeft:b==1?kCGMouseButtonCenter:kCGMouseButtonRight;}
@@ -35,12 +35,24 @@ static void post_local_button(int b,int down,CGPoint point,CGEventFlags flags){
     CGEventPost(kCGHIDEventTap,e);CFRelease(e);
 }
 static void send_key(unsigned k,int down){uint8_t p[2];hop_put_be16(p,(uint16_t)k);net_send(down?HOP_MSG_KEY_DOWN:HOP_MSG_KEY_UP,p,2);}
-static void send_button(int b,int down){uint8_t p[2]={(uint8_t)b,(uint8_t)down};net_send(HOP_MSG_MOUSE_BUTTON,p,2);buttons[b]=(unsigned char)down;}
+static void send_button(int b,int down,int click_count){
+    if(b<0||b>=3)return;
+    if(click_count<1||click_count>3)click_count=1;
+    uint8_t p[3]={(uint8_t)b,(uint8_t)down,(uint8_t)click_count};
+    net_send(HOP_MSG_MOUSE_BUTTON,p,3);
+    buttons[b]=(unsigned char)down;
+    button_clicks[b]=down?(unsigned char)click_count:0;
+}
+static int event_click_count(CGEventRef event,int button,int down){
+    int64_t count=CGEventGetIntegerValueField(event,kCGMouseEventClickState);
+    if(count<1||count>3)count=down?1:(button_clicks[button]?button_clicks[button]:1);
+    return (int)count;
+}
 void mac_capture_peer_geometry(uint32_t w,uint32_t h){peer_w=w;peer_h=h;}
 void mac_capture_return(void) {
     if (!sharing) return;
     for (unsigned k = 0; k < 128; ++k) if (held[k]) { send_key(k, 0); held[k] = 0; }
-    for (int b = 0; b < 3; ++b) if (buttons[b]) send_button(b, 0);
+    for (int b = 0; b < 3; ++b) if (buttons[b]) send_button(b, 0, button_clicks[b]?button_clicks[b]:1);
     /* Queue releases first; empty EDGE_LEAVE then clears client-side sharing. */
     if (connected && g_mac.cfg.role == HOP_ROLE_SERVER)
         net_send(HOP_MSG_EDGE_LEAVE, NULL, 0);
@@ -97,7 +109,7 @@ static void enter(CGPoint p){
         held[k]=1;send_key(k,1);post_local_key(k,0,0);
     }
     for(int b=0;b<3;++b)if(physical_buttons[b]){
-        buttons[b]=1;send_button(b,1);post_local_button(b,0,anchor,0);
+        buttons[b]=1;send_button(b,1,1);post_local_button(b,0,anchor,0);
     }
 }
 static CGEventRef capture_event(CGEventTapProxy proxy,CGEventType type,CGEventRef event,void *ctx){
@@ -135,12 +147,12 @@ static CGEventRef capture_event(CGEventTapProxy proxy,CGEventType type,CGEventRe
         if(dx||dy){uint8_t data[4];hop_put_be16(data,(uint16_t)(int16_t)dx);hop_put_be16(data+2,(uint16_t)(int16_t)dy);net_send(HOP_MSG_MOUSE_MOVE,data,4);}
         CGWarpMouseCursorPosition(anchor);return NULL;
     }
-    case kCGEventLeftMouseDown:send_button(0,1);return NULL;
-    case kCGEventLeftMouseUp:send_button(0,0);return NULL;
-    case kCGEventRightMouseDown:send_button(2,1);return NULL;
-    case kCGEventRightMouseUp:send_button(2,0);return NULL;
-    case kCGEventOtherMouseDown:send_button(1,1);return NULL;
-    case kCGEventOtherMouseUp:send_button(1,0);return NULL;
+    case kCGEventLeftMouseDown:send_button(0,1,event_click_count(event,0,1));return NULL;
+    case kCGEventLeftMouseUp:send_button(0,0,event_click_count(event,0,0));return NULL;
+    case kCGEventRightMouseDown:send_button(2,1,event_click_count(event,2,1));return NULL;
+    case kCGEventRightMouseUp:send_button(2,0,event_click_count(event,2,0));return NULL;
+    case kCGEventOtherMouseDown:send_button(1,1,event_click_count(event,1,1));return NULL;
+    case kCGEventOtherMouseUp:send_button(1,0,event_click_count(event,1,0));return NULL;
     case kCGEventScrollWheel:{
         int dy=(int)CGEventGetIntegerValueField(event,kCGScrollWheelEventDeltaAxis1)*120;
         int dx=(int)CGEventGetIntegerValueField(event,kCGScrollWheelEventDeltaAxis2)*120;

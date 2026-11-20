@@ -2,25 +2,29 @@
 
 ## 1. 角色与拓扑
 
-- **服务器（Server）**：可运行在 Windows 或 macOS，监听两个 TCP 端口，捕获本机物理键鼠。
+- **服务器（Server）**：可运行在 Windows 或 macOS，监听控制与数据两个 TCP 端口，捕获本机物理键鼠。
 - **客户端（Client）**：可运行在 Windows 或 macOS，填写服务器地址，主动连接两个通道并注入输入。
-- 剪贴板文字、图片、文件与传输历史均与操作系统和输入角色解耦；仍由原有双向数据状态机处理。
+- 两端均支持双向文本、图片和文件剪贴板；文件使用 Offer → Paste Request → 按需传输，不在普通本地复制时创建传输任务。
 - `role=server|client` 在启动时读取；设置保存到独立草稿，不热改运行态。旧配置保留原 OS 默认角色。
-- 固定双设备局域网，不做多设备发现。两端几何在控制握手交换；维持 v6 线格式和会话绑定。
+- 固定双设备局域网，不做多设备发现。两端几何在控制握手交换；当前控制协议为 v7，数据协议为 v8。
 
 ## 2. 模块划分
 
 ```
 src/
-├── core/    纯 C、平台无关：协议帧、配置、日志、连接状态机、键码映射表
-├── win/     Windows：Win32 托盘/弹窗、Raw Input、剪贴板、dxva2 DDC、Winsock
-└── mac/     macOS：CGEvent 注入（C）、IOKit 唤醒（C）、NSPasteboard 与
-             NSStatusItem（少量 ObjC）、POSIX socket
+├── core/    纯 C 共享业务核心：协议/session、Clipboard transaction、Sender/Receiver
+│            Task/Budget/History、ACK/checkpoint、rate/tracking、RX queue/buffer pool
+├── win/     Win32/Winsock/文件句柄/线程与 Event/原生剪贴板/键鼠/显示器/UI Adapter
+└── mac/     POSIX/Cocoa/CoreGraphics/NSPasteboard/pthread/dispatch/显示器/UI Adapter
 ```
 
-平台层只实现 `core` 定义的接口（输入捕获/注入、剪贴板读写、显示控制、UI 回调），
-所有跨端协议校验、队列策略与超时判定放在 `core`；平台连接循环和线程调度仍分别实现，
-尚未形成完整共用的会话状态机，需要双端回归来约束行为一致性。
+**共享 Core 的主要生产模块**：
+- Clipboard：`xfer_clipboard_txn.c/.h` 统一 Offer、Request、Paste 身份与状态转换；原生 sequence/changeCount、路径快照、剪贴板读写和 Worker 调度留在平台层。
+- Sender：`xfer_sender_engine`、`xfer_sender_chunk`、`xfer_sender_ack_wait`、`xfer_sender_queue`、`xfer_sender_scheduler`、`xfer_sender_active_job`、`xfer_sender_job_lifecycle`、`xfer_sender_worker_flow` 等共享发送策略与生命周期。
+- Receiver：`xfer_rx_frame_gate`、`xfer_rx_dispatch`、`xfer_rx_message_handlers`、Batch/File/Image state、Lifecycle、Receipt、Entry Reservations 等共享准入、状态与终结规则。
+- Transfer infrastructure：`xfer_task`、`xfer_task_history`、`xfer_budget`、`xfer_tracking`、`xfer_rate`、`xfer_ack_window`、`xfer_buffer_pool` 等。
+
+平台层保留 socket/文件句柄、原生锁与等待原语、线程生命周期、文件系统操作、系统剪贴板、键鼠注入/捕获、显示控制和 UI。连接循环仍由两端各自实现；不能将其描述为已统一的跨平台 actor。
 
 ## 3. 通信协议
 
@@ -99,9 +103,9 @@ src/
 收到 HELLO 的一端必须同时验证协议版本、长度、token 与当前控制 session；验证失败立即关闭 socket。
 握手成功前收到任何其他数据帧也会关闭连接。两端配置的 token 必须完全一致。
 
-v6 的每个非 HELLO 数据帧均在下表载荷前加 `session(16) + batch(4)`（共 20 字节）。
+当前数据协议 v8 的每个非 HELLO 数据帧均在下表载荷前加 `session(16) + batch(4)`（共 20 字节）。
 CHUNK/END 因而也有显式批次。已有类型体内的 batch 必须与前缀一致；会话错误关闭连接，
-旧批次的 CHUNK/END 被忽略。控制 HELLO 追加版本，ACK 返回版本和随机 session；两端须同时升级。数据协议 v7 的 ABORT 增加目标方向；v8 增加批次完成回执。数据协议不同版本不兼容，必须两端同时升级。完成回执表示接收端已完成批次收尾并发起剪贴板处理，不保证系统剪贴板更新或目标应用粘贴成功；断线或回执超时且无法确认时，发送端显示结果不确定。
+旧批次的 CHUNK/END 被忽略。控制协议当前为 v7，控制握手版本与数据协议版本分别校验；数据协议 v7 的 ABORT 增加目标方向，v8 增加 `XFER_DONE_ACK` 批次完成回执。任一协议版本不匹配都拒绝连接，Windows 与 macOS 必须一起升级。DONE_ACK 表示接收端已完成批次收尾并发起剪贴板处理，不保证系统剪贴板更新或目标应用粘贴成功；断线或回执超时且无法确认时，发送端显示结果不确定。
 
 | 类型 | 方向 | 类型体载荷（不含公共前缀） |
 |---|---|---|
@@ -113,6 +117,7 @@ CHUNK/END 因而也有显式批次。已有类型体内的 batch 必须与前缀
 | IMAGE_BEGIN | 双向 | `batch(4) id(4) w(4) h(4) stride(4)` |
 | XFER_DONE | 双向 | `batch(4) ok(4) total(4) bytes(8)` |
 | XFER_ABORT | 双向 | `batch(4) reason(1) target(1)`；target 为接收方的发送或接收任务 |
+| XFER_DONE_ACK | 双向 | `batch(4) status(1)`；接收端确认批次终结结果 |
 
 - **目录递归**：每个条目自带相对路径，接收端按路径逐级建目录，
   空目录用 `flags & HOP_FILE_FLAG_DIR` 单独登记。不需要额外的树结构协议。
@@ -199,6 +204,8 @@ CHUNK/END 因而也有显式批次。已有类型体内的 batch 必须与前缀
 只读文本的话会"什么都不发生"。同理，从浏览器复制图片常常同时给
 `CF_HDROP`（临时文件）和 `CF_DIB`，发文件更忠实原样。
 
+共享 Core 的 `xfer_clipboard_txn.c/.h` 持有 Offer generation、remote Offer identity、Paste Request 去重/准入、完成版本守卫和 Worker admission 等跨平台事务状态；Windows/macOS 生产路径调用同一组事务转换。原生剪贴板 sequence/changeCount、路径快照、图片转换、系统写入、线程与主队列调度仍由平台 Adapter 持有。
+
 文件复制先发送 Offer，接收端在粘贴请求后才开始传输。Windows 接收端和 macOS 的非访达目标使用
 `%TEMP%\HopDesk\<batch>\` / `$TMPDIR/HopDesk/<batch>/` 暂存并保留相对路径，再把顶层条目挂到剪贴板。
 macOS 在访达中按 Command+V 时记录当前目录；接收端直接在该目录创建源文件/目录并逐步写入，
@@ -231,7 +238,7 @@ macOS 在访达中按 Command+V 时记录当前目录；接收端直接在该目
 - 数据监听将候选连接握手与当前解码流分开，候选认证成功才替换旧连接；监听失败每 2 秒重试。
   控制通道断开时主动 shutdown 数据连接，避免失效数据会话长期占槽。
 - 每个本地数据连接有 epoch，发送线程快照与每帧写入前比对，避免旧作业写进已复用的 socket。
-  v6 另以控制握手生成的 128 位 session 绑定数据通道，并随每个数据帧校验。
+  当前数据协议 v8 以控制握手生成的 128 位 session 绑定数据通道，并随每个非 HELLO 数据帧校验。
   控制替换时 compare-and-clear 防止旧读线程清掉新会话；临时目录按 session/batch 隔离。
 - 控制队列软上限 2048、硬上限 4096、载荷字节上限 16 MB；软限后只丢移动/滚轮/心跳。
   关键事件无法入队或分配失败就断开复位，不静默丢弃释放事件。控制 socket 单次发送超时 3 秒。
@@ -265,24 +272,18 @@ macOS 在访达中按 Command+V 时记录当前目录；接收端直接在该目
 
 | 状态 | 所有者 / 同步边界 |
 |---|---|
-| 控制 session | core 注册表，互斥锁快照；旧 session 只能 compare-and-clear 自己 |
-| macOS 配置 | 启动后不可变；不再把连接/输入标记混入 `g_mac` |
-| macOS socket | 网络模块私有，在 socket 锁下读取/替换 |
-| macOS 输入/远端几何 | 输入模块私有，经控制 dispatch 锁串行变更与复位 |
+| 控制 session | 共享 Core session registry；平台连接层在锁内快照并 compare-and-clear 自己的 epoch/session |
+| Clipboard Offer / Request / Paste 事务 | `xfer_clipboard_txn`；平台锁负责串行调用，平台 Adapter 执行原生剪贴板读写与异步调度 |
+| Sender Job / Queue / Active marker | 平台 Job 持有实际资源；共享 Queue/Scheduler/Active Job/Job Lifecycle 操作借用视图与转移规则；平台锁保护所有权转移 |
+| Sender ACK / checkpoint | 平台 ACK Coordinator 持有并加锁；共享 ACK Window/ACK Wait/Engine 决定等待与推进规则 |
+| Receiver Batch/File/Image 状态 | Receiver 线程持有 `xfer_rx_context`；共享 Frame Gate/Dispatch/Rules/State 模块执行平台无关决策 |
+| Receiver session/tombstone/DONE receipt | Receiver lifecycle / receipt；新 session 使旧 tombstone/receipt 失效，旧帧不得污染新 Batch |
+| Writer Queue / Buffer Pool | 平台 Writer 持有锁、线程和文件句柄；共享 RX Queue/Buffer Pool 计算有界 slot/bytes 与 buffer 额度 |
+| Task / Reservation / 全局预算 | Task 持有 Reservation handle，Budget 是账本；调用方负责同步，handle 不得复制或重复释放 |
 | Windows UI/输入状态 | 窗口线程；后台剪贴板结果通过窗口消息提交 |
-| 接收文件/墓碑 | 接收循环所有；写盘句柄交独立 writer；新 session 清理旧确认/墓碑 |
-| 发送作业/确认 | 队列与状态锁；同 session 数据重连保留条目，新 session 重置确认游标 |
+| macOS socket/UI 状态 | 网络模块与 Cocoa 主队列分别持有；通过快照/主队列消息交接 |
 
-平台连接循环仍分开实现，不宣称已实现单一跨平台 actor 状态机。数据连接还有本地 epoch，
-与线上 session 一起防止旧 socket / 旧帧污染。接收目录使用 session/batch 命名；
-异常退出残留目录不自动删除，因为成功剪贴板路径也可能仍被使用。
-
-看门狗用单调时钟，监控 DNS（5 秒）、整帧发送（10 秒）、常规文件读写/枚举、DDC、
-延迟剪贴板取数（15 秒）、写盘队列等待（20 秒）、启动/主循环（30 秒）、整帧接收处理（60 秒）。
-主循环定期续期；监控线程整体暂停超过 2 秒时顺延活动期限，减少系统休眠造成的误杀。
-超期后直接终止整个进程（70），不试图取消持有运行库/文件锁的线程。
-这是有界失败而非所有系统调用都可取消；进程内监控无法兜底整机/内核故障或自身永久失调度。
-安装可选 supervisor / LaunchAgent 后才有自动重启；重启不会恢复内存队列，需重新复制。
+平台连接循环仍分开实现，不宣称已实现单一跨平台 actor 状态机。数据连接还有本地 epoch，与线上 session 一起防止旧 socket / 旧帧污染。接收目录使用 session/batch 命名；异常退出残留目录不自动删除，因为成功剪贴板路径也可能仍被使用。
 
 ## 10. 保留的产品与验证边界
 

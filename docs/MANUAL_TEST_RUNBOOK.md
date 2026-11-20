@@ -133,9 +133,15 @@ Run every case in both directions (Windows→Mac and Mac→Windows).
 | UI-004 | Open Settings and refresh logs with a missing/empty file, a normal log, and an unreadable log; copy the result | Loading, updated, empty, failure and copied feedback are clear; the UI remains responsive |
 | UI-005 | Use only Tab, Shift+Tab, Enter and Space to navigate and operate settings/transfer controls | Focus is visible and follows a predictable order; validation failure focuses the invalid setting |
 | UI-006 | Filter history to a state with no records and open Transfers with no active tasks | Empty states are explicit and no stale task/file details are shown |
+| UI-007 | Observe tray/menu-bar icon while disconnected, connected, sharing, preparing a transfer, and transferring in both directions | State style changes correctly; Windows shows a progress ring and direction/percentage in tooltip; macOS shows progress ring plus percentage beside the icon |
+| UI-008 | Left-click and right-click the Windows tray icon and macOS menu-bar item | Left click opens/reuses the main window; right click shows only Open/Quit; closing the window hides it without stopping background services |
 
-## Current status
+## Current automated coverage (2026-11-20)
 
-The GitHub-hosted CI covers portable core validation and TCP loopback only.
-All rows above require actual desktop sessions, hardware, or a dedicated protocol
-test harness. Record them as BLOCKED until run on the real two-machine setup.
+The latest merged PR #22 was validated by [Build HopDesk run #44662680422](https://github.com/alex520lq/HopDesk/actions/runs/44662680422). Its head Tree is identical to `main` @ `6e94d8699be6f11730fdf9b14a6df99ad90090d2`.
+
+- Windows: MSVC application build/package, portable Core tests, file-transfer protocol tests, TCP loopback, native control/data role and reconnect integration tests.
+- macOS: Apple Clang application build/package, portable Core tests, file-transfer protocol tests, TCP loopback, control/listener loopback, native receive/resume integration tests.
+- Both platform build/test/package jobs succeeded. The public Release publication job was skipped because this was not a version-tag build.
+
+CI does **not** replace physical two-device tests, interactive native UI checks, Accessibility/Input Monitoring permission checks, monitor/DDC hardware tests, clipboard contention/shutdown races, weak-network runs, or long-duration soak tests. Those cases remain BLOCKED until performed on the dedicated Windows + macOS pair and recorded with commit SHA and evidence.

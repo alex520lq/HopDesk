@@ -1,26 +1,55 @@
 # core —— 平台无关核心（纯 C）
 
-两端共享，禁止包含任何平台头文件（windows.h / CoreGraphics / Cocoa 等）。
+`src/core` 只承载平台无关的协议、状态转换、资源策略和业务生命周期。禁止包含 `windows.h`、CoreGraphics、Cocoa、Winsock、pthread 等平台头文件或暴露 OS 类型。平台锁、线程、socket、文件句柄和系统剪贴板仍由各自 Adapter 管理。
 
-传输领域已逐步拆出独立生产模块：
+## 核心领域
 
-- `xfer_ack_window.c/.h`：ACK window、deadline/RTT 和连续 checkpoint 规则。
-- `xfer_tracking.c/.h`：每方向传输状态、文件进度、阶段耗时、速度/ETA 和快照规则；调用方负责加锁。
-- `xfer_buffer_pool.c/.h`：Windows/macOS 接收端共用的有界 best-fit 缓冲池；调用方在 writer queue lock 下调用，pool 自身负责 slot 和全局 pool-byte ledger。
-- `xfer_sender_engine.c/.h`：共享 Sender 文件 ACK 窗口/连续 checkpoint、单文件 BEGIN/CHUNK/END 与 CRC/文件 IO 策略、图片分块/CRC 顺序、DONE/DONE_ACK 提交与重连重试策略；平台只提供文件句柄、当前连接快照、帧发送、ACK、时钟和状态回调。
-- `xfer_sender_queue.c/.h` 与 `xfer_sender_scheduler.c/.h`：共享 Sender FIFO 队列、取消/离线期限/重试时机选择，以及等待-重新采样-摘取 Job 的调度流程；平台 adapter 只提供原生锁、可唤醒等待、peer-ready 快照和 Job owner/active 标记回调。
-- `xfer_sender_active_job.c/.h`：共享当前发送 Job、peer ABORT、取消目标和 active marker 清理规则；平台 adapter 在自身 queue/state lock 下调用，不把 Win32/pthread 锁带入 Core。
-- `xfer_sender_context_adapter.c/.h`：共享 Sender context 的 Task/取消/状态/遥测/日志回调转发与参数校验；不包含 socket、平台锁或 UI 实现。
-- `xfer_sender_context.h`：Sender 平台适配器与执行层之间的完整依赖注入契约，覆盖时钟/可中断等待、停止/取消/ABORT、Session 校验、原子帧写入、Task 生命周期和可选遥测；不包含平台类型。Windows/macOS 生产路径已接入这些依赖。
-- `src/win/xfer_sender_protocol.inc`、`src/mac/xfer_sender_protocol.inc`：仍是待拆除的兼容 include 边界；当前协议适配逻辑逐步迁入独立编译单元。
-- `src/win/xfer_writer_io.c/.h`、`src/mac/xfer_writer_io.c/.h`：平台文件句柄和随机偏移写入 adapter；不持有 Task/Reservation，不负责 watchdog/status。
+### 协议、会话与基础能力
 
-职责：
+- `hop.h` / `protocol.c`：公共消息类型、配置/状态契约与 TCP 帧编解码。当前控制协议 v7、数据协议 v8。
+- `session.c`：共享 session 身份与 compare-and-clear 规则。
+- `config.c` / `config_migrate.h`：配置读取、校验、迁移和原子保存规则。
+- `crc32.c`、`clock.c`、`watchdog.c`、`log.c`、`keymap.c`：校验、时钟、看门狗、日志与键码映射等基础能力。
 
-- 协议帧的打包 / 解包（`type + length + payload`）
-- 连接状态机（握手、心跳、重连退避、键鼠归属）
-- 配置加载与屏幕几何
-- 日志
-- Windows VK → macOS 键码映射表、修饰键位定义
+### Clipboard
 
-平台层通过这里定义的接口注册回调（输入捕获/注入、剪贴板读写、显示控制、UI 提示）。
+- `xfer_clipboard_txn.c/.h`：Offer generation/identity、remote Offer、Paste Request 去重/准入、完成版本守卫、Worker admission、Offer 退役/重播意图和 Paste Worker admission。
+- 平台层仍负责 Windows clipboard sequence/HGLOBAL 与 macOS NSPasteboard/changeCount、路径快照、图片转换、主线程/Worker 调度和系统写入。
+- `src/win` 与 `src/mac` 仍有 `clipboard_offer.inc`、`clipboard_paste.inc` 兼容实现片段；它们属于平台 Adapter，不是 Core 模块，也不意味着两端 OS 细节已统一。
+
+### Transfer 公共状态与资源策略
+
+- `xfer_task.c/.h`、`xfer_task_history.c/.h`：Task 生命周期、身份、快照与历史。
+- `xfer_budget.c/.h`：全局资源预算和 Reservation 记账。
+- `xfer_tracking.c/.h`、`xfer_status.h`：发送/接收状态、文件进度、阶段计时、速度/ETA 与快照规则；调用方负责加锁。
+- `xfer_rate.c/.h`：速率控制策略。
+- `xfer_ack_window.c/.h`、`xfer_ack_coordinator.h`：ACK window、deadline/RTT 与连续 checkpoint 规则；实际平台锁和 ACK Coordinator 实例仍在 Adapter。
+- `xfer_buffer_pool.c/.h`：有界 best-fit 缓冲池及 pool-byte ledger。
+
+### Sender
+
+- `xfer_sender_engine.c/.h`：文件/图片发送策略、CRC/分块顺序、ACK checkpoint 和 DONE/DONE_ACK 提交/重试策略。
+- `xfer_sender_chunk.c/.h`、`xfer_sender_ack_wait.c/.h`、`xfer_sender_retry.c/.h`：Chunk 处理、ACK 等待和重试决策。
+- `xfer_sender_queue.c/.h`、`xfer_sender_scheduler.c/.h`、`xfer_sender_active_job.c/.h`：FIFO、等待/摘取 Job、取消与 active marker 规则。
+- `xfer_sender_job_lifecycle.c/.h`、`xfer_sender_lifecycle.c/.h`：Job/Task/Reservation 终态和释放顺序。
+- `xfer_sender_worker.c/.h`、`xfer_sender_worker_flow.c/.h`：共享 Worker 执行流程与结果决策。
+- `xfer_sender_context.h`、`xfer_sender_context_adapter.c/.h`、`xfer_sender_engine_adapter.c/.h`：显式依赖注入与 Engine/Context 边界。平台 Adapter 提供文件句柄、socket 写帧、锁/等待原语、时钟和回调。
+
+### Receiver / Writer
+
+- `xfer_rx_frame_gate.c/.h`：数据帧 HELLO/token/session/batch 准入。
+- `xfer_rx_dispatch.c/.h`、`xfer_rx_message_handlers.c/.h`：消息类型分发与共享处理入口。
+- `xfer_rx_batch_rules.c/.h`、`xfer_rx_batch_state.c/.h`、`xfer_rx_file_state.c/.h`、`xfer_rx_image_state.c/.h`、`xfer_rx_image_buffer.c/.h`：批次、文件、图片状态与缓冲规则。
+- `xfer_rx_lifecycle.c/.h`、`xfer_rx_receipt.c/.h`、`xfer_rx_entry_reservations.c/.h`：终结、DONE receipt、Entry/Reservation 生命周期。
+- `xfer_rx_ack_handler.c/.h`、`xfer_rx_queue.c/.h`、`xfer_validate.c`：ACK 决策、Writer 队列容量/记账与输入校验。
+- `xfer_rx_context.h`、`xfer_rx_services.h`、`xfer_rx_platform_dispatch.h`：平台 Receiver 与 Core 之间的显式服务/调度契约。
+- Writer 的锁、线程、文件句柄与平台 IO 分别由 `src/win` / `src/mac` 的 `xfer_writer_queue`、`xfer_writer_worker`、`xfer_writer_io` Adapter 实现；Core 只定义共享容量和 buffer 规则。
+
+## 边界约束与未完成事项
+
+- Core 不创建线程、不等待、不访问 socket/文件系统/系统剪贴板，也不获取平台锁；需要同步的调用由 Adapter 在明确的锁范围内完成。
+- 平台 `xfer_job` / `xf_job` 仍拥有实际 Job 资源；Core 接收借用视图/快照，不持有平台 Job 内存。
+- Sender Retry 目前仍有平台 Job 字段与 Core 决策快照之间的状态写回；是否进一步统一须先证明不会增加指针生命周期或锁复杂度。
+- Windows/macOS 的连接循环与部分协议 transport `.inc` 仍是平台实现；不要为了文件形式对称而机械抽象。
+- `xfer_sender_protocol.inc` 已不在当前平台源码树中；不要再将其列为待拆除文件。
+- 模块测试见 `tests/` 和 `scripts/test-core.*`、`test-xfer-protocol.*`、`test-network.*`。新增 Core 模块必须进入两端生产构建及适用测试目标。

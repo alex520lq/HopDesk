@@ -25,13 +25,13 @@ HopDesk 采用 **单主干 + 单活动修复分支** 的迭代方式，避免多
 |---|---|
 | 键鼠共享 | 两端均可选择服务器（捕获输入）或客户端（注入输入） |
 | 鼠标跨屏 | 支持边缘移交、反向收回、相对位移、点击和滚轮 |
-| 键盘映射 | 保持 v6 Mac 键码线格式，支持 Windows VK 双向映射与修饰键释放 |
+| 键盘映射 | 共享键码映射与修饰键释放；当前控制协议 v7、数据协议 v8 |
 | 剪贴板文本 | 双向文本同步，并抑制同步回环 |
 | 文件与文件夹 | 通过独立数据通道传输，支持目录递归和空目录 |
 | 图片 | 通过数据通道传输像素数据 |
 | 显示器控制 | Windows DDC/CI 输入源控制；macOS 唤醒、切换输入源和显示睡眠 |
 | 连接管理 | TCP 连接、心跳与客户端重连 |
-| 原生界面 | Windows Win32 主窗口；macOS Cocoa 主窗口；两端统一六页导航和交互 |
+| 原生界面 | Windows Win32 主窗口；macOS Cocoa 主窗口；两端统一四页导航和交互 |
 
 ### 当前边界
 
@@ -50,27 +50,27 @@ HopDesk 采用 **单主干 + 单活动修复分支** 的迭代方式，避免多
 ```text
 HopDesk/
 ├── src/
-│   ├── core/          # 平台无关的 C 核心
-│   │   ├── hop.h      # 协议、配置与公共定义
-│   │   ├── protocol.c # TCP 帧编解码
-│   │   ├── config.c   # 配置加载
-│   │   ├── keymap.c   # Windows 到 macOS 键码映射
-│   │   └── log.c      # 日志
-│   ├── win/           # Windows：C + Win32
-│   └── mac/           # macOS：C + 少量 Objective-C
-├── scripts/
-│   ├── build-win.ps1  # Windows 构建脚本
-│   └── build-mac.sh   # macOS 构建脚本
-├── docs/
-│   └── architecture.md
-└── LICENSE
+│   ├── core/          # 纯 C 共享核心
+│   │   ├── protocol.c / session.c / config.c
+│   │   ├── xfer_clipboard_txn.c
+│   │   ├── xfer_sender_*.c / xfer_rx_*.c
+│   │   ├── xfer_task* / xfer_budget* / xfer_tracking*
+│   │   └── xfer_ack_window* / xfer_buffer_pool* / xfer_rate*
+│   ├── win/           # Windows C + Win32 / Winsock Adapter 与原生 UI
+│   └── mac/           # macOS C + Objective-C / POSIX / Cocoa Adapter 与原生 UI
+├── tests/             # Core、Sender、Receiver、Clipboard、Writer、协议与平台集成测试
+├── scripts/           # 双平台构建、测试和发布脚本
+├── docs/              # 架构、重构契约、UI 与实机验收文档
+├── AGENTS.md
+└── README.md
 ```
+
 
 ### 平台实现
 
 **Windows**
 
-- Win32 托盘入口 + 原生主窗口（概览、连接、设置、传输、日志、更新）
+- Win32 托盘入口 + 原生主窗口（概览、设备、传输、设置）；托盘图标区分连接/共享状态，传输期间叠加进度环
 - `WH_MOUSE_LL` / `WH_KEYBOARD_LL` 输入捕获
 - `AddClipboardFormatListener` 剪贴板监听
 - Winsock TCP 服务端 / 客户端
@@ -81,7 +81,7 @@ HopDesk/
 - CoreGraphics `CGEvent` 键鼠事件注入
 - POSIX socket TCP 服务端 / 客户端
 - `NSPasteboard` 剪贴板读写
-- `NSStatusItem` 菜单栏入口 + Cocoa 原生主窗口（与 Windows 保持相同页面结构和文案）
+- `NSStatusItem` 菜单栏入口 + Cocoa 原生主窗口；菜单栏图标区分连接/共享状态，传输期间显示进度环和百分比
 - IOKit 显示唤醒，以及外部命令切换显示器输入源
 
 ## 通信设计
@@ -170,13 +170,13 @@ sh scripts/build-mac.sh
 
 ## 自动更新
 
-Windows 托盘和 macOS 菜单栏只保留“打开”“退出”；连接、设置、传输管理、日志和更新都在统一主窗口中操作。主窗口“更新”页面提供检查更新入口。用户确认后，客户端会从公开 GitHub Release 更新源下载对应平台安装包，校验 SHA-256，再由独立辅助程序替换旧版本并重新启动；HopDesk 配置与日志不会被覆盖。
+Windows 托盘和 macOS 菜单栏只保留“打开”“退出”；连接、设置、传输管理、日志和更新都在统一主窗口中操作。设置页中的“软件更新”分组提供检查更新入口。用户确认后，客户端会从公开 GitHub Release 更新源下载对应平台安装包，校验 SHA-256，再由独立辅助程序替换旧版本并重新启动；HopDesk 配置与日志不会被覆盖。
 
 源码仓库保持私有，更新包和清单发布到独立公开仓库。首次配置、发布 tag、更新安全边界和签名要求见 [自动更新与 Release 发布](docs/UPDATES.md)。在创建公开的 Release 仓库并配置 Actions secret 之前，更新服务不会实际可用。
 
 ## 运行
 
-- 托盘/菜单栏菜单只保留“打开”和“退出”。Windows 单击托盘图标可打开主窗口，右键菜单可选择打开或退出；macOS 菜单栏菜单提供相同的两个入口。主窗口包含“概览、连接、设置、传输、日志、更新”六个页面；关闭主窗口只会隐藏窗口，不会退出后台服务。
+- 托盘/菜单栏只保留“打开”和“退出”。Windows 与 macOS 左键单击图标打开主窗口，右键打开上下文菜单；关闭主窗口只会隐藏窗口，不会退出后台服务。主窗口固定为“概览、设备、传输、设置”四个页面，日志和软件更新归入设置页。
 - 设置页可编辑现有 `hopdesk.conf` 配置项，并通过同目录临时文件和原子替换保存；端口、认证和连接参数需重启 HopDesk 后完整生效。
 - **每台设备只允许一个实例**。Windows 端第二次启动会弹提示后退出（互斥量
   `Local\HopDesk.SingleInstance`）；macOS 端静默退出（状态栏里已经有一个了）。
@@ -276,11 +276,9 @@ xfer_rate_limit_mib=128
 - **落盘在独立线程**，文件句柄由写线程独占。剪贴板只在单文件 `FILE_ACK` 成功之后
   才登记，不会出现"粘贴出一个写了一半的文件"。
 
-数据协议版本在握手时校验（当前控制/数据协议均为 v6）。数据通道 HELLO
-携带协议版本、共享 token 和控制握手生成的 128 位 session ID；
-所有非 HELLO 数据帧都带 `session(16) + batch(4)` 前缀，CHUNK/END 不再仅靠隐式活动文件状态。
-旧会话或不匹配批次不能写入当前传输；临时文件按 session/batch 分目录，避免重启后批次号复用覆盖旧结果。
-v6 与旧版不兼容：**Windows 与 macOS 必须一起升级**。版本、token 或 session 不匹配即拒绝连接。
+当前控制协议版本为 **v7**，数据协议版本为 **v8**，两者在各自握手时独立校验。数据通道 HELLO 携带数据协议版本、共享 token 和控制握手生成的 128 位 session ID；
+所有非 HELLO 数据帧都带 `session(16) + batch(4)` 前缀，CHUNK/END 不再仅靠隐式活动文件状态。数据 v7 增加带目标方向的 ABORT，v8 增加批次完成 `DONE_ACK` 回执。
+旧会话或不匹配批次不能写入当前传输；临时文件按 session/batch 分目录，避免重启后批次号复用覆盖旧结果。协议版本不匹配时拒绝连接；**Windows 与 macOS 必须一起升级**。
 
 注意：Token 只用于身份校验，当前 TCP 数据仍未加密；空 Token 会被拒绝。自己管理的可信局域网可暂缓 TLS/复杂配对，但 session ID 不是加密或防窃听机制。
 不要暴露到公网/不可信 Wi-Fi；路径、长度、版本和 CRC 校验仍保留，不能因“自用”删掉内存与文件安全边界。

@@ -1,135 +1,98 @@
-# HopDesk 架构审计清单（基线：main @ c00bf9d9）
+# HopDesk 当前架构审计
 
-> 本文是架构重构规划的代码审计附件。文件行号是基线定位信息，后续提交会变化；审计描述职责与依赖，不代表所有列出的实现都是缺陷。
+> 审计基线：`main` @ `6e94d8699be6f11730fdf9b14a6df99ad90090d2`（2026-11-20）。
+> 应用版本 `0.5.0`；控制协议 v7；数据协议 v8。
+> 本文替代旧版 `main @ c00bf9d9` 的行号/职责审计；旧行数和早期模块候选不再代表当前实现。
 
-## 1. 传输模块
+## 1. 总体结论
 
-### Windows `src/win/xfer.c`（约 665 行）
+HopDesk 当前采用 **共享纯 C Core/Application + Windows Win32/Winsock Adapter + macOS POSIX/Cocoa Adapter**。传输与剪贴板的主要业务状态和策略已从平台大文件迁入独立 Core 生产模块；系统调用、同步原语、线程、socket、文件句柄、原生剪贴板、键鼠与 UI 仍由平台层持有。
 
-职责/函数簇：
-- 状态与历史：`history_prepare_path`、`history_load/save`、`status_*`、`xfer_get_status*`、`xfer_get_history`。
-- 文件枚举：`elist_push/free`、`guarded_find_next`、`walk_into`。
-- 网络帧与发送：`send_session_current`、`xfer_send_all`、`send_small`、`send_chunk`、`send_file_entry`、`send_image_job`、`send_done*`。
-- 限速/反馈：`rate_init_from_config`、`rate_wait_for_chunk`、`rate_queue_pressure_permille`、`rate_feedback`。
-- ACK：`ack_register`、`ack_mark_sent`、`ack_set_deadline`、`ack_deliver`、`ack_wait`。
-- 任务编排：`run_job`、`send_thread`、`submit`、`xfer_submit_*`、`xfer_cancel_task`、`xfer_init/shutdown`。
-- 接收端：已拆为独立生产编译单元 `src/win/xfer_receive.c`；`xfer.c` 只包含窄生命周期头 `xfer_receive.h`，不再 include 实现片段。
+当前不应继续以“平台文件行数多”或“两个平台文件相似”为理由机械抽象。下一轮应针对真实重复状态、跨层转发、锁/所有权不清晰和缺少生产路径测试的问题逐项审计。
 
-重要共享状态包括 status/history locks、send/receive tracking、history records、TX frame lock、发送 epoch，以及传输队列/当前 task/session 状态。具体字段必须在拆分前进一步列成 owner/lock 表。
+## 2. 当前协议与产品边界
 
-### macOS `src/mac/xfer.c`（约 691 行）
+- 控制协议版本：`HOP_CTRL_PROTO_VER = 7`。
+- 数据协议版本：`HOP_XFER_PROTO_VER = 8`；数据帧绑定控制 session，并在非 HELLO 帧中携带 `session(16) + batch(4)`。
+- 数据 v7 增加带目标方向的 ABORT；数据 v8 增加 `XFER_DONE_ACK` 批次终结回执。
+- 控制通道默认 TCP 24817，数据通道默认 TCP 24818；当前没有 TLS，不应暴露到公网或不可信网络。
+- 产品目标仍是双设备局域网；不提供多设备发现、公网中继或断点续传。
 
-职责簇与 Windows 基本对应，但系统调用分别使用 POSIX/pthread。额外需要核对：
-- macOS 的数据连接建立/接受方式与 Windows listener/client 组合不同。
-- `pthread` 生命周期、QOS、socket close/shutdown 与 Windows thread/event 语义不能机械替换。
-- `s_txlock`、`s_status_lock`、`s_history_io_lock`、`s_send_epoch` 等状态必须明确线程所有权。
-- 接收端同样已拆为 `src/mac/xfer_receive.c`，拆分时按行为对齐而不是按行号复制。
+## 3. Core 当前模块
 
-### Receiver modules
+### Clipboard
 
-`src/win/xfer_receive.c`（约 854 行）和 `src/mac/xfer_receive.c`（约 807 行）现在是独立生产编译单元，不再被 `xfer.c` include。`xfer_receive.h` 只暴露 start/stop/owner-clean 审计和原生线程入口；Receiver 私有状态、wire dispatch 和 staging 上下文留在各自 `.c` 内。模块内可分为：
-1. Writer integration：`wq_start/stop`、Task budget/watchdog/clock/status/log callbacks、`s_wq` 与 `xfer_rx_context` 的绑定；ring、buffer pool、worker 和平台文件 IO 已属于 `xfer_writer_queue.c` / `xfer_writer_io.c` / `xfer_writer_worker.c`。
-2. Receiver file state：`rx_close_file`、`rx_clear_state`、`rx_reset`、`rx_bind_session`、`rx_expire_stale_session`、目录与顶层条目管理。
-3. Batch lifecycle：`rx_terminate`、`rx_begin_batch`、`rx_finish_batch`。
-4. Protocol dispatch：`on_data_msg`、`on_data_frame_checked`、`on_data_frame`。
-5. Socket lifecycle：Windows `data_listener`、`xfer_receive_listener_thread`、`xfer_receive_client_thread`；macOS `do_connect`、`accept_data`、`xfer_receive_connection_thread`。
+- `src/core/xfer_clipboard_txn.c/.h` 是单一共享 Clipboard transaction production module。
+- Core 拥有 Offer generation/identity、remote Offer、Paste Request ID/去重/准入、完成版本守卫、Worker admission 和 Offer 退役/重播决策。
+- Windows/macOS Adapter 保留原生 clipboard sequence/changeCount、HGLOBAL/NSPasteboard、路径快照、图片转换、系统写入、锁和线程/主队列调度。
+- `clipboard_offer.inc` 与 `clipboard_paste.inc` 仍存在于两个平台目录；它们是平台 Adapter 的兼容 include 片段，不应误写为 Core 模块，也不应只改扩展名就宣称完成抽取。
 
-Receiver 通过显式 `hop_xfer_rx_services` callback 获取 status、clipboard、filesystem 和 writer 能力；发送端共享状态只经 `xfer_sender_internal.h` 的窄入口访问，不再依赖同一翻译单元的静态符号。Writer 负责缓冲区和写盘任务，不负责协议 ACK 或 Task 终态决策。阶段 2 仍需完成 stop-vs-producer、分配失败、慢盘/持久错误和 sanitizer 压力覆盖，不能仅凭模块拆分标记完成。
+### Sender
 
-## 2. 剪贴板模块
+- 共享模块覆盖 ACK Window/Wait、Chunk、Engine、Queue、Scheduler、Active Job、Job Lifecycle、Worker/Worker Flow、Retry 和 Context/Engine Adapter。
+- 共享 Core 负责平台无关的发送顺序、ACK/checkpoint、重试时机/队列决策、取消与 Job/Task/Reservation 生命周期规则。
+- Windows/macOS 仍拥有各自实际 `xfer_job` / `xf_job` 内存、socket、文件句柄、平台锁、等待原语和线程。
+- `xfer_sender_protocol.inc` 已不在当前 `src/win` / `src/mac` 文件树中；不要继续把它列为待拆除文件。
 
-### Windows `src/win/clipboard.c`（886 行）
+### Receiver / Writer
 
-函数簇：
-- Offer 生命周期：`clip_publish_local_offer`、`clip_send_offer*`、`clip_invalidate_remote_offer`、`clip_clear_local_offer`。
-- Win32 clipboard 操作：`apply_global_expected`、`clip_retry_pending`、`clip_apply_remote*`、`make_drop_global`。
-- 图片后台：`send_dib`、`image_worker`、`queue_image`。
-- 文本/文件提交：`send_text`、`send_drop`。
-- Paste Transaction：`clip_request_remote_paste`、`clip_on_paste_request`、`clip_complete_remote_paste`、`clip_on_paste_failed`。
+- Receiver Core 包含 Frame Gate、Dispatch、Message Handlers、Batch/File/Image state、Lifecycle、Receipt、Entry Reservation、ACK handler 和 RX queue rules。
+- 平台 `xfer_receive.c` 仍负责 Receiver 线程/连接生命周期、平台路径与文件系统、socket、剪贴板/状态 Services。
+- 共享 `xfer_rx_queue` 和 `xfer_buffer_pool` 提供有界 slot/bytes 与缓冲池记账；平台 Writer Queue/Worker/IO 负责原生锁、线程、句柄和实际磁盘操作。
+- PR #17 已删除 Receiver Protocol Adapter 和 ABORT 执行回调转发层；PR #18 增加终结副作用顺序回归。
 
-模块静态状态同时保存 Win32 HGLOBAL/sequence、worker HANDLE、Offer generation、Request 去重表、pending paste、stopping 状态。系统剪贴板句柄与跨端事务状态应拆开；sequence compare-and-apply 应由 coordinator 驱动，Win32 adapter 只执行受条件保护的系统操作。
+### 其他共享 Core
 
-### macOS `src/mac/clipboard.m`（766 行）
+- `xfer_task` / `xfer_task_history`：任务身份、生命周期和历史。
+- `xfer_budget`：Reservation 与全局预算账本。
+- `xfer_tracking` / `xfer_status`：方向状态、文件进度、计时、速度/ETA 和快照。
+- `xfer_rate`：速率控制策略。
+- `session` / `protocol` / `config`：会话、帧协议和配置基础能力。
 
-函数簇：
-- Offer/Request 生命周期与 Windows 同域。
-- NSPasteboard 轮询：`poll_pasteboard`、`clipboard_init/shutdown`。
-- 图片快照/转换：`send_image`、`send_image_data_async`、`image_conversion_fits_budget`。
-- Cocoa 应用：`clipboard_apply*`、`apply_objects_retry`。
-- Paste Transaction：`clipboard_request_remote_paste`、`clipboard_on_paste_request`、`clipboard_complete_remote_paste`。
+完整模块职责清单见 [`src/core/README.md`](../src/core/README.md)。
 
-静态状态同时持有 changeCount、dispatch timer/group、Offer/Request 状态和 worker 生命周期。主队列只应采集轻量快照/提交 UI 操作；图像转换、文件扫描和大内存操作在有预算的后台工作执行。
+## 4. 平台目录职责
 
-## 3. 连接与输入
-
-- `src/win/net_server.c`（约 424 行）：控制消息 dispatch、发送队列、reader/sender/server/client 线程、监听与 socket 生命周期混合。需区分 connection coordinator、bounded control queue、WinSock adapter。
-- `src/mac/net_client.c`（约 438 行）：控制消息 dispatch、socket connect/accept、发送队列、generation、reconnect loop。与 Windows 的角色/拓扑并非同构，不能只按文件名合并；先统一 session contract，再拆平台实现。
-- 输入捕获/注入文件：`src/win/mouse_capture.c`、`kbd_capture.c`、`inject.c`；macOS `capture.c`、`inject.c`。必须保留按下/释放配对、modifier 映射、断线 release-all、权限提示和角色切换语义。
-
-## 4. UI / 更新
-
-- Windows `main_ui.c` 同时维护 HWND、页面构建、配置草稿、任务 ID 列表、历史筛选、日志 worker、刷新和窗口消息。
-- macOS `main_ui.m` 同时维护 Cocoa 控件、配置草稿、任务/历史刷新、日志和页面构建。
-- macOS `statusbar.m` 同时承担状态栏、传输窗口和更新下载/校验流程；更新功能不应属于 UI presenter。
-- 首步不拆 UI：先让 UI 消费一致的只读快照；控件构建/布局拆分放在传输、剪贴板、连接接口稳定之后。
-
-## 5. Core 与头文件
-
-- `src/core/hop.h` 约 474 行，集中帧/配置/消息/传输/剪贴板 codec 声明及常量；适合后续按 protocol、config、session、clipboard、transfer types 拆头文件，但必须避免破坏现有 include contract。
-- 现有 Core 已有独立的 `xfer_budget`、`xfer_task`、`xfer_task_history`、`xfer_rate` 等模块；重构应复用并完善它们，不能重新造 Task Manager 或第二份预算账本。
-- `xfer_ack_window.h`、`xfer_tracking.h` 仍需检查纯策略/数据结构与同步机制的边界，不能仅因头文件较大而拆分。
-
-## 6. 构建与测试现状
-
-- Windows app build 从 `src/core/*.c` 和 `src/win/*.c` 顶层枚举；macOS build 使用 `find -maxdepth 1`。若加入嵌套目录，新模块会漏编译。阶段 1 已先将 app build source discovery 改为递归。
-- Core test scripts 使用显式 source list；这是测试目标的依赖清单，不应简单替换为链接所有 Core 文件。新增模块测试时必须显式更新对应测试目标。
-- CI workflow 为 Windows MSVC + macOS Apple Clang，分别运行 core、transfer protocol、TCP loopback 和角色/连接测试，并打包两端应用。
-- `tests/core_tests.c`（约 1,497 行）包含 protocol/config/keymap/transfer validation/budget/rate/task/tracking/history 等测试簇，后续按真实生产模块拆成独立 test targets。
-- `scripts/test-regressions.py`（约 863 行）包含多个源码提取/合成夹具。保留能验证平台边界回归的用例，但优先将 writer/receiver/clipboard 生产逻辑改为可直接链接的模块测试。
-
-## 7. Windows/macOS 对照原则
-
-| 领域 | 必须一致 | 允许不同 |
+| Windows `src/win` | macOS `src/mac` | 共同职责/差异 |
 |---|---|---|
-| Protocol / validation | 字段、长度、错误语义、session/batch 规则 | socket API |
-| Task / budget | 状态转换、Reservation owner、exactly-once release | mutex/atomic 原语 |
-| ACK / checkpoint | ACK 后推进；未确认文件恢复 | event/condvar 实现 |
-| Writer | slot/bytes/pool 约束、写入结果和错误语义 | HANDLE vs fd、线程 API |
-| Clipboard | Offer/Request/generation 规则、compare-and-apply | HGLOBAL vs NSPasteboard/changeCount |
-| Input | 按键语义、modifier、release-all | hook vs CGEvent |
-| UI | 状态快照字段、命令语义 | Win32 vs Cocoa 控件 |
+| `win_main.c` / `ui.c` / `main_ui.c` | `main.c` / `statusbar.m` / `main_ui.m` | 原生进程、托盘/菜单栏、四页主窗口；不得把 OS 控件搬入 Core |
+| `net_server.c` / transport includes | `net_client.c` / transport includes | 各自 socket、连接循环、重连和线程拓扑；共享协议/session 规则，不宣称统一 actor |
+| `clipboard.c` + offer/paste includes | `clipboard.m` + offer/paste includes | 共享事务 Core；原生剪贴板与图片/路径桥接各自实现 |
+| `xfer.c` / `xfer_sender*.c` / `xfer_receive.c` | 对应 macOS 实现 | 平台 Job/锁/socket/线程与 Core 规则组合 |
+| `xfer_writer_queue/worker/io` | 对应 macOS 实现 | 平台 writer 与文件句柄；共享队列记账和 buffer pool |
 
-## 8. 本审计暂未证明的事项
+## 5. UI 当前实现
 
-- 当前主干的完整 CI 通过情况：需以本轮 PR 最新 Actions run 为准。
-- 真机双向文件粘贴、长时间传输、弱网、慢盘、8 小时 idle、真实输入延迟：本次代码静态审计未执行。
-- 全部静态变量和所有动态分配的完整所有权闭环：需要阶段 0 后续对 writer/receiver/sender 按线程和资源逐项审计，当前只完成了主要模块和状态入口的识别。
-- 行数与函数簇来自代码快照，不能替代动态调用图或 sanitizer/线程压力验证。
+- 两端主窗口均采用四个一级入口：概览、设备、传输、设置；日志与软件更新归入设置。
+- Windows 使用 Win32 原生窗口；macOS 使用 Cocoa 原生窗口。
+- Windows 托盘图标：断开时灰度/灰点，已连接蓝点，共享中绿点；传输时显示进度环，tooltip 显示方向与百分比。左键打开主窗口，右键显示打开/退出菜单。
+- macOS 菜单栏图标：连接/共享状态使用灰/蓝/绿样式；传输时显示进度环和百分比。左键打开主窗口，右键显示打开/退出菜单。
+- UI 使用传输状态快照；空闲刷新不应触碰大块文件明细表。PR #22 对 idle tracking reset 改为只重置文件表之前的元数据，并修复稀疏 file ID 初始化范围。
 
-## 9. 首个模块拆分记录
+## 6. 自动化 CI 证据与覆盖
 
-`src/core/xfer_ack_window.h` 原先包含 11 个 `static inline` 函数，Windows/macOS 发送端都直接包含该头文件。已拆为：
-- `src/core/xfer_ack_window.h`：ACK window 数据结构、常量和公开函数声明。
-- `src/core/xfer_ack_window.c`：reset/count/register/mark-sent/deadline/deliver/take/unregister/checkpoint 规则实现。
-- `scripts/test-core.ps1` 与 `scripts/test-core.sh`：将新生产编译单元链接进两端 Core 测试。
+当前主干最近的 PR #22 构建验证为 [Actions #44662680422](https://github.com/alex520lq/HopDesk/actions/runs/44662680422)。其 head Tree 与 main Tree 相同。
 
-该拆分不改变 ACK window 的同步约定（调用方仍持有平台 ACK lock），也不把平台锁引入 Core。原有 `test_xfer_ack_window` 覆盖窗口容量、重复 ACK、deadline race、RTT 和连续 checkpoint，保留原测试向量。
+- Windows：MSVC app build/package、Core tests、file-transfer protocol tests、TCP loopback、native control/data role + reconnect integration。
+- macOS：Apple Clang app build/package、Core tests、file-transfer protocol tests、TCP loopback、control/listener loopback、native receive/resume integration。
+- Windows 与 macOS build/test/package jobs 均 success；Release publication job skipped（非 tag 构建）。
 
-### Native Writer IO Adapter
+CI 不覆盖所有实机行为，尤其不证明真实双机剪贴板争用、两角色组合完整文件传输、权限提示、DDC 显示器、弱网/慢盘、8 小时空闲和长时间大文件传输。
 
-Windows/macOS writer worker 原先直接操作各自平台文件句柄。现已将文件生命周期与随机偏移写入拆到平台 adapter：
-- `src/win/xfer_writer_io.c/.h`：HANDLE 初始化、打开/覆盖、偏移写入、关闭。
-- `src/mac/xfer_writer_io.c/.h`：fd 初始化、打开/覆盖、完整处理 partial write/EINTR、偏移写入、关闭。
-- `tests/writer_io_tests.c`：两端共享测试入口，验证 open → write-at(0) → overwrite-at(1) → close 后的实际字节内容。
+## 7. 当前已知剩余问题与审计边界
 
-平台 writer worker 仍负责 watchdog、耗时统计、Task Reservation 释放和队列状态；adapter 不触碰这些生命周期。Windows `SetFilePointerEx` 失败现在会正确返回错误，不再忽略 seek 失败。
+1. **Sender Retry 状态快照/写回**：平台 `xfer_job` / `xf_job` 仍拥有 attempt/retry deadline；Core Worker Flow 使用决策快照并回写。当前没有证明直接借用平台字段会更简单，进一步重构前必须比较指针生命周期、类型转换、锁序和 Shutdown 竞态。
+2. **Connection/session 平台循环**：Windows 与 macOS 的连接/监听拓扑不同。共享认证/session 语义，不代表应强行统一 socket loop 或线程模型。
+3. **平台 `.inc`**：Clipboard offer/paste 与 network protocol/transport 仍有 include 片段。逐个审计其重复业务规则；只搬文件或改扩展名不算模块化。
+4. **全量 Owner/lock 审计**：当前模块边界和关键生命周期已有契约与回归，但尚未完成所有静态变量、锁顺序、迟到回调、线程退出与动态分配的全量清单。
+5. **资源与性能测量**：当前没有可比的 Windows/macOS RSS、CPU、吞吐、键鼠 RTT、启动时间和包体前后数据。不能凭源码行数或模块拆分宣称性能提升。
+6. **实机验收**：真实双机文件/文件夹/图片粘贴、取消/断线/重连、剪贴板争用、权限、显示器、弱网/慢盘和长稳项目，必须按 `MANUAL_TEST_RUNBOOK.md` 逐项记录 PASS/FAIL/BLOCKED。
 
-### RX Queue Accounting
+## 8. 后续重构准则
 
-新增 `src/core/xfer_rx_queue.c/.h`，将两端 writer queue 的纯容量策略与平台同步机制分离。Core 状态包含 queued/busy/reserved slots 和 queued bytes；`can_push` 同时计算三类 slot 并以减法形式检查 byte 上限，`reserve/rollback/commit_reserved` 管理数据入队前的两阶段预留，`dequeue/complete` 表示唯一 writer 的任务生命周期，`drained` 用于安全 drain 判断。平台层仍持有锁并在锁内调用 API；Core 不等待、不分配内存、不接触 OS 线程。
-
-测试 `test_xfer_rx_queue` 验证 busy 写盘期间仍占用 slot/bytes、预留不能超限、回滚恢复预算、提交与完成、drained 状态。该队列策略当前按单 writer 设计（`busy_slots` 最大为 1），与两端实际 worker 拓扑一致。
-
-## 11. 审计结论
-
-第一项真正的生产代码拆分应从 writer queue 开始：其职责相对独立、slot/bytes/pool 所有权可明确建模，而且能通过慢盘、满队列、取消、shutdown drain 等测试验证。不要先拆 UI，也不要直接把整个 `.inc` 改名为 `.c`；后者只会把隐式依赖变成编译/链接错误。
+- 一次只解决一个问题，一个问题形成一个完整提交。
+- 先审计两端生产调用链、Core、资源 Owner、锁/线程和失败路径，再设计边界。
+- 只有共享同一业务规则且能删除重复状态/转发时才抽取；真实 OS 差异留在 Adapter。
+- 每个新 Core 模块必须进入 Windows/macOS 生产构建和对应测试目标。
+- 重构完成后列出删除的旧接口/包装、生产调用链变化、Owner 变化和双平台测试证据。
+- 未执行的真实双机和性能测试明确标记 BLOCKED，不以 CI 或 loopback 替代。

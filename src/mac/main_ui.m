@@ -120,6 +120,20 @@ void mac_request_accessibility_permission(void) {
 
 static NSString *const kPageNames[UI_PAGE_COUNT] = {@"概览",@"设备",@"传输",@"设置"};
 
+@interface HopDeskLogView : NSTextView
+@end
+
+@implementation HopDeskLogView
+- (NSMenu *)menuForEvent:(NSEvent *)event {
+    (void)event;
+    // The read-only log needs only selection and copy. The default text menu warms system service caches.
+    NSMenu *menu = [[NSMenu alloc] init];
+    [menu addItemWithTitle:@"复制" action:@selector(copy:) keyEquivalent:@""].target = self;
+    [menu addItemWithTitle:@"全选" action:@selector(selectAll:) keyEquivalent:@""].target = self;
+    return menu;
+}
+@end
+
 @interface HopDeskMainController : NSObject <NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate>
 - (void)selectPage:(id)sender;
 - (void)saveSettings:(id)sender;
@@ -911,7 +925,7 @@ static void build_pages(NSView *root) {
     s_logNote=ui_label(card,@"尚未读取",NSMakeRect(620,390,198,22),11,NO);
     NSScrollView *logScroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(18,58,804,310)];
     logScroll.hasVerticalScroller=YES;logScroll.hasHorizontalScroller=YES;
-    s_logView=[[NSTextView alloc] initWithFrame:NSMakeRect(0,0,800,300)];
+    s_logView=[[HopDeskLogView alloc] initWithFrame:NSMakeRect(0,0,800,300)];
     s_logView.editable=NO;s_logView.font=[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
     logScroll.documentView=s_logView;[card addSubview:logScroll];
     ui_button(card,@"刷新日志",NSMakeRect(584,12,108,32),s_uiController,@selector(refreshLogs:));

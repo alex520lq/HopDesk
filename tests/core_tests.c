@@ -1010,6 +1010,38 @@ static void test_xfer_tracking_stage_timing(void) {
     CHECK(t.stage_ns[HOP_XFER_TIME_SEND]==0); /* terminal tasks cannot accrue time */
 }
 
+static void test_xfer_tracking_reset_and_sparse_ids(void) {
+    static hop_xfer_tracking t;
+    hop_xfer_tracking_begin(&t, 1, HOP_XFER_DIR_RECEIVE, 4, 0, "old", HOP_XFER_RECEIVING);
+    hop_xfer_tracking_file(&t, 1, 1, "old-first", 100, 0, HOP_XFER_FILE_RECEIVING);
+    hop_xfer_tracking_chunk(&t, 1, 1, 0, 100, 1000);
+    hop_xfer_tracking_phase(&t, 1, 0, HOP_XFER_FILE_COMPLETED, 1);
+    hop_xfer_tracking_file(&t, 1, 4, "old-tail", 1, 0, HOP_XFER_FILE_RECEIVING);
+    hop_xfer_tracking_add_time(&t, 1, HOP_XFER_TIME_RECEIVE, 100);
+    t.revision = 2;
+
+    hop_xfer_tracking_reset(&t);
+    CHECK(t.count == 0 && !t.status.active && t.status.batch == 0 && t.revision == 0);
+    CHECK(t.sample_ms == 0 && t.sample_bytes == 0 && t.stage_ns[HOP_XFER_TIME_RECEIVE] == 0);
+    CHECK(strcmp(t.files[0].relative_path, "old-first") == 0);
+
+    hop_xfer_tracking_begin(&t, 2, HOP_XFER_DIR_RECEIVE, 3, 0, "new", HOP_XFER_RECEIVING);
+    CHECK(t.count == 0 && strcmp(t.files[3].relative_path, "old-tail") == 0);
+    hop_xfer_tracking_file(&t, 2, 3, "new-third", 30, 0, HOP_XFER_FILE_RECEIVING);
+    CHECK(t.count == 3 && t.status.bytes_total == 30 && t.status.files_done == 0);
+    CHECK(t.files[0].relative_path[0] == '\0' && t.files[0].bytes_total == 0 &&
+          t.files[0].bytes_done == 0 && t.files[0].phase == HOP_XFER_FILE_QUEUED);
+    CHECK(t.files[1].relative_path[0] == '\0' && t.files[1].bytes_total == 0);
+    CHECK(strcmp(t.files[2].relative_path, "new-third") == 0);
+    CHECK(strcmp(t.files[3].relative_path, "old-tail") == 0);
+
+    hop_xfer_tracking_file(&t, 2, 1, "new-first", 10, 0, HOP_XFER_FILE_RECEIVING);
+    hop_xfer_tracking_chunk(&t, 1, 1, 0, 10, 1100);
+    CHECK(t.status.bytes_total == 40 && t.status.bytes_done == 0);
+    CHECK(strcmp(t.files[0].relative_path, "new-first") == 0);
+    CHECK(strcmp(t.files[2].relative_path, "new-third") == 0);
+}
+
 static void test_xfer_tracking_duplex_snapshot(void) {
     /* Each tracker includes 8192 file records; never place them on the stack. */
     static hop_xfer_tracking tx, rx;
@@ -1592,6 +1624,7 @@ int main(void) {
     RUN_TEST(test_xfer_rx_queue);
     RUN_TEST(test_xfer_rate_limiter);
     RUN_TEST(test_xfer_tracking_stage_timing);
+    RUN_TEST(test_xfer_tracking_reset_and_sparse_ids);
     RUN_TEST(test_xfer_tracking_duplex_snapshot);
     RUN_TEST(test_xfer_tracking_speed_and_eta);
     RUN_TEST(test_xfer_task_identity_and_lifecycle);

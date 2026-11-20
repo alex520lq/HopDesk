@@ -437,7 +437,7 @@ void status_receive_set_total(uint32_t total) {
 
 void status_receive_reset(void) {
     pthread_mutex_lock(&s_status_lock);
-    memset(&s_receive_status, 0, sizeof(s_receive_status));
+    hop_xfer_tracking_reset(&s_receive_status);
     pthread_mutex_unlock(&s_status_lock);
 }
 

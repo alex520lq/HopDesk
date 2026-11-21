@@ -1142,8 +1142,8 @@ int main(void){
         if platform=='win': fixture='#define FIXTURE_WINDOWS 1\n'+fixture
         run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c','src/core/xfer_sender_chunk.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_task.c','src/core/xfer_budget.c','src/core/xfer_sender_context_adapter.c','src/core/xfer_rx_frame_gate.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c'],threads=True)
 
-    control=(ROOT/'src/mac/net_client.c').read_text(encoding='utf-8')+'\n'+(ROOT/'src/mac/net_client_protocol.inc').read_text(encoding='utf-8')
-    for platform,source_name,module_name in [('win','net_server.c','net_server_protocol.inc'),('mac','net_client.c','net_client_protocol.inc')]:
+    control=(ROOT/'src/mac/net_client.m').read_text(encoding='utf-8')+'\n'+(ROOT/'src/mac/net_client_protocol.inc').read_text(encoding='utf-8')
+    for platform,source_name,module_name in [('win','net_server.c','net_server_protocol.inc'),('mac','net_client.m','net_client_protocol.inc')]:
         transport=(ROOT/f'src/{platform}/{source_name}').read_text(encoding='utf-8')
         protocol=(ROOT/f'src/{platform}/{module_name}').read_text(encoding='utf-8')
         assert '#include "'+module_name+'"' in transport

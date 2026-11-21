@@ -241,7 +241,11 @@ static void *net_thread(void *arg) {
             }
             ssize_t r = read(s, buf, sizeof(buf));
             if (r < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
-            if (r <= 0 || !hop_decoder_feed(s_dec, (uint8_t *)buf, (uint32_t)r)) break;
+            if (r <= 0) break;
+            // Input injection can autorelease Cocoa objects on this long-lived pthread.
+            @autoreleasepool {
+                if (!hop_decoder_feed(s_dec, (uint8_t *)buf, (uint32_t)r)) break;
+            }
         }
 
         pthread_mutex_lock(&s_lock);

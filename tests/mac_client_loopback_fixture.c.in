@@ -5,6 +5,7 @@
 /* Expose Darwin TCP keepalive options while the fixture is compiled in POSIX mode. */
 #define _DARWIN_C_SOURCE 1
 #endif
+#import <Foundation/NSObject.h>
 #include "hop.h"
 #include <assert.h>
 #include <stdio.h>
@@ -33,6 +34,17 @@
 #endif
 typedef struct {hop_config cfg;int screen_w,screen_h;} mac_app;
 static _Atomic int status_connected;
+static _Atomic unsigned released_input_objects;
+
+@interface InputAutoreleaseProbe : NSObject
+@end
+@implementation InputAutoreleaseProbe
+- (void)dealloc {
+    atomic_fetch_add(&released_input_objects, 1);
+    [super dealloc];
+}
+@end
+
 int net_send(uint8_t,const void*,uint32_t);
 void net_request_reconnect(void);
 void hop_log(hop_log_level level,const char *fmt,...){(void)level;(void)fmt;}
@@ -42,7 +54,12 @@ static void mac_capture_peer_geometry(uint32_t w,uint32_t h){(void)w;(void)h;}
 static void mac_capture_return(void){}
 static void inject_set_peer_geometry(uint32_t w,uint32_t h){(void)w;(void)h;}
 static void inject_enter(int n){(void)n;}
-static void inject_move(int x,int y){(void)x;(void)y;}
+static void inject_move(int x, int y) {
+    (void)x;
+    (void)y;
+    // Model the temporary Cocoa objects created by native input injection.
+    [[[InputAutoreleaseProbe alloc] init] autorelease];
+}
 static void inject_button(int b,int d,int click_count){(void)b;(void)d;(void)click_count;}
 static void inject_wheel(int x,int y){(void)x;(void)y;}
 static void inject_key(uint16_t k,int d){(void)k;(void)d;}
@@ -84,13 +101,26 @@ static void exchange(int peer){
     for(int i=0;i<150&&!atomic_load(&status_connected);++i)usleep(20000);
     assert(atomic_load(&status_connected) && hop_session_matches(&session));
 }
+static void test_input_objects_are_released(int peer) {
+    enum { frame_count = 128, frame_size = HOP_HEADER_SIZE + 4 };
+    uint8_t frames[frame_count * frame_size] = {0};
+    for (int i = 0; i < frame_count; ++i)
+        hop_encode_header(frames + i * frame_size, HOP_MSG_MOUSE_MOVE, 4);
+    send_exact(peer, frames, sizeof(frames));
+    for (int i = 0; i < 150 && atomic_load(&released_input_objects) < frame_count; ++i)
+        usleep(20000);
+    assert(atomic_load(&status_connected));
+    assert(atomic_load(&released_input_objects) == frame_count);
+    puts("PASS: macOS control reader drains temporary input objects while still connected");
+}
 static void test_client(void){
     alarm(20);int listener=socket(AF_INET,SOCK_STREAM,0);assert(listener>=0);
     struct sockaddr_in a;memset(&a,0,sizeof(a));a.sin_family=AF_INET;a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
     assert(!bind(listener,(struct sockaddr*)&a,sizeof(a)));socklen_t n=sizeof(a);assert(!getsockname(listener,(struct sockaddr*)&a,&n));assert(!listen(listener,4));
     memset(&g_mac,0,sizeof(g_mac));g_mac.cfg.role=HOP_ROLE_CLIENT;g_mac.cfg.port=ntohs(a.sin_port);
     strcpy(g_mac.cfg.peer_host,"127.0.0.1");strcpy(g_mac.cfg.token,"test-secret");strcpy(g_mac.cfg.device_name,"Mac");g_mac.screen_w=1440;g_mac.screen_h=900;
-    net_loop_run();int peer=accept_bounded(listener);exchange(peer);shutdown(peer,SHUT_RDWR);close(peer);
+    net_loop_run();int peer=accept_bounded(listener);exchange(peer);
+    test_input_objects_are_released(peer);shutdown(peer,SHUT_RDWR);close(peer);
     for(int i=0;i<150&&atomic_load(&status_connected);++i) usleep(20000);
     assert(!atomic_load(&status_connected));
     peer=accept_bounded(listener);exchange(peer);net_request_stop();shutdown(peer,SHUT_RDWR);close(peer);close(listener);

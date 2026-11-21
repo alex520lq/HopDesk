@@ -56,7 +56,7 @@ HopDesk 当前采用 **共享纯 C Core/Application + Windows Win32/Winsock Adap
 | Windows `src/win` | macOS `src/mac` | 共同职责/差异 |
 |---|---|---|
 | `win_main.c` / `ui.c` / `main_ui.c` | `main.c` / `statusbar.m` / `main_ui.m` | 原生进程、托盘/菜单栏、四页主窗口；不得把 OS 控件搬入 Core |
-| `net_server.c` / transport includes | `net_client.c` / transport includes | 各自 socket、连接循环、重连和线程拓扑；共享协议/session 规则，不宣称统一 actor |
+| `net_server.c` / transport includes | `net_client.m` / transport includes | 各自 socket、连接循环、重连和线程拓扑；共享协议/session 规则。macOS 控制线程在每批解码结束时清空临时 Cocoa 对象。 |
 | `clipboard.c` + offer/paste includes | `clipboard.m` + offer/paste includes | 共享事务 Core；原生剪贴板与图片/路径桥接各自实现 |
 | `xfer.c` / `xfer_sender*.c` / `xfer_receive.c` | 对应 macOS 实现 | 平台 Job/锁/socket/线程与 Core 规则组合 |
 | `xfer_writer_queue/worker/io` | 对应 macOS 实现 | 平台 writer 与文件句柄；共享队列记账和 buffer pool |

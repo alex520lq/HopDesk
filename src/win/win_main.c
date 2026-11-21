@@ -7,6 +7,7 @@
 #include "update.h"
 #include "main_ui.h"
 #include "../core/update_state.h"
+#include "../platform/audio_link.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -306,6 +307,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     win_inject_reset();
     kbd_shutdown();
     capture_shutdown();
+    hop_audio_shutdown();
     while (!clip_shutdown(g_app.hwnd)) Sleep(100); /* retain unresolved image Task owners */
     /* Stop/join control callbacks before destroying transfer locks: on_link()
      * can call xfer_kick after a disconnect. */

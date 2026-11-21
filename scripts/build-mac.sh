@@ -58,6 +58,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 <key>CFBundleShortVersionString</key><string>$VERSION</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
+<key>NSLocalNetworkUsageDescription</key><string>HopDesk 连接同一局域网中的设备，以共享键鼠、剪贴板和文件。</string>
 <key>NSAppleEventsUsageDescription</key><string>HopDesk 读取访达当前文件夹，以便在按下粘贴键的位置接收文件。</string>
 </dict></plist>
 PLIST

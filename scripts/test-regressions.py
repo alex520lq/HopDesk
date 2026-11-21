@@ -201,6 +201,7 @@ int main(void){
     # The two native front ends expose the same operational dashboard,
     # consistent settings groups, and one task-history surface.
     mac_ui=(ROOT/'src/mac/main_ui.m').read_text(encoding='utf-8')
+    mac_split_ui=(ROOT/'src/mac/split_ui.m').read_text(encoding='utf-8')
     win_ui=(ROOT/'src/win/main_ui.c').read_text(encoding='utf-8')
     # Both native clients expose exactly four top-level destinations in the
     # same order. Logs and updates remain reachable inside the Settings page.
@@ -257,9 +258,11 @@ int main(void){
     assert 'MessageBoxW' not in extract(win_ui,'save_settings')
     # Selecting a live task must drive the matching detail snapshot and file batch.
     assert all(x in mac_ui for x in ['tableViewSelectionDidChange',
-        'hop_xfer_task_get_snapshot(selectedId,&selectedSnapshot)',
-        'xfer_get_files(fileDirection,fileBatch', 'selected_visible_file_index',
+        'split_ui_get_task(selectedId,&selectedSnapshot)',
+        'split_ui_get_files(fileDirection,fileBatch', 'selected_visible_file_index',
         'NSAlertSecondButtonReturn', 's_cancelTaskButtons[d].enabled=canCancel'])
+    assert 'hop_xfer_task_get_snapshot(id, out)' in extract(mac_split_ui,'split_ui_get_task')
+    assert 'xfer_get_files(direction, batch, out, capacity)' in extract(mac_split_ui,'split_ui_get_files')
     assert all(x in win_ui for x in ['UI_ID_SEND_TASKS', 'UI_ID_RECEIVE_TASKS',
         'hop_xfer_task_get_snapshot(selected_id,&selected_snapshot)',
         'xfer_get_files(file_direction,file_batch', 'selected_visible_file_index',

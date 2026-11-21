@@ -7,6 +7,8 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <dispatch/dispatch.h>
 #include "mac_app.h"
+#include "split_agent.h"
+#include "split_ui.h"
 #include "xfer.h"
 #include "../core/xfer_status.h"
 #include "../core/hop.h"
@@ -14,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <malloc/malloc.h>
 
 enum {
     CFG_NAME, CFG_HOST, CFG_PORT, CFG_DATA_PORT, CFG_TOKEN,
@@ -63,6 +66,11 @@ static uint32_t s_fileBatch;
 static int s_fileDirection;
 static BOOL s_accessibilityPermissionRequestStarted;
 
+/* Destroying the window must also drop every static strong reference below.
+ * Otherwise closing the window only hides it and the full 4-page UI stays
+ * resident for the rest of the process lifetime. */
+static void main_ui_destroy(void);
+
 /* CoreGraphics event posting can fail silently without Post Event permission.
  * Request it once, then take the user directly to the Accessibility privacy pane.
  * Cocoa and System Settings navigation are always performed on the main queue. */
@@ -73,6 +81,10 @@ void mac_request_accessibility_permission(void) {
         BOOL canAccess = AXIsProcessTrusted();
         if (canPost && canListen && canAccess) {
             hop_log(HOP_LOG_INFO, "permission: macOS event access is already granted");
+            return;
+        }
+        if (split_agent_is_active()) {
+            hop_log(HOP_LOG_WARN, "split agent: open HopDesk to grant input permissions");
             return;
         }
 
@@ -420,9 +432,9 @@ static void refresh_task_lists(void) {
     if(!s_tasksSnapshot)s_tasksSnapshot=calloc(UI_TASK_CAP,sizeof(*s_tasksSnapshot));
     if(!s_tasksSnapshot)return;
     hop_xfer_task_id selected[2]={selected_task(0),selected_task(1)};
-    int total=0,n=hop_xfer_task_list(s_tasksSnapshot,UI_TASK_CAP,&total);
+    int total=0,n=split_ui_get_tasks(s_tasksSnapshot,UI_TASK_CAP,&total);
     if(n<0)return;
-    hop_xfer_status_pair pair;memset(&pair,0,sizeof(pair));xfer_get_status_pair(&pair);
+    hop_xfer_status_pair pair;memset(&pair,0,sizeof(pair));split_ui_get_status_pair(&pair);
     NSMutableArray<NSDictionary *> *rows[2]={[NSMutableArray array],[NSMutableArray array]};
     for(int i=0;i<n;++i){
         hop_xfer_task_snapshot *t=&s_tasksSnapshot[i];
@@ -472,7 +484,7 @@ static void refresh_task_history(void) {
     NSInteger d=s_historyDirection.indexOfSelectedItem,st=s_historyState.indexOfSelectedItem,order=s_historyOrder.indexOfSelectedItem;
     if(d<0 || d>2 || st<0 || st>5 || order<0 || order>1)return;
     hop_xfer_task_history_record history[HOP_TASK_HISTORY_CAPACITY];
-    int total=0,n=hop_xfer_task_history_store_list(history,HOP_TASK_HISTORY_CAPACITY,directions[d],states[st],order==0,&total);
+    int total=0,n=split_ui_get_history(history,HOP_TASK_HISTORY_CAPACITY,directions[d],states[st],order==0,&total);
     if(n<0)return;
     NSMutableString *rows=[NSMutableString string];
     for(int i=0;i<n;++i){const hop_xfer_task_history_record *t=&history[i];
@@ -511,7 +523,7 @@ static void update_transfer_actions(void) {
         BOOL canCancel=NO;
         hop_xfer_task_snapshot task;
         hop_xfer_task_id id=selected_task(d);
-        if(id && hop_xfer_task_get_snapshot(id,&task))
+        if(id && split_ui_get_task(id,&task))
             canCancel=task.state<HOP_XFER_TASK_COMPLETED && !task.cancel_requested && !task.completing;
         if(s_cancelTaskButtons[d])s_cancelTaskButtons[d].enabled=canCancel;
     }
@@ -525,12 +537,12 @@ static void refresh_transfer_page(void) {
     s_refreshingTransfers=YES;
     refresh_task_lists();
     refresh_task_history();
-    hop_xfer_status_pair pair; memset(&pair,0,sizeof(pair)); xfer_get_status_pair(&pair);
+    hop_xfer_status_pair pair; memset(&pair,0,sizeof(pair)); split_ui_get_status_pair(&pair);
 
     hop_xfer_task_snapshot selectedSnapshot;memset(&selectedSnapshot,0,sizeof(selectedSnapshot));
     hop_xfer_task_id selectedId=selected_task(0);
     if(!selectedId)selectedId=selected_task(1);
-    BOOL hasSelected=selectedId && hop_xfer_task_get_snapshot(selectedId,&selectedSnapshot);
+    BOOL hasSelected=selectedId && split_ui_get_task(selectedId,&selectedSnapshot);
     BOOL hasTaskStatus=NO;
     hop_xfer_status st=pair.primary_direction==HOP_XFER_DIR_SEND?pair.send:pair.receive;
     if(hasSelected){
@@ -602,7 +614,7 @@ static void refresh_transfer_page(void) {
     s_fileBatchActive=hasSelected?(hasTaskStatus && st.active):st.active;
     if(!s_fileSnapshot)s_fileSnapshot=calloc(HOP_XFER_FILE_LIMIT,sizeof(*s_fileSnapshot));
     int count=s_fileSnapshot&&fileDirection!=HOP_XFER_DIR_NONE&&fileBatch?
-        xfer_get_files(fileDirection,fileBatch,s_fileSnapshot,HOP_XFER_FILE_LIMIT):0;
+        split_ui_get_files(fileDirection,fileBatch,s_fileSnapshot,HOP_XFER_FILE_LIMIT):0;
     if(s_fileBatch!=fileBatch || s_fileDirection!=fileDirection){
         memset(s_collapsedFolders,0,sizeof(s_collapsedFolders));
         s_fileBatch=fileBatch;s_fileDirection=fileDirection;
@@ -724,7 +736,7 @@ static void refresh_connection_labels(void) {
     s_overviewPeer.stringValue=[NSString stringWithFormat:@"%@  ·  %@  ·  控制端口 %u  ·  数据端口 %u",
         g_mac.cfg.role==HOP_ROLE_SERVER?@"服务器 · 提供键鼠":@"客户端 · 接收键鼠",g_mac.cfg.role==HOP_ROLE_SERVER?s_addresses:utf8(g_mac.cfg.peer_host), (unsigned)g_mac.cfg.port,(unsigned)g_mac.cfg.data_port];
     s_overviewControl.stringValue=s_connected?@"已连接":@"等待连接";
-    s_overviewData.stringValue=xfer_connected()?@"已连接":@"等待连接";
+    s_overviewData.stringValue=split_ui_data_connected()?@"已连接":@"等待连接";
     s_overviewSharing.stringValue=s_sharing?
         (g_mac.cfg.role==HOP_ROLE_SERVER?@"已移交客户端":@"正在接收输入"):
         s_connected?@"已就绪 · 等待边缘移交":@"等待连接";
@@ -737,7 +749,7 @@ static void refresh_connection_labels(void) {
     ui_apply_status_badge(s_headerStatus,s_connected,s_sharing);
     ui_apply_status_badge(s_overviewStatus,s_connected,s_sharing);
     ui_apply_status_badge(s_overviewControl,s_connected,s_sharing);
-    ui_apply_status_badge(s_overviewData,xfer_connected(),NO);
+    ui_apply_status_badge(s_overviewData,split_ui_data_connected(),NO);
     ui_apply_status_badge(s_overviewSharing,s_connected,s_sharing);
 }
 static void show_page(int page) {
@@ -954,7 +966,7 @@ static void build_pages(NSView *root) {
 - (void)settingsTextDidChange:(NSNotification *)notification {(void)notification;mark_settings_dirty();}
 - (void)saveSettings:(id)sender {(void)sender;save_settings();}
 - (void)resetSettings:(id)sender {(void)sender;reset_settings();}
-- (void)reconnect:(id)sender {(void)sender;net_request_reconnect();}
+- (void)reconnect:(id)sender {(void)sender;split_ui_reconnect();}
 - (void)switchMac:(id)sender {
     (void)sender;
     disp_wake(g_mac.cfg.disp_wake_sec);
@@ -989,18 +1001,18 @@ static void build_pages(NSView *root) {
 - (void)cancelTask:(id)sender {
     int d=[sender tag]==1?1:0;hop_xfer_task_id id=selected_task(d);
     hop_xfer_task_snapshot task;
-    if(!id || !hop_xfer_task_get_snapshot(id,&task))return;
+    if(!id || !split_ui_get_task(id,&task))return;
     NSString *name=utf8(task.name);
     if(!name.length)name=[NSString stringWithFormat:@"任务 #%llu",(unsigned long long)id];
     NSAlert *alert=[NSAlert new];alert.alertStyle=NSAlertStyleWarning;
     alert.messageText=[NSString stringWithFormat:@"确定取消%@？",name];
-    alert.informativeText=xfer_connected()?
+    alert.informativeText=split_ui_data_connected()?
         @"取消请求会立即发送到任务执行器；已经完成的文件不会回滚。":
         @"数据通道当前未连接。取消后，对端的临时文件可能要等连接恢复或断线超时后清理。已经完成的文件不会回滚。";
     [alert addButtonWithTitle:@"返回"];
     [alert addButtonWithTitle:@"取消任务"];
     if([alert runModal]!=NSAlertSecondButtonReturn)return;
-    if(!xfer_cancel_task(id)){
+    if(!split_ui_cancel_task(id)){
         NSAlert *failed=[NSAlert new];failed.messageText=@"任务已结束或正在完成，无法取消。";[failed runModal];
     }
     refresh_transfer_page();
@@ -1009,7 +1021,7 @@ static void build_pages(NSView *root) {
     (void)sender;
     int index=selected_visible_file_index();
     if(index>=0 && s_fileDirection==HOP_XFER_DIR_SEND &&
-       !xfer_retry_file(s_fileBatch,index)){
+       !split_ui_retry_file(s_fileBatch,index)){
         NSAlert *a=[NSAlert new];a.messageText=@"无法重试";
         a.informativeText=@"文件可能仍在进行、并非失败状态，或这是跨端粘贴任务。跨端粘贴请在目标设备确认剪贴板后重新发起粘贴。";[a runModal];
     }
@@ -1032,15 +1044,70 @@ static void build_pages(NSView *root) {
 - (void)checkUpdates:(id)sender {(void)sender;statusbar_check_updates();}
 - (BOOL)windowShouldClose:(NSWindow *)sender {
     if(sender!=s_mainWindow)return YES;
-    [sender orderOut:nil];
+    if (split_ui_is_active()) {
+        if (s_saveBusy) return NO;
+        if (s_settingsDirty) {
+            NSAlert *alert = [NSAlert new];
+            alert.messageText = @"设置尚未保存";
+            alert.informativeText = @"关闭窗口将丢弃本次尚未保存的设置。";
+            [alert addButtonWithTitle:@"返回"];
+            [alert addButtonWithTitle:@"丢弃并关闭"];
+            if ([alert runModal] != NSAlertSecondButtonReturn) return NO;
+        }
+    }
     [s_mainTimer invalidate];s_mainTimer=nil;
-    return NO;
+    /* Let AppKit finish the close first, then drop our references on the next
+     * main-queue turn. Releasing inside the delegate callback is re-entrant. */
+    if (!split_ui_is_active())
+        dispatch_async(dispatch_get_main_queue(), ^{ main_ui_destroy(); });
+    return YES;
 }
 @end
 
+static void main_ui_destroy(void) {
+    [s_mainTimer invalidate]; s_mainTimer=nil;
+    if(s_mainWindow){
+        s_mainWindow.delegate=nil;
+        /* The window is retained by NSApp; detach its content view first so
+         * the whole page tree is released even before the window object goes. */
+        [s_mainWindow setContentView:[[NSView alloc] initWithFrame:NSZeroRect]];
+        [s_mainWindow orderOut:nil];
+        [s_mainWindow close];
+        s_mainWindow=nil;
+    }
+    for(int i=0;i<UI_PAGE_COUNT;++i){s_pages[i]=nil;s_hosts[i]=nil;s_nav[i]=nil;}
+    s_hostCount=0;
+    s_rolePopup=nil;s_addresses=nil;
+    s_pageTitle=nil;s_headerStatus=nil;s_footer=nil;
+    s_overviewStatus=nil;s_overviewPeer=nil;s_overviewControl=nil;s_overviewData=nil;s_overviewSharing=nil;
+    s_connectionRole=nil;s_connectionStatus=nil;s_connectionPeer=nil;s_connectionPorts=nil;
+    for(int i=0;i<CFG_COUNT;++i)s_cfg[i]=nil;
+    s_cfgNote=nil;s_hostLabel=nil;s_hostHint=nil;
+    s_saveSettingsButton=nil;s_resetSettingsButton=nil;
+    s_edgePopups[0]=nil;s_edgePopups[1]=nil;
+    s_xferTitle=nil;s_xferDetail=nil;s_xferCounts=nil;s_xferProgress=nil;
+    s_xferFiles=nil;s_logView=nil;s_taskHistory=nil;s_logNote=nil;
+    s_historyDirection=nil;s_historyState=nil;s_historyOrder=nil;
+    s_retryButton=nil;s_cancelTaskButtons[0]=nil;s_cancelTaskButtons[1]=nil;
+    s_taskTables[0]=nil;s_taskTables[1]=nil;
+    s_taskRows[0]=nil;s_taskRows[1]=nil;
+    s_updateVersion=nil;s_updateSource=nil;
+    s_uiController=nil;
+    free(s_fileSnapshot);s_fileSnapshot=NULL;
+    free(s_tasksSnapshot);s_tasksSnapshot=NULL;
+    s_saveBusy=NO;s_logBusy=NO;s_settingsDirty=NO;s_populatingSettings=NO;
+    s_fileSelectionValid=NO;s_refreshingTransfers=NO;s_syncTaskSelection=NO;s_fileBatchActive=NO;
+    s_visibleFileCount=0;s_fileBatch=0;s_fileDirection=HOP_XFER_DIR_NONE;s_page=0;
+    memset(s_collapsedFolders,0,sizeof(s_collapsedFolders));
+    memset(s_visibleFileIndices,0,sizeof(s_visibleFileIndices));
+    (void)malloc_zone_pressure_relief(NULL,0);
+}
+
 static void create_main_window(void) {
     if(s_mainWindow)return;
-    s_draft=g_mac.cfg;char addresses[512];local_addresses(addresses,sizeof(addresses));s_addresses=utf8(addresses);
+    s_draft=g_mac.cfg;
+    if (split_ui_is_active()) (void)hop_config_load(&s_draft, g_mac.config_path);
+    char addresses[512];local_addresses(addresses,sizeof(addresses));s_addresses=utf8(addresses);
     NSRect frame=NSMakeRect(0,0,1140,800);
     s_mainWindow=[[NSWindow alloc] initWithContentRect:frame
         styleMask:(NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable)
@@ -1107,10 +1174,10 @@ void main_ui_set_status(int connected,int sharing) {
 }
 void main_ui_refresh(void) {
     if(!s_mainWindow)return;
+    split_ui_refresh_connection(&s_connected, &s_sharing);
     refresh_connection_labels();
     if(s_page==UI_PAGE_TRANSFER)refresh_transfer_page();
 }
 void main_ui_shutdown(void) {
-    [s_mainTimer invalidate];s_mainTimer=nil;
-    [s_mainWindow orderOut:nil];
+    main_ui_destroy();
 }

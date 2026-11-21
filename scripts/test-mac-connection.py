@@ -21,17 +21,19 @@ def extract(source, name):
         j += 1
     return source[start:j]
 
-def run(work, name, source, extra=()):
-    path = work / (name + '.c')
+def run(work, name, source, extra=(), objc=False):
+    path = work / (name + ('.m' if objc else '.c'))
     path.write_text(source, encoding='utf-8')
     exe = work / name
     cmd = [os.environ.get('CC', 'cc'), '-std=c11', '-D_POSIX_C_SOURCE=200809L',
            '-Wall', '-Wextra', '-I', str(ROOT / 'src/core'), str(path)]
     cmd += [str(ROOT / x) for x in extra] + ['-pthread', '-o', str(exe)]
+    if objc:
+        cmd += ['-framework', 'Foundation']
     subprocess.run(cmd, cwd=work, check=True)
     subprocess.run([str(exe)], cwd=work, check=True, timeout=25)
 
-control = ((ROOT / 'src/mac/net_client.c').read_text(encoding='utf-8') + '\n' +
+control = ((ROOT / 'src/mac/net_client.m').read_text(encoding='utf-8') + '\n' +
            (ROOT / 'src/mac/net_client_protocol.inc').read_text(encoding='utf-8') + '\n' +
            (ROOT / 'src/mac/net_client_transport.inc').read_text(encoding='utf-8'))
 data = (ROOT / 'src/mac/xfer.c').read_text(encoding='utf-8')
@@ -53,4 +55,4 @@ with tempfile.TemporaryDirectory(prefix='hopdesk-mac-tcp-') as directory:
     fixture = fixture.replace('@PRODUCTION@', actual)
     run(work, 'mac_client_loopback', fixture,
         ['src/core/protocol.c', 'src/core/session.c', 'src/core/clock.c',
-         'src/core/xfer_validate.c', 'src/core/crc32.c'])
+         'src/core/xfer_validate.c', 'src/core/crc32.c'], objc=True)

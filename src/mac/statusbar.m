@@ -4,6 +4,8 @@
  * ===================================================================== */
 #import <Cocoa/Cocoa.h>
 #include "mac_app.h"
+#include "split_agent.h"
+#include "split_ui.h"
 #include "xfer.h"
 #include "update_manifest.h"
 #include "../core/update_state.h"
@@ -16,7 +18,8 @@
  * 必须显式声明 NSMenuItemValidation：10.14 之后 NSMenu 只对声明了该协议的
  * target 调用 validateMenuItem:，否则"取消当前传输"永远是亮的。 */
 static void statusbar_handle_click(NSEvent *event);
-@interface HopController : NSObject
+static void open_main_window(void);
+@interface HopController : NSObject <NSApplicationDelegate, NSMenuItemValidation>
 - (void)doOpen:(id)sender;
 - (void)doStatusItemClick:(id)sender;
 - (void)doQuit:(id)sender;
@@ -35,10 +38,14 @@ static void check_for_updates(void);
 static NSWindow *s_transferWindow;
 static NSTimer *s_transferTimer;
 @implementation HopController
-- (void)doOpen:(id)sender { (void)sender; statusbar_show_main(); }
+- (void)doOpen:(id)sender { (void)sender; open_main_window(); }
 - (void)doStatusItemClick:(id)sender { (void)sender; statusbar_handle_click(NSApp.currentEvent); }
 - (void)doQuit:(id)sender {
     (void)sender;
+    if (split_agent_is_active()) {
+        if (!split_agent_stop_if_idle()) NSBeep();
+        return;
+    }
     main_ui_shutdown();
     clipboard_shutdown();
     net_request_stop();
@@ -67,7 +74,18 @@ static NSTimer *s_transferTimer;
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
     if ([item action] == @selector(doCancelXfer:)) return xfer_busy() != 0;
     if ([item action] == @selector(doCheckUpdates:)) return !s_updateBusy;
+    if ([item action] == @selector(doQuit:) && split_agent_is_active()) return !xfer_busy();
     return YES;
+}
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)app hasVisibleWindows:(BOOL)visible {
+    (void)app; (void)visible;
+    open_main_window();
+    return NO;
+}
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)app {
+    (void)app;
+    if (!split_agent_stop_if_idle()) NSBeep();
+    return NSTerminateCancel;
 }
 @end
 
@@ -192,13 +210,19 @@ static NSImage *make_status_image(int connected, int sharing, int progress) {
 
 static void refresh_status_item(void) {
     if (!s_item || !s_item.button) return;
-    hop_xfer_status_pair pair; memset(&pair, 0, sizeof(pair)); xfer_get_status_pair(&pair);
-    const hop_xfer_status *st = pair.primary_direction == HOP_XFER_DIR_SEND ? &pair.send : &pair.receive;
-    int busy = st->active || st->queued_count > 0, progress = -1;
-    if (busy) progress = st->bytes_total
-        ? (int)MIN(100.0, 100.0*(double)st->bytes_done/(double)st->bytes_total) : -2;
+    int progress = -1, direction = 0, phase = 0;
+    if (!split_agent_is_active()) {
+        hop_xfer_status_pair pair;
+        xfer_get_status_pair(&pair);
+        const hop_xfer_status *st = pair.primary_direction == HOP_XFER_DIR_SEND ? &pair.send : &pair.receive;
+        if (st->active || st->queued_count > 0) {
+            progress = st->bytes_total
+                ? (int)MIN(100.0, 100.0*(double)st->bytes_done/(double)st->bytes_total) : -2;
+            direction = st->direction;
+            phase = st->phase;
+        }
+    }
     int state = s_status_sharing ? 2 : (s_status_connected ? 1 : 0);
-    int direction = busy ? st->direction : 0, phase = busy ? st->phase : 0;
     if (state == s_last_icon_state && progress == s_last_icon_progress &&
         direction == s_last_icon_direction && phase == s_last_icon_phase) return;
     s_last_icon_state=state; s_last_icon_progress=progress;
@@ -214,12 +238,43 @@ static void refresh_status_item(void) {
     else s_item.button.toolTip = [NSString stringWithFormat:@"HopDesk · %@",stateText];
 }
 
+static void open_main_window(void) {
+    if (!split_agent_is_active()) {
+        statusbar_show_main();
+        return;
+    }
+    static BOOL opening;
+    if (opening) return;
+
+    NSBundle *bundle = NSBundle.mainBundle;
+    NSURL *bundleURL = bundle.bundleURL.URLByResolvingSymlinksInPath;
+    for (NSRunningApplication *running in [NSRunningApplication runningApplicationsWithBundleIdentifier:bundle.bundleIdentifier]) {
+        if (running.activationPolicy == NSApplicationActivationPolicyRegular &&
+            [running.bundleURL.URLByResolvingSymlinksInPath isEqual:bundleURL] &&
+            [running activateWithOptions:NSApplicationActivateAllWindows]) return;
+    }
+
+    NSWorkspaceOpenConfiguration *configuration = [NSWorkspaceOpenConfiguration configuration];
+    configuration.createsNewApplicationInstance = YES;
+    configuration.addsToRecentItems = NO;
+    configuration.arguments = @[@"--ui"];
+    opening = YES;
+    [NSWorkspace.sharedWorkspace openApplicationAtURL:bundleURL configuration:configuration
+        completionHandler:^(NSRunningApplication *application, NSError *error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                opening = NO;
+                if (!application || error)
+                    hop_log(HOP_LOG_WARN, "statusbar: failed to open the split UI");
+            });
+        }];
+}
+
 static void statusbar_handle_click(NSEvent *event) {
     if (event && event.type == NSEventTypeRightMouseDown) {
         if (s_menu && s_item.button) [NSMenu popUpContextMenu:s_menu withEvent:event forView:s_item.button];
         return;
     }
-    statusbar_show_main();
+    open_main_window();
 }
 
 
@@ -380,6 +435,11 @@ static void start_update_download(hop_update_manifest manifest) {
 
 static void check_for_updates(void) {
     if (s_updateBusy) return;
+    if (split_ui_is_active()) {
+        update_alert(@"双进程模式下请手动更新",
+                     @"请先从「HopDesk」菜单停止后台，再安装更新包。", NSAlertStyleInformational);
+        return;
+    }
     if (xfer_busy()) {
         update_alert(@"暂不能更新", @"当前仍有文件传输任务。请等待传输结束后再更新，避免中断文件传输。",
                      NSAlertStyleWarning);
@@ -446,6 +506,8 @@ void statusbar_init(void) {
         [app setActivationPolicy:NSApplicationActivationPolicyAccessory];
 
         s_ctrl = [[HopController alloc] init];
+        const BOOL split = split_agent_is_active();
+        if (split) app.delegate = s_ctrl;
 
         s_item = [[NSStatusBar systemStatusBar]
                   statusItemWithLength:NSVariableStatusItemLength];
@@ -454,7 +516,8 @@ void statusbar_init(void) {
         NSMenuItem *open = [[NSMenuItem alloc] initWithTitle:@"打开" action:@selector(doOpen:) keyEquivalent:@""];
         open.target = s_ctrl; [s_menu addItem:open];
         [s_menu addItem:[NSMenuItem separatorItem]];
-        NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:@"退出" action:@selector(doQuit:) keyEquivalent:@"q"];
+        NSString *quitTitle = split ? @"停止 HopDesk 后台" : @"退出";
+        NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:quitTitle action:@selector(doQuit:) keyEquivalent:@"q"];
         quit.target = s_ctrl; [s_menu addItem:quit];
 
         /* Left click opens the main window; right click opens the context menu. */
@@ -462,6 +525,7 @@ void statusbar_init(void) {
         s_item.button.action = @selector(doStatusItemClick:);
         [s_item.button sendActionOn:(NSEventMaskLeftMouseUp | NSEventMaskRightMouseDown)];
         refresh_status_item();
+        if (split) return;
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
             (void)timer;
             hop_xfer_status snapshot; memset(&snapshot, 0, sizeof(snapshot));
@@ -477,6 +541,11 @@ void statusbar_update(int connected, int sharing) {
         s_status_connected = connected != 0;
         s_status_sharing = sharing != 0;
         refresh_status_item();
+        if (split_agent_is_active()) {
+            split_agent_set_status(connected, sharing);
+            mac_capture_connected(connected);
+            return;
+        }
         mac_capture_connected(connected);
         main_ui_set_status(connected, sharing);
     });

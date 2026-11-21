@@ -3,6 +3,8 @@
  *  初始化配置、网络线程、状态栏，进入 Cocoa 主循环。
  * ===================================================================== */
 #include "mac_app.h"
+#include "split_agent.h"
+#include "split_ui.h"
 #include "xfer.h"
 #include "../core/config_migrate.h"
 #include <mach-o/dyld.h>
@@ -50,12 +52,18 @@ static int acquire_single_instance(void) {
 }
 
 int main(int argc, char **argv) {
-    (void)argc; (void)argv;
-    int startup_guard = hop_watchdog_begin("macOS startup", 30000);
+    const int agent = argc == 2 && strcmp(argv[1], "--agent") == 0;
+    const int start_agent = argc == 2 && strcmp(argv[1], "--split") == 0;
+    const int open_ui = argc == 2 && strcmp(argv[1], "--ui") == 0;
+    const int ui = start_agent || open_ui || (argc == 1 && split_ui_agent_available());
+    int startup_guard = 0;
 
-    if (!acquire_single_instance()) {
-        fprintf(stderr, "hopdesk: 已经有一个实例在运行，本进程退出。\n");
-        return 0; /* a duplicate launch is not a crash to restart */
+    if (!ui) {
+        if (!acquire_single_instance()) {
+            fprintf(stderr, "hopdesk: 已经有一个实例在运行，本进程退出。\n");
+            return 0; /* a duplicate launch is not a crash to restart */
+        }
+        startup_guard = hop_watchdog_begin("macOS startup", 30000);
     }
 
     memset(&g_mac, 0, sizeof(g_mac));
@@ -81,6 +89,8 @@ int main(int argc, char **argv) {
     snprintf(log, sizeof(log), "%s/hopdesk.log", support);
     snprintf(g_mac.config_path, sizeof(g_mac.config_path), "%s", config);
     snprintf(g_mac.log_path, sizeof(g_mac.log_path), "%s", log);
+
+    if (ui) return split_ui_run(start_agent);
 
     hop_log_open(log);
     const char *loaded_from=config;
@@ -124,11 +134,20 @@ int main(int argc, char **argv) {
         while (!xfer_shutdown()) usleep(100000);
         return 1;
     }
-    statusbar_init();
+    if (agent) {
+        if (!split_agent_start()) {
+            hop_log(HOP_LOG_ERROR, "split agent: unable to start local service");
+            while (!xfer_shutdown()) usleep(100000);
+            return 1;
+        }
+    } else {
+        statusbar_init();
+    }
     clipboard_init();
     net_loop_run();
     hop_watchdog_end(startup_guard);
-    app_run();
+    if (agent) split_agent_run();
+    else app_run();
     /* clipboard workers may still own image-temp Reservations; the control
      * reader may still call xfer_kick. Join both before tearing down xfer. */
     while (!clipboard_shutdown()) usleep(100000); /* retain unresolved image Task owners */

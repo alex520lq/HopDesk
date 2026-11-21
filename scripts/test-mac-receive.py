@@ -24,3 +24,16 @@ with tempfile.TemporaryDirectory(prefix="hopdesk-mac-receive-") as directory:
         [str(exe)], check=True, timeout=25,
         env={**os.environ, "HOME": directory, "TMPDIR": directory},
     )
+
+    paste = (ROOT / "src/mac/clipboard_paste.inc").read_text(encoding="utf-8")
+    focus = paste[paste.index("static id clip_ax_value"):paste.index("static NSString *clip_finder_destination")]
+    fixture = (ROOT / "tests/mac_finder_focus_fixture.m.in").read_text(encoding="utf-8")
+    source = work / "finder-focus.m"
+    source.write_text(fixture.replace("@FINDER_RESOLUTION@", focus), encoding="utf-8")
+    exe = work / "finder-focus"
+    subprocess.run(
+        [os.environ.get("CC", "clang"), "-Wall", "-Wextra", "-Werror", "-fobjc-arc",
+         "-framework", "AppKit", "-framework", "ApplicationServices", "-o", str(exe), str(source)],
+        check=True,
+    )
+    subprocess.run([str(exe)], check=True, timeout=10)

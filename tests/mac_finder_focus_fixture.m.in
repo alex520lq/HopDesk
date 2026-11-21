@@ -1,0 +1,58 @@
+#import <AppKit/AppKit.h>
+#import <ApplicationServices/ApplicationServices.h>
+#include <assert.h>
+#include <stdatomic.h>
+
+/* Give the production AX traversal a deterministic snapshot from Finder. */
+static NSDictionary *attributes;
+static _Atomic BOOL s_finder_automation_granted;
+static AXError copy_test_attribute(AXUIElementRef element, CFStringRef name, CFTypeRef *out) {
+    NSDictionary *node = (__bridge NSDictionary *)element;
+    id value = attributes[node[@"id"]][(__bridge NSString *)name];
+    *out = value ? CFBridgingRetain(value) : NULL;
+    return value ? kAXErrorSuccess : kAXErrorNoValue;
+}
+
+#define AXUIElementCopyAttributeValue copy_test_attribute
+#define AXUIElementGetTypeID CFDictionaryGetTypeID
+@FINDER_RESOLUTION@
+#undef AXUIElementCopyAttributeValue
+#undef AXUIElementGetTypeID
+
+int main(void) {
+    @autoreleasepool {
+        NSDictionary *finder = @{@"id": @"finder"};
+        NSDictionary *window = @{@"id": @"window"};
+        NSDictionary *desktop = @{@"id": @"desktop"};
+        NSDictionary *icon = @{@"id": @"icon"};
+        NSDictionary *view = @{@"id": @"view"};
+        NSDictionary *dialog = @{@"id": @"dialog"};
+        NSDictionary *base = @{
+            @"desktop": @{@"AXRole": @"AXScrollArea", @"AXParent": finder},
+            @"icon": @{@"AXRole": @"AXImage", @"AXParent": desktop},
+            @"window": @{@"AXRole": @"AXWindow", @"AXSubrole": @"AXStandardWindow", @"AXParent": finder},
+            @"view": @{@"AXRole": @"AXOutline", @"AXParent": window},
+            @"dialog": @{@"AXRole": @"AXWindow", @"AXSubrole": @"AXDialog", @"AXParent": finder},
+        };
+        NSMutableDictionary *snapshot = [base mutableCopy];
+        attributes = snapshot;
+        AXUIElementRef app = (__bridge AXUIElementRef)finder;
+
+        snapshot[@"finder"] = @{@"AXFocusedUIElement": icon, @"AXFocusedWindow": window};
+        assert(clip_finder_paste_surface(app) == desktop);
+        NSString *expected = NSSearchPathForDirectoriesInDomains(NSDesktopDirectory, NSUserDomainMask, YES).firstObject;
+        assert(expected && [clip_focused_finder_path(app) isEqualToString:expected]);
+
+        snapshot[@"finder"] = @{@"AXFocusedUIElement": view, @"AXFocusedWindow": window};
+        assert(clip_finder_paste_surface(app) == window);
+        assert(clip_focused_finder_path(app) == nil); /* Finder Automation unavailable. */
+
+        snapshot[@"finder"] = @{@"AXFocusedWindow": window};
+        assert(clip_finder_paste_surface(app) == nil);
+
+        snapshot[@"finder"] = @{@"AXFocusedUIElement": dialog, @"AXFocusedWindow": window};
+        assert(clip_finder_paste_surface(app) == nil);
+        puts("PASS: desktop keyboard focus wins over a stale Finder window; ambiguous focus defers paste");
+    }
+    return 0;
+}

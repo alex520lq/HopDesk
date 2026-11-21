@@ -32,29 +32,63 @@ void clipboard_on_link(int connected) {
   for (int i = 0; i < count; ++i)
     free(copies[i]);
 }
+static id clip_ax_value(AXUIElementRef element, CFStringRef attribute) {
+  CFTypeRef value = NULL;
+  AXUIElementCopyAttributeValue(element, attribute, &value);
+  return CFBridgingRelease(value);
+}
+
+static BOOL clip_ax_is_element(id value) {
+  return value && CFGetTypeID((__bridge CFTypeRef)value) == AXUIElementGetTypeID();
+}
+
+/* Finder exposes the desktop's scroll area as a direct child of its app,
+ * separately from normal windows. Start at the actual keyboard focus. */
+static id clip_finder_paste_surface(AXUIElementRef finder) {
+  id node = clip_ax_value(finder, kAXFocusedUIElementAttribute);
+  for (unsigned depth = 0; depth < 16 && clip_ax_is_element(node); ++depth) {
+    AXUIElementRef element = (__bridge AXUIElementRef)node;
+    id role = clip_ax_value(element, kAXRoleAttribute);
+    if ([role isEqual:(__bridge NSString *)kAXWindowRole]) {
+      id subrole = clip_ax_value(element, kAXSubroleAttribute);
+      return [subrole isEqual:(__bridge NSString *)kAXStandardWindowSubrole] ? node : nil;
+    }
+    id parent = clip_ax_value(element, kAXParentAttribute);
+    if (clip_ax_is_element(parent) && CFEqual((__bridge CFTypeRef)parent, finder))
+      return [role isEqual:(__bridge NSString *)kAXScrollAreaRole] ? node : nil;
+    node = parent;
+  }
+  return nil;
+}
+
+static NSString *clip_focused_finder_path(AXUIElementRef finder) {
+  id surface = clip_finder_paste_surface(finder);
+  if (!surface) return nil;
+
+  AXUIElementRef element = (__bridge AXUIElementRef)surface;
+  id role = clip_ax_value(element, kAXRoleAttribute);
+  if ([role isEqual:(__bridge NSString *)kAXScrollAreaRole])
+    return NSSearchPathForDirectoriesInDomains(NSDesktopDirectory, NSUserDomainMask, YES).firstObject;
+
+  if (!atomic_load(&s_finder_automation_granted)) return nil;
+  NSAppleScript *script = [[NSAppleScript alloc] initWithSource:
+      @"tell application \"Finder\" to get POSIX path of (insertion location as alias)"];
+  NSString *path = [[script executeAndReturnError:NULL] stringValue];
+  id current = clip_finder_paste_surface(finder);
+  return current && CFEqual((__bridge CFTypeRef)surface, (__bridge CFTypeRef)current) ? path : nil;
+}
+
 static NSString *clip_finder_destination(void) {
   NSRunningApplication *front = NSWorkspace.sharedWorkspace.frontmostApplication;
   if (![front.bundleIdentifier isEqualToString:@"com.apple.finder"]) return nil;
 
   AXUIElementRef finder = AXUIElementCreateApplication(front.processIdentifier);
-  CFTypeRef focused = NULL;
-  AXError focused_error = AXUIElementCopyAttributeValue(
-      finder, kAXFocusedWindowAttribute, &focused);
+  if (!finder) return nil;
+  NSString *path = clip_focused_finder_path(finder);
   CFRelease(finder);
-  if (focused) CFRelease(focused);
+  if (NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier != front.processIdentifier)
+    return nil;
 
-  NSString *path = nil;
-  if (focused_error == kAXErrorNoValue) {
-    path = NSSearchPathForDirectoriesInDomains(NSDesktopDirectory, NSUserDomainMask, YES).firstObject;
-  } else if (focused_error == kAXErrorSuccess) {
-    if (!atomic_load(&s_finder_automation_granted)) return nil;
-    NSAppleScript *script = [[NSAppleScript alloc] initWithSource:
-        @"tell application \"Finder\" to get POSIX path of (target of front Finder window as alias)"];
-    NSDictionary *error = nil;
-    path = [[script executeAndReturnError:&error] stringValue];
-    if (!path) hop_log(HOP_LOG_WARN, "clip: cannot read Finder destination (%s)",
-                       error.description.UTF8String ?: "unknown error");
-  }
   BOOL directory = NO;
   if (!path || ![NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&directory] ||
       !directory || access(path.fileSystemRepresentation, W_OK) != 0) return nil;

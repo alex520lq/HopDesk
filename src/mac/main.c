@@ -7,6 +7,7 @@
 #include "split_ui.h"
 #include "xfer.h"
 #include "../core/config_migrate.h"
+#include "../platform/audio_link.h"
 #include <mach-o/dyld.h>
 
 #include <stdio.h>
@@ -148,6 +149,7 @@ int main(int argc, char **argv) {
     hop_watchdog_end(startup_guard);
     if (agent) split_agent_run();
     else app_run();
+    hop_audio_shutdown();
     /* clipboard workers may still own image-temp Reservations; the control
      * reader may still call xfer_kick. Join both before tearing down xfer. */
     while (!clipboard_shutdown()) usleep(100000); /* retain unresolved image Task owners */

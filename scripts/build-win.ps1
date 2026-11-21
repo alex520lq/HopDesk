@@ -21,7 +21,8 @@ New-Item -ItemType Directory -Force -Path $build | Out-Null
 
 $core = Get-ChildItem -LiteralPath (Join-Path $root 'src/core') -Recurse -File -Filter *.c | Sort-Object FullName
 $win = Get-ChildItem -LiteralPath (Join-Path $root 'src/win') -Recurse -File -Filter *.c | Sort-Object FullName
-$src = @($core.FullName) + @($win.FullName)
+$platform = Get-ChildItem -LiteralPath (Join-Path $root 'src/platform') -Recurse -File -Filter *.c | Sort-Object FullName
+$src = @($core.FullName) + @($platform.FullName) + @($win.FullName)
 $inc = Join-Path $root 'src/core'
 $iconInc = Join-Path $root 'assets/appicon'
 $out = Join-Path $build 'hopdesk.exe'
@@ -31,7 +32,7 @@ if ($version -notmatch '^[0-9]+[.][0-9]+[.][0-9]+$') { throw "Invalid HOPDESK_VE
 $versionHeader = Join-Path $build 'hop_version.h'
 $headerContent = '#define HOP_VERSION "' + $version + '"'
 Set-Content -LiteralPath $versionHeader -Value $headerContent -Encoding ascii
-$libs = 'ws2_32', 'dxva2', 'gdi32', 'shell32', 'user32', 'comctl32', 'winhttp', 'bcrypt', 'iphlpapi'
+$libs = 'ws2_32', 'dxva2', 'gdi32', 'shell32', 'user32', 'comctl32', 'winhttp', 'bcrypt', 'iphlpapi', 'ole32', 'uuid', 'mmdevapi'
 $iconPng = Join-Path $root 'assets/appicon/hopdesk.png'
 $iconIco = Join-Path $root 'assets/appicon/hopdesk.ico'
 $resource = Join-Path $root 'assets/appicon/hopdesk.rc'

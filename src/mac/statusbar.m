@@ -9,6 +9,7 @@
 #include "xfer.h"
 #include "update_manifest.h"
 #include "../core/update_state.h"
+#include "../platform/audio_link.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <stdio.h>
 #include <strings.h>
@@ -30,6 +31,7 @@ static void open_main_window(void);
 - (void)doRetryFile:(id)sender;
 - (void)doToggleFolder:(id)sender;
 - (void)doCheckUpdates:(id)sender;
+- (void)toggleAudio:(NSMenuItem *)item;
 @end
 static void retry_selected_mac_file(void);
 static void toggle_selected_mac_folder(void);
@@ -69,12 +71,30 @@ static NSTimer *s_transferTimer;
 - (void)doRetryFile:(id)sender { (void)sender; retry_selected_mac_file(); }
 - (void)doToggleFolder:(id)sender { (void)sender; toggle_selected_mac_folder(); }
 - (void)doCheckUpdates:(id)sender { (void)sender; check_for_updates(); }
+- (void)toggleAudio:(NSMenuItem *)item {
+    unsigned mode = hop_audio_get_status().requested ^ (unsigned)item.tag;
+    if (!hop_audio_set_mode(&g_mac.cfg, mode)) NSBeep();
+}
 /* 菜单打开时自动校验：没有传输在进行就把"取消"变灰。
  * NSMenu 默认 autoenablesItems，走的就是这个入口。 */
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
     if ([item action] == @selector(doCancelXfer:)) return xfer_busy() != 0;
     if ([item action] == @selector(doCheckUpdates:)) return !s_updateBusy;
     if ([item action] == @selector(doQuit:) && split_agent_is_active()) return !xfer_busy();
+    if ([item action] == @selector(toggleAudio:)) {
+        hop_audio_status status = hop_audio_get_status();
+        unsigned mode = (unsigned)item.tag;
+        item.state = (status.requested & mode) ? NSControlStateValueOn : NSControlStateValueOff;
+        NSString *title = mode == HOP_AUDIO_SEND ? @"发送本机系统声音" : @"播放对方系统声音";
+        if (status.active & mode) title = [title stringByAppendingString:@"（已连接）"];
+        else if (status.unavailable & mode) title = [title stringByAppendingString:@"（音频不可用，见日志）"];
+        else if (status.requested & mode) title = [title stringByAppendingString:@"（等待音频连接）"];
+        BOOL supported = mode != HOP_AUDIO_SEND;
+        if (@available(macOS 14.2, *)) supported = YES;
+        if (!supported) title = [title stringByAppendingString:@"（需 macOS 14.2）"];
+        item.title = title;
+        return supported;
+    }
     return YES;
 }
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)app hasVisibleWindows:(BOOL)visible {
@@ -516,6 +536,17 @@ void statusbar_init(void) {
         NSMenuItem *open = [[NSMenuItem alloc] initWithTitle:@"打开" action:@selector(doOpen:) keyEquivalent:@""];
         open.target = s_ctrl; [s_menu addItem:open];
         [s_menu addItem:[NSMenuItem separatorItem]];
+        NSMenuItem *sendAudio = [[NSMenuItem alloc] initWithTitle:@"发送本机系统声音"
+            action:@selector(toggleAudio:) keyEquivalent:@""];
+        sendAudio.target = s_ctrl;
+        sendAudio.tag = HOP_AUDIO_SEND;
+        [s_menu addItem:sendAudio];
+        NSMenuItem *playAudio = [[NSMenuItem alloc] initWithTitle:@"播放对方系统声音"
+            action:@selector(toggleAudio:) keyEquivalent:@""];
+        playAudio.target = s_ctrl;
+        playAudio.tag = HOP_AUDIO_PLAY;
+        [s_menu addItem:playAudio];
+        [s_menu addItem:[NSMenuItem separatorItem]];
         NSString *quitTitle = split ? @"停止 HopDesk 后台" : @"退出";
         NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:quitTitle action:@selector(doQuit:) keyEquivalent:@"q"];
         quit.target = s_ctrl; [s_menu addItem:quit];
@@ -640,7 +671,7 @@ static void transfer_window_refresh(void) {
 
 void statusbar_show_transfers(void) { main_ui_show_page(3); }
 
-/* The main window owns all user-facing controls; the status item only opens it. */
+/* Update controls are part of the main window. */
 void statusbar_check_updates(void) { check_for_updates(); }
 
 #if 0

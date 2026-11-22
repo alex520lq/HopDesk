@@ -185,6 +185,7 @@ int split_ui_set_audio_mode(unsigned mode) {
         g_mac.cfg.audio_mode = mode;
         return 1;
     }
+    g_mac.cfg.audio_mode = mode;
     split_ipc_query query = {.index = (int32_t)mode};
     return action(SPLIT_IPC_AUDIO_MODE_SET, &query);
 }
@@ -200,6 +201,13 @@ void split_ui_get_audio_status(hop_audio_status *out) {
         out->requested = (unsigned)s_status.audio_requested;
         out->active = (unsigned)s_status.audio_active;
         out->unavailable = (unsigned)s_status.audio_unavailable;
+        if (!out->requested && g_mac.cfg.audio_mode) {
+            out->requested = g_mac.cfg.audio_mode;
+            out->unavailable = g_mac.cfg.audio_mode;
+        }
+    } else {
+        out->requested = g_mac.cfg.audio_mode;
+        out->unavailable = g_mac.cfg.audio_mode;
     }
 }
 

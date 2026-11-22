@@ -179,11 +179,9 @@ static int action(split_ipc_operation operation, split_ipc_query *query) {
 int split_ui_set_audio_mode(unsigned mode) {
     if (mode & ~HOP_AUDIO_MODES) return 0;
     if (!s_splitUI) {
-        hop_config runtime = g_mac.cfg;
-        runtime.audio_mode = mode;
-        if (!hop_audio_set_mode(&runtime, mode)) return 0;
         g_mac.cfg.audio_mode = mode;
-        return 1;
+        hop_config runtime = g_mac.cfg;
+        return hop_audio_set_mode(&runtime, mode);
     }
     g_mac.cfg.audio_mode = mode;
     split_ipc_query query = {.index = (int32_t)mode};
@@ -194,6 +192,10 @@ void split_ui_get_audio_status(hop_audio_status *out) {
     if (!out) return;
     if (!s_splitUI) {
         *out = hop_audio_get_status();
+        if (!out->requested && g_mac.cfg.audio_mode) {
+            out->requested = g_mac.cfg.audio_mode;
+            out->unavailable = g_mac.cfg.audio_mode;
+        }
         return;
     }
     *out = (hop_audio_status){0};

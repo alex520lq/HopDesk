@@ -387,6 +387,12 @@ static void save_settings(void) {
     next.xfer_chunk_kb=(int)chunk;
     next.audio_mode=(s_audioSend.state==NSControlStateValueOn?HOP_AUDIO_SEND:0u) |
                     (s_audioPlay.state==NSControlStateValueOn?HOP_AUDIO_PLAY:0u);
+    if(next.audio_mode && port==HOP_AUDIO_PORT){
+        settings_validation_error(CFG_PORT,@"控制端口 24819 已保留给系统音频，请选择其他端口。");return;
+    }
+    if(next.audio_mode && dataPort==HOP_AUDIO_PORT){
+        settings_validation_error(CFG_DATA_PORT,@"数据端口 24819 已保留给系统音频，请选择其他端口。");return;
+    }
     snprintf(next.mac_input_cmd,sizeof(next.mac_input_cmd),"%s",input);
     snprintf(next.mac_sleep_cmd,sizeof(next.mac_sleep_cmd),"%s",sleep);
     s_saveBusy=YES;

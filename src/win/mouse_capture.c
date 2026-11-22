@@ -384,6 +384,10 @@ void capture_check_hooks(void) {
     if (!GetLastInputInfo(&info)) return;
     int stale = (DWORD)(now - info.dwTime) < 5000 && (LONG)(info.dwTime - last) > 2000;
     if ((!s_hook || stale) && (!s_last_reinstall || (DWORD)(now - s_last_reinstall) >= 30000)) {
+        /* If recent system input was not observed by either hook, the
+         * keyboard snapshot may contain a key whose key-up was missed.
+         * Discard it before handback so it cannot be replayed as a new down. */
+        if (stale) kbd_forget_physical_state();
         capture_set_sharing(0);
         if (s_hook) UnhookWindowsHookEx(s_hook);
         s_hook = SetWindowsHookExW(WH_MOUSE_LL, mouse_proc_hook, g_app.inst, 0);

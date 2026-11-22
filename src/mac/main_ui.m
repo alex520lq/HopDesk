@@ -273,7 +273,7 @@ static void update_settings_actions(void) {
 static void mark_settings_dirty(void) {
     if(s_populatingSettings||s_saveBusy)return;
     s_settingsDirty=YES;
-    set_settings_note(@"有未保存的更改。音频设置可立即生效；网络与认证设置需重启。",NO);
+    set_settings_note(@"有未保存的更改。音频设置可立即生效；网络、认证和角色设置需重启。",NO);
     update_settings_actions();
 }
 static void settings_validation_error(int field, NSString *message) {
@@ -326,7 +326,7 @@ static void populate_settings(void) {
     update_settings_role_fields();
     s_populatingSettings=NO;
     s_settingsDirty=NO;
-    set_settings_note(@"设置已加载。修改后保存；网络与认证参数将在重启后生效。",NO);
+    set_settings_note(@"设置已加载。音频保存后立即应用；网络、认证和角色参数重启后生效。",NO);
     update_settings_actions();
 }
 static void save_settings(void) {
@@ -401,7 +401,7 @@ static void save_settings(void) {
             if(ok){
                 s_draft=next;s_settingsDirty=NO;
                 if(split_ui_set_audio_mode(next.audio_mode))
-                    set_settings_note(@"设置已保存。音频设置立即生效；网络与认证参数重启后生效。",NO);
+                    set_settings_note(@"设置已保存。音频设置立即生效；网络、认证和角色参数重启后生效。",NO);
                 else
                     set_settings_note(@"设置已保存，但后台未能应用音频设置。请确认后台运行；重启后会按已保存配置重试。",YES);
                 refresh_audio_status();
@@ -842,7 +842,7 @@ static void build_settings_page(NSView *p) {
     ui_label(left,@"音频能力（独立于本机角色）",NSMakeRect(18,50,360,18),12,YES);
     s_audioSend=[NSButton checkboxWithTitle:@"发送本机系统声音" target:s_uiController action:@selector(settingsChanged:)];
     s_audioSend.frame=NSMakeRect(18,24,178,22);
-    s_audioSend.toolTip=@"发送本机系统声音；需要对端启用播放";
+    s_audioSend.toolTip=@"发送本机系统声音；需要对端启用播放；需要 macOS 14.2 或更高版本";
     [left addSubview:s_audioSend];
     s_audioPlay=[NSButton checkboxWithTitle:@"播放对端系统声音" target:s_uiController action:@selector(settingsChanged:)];
     s_audioPlay.frame=NSMakeRect(198,24,180,22);
@@ -872,7 +872,7 @@ static void build_settings_page(NSView *p) {
 
     NSView *actions=ui_card(p,NSMakeRect(20,22,840,104));
     ui_label(actions,@"应用设置",NSMakeRect(18,82,360,20),13,YES);
-    ui_label(actions,@"保存会写入配置文件；网络监听和认证参数需要重启后生效。",NSMakeRect(18,56,560,18),11,NO);
+    ui_label(actions,@"音频保存后立即应用；网络监听、认证和角色参数重启后生效。",NSMakeRect(18,56,560,18),11,NO);
     s_cfgNote=ui_label(actions,@"设置已加载。修改后保存。",NSMakeRect(18,28,560,18),11,NO);
     s_saveSettingsButton=ui_primary_button(actions,@"保存设置",NSMakeRect(610,38,112,34),s_uiController,@selector(saveSettings:));
     s_resetSettingsButton=ui_button(actions,@"恢复默认",NSMakeRect(738,38,92,34),s_uiController,@selector(resetSettings:));

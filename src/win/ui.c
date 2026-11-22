@@ -1,12 +1,11 @@
 /* =====================================================================
  * HopDesk - Windows tray shell. The full application lives in one main UI.
- * Tray actions include system audio controls that operate without the main window.
+ * Tray actions open the main UI or exit; persistent audio settings live in Settings.
  * ===================================================================== */
 #include "app.h"
 #include "resource.h"
 #include "xfer.h"
 #include "main_ui.h"
-#include "../platform/audio_link.h"
 
 #include <commctrl.h>
 #include <stdio.h>
@@ -15,8 +14,6 @@
 
 #define IDM_OPEN_MAIN 1090
 #define IDM_EXIT_APP  1091
-#define IDM_AUDIO_SEND 1092
-#define IDM_AUDIO_PLAY 1093
 
 static int s_notified_direction;
 static uint32_t s_notified_batch;
@@ -210,25 +207,10 @@ void ui_init(win_app *app) {
     }
 }
 
-static void append_audio_menu_item(HMENU menu, hop_audio_status audio, unsigned bit,
-                                   UINT id, const wchar_t *label) {
-    const wchar_t *status = L"";
-    if (audio.active & bit) status = L"（已连接）";
-    else if (audio.unavailable & bit) status = L"（音频不可用，见日志）";
-    else if (audio.requested & bit) status = L"（等待音频连接）";
-    wchar_t title[64];
-    swprintf(title, sizeof(title) / sizeof(title[0]), L"%ls%ls", label, status);
-    AppendMenuW(menu, (audio.requested & bit) ? MF_CHECKED : MF_UNCHECKED, id, title);
-}
-
 void ui_show_menu(win_app *app) {
     POINT pt; GetCursorPos(&pt);
     HMENU menu=CreatePopupMenu();
     AppendMenuW(menu,MF_STRING,IDM_OPEN_MAIN,L"打开");
-    AppendMenuW(menu,MF_SEPARATOR,0,NULL);
-    hop_audio_status audio = hop_audio_get_status();
-    append_audio_menu_item(menu, audio, HOP_AUDIO_SEND, IDM_AUDIO_SEND, L"发送本机系统声音");
-    append_audio_menu_item(menu, audio, HOP_AUDIO_PLAY, IDM_AUDIO_PLAY, L"播放对方系统声音");
     AppendMenuW(menu,MF_SEPARATOR,0,NULL);
     AppendMenuW(menu,MF_STRING,IDM_EXIT_APP,L"退出");
     SetForegroundWindow(app->hwnd);
@@ -236,12 +218,7 @@ void ui_show_menu(win_app *app) {
                               pt.x, pt.y, 0, app->hwnd, NULL);
     PostMessageW(app->hwnd,WM_NULL,0,0);
     DestroyMenu(menu);
-    if (cmd == IDM_AUDIO_SEND || cmd == IDM_AUDIO_PLAY) {
-        unsigned bit = cmd == IDM_AUDIO_SEND ? HOP_AUDIO_SEND : HOP_AUDIO_PLAY;
-        if (!hop_audio_set_mode(&app->cfg, audio.requested ^ bit)) MessageBeep(MB_ICONWARNING);
-    } else if (cmd) {
-        PostMessageW(app->hwnd, WM_COMMAND, cmd, 0);
-    }
+    if (cmd) PostMessageW(app->hwnd, WM_COMMAND, cmd, 0);
 }
 
 void ui_show_main(win_app *app) {

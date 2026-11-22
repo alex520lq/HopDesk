@@ -376,16 +376,16 @@ int main(void){
 typedef uint8_t BYTE;typedef uint16_t WORD;typedef uint32_t DWORD;typedef int32_t LONG;
 typedef struct {int role,client_edge,edge_margin_px;} cfg_t;
 typedef struct {cfg_t cfg;int peer_w,peer_h,state;void *net;} app_t;
-static app_t g_app;static BYTE held[256],buttons[3],paste_suppressed[256];static double px,py,over;static int sharing,clip_request_result,injected_key_events;
+static app_t g_app;static BYTE held[256],buttons[3],paste_suppressed[256],key_release_pending[256],button_release_pending[3];static double px,py,over;static int sharing,clip_request_result,injected_key_events,fail_key_up;
 static int released_keys,released_buttons,refreshes;
 enum {HOP_ROLE_CLIENT=1,HOP_EDGE_TOP=2,HOP_LINK_LOCAL=1,HOP_LINK_SHARING=2,
  HOP_KEY_NONE=0xffff,HOP_MSG_EDGE_LEAVE=13,HOP_MSG_MOUSE_ENTER=14,HOP_MSG_MOUSE_MOVE=10,
  HOP_MSG_MOUSE_BUTTON=11,HOP_MSG_MOUSE_WHEEL=12,HOP_MSG_KEY_DOWN=20,HOP_MSG_KEY_UP=21,
  SM_CXSCREEN=1,SM_CYSCREEN=2,MOUSEEVENTF_HWHEEL=4,MOUSEEVENTF_WHEEL=8,
  VK_LCONTROL=0xA2,VK_RCONTROL=0xA3,VK_LWIN=0x5B,VK_RWIN=0x5C};
-static void key(WORD vk,int down){held[vk]=(BYTE)down;injected_key_events++;if(!down)released_keys++;}
-static void button(int b,int down){buttons[b]=(BYTE)down;if(!down)released_buttons++;}
-static void mouse(DWORD flags,LONG dx,LONG dy,DWORD data){(void)flags;(void)dx;(void)dy;(void)data;}
+static int key(WORD vk,int down){injected_key_events++;if(!down&&fail_key_up)return 0;held[vk]=(BYTE)down;if(!down)released_keys++;return 1;}
+static int button(int b,int down){buttons[b]=(BYTE)down;if(!down)released_buttons++;return 1;}
+static int mouse(DWORD flags,LONG dx,LONG dy,DWORD data){(void)flags;(void)dx;(void)dy;(void)data;return 1;}
 static void enter(int along){(void)along;sharing=1;}
 static double edge_margin(double w,double h){(void)w;(void)h;return 40;}
 static int GetSystemMetrics(int what){return what==SM_CYSCREEN?1080:1920;}
@@ -414,11 +414,23 @@ int main(void){
     win_inject_message(HOP_MSG_KEY_UP,ctrl_key,sizeof(ctrl_key));
     assert(!paste_suppressed['V'] && !paste_suppressed[VK_LCONTROL]);
     assert(injected_key_events==1);
-    puts("PASS: Windows client releases stuck input and consumes lazy-paste key sequence");return 0;
+    sharing=1;held[VK_LCONTROL]=1;fail_key_up=1;
+    win_inject_message(HOP_MSG_KEY_UP,ctrl_key,sizeof(ctrl_key));
+    assert(held[VK_LCONTROL] && key_release_pending[VK_LCONTROL]);
+    fail_key_up=0;win_inject_retry_pending();
+    assert(!held[VK_LCONTROL] && !key_release_pending[VK_LCONTROL]);
+    held[VK_LCONTROL]=1;fail_key_up=1;
+    win_inject_reset();
+    assert(held[VK_LCONTROL] && key_release_pending[VK_LCONTROL]);
+    fail_key_up=0;win_inject_retry_pending();
+    assert(!held[VK_LCONTROL] && !key_release_pending[VK_LCONTROL]);
+    puts("PASS: Windows client releases stuck input, consumes lazy-paste, and retries failed key-up");return 0;
 }
 '''
     run('win_client_server_return',win_leave_preamble+
-        extract(win_inject,'win_inject_reset')+'\n'+extract(win_inject,'win_inject_message')+win_leave_main)
+        extract(win_inject,'win_inject_reset')+'\n'+extract(win_inject,'win_inject_retry_pending')+'\n'+extract(win_inject,'win_inject_message')+win_leave_main)
+    win_main=(ROOT/'src/win/win_main.c').read_text(encoding='utf-8')
+    assert 'win_inject_retry_pending();' in extract(win_main,'wnd_proc')
 
     # Server return must follow all remote release frames.
     mac_return=extract(capture,'mac_capture_return')
@@ -1123,6 +1135,57 @@ int main(void){
     names=['recompute_flags','mod_index','post','inject_release_all','inject_reset','inject_key','inject_button']
     fixture=fixture.replace('@FUNCTIONS@','\n'.join(extract(inject,n) for n in names))
     run('inject_release',fixture,['src/core/keymap.c'])
+
+    # A recovered Windows low-level hook must not restore a stale physical
+    # modifier snapshot as a fresh local key-down during handback.
+    kbd=(ROOT/'src/win/kbd_capture.c').read_text(encoding='utf-8')
+    mouse_capture=(ROOT/'src/win/mouse_capture.c').read_text(encoding='utf-8')
+    assert extract(kbd,'kbd_reinstall').index('kbd_forget_physical_state()') > extract(kbd,'kbd_reinstall').index('kbd_release_all()')
+    assert 's_local_release_pending[k->vkCode]' in extract(kbd,'kbd_proc')
+    assert 'kbd_retry_pending();' in extract((ROOT/'src/win/win_main.c').read_text(encoding='utf-8'),'wnd_proc')
+    recovery=extract(mouse_capture,'capture_check_hooks')
+    assert recovery.index('kbd_forget_physical_state()') < recovery.index('capture_set_sharing(0)')
+    kbd_fixture=r'''
+#include <stdint.h>
+#include <string.h>
+#include <assert.h>
+#include <stdio.h>
+typedef uint8_t BYTE;typedef uint16_t WORD;
+#define KBD_HELD_MAX 256
+#define VK_LSHIFT 0xA0
+#define VK_LCONTROL 0xA2
+static uint16_t s_held[256];static int s_nheld;
+static BYTE s_physical_down[256],s_local_release_pending[256],s_local_restore_pending[256];
+static int s_kbd_sharing;
+static int remote_key_ups,remote_key_downs,local_key_downs,local_key_ups,fail_local_keyup,fail_local_keydown;
+static int is_mouse_vk(unsigned vk){return vk==1||vk==2||vk==4||vk==5||vk==6;}
+static void send_key(uint16_t kc,int down){(void)kc;if(down)remote_key_downs++;else remote_key_ups++;}
+static int inject_local_key(WORD vk,int down){(void)vk;if(down){if(fail_local_keydown)return 0;local_key_downs++;}else{if(fail_local_keyup)return 0;local_key_ups++;}return 1;}
+static uint16_t hop_vk_to_mac(int vk){return (uint16_t)vk;}
+#define HOP_KEY_NONE 0xffff
+@FUNCTIONS@
+int main(void){
+    s_held[0]=0x3B;s_nheld=1;s_physical_down[VK_LSHIFT]=1;
+    kbd_end_sharing();
+    assert(remote_key_ups==1 && local_key_downs==1 && s_nheld==0);
+    remote_key_ups=local_key_downs=0;
+    s_held[0]=0x3B;s_nheld=1;s_physical_down[VK_LCONTROL]=1;
+    kbd_forget_physical_state();
+    kbd_end_sharing();
+    assert(remote_key_ups==1 && local_key_downs==0 && s_nheld==0);
+    for(unsigned i=0;i<sizeof(s_physical_down);++i)assert(!s_physical_down[i]);
+    puts("PASS: Windows hook recovery drops stale physical keys and still releases remote keys");
+    return 0;
+}
+'''
+    kbd_fixture=kbd_fixture.replace('@FUNCTIONS@','\n'.join(extract(kbd,n) for n in ['held_add','kbd_release_all','kbd_begin_sharing','kbd_end_sharing','kbd_forget_physical_state','kbd_retry_pending']))
+    run('kbd_hook_recovery',kbd_fixture)
+
+    # The sender must not lose a failed synthetic local key-up while sharing.
+    # Retry the release first, then restore only keys still physically held.
+    local_fixture=kbd_fixture.replace('int main(void){', 'int main(void){\n    memset(s_physical_down,0,sizeof(s_physical_down));memset(s_local_release_pending,0,sizeof(s_local_release_pending));memset(s_local_restore_pending,0,sizeof(s_local_restore_pending));\n    remote_key_ups=remote_key_downs=local_key_downs=local_key_ups=0;fail_local_keyup=1;\n    s_physical_down[VK_LSHIFT]=1;kbd_begin_sharing();\n    assert(remote_key_downs==1 && s_local_release_pending[VK_LSHIFT]);\n    kbd_end_sharing();assert(remote_key_ups==1 && s_local_restore_pending[VK_LSHIFT] && local_key_downs==0);\n    fail_local_keyup=0;kbd_retry_pending();assert(!s_local_release_pending[VK_LSHIFT] && !s_local_restore_pending[VK_LSHIFT] && local_key_downs==1);\n    s_kbd_sharing=1;fail_local_keyup=1;s_physical_down[VK_LCONTROL]=1;kbd_begin_sharing();\n    assert(s_local_release_pending[VK_LCONTROL]);s_physical_down[VK_LCONTROL]=0;fail_local_keyup=0;kbd_retry_pending();\n    assert(!s_local_release_pending[VK_LCONTROL] && local_key_downs==1);kbd_end_sharing();remote_key_ups=remote_key_downs=local_key_downs=local_key_ups=0;memset(s_held,0,sizeof(s_held));s_nheld=0;memset(s_physical_down,0,sizeof(s_physical_down));memset(s_local_release_pending,0,sizeof(s_local_release_pending));memset(s_local_restore_pending,0,sizeof(s_local_restore_pending));s_kbd_sharing=0;')
+    run('kbd_local_release_retry',local_fixture)
+
 
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')

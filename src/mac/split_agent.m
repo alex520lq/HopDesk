@@ -15,6 +15,7 @@
 #include "mac_app.h"
 #include "split_agent.h"
 #include "split_ipc.h"
+#include "../platform/audio_link.h"
 
 static int s_listener = -1;
 static struct sockaddr_un s_address;
@@ -135,11 +136,12 @@ static void serve(int fd) {
     if (!io_full(fd, &header, sizeof(header), false, deadline) ||
         ntohl(header.version) != SPLIT_IPC_VERSION) return;
     uint32_t operation = ntohl(header.operation);
-    if (operation < SPLIT_IPC_STATUS || operation > SPLIT_IPC_STOP) return;
+    if (operation < SPLIT_IPC_STATUS || operation > SPLIT_IPC_AUDIO_MODE_SET) return;
 
     split_ipc_query query = {0};
     bool has_query = (operation >= SPLIT_IPC_TASKS_GET && operation <= SPLIT_IPC_FILES_GET) ||
-                     operation == SPLIT_IPC_RETRY_FILE || operation == SPLIT_IPC_CANCEL_TASK;
+                     operation == SPLIT_IPC_RETRY_FILE || operation == SPLIT_IPC_CANCEL_TASK ||
+                     operation == SPLIT_IPC_AUDIO_MODE_SET;
     if (ntohl(header.payload_size) != (has_query ? sizeof(query) : 0)) {
         (void)reply(fd, &header, false, NULL, 0, NULL, 0, deadline);
         return;
@@ -148,6 +150,7 @@ static void serve(int fd) {
     switch (operation) {
     case SPLIT_IPC_STATUS: {
         unsigned int connection = atomic_load(&s_connection);
+        hop_audio_status audio = hop_audio_get_status();
         split_ipc_status status = {
             .pid = getpid(),
             .control = (connection & 1u) != 0,
@@ -156,7 +159,10 @@ static void serve(int fd) {
             .post_permission = CGPreflightPostEventAccess(),
             .listen_permission = CGPreflightListenEventAccess(),
             .accessibility = AXIsProcessTrusted(),
-            .busy = xfer_busy()
+            .busy = xfer_busy(),
+            .audio_requested = (int32_t)audio.requested,
+            .audio_active = (int32_t)audio.active,
+            .audio_unavailable = (int32_t)audio.unavailable
         };
         (void)reply(fd, &header, true, &status, sizeof(status), NULL, 0, deadline);
         return;
@@ -168,6 +174,19 @@ static void serve(int fd) {
         hop_xfer_status_pair status = {0};
         xfer_get_status_pair(&status);
         (void)reply(fd, &header, true, &status, sizeof(status), NULL, 0, deadline);
+        return;
+    }
+    case SPLIT_IPC_AUDIO_MODE_SET: {
+        split_ipc_result result = {0};
+        if (query.index >= 0 && !((unsigned)query.index & ~HOP_AUDIO_MODES)) {
+            hop_config runtime = g_mac.cfg;
+            runtime.audio_mode = (unsigned)query.index;
+            if (hop_audio_set_mode(&runtime, runtime.audio_mode)) {
+                g_mac.cfg.audio_mode = runtime.audio_mode;
+                result.result = 1;
+            }
+        }
+        (void)reply(fd, &header, true, &result, sizeof(result), NULL, 0, deadline);
         return;
     }
     case SPLIT_IPC_TASKS_GET:

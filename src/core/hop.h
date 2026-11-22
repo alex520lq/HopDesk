@@ -220,9 +220,15 @@ typedef enum {
 
 typedef enum { HOP_ROLE_SERVER = 0, HOP_ROLE_CLIENT = 1 } hop_role;
 
+/* Local audio capabilities; deliberately independent of the server/client role. */
+#define HOP_AUDIO_SEND  1u
+#define HOP_AUDIO_PLAY  2u
+#define HOP_AUDIO_MODES (HOP_AUDIO_SEND | HOP_AUDIO_PLAY)
+
 /* ---- 配置 ---- */
 typedef struct {
     hop_role role; /* independent of operating system; restart to change */
+    unsigned audio_mode; /* local SEND/PLAY capabilities; hot-applied independently of role */
     uint16_t port;
     char     token[HOP_TOKEN_MAX];
     char     peer_host[64];        /* 客户端用：服务端地址 */

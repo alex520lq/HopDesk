@@ -146,6 +146,8 @@ int main(int argc, char **argv) {
     }
     clipboard_init();
     net_loop_run();
+    if(!hop_audio_set_mode(&g_mac.cfg,g_mac.cfg.audio_mode))
+        hop_log(HOP_LOG_WARN,"audio: unable to start configured audio mode %u",g_mac.cfg.audio_mode);
     hop_watchdog_end(startup_guard);
     if (agent) split_agent_run();
     else app_run();

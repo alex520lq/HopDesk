@@ -82,6 +82,15 @@ static int current(const audio_connection *conn) {
     return keep && hop_session_matches(&conn->session);
 }
 
+static void mark_unavailable(const audio_connection *conn, unsigned modes) {
+    lock_state();
+    if (s_revision == conn->revision) {
+        s_status.unavailable |= modes;
+        s_status.active &= ~modes;
+    }
+    unlock_state();
+}
+
 static int wait_socket(audio_socket s, int writing, unsigned ms) {
 #if defined(_WIN32)
     fd_set wanted, failed;
@@ -214,7 +223,10 @@ static int transmit(const audio_connection *c, hop_native_audio *audio, unsigned
         if (!p->size) {
             uint32_t rate = 0;
             int frames = (directions & HOP_AUDIO_SEND) ? hop_native_audio_capture(audio, pcm, &rate) : 0;
-            if (frames < 0 || frames > (int)HOP_AUDIO_FRAMES) return 0;
+            if (frames < 0 || frames > (int)HOP_AUDIO_FRAMES) {
+                mark_unavailable(c, HOP_AUDIO_SEND);
+                return 0;
+            }
             if (!frames && now - *sent < KEEPALIVE_MS) return 1;
             hop_audio_header(wire, frames ? rate : 0, (unsigned)frames);
             p->size = HOP_AUDIO_HEADER_SIZE + (unsigned)frames * HOP_AUDIO_FRAME_BYTES;
@@ -251,7 +263,10 @@ static int receive(const audio_connection *c, hop_native_audio *audio, unsigned 
         }
         if (p->offset != p->size) continue;
         if (!current(c)) return 0;
-        if (p->frames && !hop_native_audio_play(audio, pcm, p->frames, p->rate)) return 0;
+        if (p->frames && !hop_native_audio_play(audio, pcm, p->frames, p->rate)) {
+            mark_unavailable(c, HOP_AUDIO_PLAY);
+            return 0;
+        }
         *received = now;
         p->offset = 0;
     }
@@ -325,10 +340,16 @@ static void run_worker(const hop_config *cfg) {
         if (cfg->role == HOP_ROLE_SERVER) {
             if (listener == BAD_SOCKET) listener = open_listener();
             if (listener == BAD_SOCKET) {
+                mark_unavailable(&c, c.requested);
                 if (!reported_bind) hop_log(HOP_LOG_WARN, "audio: cannot listen on TCP %d", HOP_AUDIO_PORT);
                 reported_bind = 1;
                 pause_ms(RETRY_MS);
                 continue;
+            }
+            if (reported_bind) {
+                lock_state();
+                if (s_revision == c.revision) s_status.unavailable &= ~c.requested;
+                unlock_state();
             }
             reported_bind = 0;
             if (wait_socket(listener, 0, 100) > 0) c.socket = accept(listener, NULL, NULL);

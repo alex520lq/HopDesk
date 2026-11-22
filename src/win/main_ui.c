@@ -232,6 +232,10 @@ static void set_text(HWND h, const wchar_t *s) {
 }
 static void refresh_audio_status(void) {
     hop_audio_status status = hop_audio_get_status();
+    if (!status.requested && g_app.cfg.audio_mode) {
+        status.requested = g_app.cfg.audio_mode;
+        status.unavailable = g_app.cfg.audio_mode;
+    }
     wchar_t send[80] = L"", play[80] = L"", text[192] = L"音频已关闭";
     if (status.requested & HOP_AUDIO_SEND) {
         const wchar_t *state = (status.active & HOP_AUDIO_SEND) ? L"已连接" :
@@ -487,7 +491,7 @@ static void populate_settings(void) {
     update_settings_role_fields();
     s_populating_settings=0;
     s_settings_dirty=0;
-    set_settings_note(L"设置已加载。修改后保存；网络与认证参数将在重启后生效。",0);
+    set_settings_note(L"设置已加载。音频设置保存后立即生效；网络、认证和角色参数重启后生效。",0);
     update_settings_actions();
 }
 static void reset_settings(void) {
@@ -701,6 +705,13 @@ static void update_transfer_actions(void) {
         if(s_cancel_task_buttons[d])EnableWindow(s_cancel_task_buttons[d],can_cancel);
     }
 }
+static int settings_require_restart(const hop_config *saved) {
+    if (!saved) return 0;
+    hop_config runtime = g_app.cfg, next = *saved;
+    runtime.audio_mode = 0;
+    next.audio_mode = 0;
+    return memcmp(&runtime, &next, sizeof(runtime)) != 0;
+}
 static void refresh_transfers(void) {
     if(!s_xfer_title)return;
     refresh_task_lists();
@@ -897,7 +908,7 @@ static void create_settings_page(HWND p) {
 
     group(p,L"",20,506,840,104);
     label(p,L"应用设置",38,508,360,20);
-    HWND saveHelp=label(p,L"保存只写入配置文件，不会中断当前连接；网络和认证参数重启后生效。",38,560,560,18);
+    HWND saveHelp=label(p,L"音频保存后立即应用；网络、认证和角色参数重启后生效。",38,560,560,18);
     set_font(saveHelp,s_font_small);
     s_cfg_note=label(p,L"设置已加载。修改后保存。",38,586,560,18);
     set_font(s_cfg_note,s_font_small);
@@ -1156,10 +1167,11 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             save_result *result=(save_result*)lp;s_save_busy=0;
             set_settings_editors_enabled(1);
             if(result->ok){
-                s_draft=result->config;s_pending_restart=1;s_settings_dirty=0;
+                s_pending_restart=settings_require_restart(&result->config);
+                s_draft=result->config;s_settings_dirty=0;
                 g_app.cfg.audio_mode=result->config.audio_mode;
                 if(hop_audio_set_mode(&g_app.cfg,g_app.cfg.audio_mode))
-                    set_settings_note(L"设置已保存。音频设置立即生效；网络与认证参数重启后生效。",0);
+                    set_settings_note(s_pending_restart?L"设置已保存。音频已立即应用；网络、认证和角色参数重启后生效。":L"设置已保存，音频设置已立即应用。",0);
                 else
                     set_settings_note(L"设置已保存，但音频后台未能启动。请查看日志；重启后会按已保存配置重试。",1);
                 refresh_audio_status();

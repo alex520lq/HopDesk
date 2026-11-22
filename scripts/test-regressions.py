@@ -265,6 +265,9 @@ int main(void){
     assert 'SPLIT_IPC_AUDIO_MODE_SET' in split_agent and 'audio_requested' in split_agent
     assert 'hop_audio_set_mode(&g_app.cfg,g_app.cfg.audio_mode)' in win_main
     assert 'hop_audio_set_mode(&g_mac.cfg,g_mac.cfg.audio_mode)' in mac_main
+    assert 'port==HOP_AUDIO_PORT' in mac_ui and 'dataPort==HOP_AUDIO_PORT' in mac_ui
+    assert 'port==HOP_AUDIO_PORT' in win_ui and 'data_port==HOP_AUDIO_PORT' in win_ui
+    assert 'if (!out->requested && g_mac.cfg.audio_mode)' in mac_split_ui
     assert 'IDM_AUDIO_SEND' not in win_tray and 'IDM_AUDIO_PLAY' not in win_tray
     assert 'toggleAudio:' not in mac_tray
     for source in [mac_ui,win_ui]:

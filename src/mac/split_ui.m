@@ -11,6 +11,7 @@
 #include "mac_app.h"
 #include "split_ipc.h"
 #include "split_ui.h"
+#include "../platform/audio_link.h"
 
 static BOOL s_splitUI;
 static BOOL s_agentAvailable;
@@ -173,6 +174,33 @@ int split_ui_get_files(int direction, uint32_t batch, hop_xfer_file_status *out,
 static int action(split_ipc_operation operation, split_ipc_query *query) {
     int32_t result = 0;
     return exchange(operation, query, &result, sizeof(result)) && result;
+}
+
+int split_ui_set_audio_mode(unsigned mode) {
+    if (mode & ~HOP_AUDIO_MODES) return 0;
+    if (!s_splitUI) {
+        hop_config runtime = g_mac.cfg;
+        runtime.audio_mode = mode;
+        if (!hop_audio_set_mode(&runtime, mode)) return 0;
+        g_mac.cfg.audio_mode = mode;
+        return 1;
+    }
+    split_ipc_query query = {.index = (int32_t)mode};
+    return action(SPLIT_IPC_AUDIO_MODE_SET, &query);
+}
+
+void split_ui_get_audio_status(hop_audio_status *out) {
+    if (!out) return;
+    if (!s_splitUI) {
+        *out = hop_audio_get_status();
+        return;
+    }
+    *out = (hop_audio_status){0};
+    if (s_agentAvailable) {
+        out->requested = (unsigned)s_status.audio_requested;
+        out->active = (unsigned)s_status.audio_active;
+        out->unavailable = (unsigned)s_status.audio_unavailable;
+    }
 }
 
 int split_ui_cancel_task(hop_xfer_task_id id) {

@@ -8,6 +8,8 @@ typedef SOCKET test_socket;
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <sys/time.h>
+#include <pthread.h>
 typedef int test_socket;
 #define BAD_SOCKET (-1)
 #define close_socket close
@@ -27,7 +29,7 @@ struct hop_native_audio { int sent; };
 static hop_native_audio fixture;
 
 hop_native_audio *hop_native_audio_open(unsigned *directions) {
-    CHECK(*directions == HOP_AUDIO_MODES);
+    CHECK(*directions == HOP_AUDIO_MODES || *directions == HOP_AUDIO_SEND);
     ++opens;
     fixture.sent = 0;
     return &fixture;
@@ -126,6 +128,69 @@ static void check_protocol(void) {
     CHECK(hop_audio_directions(HOP_AUDIO_MODES, HOP_AUDIO_MODES) == HOP_AUDIO_MODES);
 }
 
+typedef struct {
+    test_socket listener;
+    hop_session_id session;
+    char token[HOP_TOKEN_MAX];
+} client_peer_context;
+
+static test_socket listen_peer(void) {
+    test_socket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    CHECK(s != BAD_SOCKET);
+    int on = 1;
+    CHECK(setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&on, sizeof(on)) == 0);
+    struct sockaddr_in address = {0};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(HOP_AUDIO_PORT);
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    CHECK(bind(s, (struct sockaddr *)&address, sizeof(address)) == 0);
+    CHECK(listen(s, 1) == 0);
+    return s;
+}
+
+#if defined(_WIN32)
+static DWORD WINAPI client_peer_thread(void *arg) {
+#else
+static void *client_peer_thread(void *arg) {
+#endif
+    client_peer_context *ctx = arg;
+    test_socket peer = accept(ctx->listener, NULL, NULL);
+    CHECK(peer != BAD_SOCKET);
+#if defined(_WIN32)
+    DWORD timeout = 3000;
+#else
+    struct timeval timeout = {3, 0};
+#endif
+    CHECK(setsockopt(peer, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout)) == 0);
+    uint8_t hello[HOP_AUDIO_HELLO_SIZE];
+    read_bytes(peer, hello, sizeof(hello));
+    CHECK(hop_audio_peer_mode(hello, ctx->token, &ctx->session) == HOP_AUDIO_SEND);
+    hop_audio_hello(hello, HOP_AUDIO_PLAY, ctx->token, &ctx->session);
+    send_bytes(peer, hello, sizeof(hello));
+    uint8_t ready = 0;
+    read_bytes(peer, &ready, 1);
+    CHECK(ready == HOP_AUDIO_SEND);
+    ready = HOP_AUDIO_PLAY;
+    send_bytes(peer, &ready, 1);
+    uint8_t packet[HOP_AUDIO_HEADER_SIZE + sizeof(expected)];
+    read_bytes(peer, packet, HOP_AUDIO_HEADER_SIZE);
+    uint32_t rate = 0;
+    unsigned frames = 0;
+    CHECK(hop_audio_read_header(packet, &rate, &frames));
+    CHECK(rate == 44100 && frames == 2);
+    read_bytes(peer, packet + HOP_AUDIO_HEADER_SIZE, frames * HOP_AUDIO_FRAME_BYTES);
+    CHECK(!memcmp(packet + HOP_AUDIO_HEADER_SIZE, expected, sizeof(expected)));
+    hop_session_clear(&ctx->session); /* client closes first, avoiding a TIME_WAIT listener conflict */
+    expect_close(peer);
+    close_socket(peer);
+    close_socket(ctx->listener);
+#if defined(_WIN32)
+    return 0;
+#else
+    return NULL;
+#endif
+}
+
 static test_socket pair_audio(const hop_config *cfg, const hop_session_id *session) {
     test_socket peer = connect_peer();
     uint8_t hello[HOP_AUDIO_HELLO_SIZE];
@@ -146,10 +211,33 @@ int main(void) {
     CHECK(WSAStartup(MAKEWORD(2, 2), &wsa) == 0);
 #endif
     check_protocol();
-    hop_config cfg = {.role = HOP_ROLE_SERVER, .port = HOP_DEFAULT_PORT,
+    hop_config cfg = {.role = HOP_ROLE_CLIENT, .port = HOP_DEFAULT_PORT,
                       .data_port = HOP_DATA_PORT, .token = "audio-integration-test"};
+    snprintf(cfg.peer_host, sizeof(cfg.peer_host), "%s", "127.0.0.1");
     hop_session_id session = {{1}}, stale = {{2}};
     hop_session_publish(&session);
+    client_peer_context context = {.listener = listen_peer(), .session = session};
+    snprintf(context.token, sizeof(context.token), "%s", cfg.token);
+#if defined(_WIN32)
+    HANDLE peer_thread = CreateThread(NULL, 0, client_peer_thread, &context, 0, NULL);
+    CHECK(peer_thread != NULL);
+#else
+    pthread_t peer_thread;
+    CHECK(pthread_create(&peer_thread, NULL, client_peer_thread, &context) == 0);
+#endif
+    CHECK(hop_audio_set_mode(&cfg, HOP_AUDIO_SEND));
+#if defined(_WIN32)
+    CHECK(WaitForSingleObject(peer_thread, 5000) == WAIT_OBJECT_0);
+    CloseHandle(peer_thread);
+#else
+    CHECK(pthread_join(peer_thread, NULL) == 0);
+#endif
+    hop_audio_shutdown();
+    CHECK(opens == 1 && closes == 1 && plays == 0);
+
+    hop_session_publish(&session);
+    cfg.role = HOP_ROLE_SERVER;
+    cfg.peer_host[0] = '\0';
     CHECK(hop_audio_set_mode(&cfg, HOP_AUDIO_MODES));
 
     uint8_t hello[HOP_AUDIO_HELLO_SIZE];
@@ -185,10 +273,10 @@ int main(void) {
     expect_close(peer);
     hop_audio_shutdown();
     CHECK(!hop_audio_get_status().active && !hop_audio_get_status().requested);
-    CHECK(opens == 2 && closes == 2 && plays == 1);
+    CHECK(opens == 3 && closes == 3 && plays == 1);
 #if defined(_WIN32)
     WSACleanup();
 #endif
-    puts("audio link tests: session binding, bidirectional PCM, invalid frames, reconnect and shutdown passed");
+    puts("audio link tests: client/server roles, direction negotiation, session binding, PCM, invalid frames, reconnect and shutdown passed");
     return 0;
 }

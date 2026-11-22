@@ -38,11 +38,12 @@ iconutil -c icns "$ICONSET" -o "$RESOURCES/HopDesk.icns"
 CORE=$(find "$ROOT/src/core" -type f -name '*.c' -print | sort)
 MAC_C=$(find "$ROOT/src/mac" -type f -name '*.c' -print | sort)
 MAC_M=$(find "$ROOT/src/mac" -type f -name '*.m' -print | sort)
+PLATFORM=$(find "$ROOT/src/platform" -type f -name '*.c' -print | sort)
 if [ -z "$CORE$MAC_C$MAC_M" ]; then echo "No HopDesk source files found." >&2; exit 1; fi
 INC="$ROOT/src/core"
-FRAMEWORKS="-framework Cocoa -framework ApplicationServices -framework CoreGraphics -framework IOKit"
+FRAMEWORKS="-framework Cocoa -framework ApplicationServices -framework CoreGraphics -framework IOKit -framework CoreAudio -framework AudioToolbox"
 # shellcheck disable=SC2086
-clang -O2 -Wall -Wextra -fobjc-arc -include "$VERSION_HEADER" -I "$INC" -o "$MACOS/HopDesk" $CORE $MAC_C $MAC_M $FRAMEWORKS
+clang -O2 -Wall -Wextra -fobjc-arc -include "$VERSION_HEADER" -I "$INC" -o "$MACOS/HopDesk" $CORE $PLATFORM $MAC_C $MAC_M $FRAMEWORKS
 
 cat > "$CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -58,8 +59,9 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 <key>CFBundleShortVersionString</key><string>$VERSION</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
-<key>NSLocalNetworkUsageDescription</key><string>HopDesk 连接同一局域网中的设备，以共享键鼠、剪贴板和文件。</string>
+<key>NSLocalNetworkUsageDescription</key><string>HopDesk 连接同一局域网中的设备，以共享键鼠、剪贴板、文件和系统声音。</string>
 <key>NSAppleEventsUsageDescription</key><string>HopDesk 读取访达当前文件夹，以便在按下粘贴键的位置接收文件。</string>
+<key>NSAudioCaptureUsageDescription</key><string>启用发送本机系统声音时，HopDesk 将系统声音传到已配对的设备。</string>
 </dict></plist>
 PLIST
 

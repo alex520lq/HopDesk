@@ -5,7 +5,8 @@
 - **服务器（Server）**：可运行在 Windows 或 macOS，监听控制与数据两个 TCP 端口，捕获本机物理键鼠。
 - **客户端（Client）**：可运行在 Windows 或 macOS，填写服务器地址，主动连接两个通道并注入输入。
 - 两端均支持双向文本、图片和文件剪贴板；文件使用 Offer → Paste Request → 按需传输，不在普通本地复制时创建传输任务。
-- `role=server|client` 在启动时读取；设置保存到独立草稿，不热改运行态。旧配置保留原 OS 默认角色。
+- `role=server|client` 在启动时读取；它只决定键鼠捕获/注入与网络连接拓扑，不决定音频方向。设置保存到独立草稿，角色变更重启生效。
+- 音频 SEND/PLAY 是每台设备独立的本地能力配置，与 server/client 无关；旧配置缺少 `audio_mode` 时 Windows 默认 PLAY、macOS 默认 SEND。音频模式保存后热应用。
 - 固定双设备局域网，不做多设备发现。两端几何在控制握手交换；当前控制协议为 v7，数据协议为 v8。
 
 ## 2. 模块划分
@@ -24,19 +25,23 @@ src/
 - Receiver：`xfer_rx_frame_gate`、`xfer_rx_dispatch`、`xfer_rx_message_handlers`、Batch/File/Image state、Lifecycle、Receipt、Entry Reservations 等共享准入、状态与终结规则。
 - Transfer infrastructure：`xfer_task`、`xfer_task_history`、`xfer_budget`、`xfer_tracking`、`xfer_rate`、`xfer_ack_window`、`xfer_buffer_pool` 等。
 
-平台层保留 socket/文件句柄、原生锁与等待原语、线程生命周期、文件系统操作、系统剪贴板、键鼠注入/捕获、显示控制和 UI。连接循环仍由两端各自实现；不能将其描述为已统一的跨平台 actor。
+- `audio_protocol` 负责音频握手、方向协商和帧边界校验。两端复用 `src/platform/audio_link.c` 的 socket 工作线程，分别调用 WASAPI 和 Core Audio 采集并播放系统声音。
+
+平台层负责 socket、文件句柄、原生同步、线程生命周期、文件系统、剪贴板、键鼠、显示控制和 UI。控制连接循环由两端各自实现。
 
 ## 3. 通信协议
 
-**两条 TCP 长连接，按载荷性质分工：**
+**TCP 连接按载荷分工**
 
 | 通道 | 端口 | 承载 | 发送方式 |
 |---|---|---|---|
 | 控制 | 24817 | 键鼠、显示控制、剪贴板文本 | 入队 + 独立发送线程 |
 | 数据 | 24818 | 文件字节、图片像素 | 专用线程，流式读写 |
+| 音频（按需） | 24819 | 双向系统声音 | 独立连接，帧缓冲有界 |
 
-分两条的理由是**队头阻塞**：单条 TCP 流上的 1 MB 分块会把排在后面的鼠标事件
-一起拖住几十毫秒。分开后传大文件不影响手感。
+独立连接避免 TCP 队头阻塞将文件分块、键鼠事件和音频排在同一条流上。
+
+音频由控制客户端发起独立 TCP 连接、服务器监听；这只是连接建立方式，不代表音频数据只能沿客户端到服务器传输。握手交换音频版本、控制会话 ID、Token 和两端独立的方向选项。`HOP_AUDIO_SEND` 只与对端 `HOP_AUDIO_PLAY` 匹配，反向亦然，因此可以同时支持 Mac→Windows、Windows→Mac，或双向音频。服务器/客户端角色不参与方向协商。默认 Windows 启用 PLAY、macOS 启用 SEND；保存 `audio_mode` 后热应用。音频帧使用带采样率的双声道 16 位 PCM，每包最多 480 个采样帧。发送超时或控制会话失效时关闭音频连接并释放平台音频资源。两端都排除 HopDesk 自己的播放进程来避免回授。macOS 双进程模式由后台负责音频和连接；macOS 系统声音采集需要 14.2 或更高版本。
 
 控制通道的发送必须异步。`WH_MOUSE_LL` / `WH_KEYBOARD_LL` 的回调跑在装钩子的线程
 （主线程），`WM_CLIPBOARDUPDATE` 也在主线程；如果在那里直接阻塞 `send()`，

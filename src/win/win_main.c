@@ -7,6 +7,7 @@
 #include "update.h"
 #include "main_ui.h"
 #include "../core/update_state.h"
+#include "../platform/audio_link.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -290,6 +291,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     }
     clip_init(g_app.hwnd);
     if(g_app.cfg.role==HOP_ROLE_SERVER){capture_init(&g_app);kbd_init(&g_app);}
+    if(!hop_audio_set_mode(&g_app.cfg,g_app.cfg.audio_mode))
+        hop_log(HOP_LOG_WARN,"audio: unable to start configured audio mode %u",g_app.cfg.audio_mode);
     hop_watchdog_end(startup_guard);
     s_ui_guard = hop_watchdog_begin("Windows message loop", 30000);
     SetTimer(g_app.hwnd, IDT_HOOK, 3000, NULL);
@@ -306,6 +309,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     win_inject_reset();
     kbd_shutdown();
     capture_shutdown();
+    hop_audio_shutdown();
     while (!clip_shutdown(g_app.hwnd)) Sleep(100); /* retain unresolved image Task owners */
     /* Stop/join control callbacks before destroying transfer locks: on_link()
      * can call xfer_kick after a disconnect. */

@@ -1,6 +1,6 @@
 /* =====================================================================
  * HopDesk - Windows tray shell. The full application lives in one main UI.
- * Tray actions are intentionally limited to Open and Exit.
+ * Tray actions open the main UI or exit; persistent audio settings live in Settings.
  * ===================================================================== */
 #include "app.h"
 #include "resource.h"
@@ -10,6 +10,7 @@
 #include <commctrl.h>
 #include <stdio.h>
 #include <string.h>
+#include <wchar.h>
 
 #define IDM_OPEN_MAIN 1090
 #define IDM_EXIT_APP  1091
@@ -213,9 +214,11 @@ void ui_show_menu(win_app *app) {
     AppendMenuW(menu,MF_SEPARATOR,0,NULL);
     AppendMenuW(menu,MF_STRING,IDM_EXIT_APP,L"退出");
     SetForegroundWindow(app->hwnd);
-    TrackPopupMenu(menu,TPM_RIGHTBUTTON|TPM_BOTTOMALIGN,pt.x,pt.y,0,app->hwnd,NULL);
+    UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,
+                              pt.x, pt.y, 0, app->hwnd, NULL);
     PostMessageW(app->hwnd,WM_NULL,0,0);
     DestroyMenu(menu);
+    if (cmd) PostMessageW(app->hwnd, WM_COMMAND, cmd, 0);
 }
 
 void ui_show_main(win_app *app) {

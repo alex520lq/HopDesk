@@ -13,6 +13,7 @@
 #include "../core/xfer_status.h"
 #include "../core/hop.h"
 #include "../core/xfer_task_history.h"
+#include "../platform/audio_link.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +41,8 @@ static NSTextField *s_overviewStatus, *s_overviewPeer, *s_overviewControl, *s_ov
 static NSTextField *s_connectionRole, *s_connectionStatus, *s_connectionPeer, *s_connectionPorts;
 static NSTextField *s_cfg[CFG_COUNT], *s_cfgNote, *s_hostLabel, *s_hostHint;
 static NSButton *s_saveSettingsButton, *s_resetSettingsButton;
+static NSButton *s_audioSend, *s_audioPlay;
+static NSTextField *s_audioStatus;
 static NSPopUpButton *s_edgePopups[2];
 static NSTextField *s_xferTitle, *s_xferDetail, *s_xferCounts;
 static NSProgressIndicator *s_xferProgress;
@@ -70,6 +73,7 @@ static BOOL s_accessibilityPermissionRequestStarted;
  * Otherwise closing the window only hides it and the full 4-page UI stays
  * resident for the rest of the process lifetime. */
 static void main_ui_destroy(void);
+static void refresh_audio_status(void);
 
 /* CoreGraphics event posting can fail silently without Post Event permission.
  * Request it once, then take the user directly to the Accessibility privacy pane.
@@ -269,7 +273,7 @@ static void update_settings_actions(void) {
 static void mark_settings_dirty(void) {
     if(s_populatingSettings||s_saveBusy)return;
     s_settingsDirty=YES;
-    set_settings_note(@"有未保存的更改。网络与认证设置保存后需要重启生效。",NO);
+    set_settings_note(@"有未保存的更改。音频设置可立即生效；网络、认证和角色设置需重启。",NO);
     update_settings_actions();
 }
 static void settings_validation_error(int field, NSString *message) {
@@ -285,13 +289,15 @@ static void update_settings_role_fields(void) {
     s_cfg[CFG_HOST].placeholderString=client?@"例如 192.168.1.20":@"服务器模式无需填写";
     s_hostLabel.stringValue=@"服务器地址";
     s_hostHint.stringValue=client?
-        @"客户端模式：填写服务器 IP 地址或主机名。":
-        @"服务器模式：无需填写地址，等待客户端连接。";
+        @"客户端：接收服务器键鼠；音频发送/播放独立配置。":
+        @"服务器：向客户端提供键鼠；音频发送/播放独立配置。";
 }
 static void set_settings_editors_enabled(BOOL enabled) {
     for(int i=0;i<CFG_COUNT;++i)if(s_cfg[i])s_cfg[i].enabled=enabled;
     if(s_rolePopup)s_rolePopup.enabled=enabled;
     for(int i=0;i<2;++i)if(s_edgePopups[i])s_edgePopups[i].enabled=enabled;
+    if(s_audioSend)s_audioSend.enabled=enabled;
+    if(s_audioPlay)s_audioPlay.enabled=enabled;
     if(enabled)update_settings_role_fields();
 }
 static void populate_settings(void) {
@@ -314,10 +320,13 @@ static void populate_settings(void) {
     set_cfg_text(CFG_CHUNK,[NSString stringWithFormat:@"%d",c->xfer_chunk_kb]);
     set_cfg_text(CFG_MAC_INPUT,utf8(c->mac_input_cmd));
     set_cfg_text(CFG_MAC_SLEEP,utf8(c->mac_sleep_cmd));
+    s_audioSend.state=(c->audio_mode & HOP_AUDIO_SEND)?NSControlStateValueOn:NSControlStateValueOff;
+    s_audioPlay.state=(c->audio_mode & HOP_AUDIO_PLAY)?NSControlStateValueOn:NSControlStateValueOff;
+    refresh_audio_status();
     update_settings_role_fields();
     s_populatingSettings=NO;
     s_settingsDirty=NO;
-    set_settings_note(@"设置已加载。修改后保存；网络与认证参数将在重启后生效。",NO);
+    set_settings_note(@"设置已加载。音频保存后立即应用；网络、认证和角色参数重启后生效。",NO);
     update_settings_actions();
 }
 static void save_settings(void) {
@@ -376,6 +385,14 @@ static void save_settings(void) {
     next.edge_margin_px=(int)margin;next.disp_win_input=(uint16_t)winInput;
     next.disp_mac_input=(uint16_t)macInput;next.disp_wake_sec=(int)wake;
     next.xfer_chunk_kb=(int)chunk;
+    next.audio_mode=(s_audioSend.state==NSControlStateValueOn?HOP_AUDIO_SEND:0u) |
+                    (s_audioPlay.state==NSControlStateValueOn?HOP_AUDIO_PLAY:0u);
+    if(next.audio_mode && port==HOP_AUDIO_PORT){
+        settings_validation_error(CFG_PORT,@"控制端口 24819 已保留给系统音频，请选择其他端口。");return;
+    }
+    if(next.audio_mode && dataPort==HOP_AUDIO_PORT){
+        settings_validation_error(CFG_DATA_PORT,@"数据端口 24819 已保留给系统音频，请选择其他端口。");return;
+    }
     snprintf(next.mac_input_cmd,sizeof(next.mac_input_cmd),"%s",input);
     snprintf(next.mac_sleep_cmd,sizeof(next.mac_sleep_cmd),"%s",sleep);
     s_saveBusy=YES;
@@ -389,7 +406,11 @@ static void save_settings(void) {
             set_settings_editors_enabled(YES);
             if(ok){
                 s_draft=next;s_settingsDirty=NO;
-                set_settings_note(@"设置已保存。网络与认证参数将在重启 HopDesk 后生效。",NO);
+                if(split_ui_set_audio_mode(next.audio_mode))
+                    set_settings_note(@"设置已保存。音频设置立即生效；网络、认证和角色参数重启后生效。",NO);
+                else
+                    set_settings_note(@"设置已保存，但后台未能应用音频设置。请确认后台运行；重启后会按已保存配置重试。",YES);
+                refresh_audio_status();
             } else {
                 s_settingsDirty=YES;
                 set_settings_note(@"保存失败；原配置未改变。请检查文件权限和磁盘空间后重试。",YES);
@@ -729,6 +750,23 @@ static NSString *link_status(void) {
     if (!s_connected) return g_mac.cfg.role==HOP_ROLE_SERVER?@"等待客户端连接":g_mac.cfg.peer_host[0]?@"正在连接服务器":@"请先填写服务器 IP";
     return s_sharing?(g_mac.cfg.role==HOP_ROLE_SERVER?@"键鼠已移交客户端":@"正在接收服务器键鼠"):@"已连接";
 }
+static void refresh_audio_status(void) {
+    if(!s_audioStatus)return;
+    hop_audio_status audio={0};
+    split_ui_get_audio_status(&audio);
+    NSMutableArray<NSString *> *parts=[NSMutableArray array];
+    if(audio.requested & HOP_AUDIO_SEND){
+        NSString *state=(audio.active & HOP_AUDIO_SEND)?@"已连接":
+            (audio.unavailable & HOP_AUDIO_SEND)?@"不可用":@"等待对端播放";
+        [parts addObject:[NSString stringWithFormat:@"发送：%@",state]];
+    }
+    if(audio.requested & HOP_AUDIO_PLAY){
+        NSString *state=(audio.active & HOP_AUDIO_PLAY)?@"已连接":
+            (audio.unavailable & HOP_AUDIO_PLAY)?@"不可用":@"等待对端发送";
+        [parts addObject:[NSString stringWithFormat:@"播放：%@",state]];
+    }
+    s_audioStatus.stringValue=parts.count?[parts componentsJoinedByString:@"    ·    "]:@"音频已关闭";
+}
 static void refresh_connection_labels(void) {
     NSString *status=link_status();
     s_headerStatus.stringValue=status;
@@ -751,6 +789,7 @@ static void refresh_connection_labels(void) {
     ui_apply_status_badge(s_overviewControl,s_connected,s_sharing);
     ui_apply_status_badge(s_overviewData,split_ui_data_connected(),NO);
     ui_apply_status_badge(s_overviewSharing,s_connected,s_sharing);
+    refresh_audio_status();
 }
 static void show_page(int page) {
     if(page<0||page>=UI_PAGE_COUNT)page=UI_PAGE_OVERVIEW;
@@ -774,7 +813,7 @@ static void build_settings_page(NSView *p) {
     NSView *left=ui_card(p,NSMakeRect(20,180,400,470));
     NSView *right=ui_card(p,NSMakeRect(440,180,400,470));
     ui_label(left,@"设备与连接",NSMakeRect(18,424,360,24),15,YES);
-    ui_label(left,@"设置本机身份、连接目标和两端共用的认证信息。",NSMakeRect(18,398,360,18),11,NO);
+    s_hostHint=ui_label(left,@"服务器：向客户端提供键鼠；音频能力独立配置。",NSMakeRect(18,398,360,18),11,NO);
     const CGFloat y[]={360,320,280,240,200,160,120,80};
     const int ids[]={CFG_NAME,CFG_ROLE,CFG_HOST,CFG_PORT,CFG_DATA_PORT,CFG_TOKEN,CFG_SERVER_EDGE,CFG_CLIENT_EDGE};
     NSString *labels[]={@"设备名称",@"本机角色",@"服务器地址",@"控制端口",@"数据端口",@"共享 Token",@"服务端边缘",@"客户端边缘"};
@@ -806,7 +845,16 @@ static void build_settings_page(NSView *p) {
             }
         }
     }
-    s_hostHint=ui_label(left,@"服务器模式：无需填写地址，等待客户端连接。",NSMakeRect(18,22,360,34),11,NO);
+    ui_label(left,@"音频能力（独立于本机角色）",NSMakeRect(18,50,360,18),12,YES);
+    s_audioSend=[NSButton checkboxWithTitle:@"发送本机系统声音" target:s_uiController action:@selector(settingsChanged:)];
+    s_audioSend.frame=NSMakeRect(18,24,178,22);
+    s_audioSend.toolTip=@"发送本机系统声音；需要对端启用播放；需要 macOS 14.2 或更高版本";
+    [left addSubview:s_audioSend];
+    s_audioPlay=[NSButton checkboxWithTitle:@"播放对端系统声音" target:s_uiController action:@selector(settingsChanged:)];
+    s_audioPlay.frame=NSMakeRect(198,24,180,22);
+    s_audioPlay.toolTip=@"播放对端系统声音；需要对端启用发送";
+    [left addSubview:s_audioPlay];
+    s_audioStatus=ui_label(left,@"音频已关闭",NSMakeRect(18,2,360,16),10,NO);
 
     ui_label(right,@"交互与显示器",NSMakeRect(18,424,360,24),15,YES);
     ui_label(right,@"按需调整跨屏切换行为；输入源编号支持十六进制。",NSMakeRect(18,398,360,18),11,NO);
@@ -830,7 +878,7 @@ static void build_settings_page(NSView *p) {
 
     NSView *actions=ui_card(p,NSMakeRect(20,22,840,104));
     ui_label(actions,@"应用设置",NSMakeRect(18,82,360,20),13,YES);
-    ui_label(actions,@"保存会写入配置文件；网络监听和认证参数需要重启后生效。",NSMakeRect(18,56,560,18),11,NO);
+    ui_label(actions,@"音频保存后立即应用；网络监听、认证和角色参数重启后生效。",NSMakeRect(18,56,560,18),11,NO);
     s_cfgNote=ui_label(actions,@"设置已加载。修改后保存。",NSMakeRect(18,28,560,18),11,NO);
     s_saveSettingsButton=ui_primary_button(actions,@"保存设置",NSMakeRect(610,38,112,34),s_uiController,@selector(saveSettings:));
     s_resetSettingsButton=ui_button(actions,@"恢复默认",NSMakeRect(738,38,92,34),s_uiController,@selector(resetSettings:));
@@ -1084,6 +1132,7 @@ static void main_ui_destroy(void) {
     for(int i=0;i<CFG_COUNT;++i)s_cfg[i]=nil;
     s_cfgNote=nil;s_hostLabel=nil;s_hostHint=nil;
     s_saveSettingsButton=nil;s_resetSettingsButton=nil;
+    s_audioSend=nil;s_audioPlay=nil;s_audioStatus=nil;
     s_edgePopups[0]=nil;s_edgePopups[1]=nil;
     s_xferTitle=nil;s_xferDetail=nil;s_xferCounts=nil;s_xferProgress=nil;
     s_xferFiles=nil;s_logView=nil;s_taskHistory=nil;s_logNote=nil;

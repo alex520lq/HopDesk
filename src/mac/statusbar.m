@@ -640,7 +640,7 @@ static void transfer_window_refresh(void) {
 
 void statusbar_show_transfers(void) { main_ui_show_page(3); }
 
-/* The main window owns all user-facing controls; the status item only opens it. */
+/* Update controls are part of the main window. */
 void statusbar_check_updates(void) { check_for_updates(); }
 
 #if 0

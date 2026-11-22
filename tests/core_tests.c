@@ -161,6 +161,12 @@ static void test_config_defaults_and_loading(void) {
     CHECK(c.data_port == HOP_DATA_PORT);
     CHECK(c.xfer_chunk_kb == HOP_CHUNK_KB_DEFAULT);
     CHECK(c.xfer_rate_limit_mib == 128);
+#if defined(_WIN32)
+    CHECK(c.audio_mode == HOP_AUDIO_PLAY);
+#else
+    CHECK(c.audio_mode == HOP_AUDIO_SEND);
+#endif
+    unsigned default_audio_mode = c.audio_mode;
     CHECK(c.token[0] == '\0');
 
     const char *path = "hopdesk-core-test.conf";
@@ -187,6 +193,7 @@ static void test_config_defaults_and_loading(void) {
     CHECK(strcmp(c.peer_host, "127.0.0.1") == 0);
     CHECK(c.xfer_chunk_kb == 512);
     CHECK(c.xfer_rate_limit_mib == 256);
+    CHECK(c.audio_mode == default_audio_mode);
     CHECK(c.disp_win_input == 0x0F);
     CHECK(c.switch_delay_ms == 175);
 
@@ -195,6 +202,7 @@ static void test_config_defaults_and_loading(void) {
     snprintf(c.mac_input_cmd, sizeof(c.mac_input_cmd), "%s", "m1ddc display 1 set input");
     c.switch_cooldown_ms = 425;
     c.edge_margin_px = 48;
+    c.audio_mode = HOP_AUDIO_MODES;
     CHECK(hop_config_save_atomic(&c, path) == 1);
     hop_config_defaults(&c);
     CHECK(hop_config_load(&c, path) == 1);
@@ -205,12 +213,19 @@ static void test_config_defaults_and_loading(void) {
     CHECK(c.edge_margin_px == 48 && c.disp_win_input == 0x0F);
     CHECK(c.xfer_chunk_kb == 512);
     CHECK(c.xfer_rate_limit_mib == 256);
+    CHECK(c.audio_mode == HOP_AUDIO_MODES);
     f = fopen(path, "w");
     CHECK(f != NULL);
     if (f) { fputs("xfer_rate_limit_mib=8\n", f); fclose(f); }
     hop_config before_invalid = c;
     CHECK(hop_config_load(&c, path) == 0);
     CHECK(c.xfer_rate_limit_mib == before_invalid.xfer_rate_limit_mib);
+    f = fopen(path, "w");
+    CHECK(f != NULL);
+    if (f) { fputs("audio_mode=4\n", f); fclose(f); }
+    before_invalid = c;
+    CHECK(hop_config_load(&c, path) == 0);
+    CHECK(c.audio_mode == before_invalid.audio_mode);
     remove(path);
 }
 

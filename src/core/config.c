@@ -25,6 +25,9 @@ void hop_config_defaults(hop_config *c) {
     c->role = HOP_ROLE_SERVER;
 #if !defined(_WIN32)
     c->role = HOP_ROLE_CLIENT; /* preserve existing macOS installations */
+    c->audio_mode = HOP_AUDIO_SEND;
+#else
+    c->audio_mode = HOP_AUDIO_PLAY;
 #endif
     c->port            = HOP_DEFAULT_PORT;
     c->server_edge     = HOP_EDGE_LEFT;
@@ -79,6 +82,14 @@ static int set_kv(hop_config *c, const char *k, const char *v) {
         if (!strcmp(v,"server")) c->role=HOP_ROLE_SERVER;
         else if (!strcmp(v,"client")) c->role=HOP_ROLE_CLIENT;
         else return -1;
+    }
+    else if (!strcmp(k, "audio_mode")) {
+        char *end = NULL;
+        errno = 0;
+        long mode = strtol(v, &end, 0);
+        if (errno || end == v || *end || mode < 0 ||
+            ((unsigned long)mode & ~(unsigned long)HOP_AUDIO_MODES)) return -1;
+        c->audio_mode = (unsigned)mode;
     }
     else if (!strcmp(k, "port"))          c->port = (uint16_t)atoi(v);
     else if (!strcmp(k, "token"))    snprintf(c->token, sizeof(c->token), "%s", v);
@@ -160,6 +171,7 @@ static int config_utf8_path(const char *src, wchar_t *dst, int cap) {
 int hop_config_save_atomic(const hop_config *c, const char *path) {
     if (!c || !path || !path[0] || strlen(path) > 900 ||
         (c->role!=HOP_ROLE_SERVER && c->role!=HOP_ROLE_CLIENT) ||
+        (c->audio_mode & ~HOP_AUDIO_MODES) ||
         c->xfer_rate_limit_mib < 16 || c->xfer_rate_limit_mib > 4096) return 0;
     char temp[1024];
     int temp_len = snprintf(temp, sizeof(temp), "%s.tmp", path);
@@ -188,6 +200,7 @@ int hop_config_save_atomic(const hop_config *c, const char *path) {
 #define CFG_WRITE(...) do { if (fprintf(f, __VA_ARGS__) < 0) ok = 0; } while (0)
     CFG_WRITE("# HopDesk configuration — edited by the native UI\n");
     CFG_WRITE("role=%s\n",c->role==HOP_ROLE_SERVER?"server":"client");
+    CFG_WRITE("audio_mode=%u\n", c->audio_mode);
     CFG_WRITE("name=%s\n", name);
     CFG_WRITE("host=%s\n", host);
     CFG_WRITE("port=%u\n", (unsigned)c->port);

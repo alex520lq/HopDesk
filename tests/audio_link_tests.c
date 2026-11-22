@@ -23,6 +23,7 @@ typedef int test_socket;
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%d: %s\n", __LINE__, #x); exit(1); } } while (0)
 
 static unsigned opens, closes, plays;
+static int fail_capture, fail_playback;
 static const int16_t expected[] = {123, -456, 789, -1234};
 
 struct hop_native_audio { int sent; };
@@ -36,6 +37,7 @@ hop_native_audio *hop_native_audio_open(unsigned *directions) {
 }
 
 int hop_native_audio_capture(hop_native_audio *a, int16_t *pcm, uint32_t *rate) {
+    if (fail_capture) return -1;
     if (a->sent) return 0;
     a->sent = 1;
     memcpy(pcm, expected, sizeof(expected));
@@ -47,7 +49,7 @@ int hop_native_audio_play(hop_native_audio *a, const int16_t *pcm, unsigned coun
     CHECK(a == &fixture && count == 2 && rate == 48000);
     CHECK(!memcmp(pcm, expected, sizeof(expected)));
     ++plays;
-    return 1;
+    return !fail_playback;
 }
 
 void hop_native_audio_close(hop_native_audio *a) {
@@ -267,13 +269,29 @@ int main(void) {
     send_bytes(peer, packet, HOP_AUDIO_HEADER_SIZE);
     expect_close(peer);
 
+    fail_capture = 1;
+    peer = pair_audio(&cfg, &session);
+    expect_close(peer);
+    CHECK(hop_audio_get_status().unavailable & HOP_AUDIO_SEND);
+    fail_capture = 0;
+
+    fail_playback = 1;
+    peer = pair_audio(&cfg, &session);
+    read_bytes(peer, packet, sizeof(packet));
+    hop_audio_header(packet, 48000, 2);
+    memcpy(packet + HOP_AUDIO_HEADER_SIZE, expected, sizeof(expected));
+    send_bytes(peer, packet, sizeof(packet));
+    expect_close(peer);
+    CHECK(hop_audio_get_status().unavailable & HOP_AUDIO_PLAY);
+    fail_playback = 0;
+
     peer = pair_audio(&cfg, &session);
     read_bytes(peer, packet, sizeof(packet));
     hop_session_clear(&session);
     expect_close(peer);
     hop_audio_shutdown();
     CHECK(!hop_audio_get_status().active && !hop_audio_get_status().requested);
-    CHECK(opens == 3 && closes == 3 && plays == 1);
+    CHECK(opens == 5 && closes == 5 && plays == 2);
 #if defined(_WIN32)
     WSACleanup();
 #endif

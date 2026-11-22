@@ -249,6 +249,24 @@ int main(void){
     assert all(x in win_ui for x in ['s_settings_dirty','HIWORD(wp)==EN_CHANGE',
         'settings_validation_error','set_settings_editors_enabled','s_cfg_save_button,s_settings_dirty&&!s_save_busy'])
     assert 'update_settings_role_fields' in mac_ui and 'update_settings_role_fields' in win_ui
+    assert all(x in mac_ui for x in ['HOP_AUDIO_SEND','HOP_AUDIO_PLAY','s_audioSend','s_audioPlay','split_ui_set_audio_mode'])
+    assert all(x in win_ui for x in ['HOP_AUDIO_SEND','HOP_AUDIO_PLAY','s_audio_send','s_audio_play','hop_audio_set_mode'])
+    audio_config=(ROOT/'src/core/config.c').read_text(encoding='utf-8')
+    audio_header=(ROOT/'src/core/hop.h').read_text(encoding='utf-8')
+    split_ipc=(ROOT/'src/mac/split_ipc.h').read_text(encoding='utf-8')
+    split_agent=(ROOT/'src/mac/split_agent.m').read_text(encoding='utf-8')
+    win_main=(ROOT/'src/win/win_main.c').read_text(encoding='utf-8')
+    mac_main=(ROOT/'src/mac/main.c').read_text(encoding='utf-8')
+    win_tray=(ROOT/'src/win/ui.c').read_text(encoding='utf-8')
+    mac_tray=(ROOT/'src/mac/statusbar.m').read_text(encoding='utf-8')
+    assert 'audio_mode=%u' in audio_config and 'audio_mode' in audio_header
+    assert 'c->audio_mode = HOP_AUDIO_PLAY' in audio_config and 'c->audio_mode = HOP_AUDIO_SEND' in audio_config
+    assert 'SPLIT_IPC_AUDIO_MODE_SET' in split_ipc and 'SPLIT_IPC_VERSION 2u' in split_ipc
+    assert 'SPLIT_IPC_AUDIO_MODE_SET' in split_agent and 'audio_requested' in split_agent
+    assert 'hop_audio_set_mode(&g_app.cfg,g_app.cfg.audio_mode)' in win_main
+    assert 'hop_audio_set_mode(&g_mac.cfg,g_mac.cfg.audio_mode)' in mac_main
+    assert 'IDM_AUDIO_SEND' not in win_tray and 'IDM_AUDIO_PLAY' not in win_tray
+    assert 'toggleAudio:' not in mac_tray
     for source in [mac_ui,win_ui]:
         save=extract(source,'save_settings')
         assert 'settings_validation_error' in save

@@ -544,6 +544,12 @@ static void save_settings(void) {
     next.audio_mode =
         (SendMessageW(s_audio_send,BM_GETCHECK,0,0)==BST_CHECKED?HOP_AUDIO_SEND:0u) |
         (SendMessageW(s_audio_play,BM_GETCHECK,0,0)==BST_CHECKED?HOP_AUDIO_PLAY:0u);
+    if(next.audio_mode && port==HOP_AUDIO_PORT){
+        settings_validation_error(CFG_PORT,L"控制端口 24819 已保留给系统音频，请选择其他端口。");return;
+    }
+    if(next.audio_mode && data_port==HOP_AUDIO_PORT){
+        settings_validation_error(CFG_DATA_PORT,L"数据端口 24819 已保留给系统音频，请选择其他端口。");return;
+    }
     if(!wide_to_utf8(s_cfg[CFG_MAC_INPUT],utf8,sizeof(utf8)))utf8[0]=0;
     if(strlen(utf8)>=sizeof(next.mac_input_cmd)){settings_validation_error(CFG_MAC_INPUT,L"Mac 切源命令过长。");return;}
     memcpy(next.mac_input_cmd,utf8,strlen(utf8)+1);

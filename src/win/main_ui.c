@@ -9,6 +9,7 @@
 #include "../core/xfer_status.h"
 #include "../core/hop.h"
 #include "../core/xfer_task_history.h"
+#include "../platform/audio_link.h"
 
 #include <commctrl.h>
 #include <stdio.h>
@@ -38,6 +39,8 @@ enum { UI_PAGE_OVERVIEW, UI_PAGE_DEVICE, UI_PAGE_TRANSFER, UI_PAGE_SETTINGS, UI_
 #define UI_ID_RECEIVE_TASKS 5116
 #define UI_ID_SEND_CANCEL 5117
 #define UI_ID_RECEIVE_CANCEL 5118
+#define UI_ID_AUDIO_SEND 5119
+#define UI_ID_AUDIO_PLAY 5120
 #define UI_TASK_CAP HOP_TASK_MANAGER_MAX_LIVE
 
 enum {
@@ -54,6 +57,7 @@ static HWND s_title, s_header_status, s_footer;
 static HWND s_overview_status, s_overview_peer, s_overview_control, s_overview_data, s_overview_sharing;
 static HWND s_connection_role, s_connection_status, s_connection_peer, s_connection_ports;
 static HWND s_cfg[CFG_COUNT], s_cfg_note, s_host_label, s_host_hint;
+static HWND s_audio_send, s_audio_play, s_audio_status;
 static HWND s_cfg_save_button, s_cfg_reset_button;
 static HWND s_xfer_title, s_xfer_detail, s_xfer_counts;
 static HWND s_xfer_progress, s_xfer_files, s_xfer_retry_button;
@@ -226,6 +230,24 @@ static LRESULT CALLBACK page_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
 static void set_text(HWND h, const wchar_t *s) {
     if (h) SetWindowTextW(h, s ? s : L"");
 }
+static void refresh_audio_status(void) {
+    hop_audio_status status = hop_audio_get_status();
+    wchar_t send[80] = L"", play[80] = L"", text[192] = L"音频已关闭";
+    if (status.requested & HOP_AUDIO_SEND) {
+        const wchar_t *state = (status.active & HOP_AUDIO_SEND) ? L"已连接" :
+            (status.unavailable & HOP_AUDIO_SEND) ? L"不可用" : L"等待对端播放";
+        swprintf_s(send, ARRAYSIZE(send), L"发送：%ls", state);
+    }
+    if (status.requested & HOP_AUDIO_PLAY) {
+        const wchar_t *state = (status.active & HOP_AUDIO_PLAY) ? L"已连接" :
+            (status.unavailable & HOP_AUDIO_PLAY) ? L"不可用" : L"等待对端发送";
+        swprintf_s(play, ARRAYSIZE(play), L"播放：%ls", state);
+    }
+    if (send[0] && play[0]) swprintf_s(text, ARRAYSIZE(text), L"%ls    ·    %ls", send, play);
+    else if (send[0]) wcscpy_s(text, ARRAYSIZE(text), send);
+    else if (play[0]) wcscpy_s(text, ARRAYSIZE(text), play);
+    set_text(s_audio_status, text);
+}
 static void set_font(HWND h, HFONT f) {
     if (h && f) {SendMessageW(h, WM_SETFONT, (WPARAM)f, TRUE);for(int i=0;i<s_node_count;++i)if(s_nodes[i].hwnd==h)s_nodes[i].font=f==s_font_title?1:f==s_font_small?2:0;}
 }
@@ -299,6 +321,7 @@ static void refresh_connection(void) {
     swprintf(b, 512, L"HopDesk  v%hs    ·    %ls", HOP_VERSION, link_state());
     if(s_pending_restart)wcscat(b,L" · 设置已保存，重启生效");
     set_text(s_footer, b);
+    refresh_audio_status();
 }
 static wchar_t *load_logs(void) {
     if (!g_app.log_path[0]) return _wcsdup(L"日志路径尚未初始化。");
@@ -408,7 +431,7 @@ static void update_settings_actions(void) {
 static void mark_settings_dirty(void) {
     if(s_populating_settings||s_save_busy)return;
     s_settings_dirty=1;
-    set_settings_note(L"有未保存的更改。网络与认证设置保存后需要重启生效。",0);
+    set_settings_note(L"有未保存的更改。音频设置可立即生效；网络与认证设置需重启。",0);
     update_settings_actions();
 }
 static void settings_validation_error(int field,const wchar_t *message) {
@@ -422,13 +445,15 @@ static void update_settings_role_fields(void) {
     EnableWindow(s_cfg[CFG_HOST],client);
     set_text(s_host_label,L"服务器地址");
     set_text(s_host_hint,client?
-        L"客户端模式：填写服务器 IP 地址或主机名。":
-        L"服务器模式：无需填写地址，等待客户端连接。");
+        L"客户端：接收服务器键鼠；音频发送/播放独立配置。":
+        L"服务器：向客户端提供键鼠；音频发送/播放独立配置。");
     SendMessageW(s_cfg[CFG_HOST],EM_SETCUEBANNER,TRUE,
         (LPARAM)(client?L"例如 192.168.1.20":L"服务器模式无需填写"));
 }
 static void set_settings_editors_enabled(int enabled) {
     for(int i=0;i<CFG_COUNT;++i)if(s_cfg[i])EnableWindow(s_cfg[i],enabled);
+    if(s_audio_send)EnableWindow(s_audio_send,enabled);
+    if(s_audio_play)EnableWindow(s_audio_play,enabled);
     if(enabled)update_settings_role_fields();
     else if(s_cfg[CFG_HOST])EnableWindow(s_cfg[CFG_HOST],FALSE);
 }
@@ -456,6 +481,9 @@ static void populate_settings(void) {
     set_int(s_cfg[CFG_CHUNK],c->xfer_chunk_kb);
     utf8_to_wide(c->mac_input_cmd,b,128);set_text(s_cfg[CFG_MAC_INPUT],b);
     utf8_to_wide(c->mac_sleep_cmd,b,128);set_text(s_cfg[CFG_MAC_SLEEP],b);
+    SendMessageW(s_audio_send,BM_SETCHECK,(c->audio_mode & HOP_AUDIO_SEND)?BST_CHECKED:BST_UNCHECKED,0);
+    SendMessageW(s_audio_play,BM_SETCHECK,(c->audio_mode & HOP_AUDIO_PLAY)?BST_CHECKED:BST_UNCHECKED,0);
+    refresh_audio_status();
     update_settings_role_fields();
     s_populating_settings=0;
     s_settings_dirty=0;
@@ -509,6 +537,9 @@ static void save_settings(void) {
     next.switch_delay_ms=(int)delay;next.switch_cooldown_ms=(int)cooldown;next.edge_margin_px=(int)margin;
     next.disp_win_input=(uint16_t)win_input;next.disp_mac_input=(uint16_t)mac_input;
     next.disp_wake_sec=(int)wake;next.xfer_chunk_kb=(int)chunk;
+    next.audio_mode =
+        (SendMessageW(s_audio_send,BM_GETCHECK,0,0)==BST_CHECKED?HOP_AUDIO_SEND:0u) |
+        (SendMessageW(s_audio_play,BM_GETCHECK,0,0)==BST_CHECKED?HOP_AUDIO_PLAY:0u);
     if(!wide_to_utf8(s_cfg[CFG_MAC_INPUT],utf8,sizeof(utf8)))utf8[0]=0;
     if(strlen(utf8)>=sizeof(next.mac_input_cmd)){settings_validation_error(CFG_MAC_INPUT,L"Mac 切源命令过长。");return;}
     memcpy(next.mac_input_cmd,utf8,strlen(utf8)+1);
@@ -813,8 +844,8 @@ static void refresh_transfers(void) {
 }
 static void create_settings_page(HWND p) {
     group(p,L"设备与连接",20,18,400,470);
-    HWND deviceHelp=label(p,L"设置本机身份、连接目标和两端共用的认证信息。",38,72,360,18);
-    set_font(deviceHelp,s_font_small);
+    s_host_hint=label(p,L"服务器：向客户端提供键鼠；音频发送/播放独立配置。",38,72,360,18);
+    set_font(s_host_hint,s_font_small);
     const int y[]={98,138,178,218,258,298,338,378};
     const int ids[]={CFG_NAME,CFG_ROLE,CFG_HOST,CFG_PORT,CFG_DATA_PORT,CFG_TOKEN,CFG_SERVER_EDGE,CFG_CLIENT_EDGE};
     const wchar_t *names[]={L"设备名称",L"本机角色",L"服务器地址",L"控制端口",L"数据端口",L"共享 Token",L"服务端边缘",L"客户端边缘"};
@@ -838,8 +869,12 @@ static void create_settings_page(HWND p) {
             if(ids[i]==CFG_HOST)SendMessageW(s_cfg[CFG_HOST],EM_SETCUEBANNER,TRUE,(LPARAM)L"服务器模式无需填写");
         }
     }
-    s_host_hint=label(p,L"服务器模式：无需填写地址，等待客户端连接。",38,432,360,34);
-    set_font(s_host_hint,s_font_small);
+    HWND audioTitle=label(p,L"音频能力（独立于本机角色）",38,416,360,20);
+    set_font(audioTitle,s_font_small);
+    s_audio_send=child(p,L"BUTTON",L"发送本机系统声音",BS_AUTOCHECKBOX|WS_TABSTOP,38,440,174,22,UI_ID_AUDIO_SEND);
+    s_audio_play=child(p,L"BUTTON",L"播放对端系统声音",BS_AUTOCHECKBOX|WS_TABSTOP,220,440,178,22,UI_ID_AUDIO_PLAY);
+    set_font(s_audio_send,s_font_small);set_font(s_audio_play,s_font_small);
+    s_audio_status=label(p,L"音频已关闭",38,466,360,16);set_font(s_audio_status,s_font_small);
 
     group(p,L"交互与显示器",440,18,400,470);
     HWND displayHelp=label(p,L"按需调整跨屏切换行为；输入源编号支持十六进制。",458,72,362,18);
@@ -1052,6 +1087,8 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if(!s_populating_settings && HIWORD(wp)==EN_CHANGE){
                 for(int i=0;i<CFG_COUNT;++i)if(source&&source==s_cfg[i]){mark_settings_dirty();break;}
             }
+            if(!s_populating_settings && HIWORD(wp)==BN_CLICKED &&
+                (source==s_audio_send||source==s_audio_play))mark_settings_dirty();
             if(!s_populating_settings && HIWORD(wp)==CBN_SELCHANGE &&
                 (source==s_cfg[CFG_SERVER_EDGE]||source==s_cfg[CFG_CLIENT_EDGE]))mark_settings_dirty();
             if(id>=UI_NAV_BASE && id<UI_NAV_BASE+UI_PAGE_COUNT){show_page(id-UI_NAV_BASE);return 0;}
@@ -1120,7 +1157,12 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             set_settings_editors_enabled(1);
             if(result->ok){
                 s_draft=result->config;s_pending_restart=1;s_settings_dirty=0;
-                set_settings_note(L"设置已保存。网络与认证参数将在重启 HopDesk 后生效。",0);
+                g_app.cfg.audio_mode=result->config.audio_mode;
+                if(hop_audio_set_mode(&g_app.cfg,g_app.cfg.audio_mode))
+                    set_settings_note(L"设置已保存。音频设置立即生效；网络与认证参数重启后生效。",0);
+                else
+                    set_settings_note(L"设置已保存，但音频后台未能启动。请查看日志；重启后会按已保存配置重试。",1);
+                refresh_audio_status();
             } else {
                 s_settings_dirty=1;
                 set_settings_note(L"保存失败；原配置未改变。请检查文件权限和磁盘空间后重试。",1);

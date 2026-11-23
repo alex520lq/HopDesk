@@ -10,6 +10,8 @@
 #include "update_manifest.h"
 #include "../core/update_state.h"
 #include <CommonCrypto/CommonDigest.h>
+#include <stdatomic.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <strings.h>
 #include <unistd.h>
@@ -94,6 +96,19 @@ static NSMenu *s_menu;
 static NSMenuItem *s_state;
 static HopController *s_ctrl;
 static int s_status_connected, s_status_sharing;
+static atomic_bool s_cursor_restore_pending = ATOMIC_VAR_INIT(false);
+
+/* Synthetic mouse moves do not always cancel macOS's hide-until-mouse-moves
+ * state after remote typing. Coalesce requests onto AppKit's main queue. */
+void mac_cursor_restore(void) {
+    if (atomic_exchange_explicit(&s_cursor_restore_pending, true, memory_order_acq_rel))
+        return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSCursor setHiddenUntilMouseMoves:NO];
+        atomic_store_explicit(&s_cursor_restore_pending, false, memory_order_release);
+    });
+}
+
 static int s_last_icon_state = -1, s_last_icon_progress = -999;
 static int s_last_icon_direction = -1, s_last_icon_phase = -1;
 static NSTextField *s_transferTitle, *s_transferDetail, *s_transferCounts;

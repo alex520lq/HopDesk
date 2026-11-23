@@ -187,6 +187,7 @@ void inject_reset(void) {
     s_input.mouse_x = 0;
     s_input.mouse_y = 0;
     for (int i = 0; i < 3; ++i) { s_input.btn_held[i] = 0; s_input.btn_click_count[i] = 0; }
+    mac_cursor_restore();
 }
 
 /* 按住左键移动必须发 LeftMouseDragged，否则在 Mac 上拖不动东西 */
@@ -201,6 +202,7 @@ static void post_move(CGPoint pt, CGMouseButton btn) {
     CGEventRef e = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved, pt, btn);
     CGEventSetType(e, move_type());
     post_mouse(e);
+    mac_cursor_restore();
 }
 
 /* 进入共享：边缘内侧死区、指定 y（已是本端坐标），并立即定位物理鼠标 */
@@ -231,6 +233,7 @@ static void leave_edge(void) {
     net_send(HOP_MSG_EDGE_LEAVE,
              (uint8_t[]){ (uint8_t)g_mac.cfg.client_edge }, 1);
     statusbar_update(1, 0);
+    mac_cursor_restore();
 }
 
 void inject_move(int dx, int dy) {
@@ -293,6 +296,7 @@ void inject_button(int button, int down, int click_count) {
     e = CGEventCreateMouseEvent(NULL, t, pt, b);
     if (e) CGEventSetIntegerValueField(e, kCGMouseEventClickState, click_count);
     post_mouse(e);
+    mac_cursor_restore();
     if (!down) s_input.btn_click_count[button] = 0;
 }
 
@@ -303,6 +307,7 @@ void inject_wheel(int dx, int dy) {
     e = CGEventCreateScrollWheelEvent2(NULL, kCGScrollEventUnitPixel, 2,
                                        (int32_t)dy, (int32_t)dx, 0);
     post_mouse(e);
+    mac_cursor_restore();
 }
 
 /* ---- 阶段 2：键盘 ---- */

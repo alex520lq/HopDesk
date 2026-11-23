@@ -2309,4 +2309,13 @@ assert 'kCGMouseEventClickState' in mac_capture and 'uint8_t p[3]' in mac_captur
 assert 'CGEventSetIntegerValueField(e, kCGMouseEventClickState, click_count)' in mac_inject
 assert 'len >= 3 ? p[2] : 1' in mac_protocol
 assert 'click_count < 1 || click_count > 3' in mac_inject
+mac_statusbar = (ROOT / 'src/mac/statusbar.m').read_text(encoding='utf-8')
+mac_app_header = (ROOT / 'src/mac/mac_app.h').read_text(encoding='utf-8')
+assert 'void mac_cursor_restore(void);' in mac_app_header
+assert '[NSCursor setHiddenUntilMouseMoves:NO]' in mac_statusbar
+assert 'mac_cursor_restore();' in extract(mac_inject, 'post_move')
+assert 'mac_cursor_restore();' in extract(mac_inject, 'leave_edge')
+assert 'mac_cursor_restore();' in extract(mac_inject, 'inject_reset')
+assert 'mac_cursor_restore();' in extract(mac_inject, 'inject_button')
+assert 'mac_cursor_restore();' in extract(mac_inject, 'inject_wheel')
 assert 'click_count' in mouse_core and 'hop_mouse_click_tracker' in mouse_header

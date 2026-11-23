@@ -69,6 +69,7 @@ void disp_set_input(uint16_t vcp);
 /* statusbar.m */
 void statusbar_init(void);
 void statusbar_update(int connected, int sharing);
+void mac_cursor_restore(void); /* clear macOS hide-until-mouse-moves after remote input */
 void statusbar_show_transfers(void);
 void statusbar_show_main(void);
 void statusbar_check_updates(void);

@@ -45,6 +45,8 @@ static void post_mouse(CGEventRef e){
  CGEventPost(kCGHIDEventTap,e);
  CFRelease(e);
 }
+static int cursor_restore_count;
+static void mac_cursor_restore(void) { ++cursor_restore_count; }
 @FUNCTIONS@
 int main(void){
  inject_key(0,1);inject_key(7,1);

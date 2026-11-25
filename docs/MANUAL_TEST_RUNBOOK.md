@@ -145,3 +145,15 @@ The latest merged PR #22 was validated by [Build HopDesk run #44662680422](https
 - Both platform build/test/package jobs succeeded. The public Release publication job was skipped because this was not a version-tag build.
 
 CI does **not** replace physical two-device tests, interactive native UI checks, Accessibility/Input Monitoring permission checks, monitor/DDC hardware tests, clipboard contention/shutdown races, weak-network runs, or long-duration soak tests. Those cases remain BLOCKED until performed on the dedicated Windows + macOS pair and recorded with commit SHA and evidence.
+
+## macOS input permission onboarding
+
+Record commit SHA, macOS version, bundle path and signing requirement for each run.
+
+1. Missing device-control or Input Monitoring permission: launch the normal app; expect one permission guide, with both Settings actions and the exact installed path. Repeated remote input must not repeatedly interrupt the user.
+2. Dismiss the guide, then use the menu-bar context menu, overview and Settings permission entries. Each explicit action must remain available and open its corresponding privacy pane, even if an existing entry is already enabled.
+3. Grant both permissions, restart HopDesk, and verify the overview/settings status, remote pointer movement/clicks/typing and local paste shortcut. Network connection alone is not evidence of input readiness.
+4. Repeat in split mode. Show the background process permissions, not only UI permissions; after granting, stop/restart the background. A disconnected background must show unknown permission status.
+5. Replace an ad-hoc build with a different build at the same path. If TCC retains an enabled but stale entry, remove/re-add that App and restart. Then repeat an update signed with the same configured Developer ID identity to verify permission continuity separately.
+
+These checks remain pending until performed on the changed build. Do not revoke working user permissions just to run automated regressions.

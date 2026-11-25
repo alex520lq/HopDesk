@@ -67,7 +67,8 @@ static int s_visibleFileIndices[HOP_XFER_FILE_LIMIT];
 static int s_visibleFileCount;
 static uint32_t s_fileBatch;
 static int s_fileDirection;
-static BOOL s_accessibilityPermissionRequestStarted;
+static BOOL s_startupPermissionsChecked;
+static NSTextField *s_inputPermissionsStatus, *s_overviewPermissions;
 
 /* Destroying the window must also drop every static strong reference below.
  * Otherwise closing the window only hides it and the full 4-page UI stays
@@ -75,62 +76,81 @@ static BOOL s_accessibilityPermissionRequestStarted;
 static void main_ui_destroy(void);
 static void refresh_audio_status(void);
 
-/* CoreGraphics event posting can fail silently without Post Event permission.
- * Request it once, then take the user directly to the Accessibility privacy pane.
- * Cocoa and System Settings navigation are always performed on the main queue. */
+/* Permissions belong to the process doing input work. The split UI must use
+ * the agent's existing status snapshot, not assume its own TCC grants suffice. */
+static BOOL input_permissions(int *post, int *listen, int *accessibility) {
+    if (split_ui_is_active())
+        return split_ui_get_input_permissions(post, listen, accessibility);
+    *post = CGPreflightPostEventAccess();
+    *listen = CGPreflightListenEventAccess();
+    *accessibility = AXIsProcessTrusted();
+    return YES;
+}
+
+static NSString *input_permissions_status(void) {
+    int post = 0, listen = 0, accessibility = 0;
+    if (!input_permissions(&post, &listen, &accessibility))
+        return @"后台未连接，无法确认键鼠权限";
+    return [NSString stringWithFormat:@"设备控制：%@    输入监控：%@",
+        post && accessibility ? @"已授权" : @"未授权", listen ? @"已授权" : @"未授权"];
+}
+
+static void open_input_permission_settings(BOOL listen) {
+    /* Explicit user actions remain available after the once-per-launch prompt,
+     * including when Settings shows a stale enabled entry after an update. */
+    if (listen) {
+        (void)CGRequestListenEventAccess();
+    } else {
+        NSDictionary *prompt = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES};
+        (void)AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)prompt);
+        (void)CGRequestPostEventAccess();
+    }
+    NSString *pane = listen ? @"Privacy_ListenEvent" : @"Privacy_Accessibility";
+    NSString *base = @"x-apple.systempreferences:com.apple.preference.security?";
+    if (@available(macOS 13.0, *))
+        base = @"x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?";
+    BOOL opened = [NSWorkspace.sharedWorkspace openURL:
+        [NSURL URLWithString:[base stringByAppendingString:pane]]];
+    if (!opened) {
+        NSString *legacy = [@"x-apple.systempreferences:com.apple.preference.security?" stringByAppendingString:pane];
+        opened = [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:legacy]];
+    }
+    hop_log(opened ? HOP_LOG_INFO : HOP_LOG_ERROR, "permission: %s %s settings for %s",
+        opened ? "opened" : "unable to open", listen ? "Input Monitoring" : "Accessibility",
+        NSBundle.mainBundle.bundlePath.UTF8String);
+    if (!opened) {
+        NSAlert *alert = [NSAlert new];
+        alert.messageText = @"无法打开系统权限设置";
+        alert.informativeText = @"请打开“系统设置 → 隐私与安全性”，选择设备控制（辅助功能）或输入监控，为 HopDesk 开启权限。";
+        [alert runModal];
+    }
+}
+
 void mac_request_accessibility_permission(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        BOOL canPost = CGPreflightPostEventAccess();
-        BOOL canListen = CGPreflightListenEventAccess();
-        BOOL canAccess = AXIsProcessTrusted();
-        if (canPost && canListen && canAccess) {
-            hop_log(HOP_LOG_INFO, "permission: macOS event access is already granted");
-            return;
-        }
-        if (split_agent_is_active()) {
-            hop_log(HOP_LOG_WARN, "split agent: open HopDesk to grant input permissions");
-            return;
-        }
+        if (split_agent_is_active()) return; /* Background agents never display prompts. */
+        NSAlert *alert = [NSAlert new];
+        alert.messageText = @"HopDesk 键鼠权限";
+        alert.informativeText = [NSString stringWithFormat:
+            @"%@\n\n请在两个设置页为这份应用授权：\n%@\n\n授权后请退出并重新启动 HopDesk（双进程模式还需停止并重启后台）。如果更新后开关已开但仍未授权，请移除旧条目，再添加上面路径中的 HopDesk。",
+            input_permissions_status(), NSBundle.mainBundle.bundlePath];
+        [alert addButtonWithTitle:@"打开设备控制设置"];
+        [alert addButtonWithTitle:@"打开输入监控设置"];
+        [alert addButtonWithTitle:@"稍后"];
+        [NSApp activateIgnoringOtherApps:YES];
+        NSModalResponse response = [alert runModal];
+        if (response == NSAlertFirstButtonReturn) open_input_permission_settings(NO);
+        if (response == NSAlertSecondButtonReturn) open_input_permission_settings(YES);
+    });
+}
 
-        if (s_accessibilityPermissionRequestStarted) return;
-        s_accessibilityPermissionRequestStarted = YES;
-
-        /* AX registers this exact bundle in the Accessibility list. CoreGraphics
-         * PostEvent alone can leave the user staring at an empty list. */
-        if (!canAccess) {
-            NSDictionary *prompt = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES};
-            canAccess = AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)prompt);
-        }
-        if (!canPost) canPost = CGRequestPostEventAccess();
-        if (!canListen) canListen = CGRequestListenEventAccess();
-        if (canPost && canListen && canAccess) {
-            hop_log(HOP_LOG_INFO, "permission: macOS event access granted");
-            return;
-        }
-
-        NSString *pane = (!canAccess || !canPost) ? @"Privacy_Accessibility" : @"Privacy_ListenEvent";
-        NSString *base = @"x-apple.systempreferences:com.apple.preference.security?";
-        if (@available(macOS 13.0, *))
-            base = @"x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?";
-        NSString *url = [base stringByAppendingString:pane];
-        NSURL *settingsURL = [NSURL URLWithString:url];
-
-        BOOL opened = settingsURL && [NSWorkspace.sharedWorkspace openURL:settingsURL];
-        if (!opened) {
-            NSURL *legacyURL = [NSURL URLWithString:
-                @"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"];
-            opened = legacyURL && [NSWorkspace.sharedWorkspace openURL:legacyURL];
-        }
-
-        if (opened) {
-            hop_log(HOP_LOG_WARN,
-                    "permission: opened privacy settings for %s; enable HopDesk at %s, then relaunch it",
-                    (!canAccess || !canPost) ? "Accessibility" : "Input Monitoring",
-                    NSBundle.mainBundle.bundlePath.UTF8String);
-        } else {
-            hop_log(HOP_LOG_ERROR,
-                    "permission: unable to open the Accessibility settings pane; open System Settings > Privacy & Security > Accessibility manually");
-        }
+void mac_check_input_permissions(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (s_startupPermissionsChecked || split_agent_is_active()) return;
+        s_startupPermissionsChecked = YES;
+        int post = 0, listen = 0, accessibility = 0;
+        if (!input_permissions(&post, &listen, &accessibility) || !post || !listen || !accessibility)
+            mac_request_accessibility_permission();
     });
 }
 
@@ -170,6 +190,8 @@ static NSString *const kPageNames[UI_PAGE_COUNT] = {@"概览",@"设备",@"传输
 - (void)refreshLogs:(id)sender;
 - (void)copyLogs:(id)sender;
 - (void)checkUpdates:(id)sender;
+- (void)openInputPermissionSettings:(id)sender;
+- (void)checkInputPermissions:(id)sender;
 - (BOOL)windowShouldClose:(NSWindow *)sender;
 @end
 
@@ -789,6 +811,15 @@ static void refresh_connection_labels(void) {
     ui_apply_status_badge(s_overviewControl,s_connected,s_sharing);
     ui_apply_status_badge(s_overviewData,split_ui_data_connected(),NO);
     ui_apply_status_badge(s_overviewSharing,s_connected,s_sharing);
+    NSString *permissions = input_permissions_status();
+    s_inputPermissionsStatus.stringValue = permissions;
+    s_overviewPermissions.stringValue = permissions;
+    int post = 0, listen = 0, accessibility = 0;
+    BOOL known = input_permissions(&post, &listen, &accessibility);
+    if (!known || !post || !listen || !accessibility) {
+        s_overviewSharing.stringValue = known ? @"权限不足 · 请检查键鼠权限" : @"后台未连接 · 权限未知";
+        s_overviewSharing.textColor = NSColor.systemOrangeColor;
+    }
     refresh_audio_status();
 }
 static void show_page(int page) {
@@ -892,6 +923,9 @@ static void build_pages(NSView *root) {
     s_overviewPeer=ui_label(card,@"设备与对端信息",NSMakeRect(22,64,600,22),12,NO);
     ui_primary_button(card,@"重新连接",NSMakeRect(680,88,130,36),s_uiController,@selector(reconnect:));
 
+    s_overviewPermissions=ui_label(card,@"正在检查键鼠权限…",NSMakeRect(22,22,580,22),11,NO);
+    ui_button(card,@"检查键鼠权限",NSMakeRect(680,18,130,30),s_uiController,@selector(checkInputPermissions:));
+
     card=ui_card(p,NSMakeRect(20,330,268,120));
     ui_label(card,@"控制通道",NSMakeRect(18,82,230,20),12,YES);
     s_overviewControl=ui_label(card,@"等待连接",NSMakeRect(18,42,230,26),14,YES);
@@ -975,7 +1009,14 @@ static void build_pages(NSView *root) {
     taskHistoryScroll.documentView=s_taskHistory;[card addSubview:taskHistoryScroll];
 
     p=s_pages[UI_PAGE_SETTINGS];
-    [p setFrameSize:NSMakeSize(880,1400)];
+    [p setFrameSize:NSMakeSize(880,1580)];
+    card=ui_card(p,NSMakeRect(20,1400,840,160));
+    ui_label(card,@"键鼠权限",NSMakeRect(22,126,780,22),15,YES);
+    s_inputPermissionsStatus=ui_label(card,@"正在检查…",NSMakeRect(22,98,780,22),12,NO);
+    ui_label(card,@"授权后请重启 HopDesk 和后台；更新后开关已开却仍未授权时，请移除旧条目并重新添加。",
+        NSMakeRect(22,70,796,22),11,NO);
+    ui_button(card,@"设备控制（辅助功能）…",NSMakeRect(22,22,206,34),s_uiController,@selector(openInputPermissionSettings:)).tag=0;
+    ui_button(card,@"输入监控…",NSMakeRect(244,22,140,34),s_uiController,@selector(openInputPermissionSettings:)).tag=1;
     NSView *settingsForm=[[NSView alloc] initWithFrame:NSMakeRect(0,700,880,680)];
     [p addSubview:settingsForm];
     build_settings_page(settingsForm);
@@ -1004,6 +1045,8 @@ static void build_pages(NSView *root) {
 }
 
 @implementation HopDeskMainController
+- (void)openInputPermissionSettings:(id)sender { open_input_permission_settings([sender tag] != 0); }
+- (void)checkInputPermissions:(id)sender { (void)sender; mac_request_accessibility_permission(); }
 - (void)selectPage:(id)sender {
     NSInteger page=[sender tag];
     if ([sender isKindOfClass:[NSButton class]] && page==0 && [sender title].length==0) page=0;
@@ -1141,6 +1184,7 @@ static void main_ui_destroy(void) {
     s_taskTables[0]=nil;s_taskTables[1]=nil;
     s_taskRows[0]=nil;s_taskRows[1]=nil;
     s_updateVersion=nil;s_updateSource=nil;
+    s_inputPermissionsStatus=nil;s_overviewPermissions=nil;
     s_uiController=nil;
     free(s_fileSnapshot);s_fileSnapshot=NULL;
     free(s_tasksSnapshot);s_tasksSnapshot=NULL;

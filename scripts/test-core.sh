@@ -26,6 +26,7 @@ clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-
   "$ROOT/src/core/xfer_rx_file_state.c"
 "$BUILD/hopdesk-core-tests"
 python3 "$ROOT/scripts/test-regressions.py"
+python3 "$ROOT/scripts/test-macos-input-permissions.py"
 clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer -I "$ROOT/src/core" \
   -o "$BUILD/hopdesk-resilience-tests" "$ROOT/tests/resilience_tests.c" \
   "$ROOT/src/core/protocol.c" "$ROOT/src/core/clock.c" "$ROOT/src/core/log.c" "$ROOT/src/core/session.c" "$ROOT/src/core/watchdog.c"

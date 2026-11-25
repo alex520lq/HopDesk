@@ -22,7 +22,6 @@ static struct {
 void inject_set_peer_geometry(uint32_t w, uint32_t h) { s_input.peer_w = w; s_input.peer_h = h; }
 static double s_w, s_h;
 static int    s_inited;
-static int    s_permission_guidance_requested;
 
 /* 越过出口边缘的累计量，回到屏内立即清零。
  * 必须累计而不是看单次位移：慢推时每次事件只有几个像素，
@@ -123,10 +122,7 @@ void inject_init(void) {
     } else {
         hop_log(HOP_LOG_ERROR,
                 "inject: 缺少 macOS 辅助功能 / 事件投递权限，CGEventPost 会被系统静默丢弃");
-        if (!s_permission_guidance_requested) {
-            s_permission_guidance_requested = 1;
-            mac_request_accessibility_permission();
-        }
+        mac_check_input_permissions();
     }
 }
 

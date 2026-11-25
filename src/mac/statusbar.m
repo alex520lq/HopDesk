@@ -23,6 +23,7 @@ static void statusbar_handle_click(NSEvent *event);
 static void open_main_window(void);
 @interface HopController : NSObject <NSApplicationDelegate, NSMenuItemValidation>
 - (void)doOpen:(id)sender;
+- (void)doInputPermissions:(id)sender;
 - (void)doStatusItemClick:(id)sender;
 - (void)doQuit:(id)sender;
 - (void)doWake:(id)sender;
@@ -41,6 +42,11 @@ static NSWindow *s_transferWindow;
 static NSTimer *s_transferTimer;
 @implementation HopController
 - (void)doOpen:(id)sender { (void)sender; open_main_window(); }
+- (void)doInputPermissions:(id)sender {
+    (void)sender;
+    if (split_agent_is_active()) { open_main_window(); return; }
+    mac_request_accessibility_permission();
+}
 - (void)doStatusItemClick:(id)sender { (void)sender; statusbar_handle_click(NSApp.currentEvent); }
 - (void)doQuit:(id)sender {
     (void)sender;
@@ -530,6 +536,8 @@ void statusbar_init(void) {
         s_menu = [[NSMenu alloc] init];
         NSMenuItem *open = [[NSMenuItem alloc] initWithTitle:@"打开" action:@selector(doOpen:) keyEquivalent:@""];
         open.target = s_ctrl; [s_menu addItem:open];
+        NSMenuItem *permissions = [[NSMenuItem alloc] initWithTitle:@"检查键鼠权限…" action:@selector(doInputPermissions:) keyEquivalent:@""];
+        permissions.target = s_ctrl; [s_menu addItem:permissions];
         [s_menu addItem:[NSMenuItem separatorItem]];
         NSString *quitTitle = split ? @"停止 HopDesk 后台" : @"退出";
         NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:quitTitle action:@selector(doQuit:) keyEquivalent:@"q"];

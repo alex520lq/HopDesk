@@ -11,6 +11,7 @@ int split_ui_run(int start_agent);
 int split_ui_is_active(void);
 void split_ui_refresh_connection(int *connected, int *sharing);
 int split_ui_data_connected(void);
+int split_ui_get_input_permissions(int *post, int *listen, int *accessibility);
 void split_ui_get_status_pair(hop_xfer_status_pair *out);
 int split_ui_get_tasks(hop_xfer_task_snapshot *out, int capacity, int *total);
 int split_ui_get_task(hop_xfer_task_id id, hop_xfer_task_snapshot *out);

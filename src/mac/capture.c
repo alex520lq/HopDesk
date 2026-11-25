@@ -185,7 +185,7 @@ void mac_capture_init(void){
     if(g_mac.cfg.role==HOP_ROLE_SERVER)
         mask|=CGEventMaskBit(kCGEventMouseMoved)|CGEventMaskBit(kCGEventLeftMouseDragged)|CGEventMaskBit(kCGEventRightMouseDragged)|CGEventMaskBit(kCGEventOtherMouseDragged)|CGEventMaskBit(kCGEventLeftMouseDown)|CGEventMaskBit(kCGEventLeftMouseUp)|CGEventMaskBit(kCGEventRightMouseDown)|CGEventMaskBit(kCGEventRightMouseUp)|CGEventMaskBit(kCGEventOtherMouseDown)|CGEventMaskBit(kCGEventOtherMouseUp)|CGEventMaskBit(kCGEventScrollWheel)|CGEventMaskBit(kCGEventFlagsChanged);
     tap=CGEventTapCreate(kCGHIDEventTap,kCGHeadInsertEventTap,kCGEventTapOptionDefault,mask,capture_event,NULL);
-    if(!tap){hop_log(HOP_LOG_ERROR,"capture: grant Accessibility and Input Monitoring permissions, then restart HopDesk");mac_request_accessibility_permission();return;}
+    if(!tap){hop_log(HOP_LOG_ERROR,"capture: grant Accessibility and Input Monitoring permissions, then restart HopDesk");mac_check_input_permissions();return;}
     CFRunLoopSourceRef source=CFMachPortCreateRunLoopSource(NULL,tap,0);CFRunLoopAddSource(CFRunLoopGetMain(),source,kCFRunLoopCommonModes);CFRelease(source);
     if(g_mac.cfg.role==HOP_ROLE_SERVER){
         CFRunLoopTimerRef timer=CFRunLoopTimerCreate(NULL,CFAbsoluteTimeGetCurrent()+.02,.02,0,0,edge_tick,NULL);

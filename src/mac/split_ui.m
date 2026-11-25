@@ -132,6 +132,14 @@ void split_ui_refresh_connection(int *connected, int *sharing) {
     *sharing = s_agentAvailable && s_status.sharing;
 }
 
+int split_ui_get_input_permissions(int *post, int *listen, int *accessibility) {
+    if (!s_splitUI || !s_agentAvailable) return 0;
+    *post = s_status.post_permission;
+    *listen = s_status.listen_permission;
+    *accessibility = s_status.accessibility;
+    return 1;
+}
+
 int split_ui_data_connected(void) {
     return s_splitUI ? s_agentAvailable && s_status.data : xfer_connected();
 }
@@ -361,6 +369,9 @@ int split_ui_run(int start_agent) {
         app.delegate = delegate;
         configure_menu(delegate);
         statusbar_show_main();
+        int connected = 0, sharing = 0;
+        split_ui_refresh_connection(&connected, &sharing);
+        mac_check_input_permissions();
         [app run];
         close(lock);
     }

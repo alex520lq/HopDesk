@@ -217,7 +217,11 @@ int main(void){
     assert 's_pages[4]' not in win_ui and 's_pages[5]' not in win_ui
     assert 'p=s_pages[UI_PAGE_TRANSFER];' in mac_ui and 'p=s_pages[UI_PAGE_SETTINGS];' in mac_ui
     assert 'p=s_pages[UI_PAGE_TRANSFER];' in win_ui and 'p=s_pages[UI_PAGE_SETTINGS]; create_settings_page(p);' in win_ui
-    assert 'build_settings_page(settingsForm)' in mac_ui and '[p setFrameSize:NSMakeSize(880,1400)]' in mac_ui
+    assert 'build_settings_page(settingsForm)' in mac_ui
+    settings_page = mac_ui[mac_ui.index('p=s_pages[UI_PAGE_SETTINGS];'):]
+    page_height = int(re.search(r'setFrameSize:NSMakeSize\(880,(\d+)\)', settings_page).group(1))
+    form_y, form_height = map(int, re.search(r'settingsForm=.*?NSMakeRect\(0,(\d+),880,(\d+)\)', settings_page).groups())
+    assert page_height >= form_y + form_height, 'Settings form must fit inside its scrollable page'
     assert 'ui_label(card,@"运行日志"' in mac_ui and 'ui_label(card,@"软件更新"' in mac_ui
     assert 'group(p,L"运行日志",20,620,800,590)' in win_ui
     assert 'group(p,L"软件更新",20,1240,800,300)' in win_ui

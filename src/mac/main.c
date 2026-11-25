@@ -144,6 +144,7 @@ int main(int argc, char **argv) {
     } else {
         statusbar_init();
     }
+    mac_check_input_permissions();
     clipboard_init();
     net_loop_run();
     if(!hop_audio_set_mode(&g_mac.cfg,g_mac.cfg.audio_mode))

@@ -75,3 +75,15 @@
 当前 macOS 构建使用 ad-hoc code signing；当前 Windows 构建没有 Authenticode 签名。因此 codesign --verify 仅验证签名结构，不证明发布者身份。在向不受信任的外部用户公开分发前，必须配置 Windows Authenticode 证书、Apple Developer ID 签名与 notarization，并在更新器中固定/验证发布者身份。不得把当前 SHA-256 校验描述为独立的数字签名验证。
 
 当前安装方式是便携目录/用户目录更新。Windows 安装在受管理员保护的目录或 macOS 安装在不可写的 /Applications 时，更新可能因权限不足而失败；旧版本会保留，用户需将应用安装在当前用户可写的位置或手动处理权限。
+
+## macOS 权限与更新签名
+
+权限保存在 macOS 的 TCC 数据库中，不能通过复制 `hopdesk.conf` 或旧 App 目录转移。macOS 用代码的 designated requirement 识别是否为同一应用；ad-hoc 签名的身份绑定当前构建，新构建不能保证沿用旧授权。参考 Apple [TN3127: Inside Code Signing: Requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements)。
+
+- 启动时检查设备控制（辅助功能／事件投递）和输入监控，缺失时前台显示一次引导；显式点击权限入口可重复打开，不受启动提示去重影响。概览和设置页显示当前状态。
+- 双进程界面使用现有 IPC 状态中的后台权限；后台不弹窗。授权后重启后台，不能只重开窗口。普通模式需重启整个应用，以重新创建输入监听。
+- 当前 CI 仍为 ad-hoc 包。若系统设置中的 HopDesk 已开启却仍未授权，移除旧条目，重新添加当前安装路径的 App，再重启。避免交替运行不同安装目录中的副本。
+- 要让后续更新保持同一代码身份，发布构建需在 CI 配置同一 Apple Developer ID 签名身份，按现有 `HOPDESK_CODESIGN_IDENTITY` 传给构建脚本，并完成 notarization；私钥只放在受保护的签名环境或 CI secrets，不能提交到仓库。当前工作流没有导入证书，因此仅修改启动逻辑不能解决签名身份变化。
+- 本机已有固定证书的开发部署可使用 README 中的 `hopdesk-update-local --ci`。没有可用签名身份时，该工具不能代替证书；首次从 ad-hoc 迁移到固定身份仍需重新授权一次。
+
+定向回归：`python3 scripts/test-macos-input-permissions.py` 在 macOS 上编译执行提取的生产权限函数，以 OS／对话框替身覆盖启动去重、手动重开、后台权限来源和系统设置链接回退；不更改真实 TCC 授权，也不代表真实桌面授权验收。

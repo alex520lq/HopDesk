@@ -79,7 +79,8 @@ void main_ui_show_page(int page);
 void main_ui_set_status(int connected, int sharing);
 void main_ui_refresh(void);
 void main_ui_shutdown(void);
-void mac_request_accessibility_permission(void); /* main queue: register app and request event permissions */
+void mac_check_input_permissions(void); /* once per launch; headless agents never prompt */
+void mac_request_accessibility_permission(void); /* explicit actions can always reopen guidance */
 void app_run(void);                 /* 启动 NSApplication 主循环 */
 
 #endif

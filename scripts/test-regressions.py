@@ -303,6 +303,9 @@ int main(void){
     assert 's_fileSnapshotFrozen' in mac_ui and 's_fileRevisionSeen' in mac_ui
     assert 'calloc(HOP_XFER_FILE_LIMIT' not in win_ui
     assert 'resize_file_snapshot(requested_file_count)' in win_ui
+    assert 'calloc(UI_TASK_CAP' not in win_ui
+    assert 'resize_task_snapshot(total)' in win_ui
+    assert 'hop_xfer_task_list_revisioned(NULL,0,&total,&revision)' in win_ui
     assert 'file_details_available = !has_selected || has_task_status' in win_ui
     assert 'files_total > HOP_XFER_FILE_LIMIT' in win_ui
     assert 'hop_xfer_tracking_files_page' in (ROOT/'src/core/xfer_tracking.c').read_text(encoding='utf-8')
@@ -1699,7 +1702,7 @@ typedef struct {int count,selected,top;} list;typedef list* HWND;
 static list lists[2]={{0,-1,0},{0,-1,0}};
 static HWND s_task_lists[2]={&lists[0],&lists[1]},s_main;
 static hop_xfer_task_id s_task_ids[2][UI_TASK_CAP];static int s_task_counts[2];
-static hop_xfer_task_snapshot *s_tasks_snapshot;
+static hop_xfer_task_snapshot *s_tasks_snapshot;static int s_tasks_snapshot_capacity;
 static hop_xfer_status_pair test_status_pair;
 static void xfer_get_status_pair(hop_xfer_status_pair *out){*out=test_status_pair;}
 uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
@@ -1736,11 +1739,12 @@ int main(void){
  assert(!hop_xfer_task_cancel_requested(a.id) && !hop_xfer_task_cancel_requested(c.id) && !hop_xfer_task_cancel_requested(rx.id));
  hop_xfer_task_dispose(&b);refresh_task_lists();assert(!selected_task(0) && lists[0].top==1);
  cancel_selected_task(0);assert(calls==1);
- hop_xfer_task_dispose(&a);hop_xfer_task_dispose(&c);hop_xfer_task_dispose(&rx);free(s_tasks_snapshot);
- puts("PASS: task list preserves Task ID through reordering and cancels only selection");return 0;
+ hop_xfer_task_dispose(&a);hop_xfer_task_dispose(&c);hop_xfer_task_dispose(&rx);
+ refresh_task_lists();assert(!s_tasks_snapshot && s_tasks_snapshot_capacity==0);
+ puts("PASS: task list preserves Task ID through reordering and releases empty snapshots");return 0;
 }
 """
-    code=common+'\n'.join(extract(ui,n) for n in ['selected_task','task_state_name','refresh_task_lists','cancel_selected_task'])+main
+    code=common+'\n'.join(extract(ui,n) for n in ['selected_task','task_state_name','resize_task_snapshot','refresh_task_lists','cancel_selected_task'])+main
     run('task_list_selection_win',code,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
 
     # Manager-owned disconnect timer must be receive-only, monotonic, and reset

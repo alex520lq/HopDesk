@@ -66,6 +66,7 @@ static HWND s_task_history, s_history_direction, s_history_state, s_history_orde
 static hop_xfer_task_id s_task_ids[2][UI_TASK_CAP];
 static int s_task_counts[2];
 static hop_xfer_task_snapshot *s_tasks_snapshot;
+static int s_tasks_snapshot_capacity;
 static HWND s_log_edit,s_log_note;
 static int s_log_note_error;
 static HWND s_update_version, s_update_source;
@@ -609,17 +610,44 @@ static const wchar_t *task_state_name(const hop_xfer_task_snapshot *t) {
         default:return L"未知";
     }
 }
+static int resize_task_snapshot(int capacity) {
+    if (capacity < 0 || capacity > (int)UI_TASK_CAP) return 0;
+    if (capacity == s_tasks_snapshot_capacity) return 1;
+    if (capacity == 0) {
+        free(s_tasks_snapshot);
+        s_tasks_snapshot = NULL;
+        s_tasks_snapshot_capacity = 0;
+        return 1;
+    }
+    hop_xfer_task_snapshot *next = (hop_xfer_task_snapshot *)realloc(
+        s_tasks_snapshot, (size_t)capacity * sizeof(*s_tasks_snapshot));
+    if (!next) return 0;
+    s_tasks_snapshot = next;
+    s_tasks_snapshot_capacity = capacity;
+    return 1;
+}
 static void refresh_task_lists(void) {
     if(!s_task_lists[0] || !s_task_lists[1])return;
-    if(!s_tasks_snapshot)s_tasks_snapshot=calloc(UI_TASK_CAP,sizeof(*s_tasks_snapshot));
-    if(!s_tasks_snapshot)return;
+    int total=0,n=-1;
+    uint64_t revision=0;
+    for(int attempt=0;attempt<3;++attempt){
+        if(hop_xfer_task_list_revisioned(NULL,0,&total,&revision)<0 ||
+           total<0 || total>(int)UI_TASK_CAP)return;
+        if(!resize_task_snapshot(total))return;
+        int actual_total=0;
+        uint64_t actual_revision=0;
+        n=hop_xfer_task_list_revisioned(s_tasks_snapshot,total,
+                                        &actual_total,&actual_revision);
+        if(n<0)return;
+        if(actual_total==total && actual_revision==revision)break;
+        if(attempt==2)return;
+    }
+    if(n<0)return;
     hop_xfer_task_id selected[2]={selected_task(0),selected_task(1)};
     int top[2]={
         (int)SendMessageW(s_task_lists[0],LB_GETTOPINDEX,0,0),
         (int)SendMessageW(s_task_lists[1],LB_GETTOPINDEX,0,0)
     };
-    int total=0,n=hop_xfer_task_list(s_tasks_snapshot,UI_TASK_CAP,&total);
-    if(n<0)return;
     hop_xfer_status_pair pair;memset(&pair,0,sizeof(pair));xfer_get_status_pair(&pair);
     for(int d=0;d<2;++d){s_task_counts[d]=0;SendMessageW(s_task_lists[d],LB_RESETCONTENT,0,0);}
     for(int i=0;i<n;++i){
@@ -1223,6 +1251,8 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             KillTimer(h,UI_TIMER);
             if(s_file_snapshot){free(s_file_snapshot);s_file_snapshot=NULL;}
             s_file_snapshot_capacity=0;
+            if(s_tasks_snapshot){free(s_tasks_snapshot);s_tasks_snapshot=NULL;}
+            s_tasks_snapshot_capacity=0;
             if(s_font)DeleteObject(s_font);
             if(s_font_title)DeleteObject(s_font_title);
             if(s_font_small)DeleteObject(s_font_small);

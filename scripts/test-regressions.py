@@ -938,7 +938,7 @@ static uint64_t s_test_monotonic_ms=1000;
 uint64_t hop_monotonic_ms(void){return ++s_test_monotonic_ms;}
 uint64_t hop_wallclock_ms(void){return 1700000000000ull+s_test_monotonic_ms;}
 static hop_xfer_tracking s_send_status,s_receive_status;
-static void *s_retry_paths[HOP_XFER_FILE_LIMIT];
+static void **s_retry_paths;static int s_retry_path_count;
 static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];static int s_history_count;
 static void history_save(void){saves++;}
 void hop_log(hop_log_level lvl,const char *fmt,...){(void)lvl;(void)fmt;}
@@ -962,7 +962,7 @@ int main(void){
     puts("PASS: production per-direction state wrappers and exactly-once history");return 0;
 }
 '''
-        names=['status_for','status_begin','status_chunk_timed','status_file_phase','status_end','status_add_received_file']
+        names=['status_for','retry_paths_clear','status_begin','status_chunk_timed','status_file_phase','status_end','status_add_received_file']
         run('wrappers_'+platform,preamble+'\n'.join(extract(source,n) for n in names)+main,['src/core/xfer_tracking.c'])
 
     if os.name!='nt':
@@ -1089,7 +1089,7 @@ int main(void){
         values={
             'RX_STATE':state_contract,
             'WIRE_SEND':extract(sender,'send_abort_msg' if platform=='win' else 'send_abort'),
-            'STATUS_FUNCTIONS':'\n'.join(extract(sender,n) for n in ['status_for','status_begin','status_end']),
+            'STATUS_FUNCTIONS':'\n'.join(extract(sender,n) for n in ['status_for','retry_paths_clear','status_begin','status_end']),
             'CLEAR_STATE':extract(receiver,'hop_xfer_rx_reset_batch_state'),
             'TERMINATE':extract(receiver,'rx_release_terminal_resources')+'\n'+extract(receiver,'hop_xfer_rx_terminate_batch'),
             'BEGIN_BATCH':extract(receiver,'hop_xfer_rx_begin_batch'),
@@ -2009,13 +2009,16 @@ int main(void){
     # audit. Writer stop must succeed before resetting Receiver state.
     shutdown_source=(ROOT/f'src/{owner_platform}/xfer.c').read_text(encoding='utf-8')
     shutdown_function=extract(shutdown_source,'xfer_shutdown')
+    retry_paths_function=extract(shutdown_source,'retry_paths_clear')
     receiver_source=(ROOT/f'src/{owner_platform}/xfer_receive.c').read_text(encoding='utf-8')
     receiver_stop_function=extract(receiver_source,'xfer_receive_stop')
     shutdown_prefix=r'''
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include "xfer_tracking.h"
 #define HOP_LOG_ERROR 1
 #define HOP_LOG_WARN 2
 static int join_failures=1, drain_failures=1, writer_failures=1, audit_failures=1;
@@ -2036,6 +2039,10 @@ typedef struct {
 static shutdown_state s_x;
 static CRITICAL_SECTION s_txlock;
 static SRWLOCK s_x_lifecycle_lock=SRWLOCK_INIT;
+static SRWLOCK s_status_lock=SRWLOCK_INIT;
+static hop_xfer_tracking s_send_status,s_receive_status;
+static void **s_retry_paths;
+static int s_retry_path_count;
 static int shutdown(SOCKET socket_handle,int how) {
     (void)socket_handle; (void)how;
     return 0;
@@ -2070,6 +2077,10 @@ typedef struct {
 } shutdown_state;
 static shutdown_state s_x;
 static pthread_rwlock_t s_x_lifecycle_lock=PTHREAD_RWLOCK_INITIALIZER;
+static pthread_mutex_t s_status_lock=PTHREAD_MUTEX_INITIALIZER;
+static hop_xfer_tracking s_send_status,s_receive_status;
+static void **s_retry_paths;
+static int s_retry_path_count;
 static int shutdown(int socket_fd,int how) {
     (void)socket_fd; (void)how;
     return 0;
@@ -2167,8 +2178,8 @@ int main(void) {
 }
 """
     run('sender_shutdown_orchestration_retry',
-        shutdown_prefix+receiver_stop_function+'\n'+shutdown_function+'\n'+shutdown_main,
-        threads=(owner_platform=='mac'))
+        shutdown_prefix+retry_paths_function+'\n'+receiver_stop_function+'\n'+shutdown_function+'\n'+shutdown_main,
+        ['src/core/xfer_tracking.c'], threads=(owner_platform=='mac'))
 
     retry_core=(ROOT/'src/core/xfer_sender_retry.c').read_text(encoding='utf-8')
     retry_header=(ROOT/'src/core/xfer_sender_retry.h').read_text(encoding='utf-8')

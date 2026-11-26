@@ -21,6 +21,7 @@ typedef char path_char;
 #define PATH(x) x
 #endif
 static path_char *s_retry_paths[2];
+static int s_retry_path_count=2;
 static path_char *copy_path(const path_char *path) {
 #ifdef FIXTURE_WINDOWS
     size_t n=(wcslen(path)+1)*sizeof(*path);

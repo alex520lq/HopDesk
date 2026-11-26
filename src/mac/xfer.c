@@ -67,7 +67,8 @@ hop_xfer_sender_context s_sender_context;
 pthread_mutex_t s_status_lock = PTHREAD_MUTEX_INITIALIZER;
 hop_xfer_tracking s_send_status, s_receive_status;
 static uint64_t s_status_revision;
-static char *s_retry_paths[HOP_XFER_FILE_LIMIT];
+static char **s_retry_paths;
+static int s_retry_path_count;
 static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];
 static int s_history_count;
 static pthread_mutex_t s_history_io_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -152,14 +153,22 @@ static void history_save(void) {
 static hop_xfer_tracking *status_for(int direction) {
     return direction == HOP_XFER_DIR_SEND ? &s_send_status : &s_receive_status;
 }
+
+/* Caller holds s_status_lock. Retry paths are retained only for the latest
+ * send batch, and only for its actual entry count. */
+static void retry_paths_clear(void) {
+    for (int i = 0; i < s_retry_path_count; ++i) free(s_retry_paths[i]);
+    free(s_retry_paths);
+    s_retry_paths = NULL;
+    s_retry_path_count = 0;
+}
 int status_begin(uint32_t batch,int direction,uint32_t files,uint64_t bytes,const char *name,int phase) {
     int created=0;
     pthread_mutex_lock(&s_status_lock);
     hop_xfer_tracking *t = status_for(direction);
     /* The FIFO sender retains this snapshot while retrying the same job. */
     if (!hop_xfer_tracking_matches(t,batch)) {
-        if (direction == HOP_XFER_DIR_SEND)
-            for(int i=0;i<HOP_XFER_FILE_LIMIT;i++){free(s_retry_paths[i]);s_retry_paths[i]=NULL;}
+        if (direction == HOP_XFER_DIR_SEND) retry_paths_clear();
         hop_xfer_tracking_begin(t,batch,direction,files,bytes,name,phase);
         created=1;
     } else t->status.phase=phase;
@@ -235,10 +244,16 @@ static void status_set_files(uint32_t batch,const xf_entry *entries,int n) {
     pthread_mutex_lock(&s_status_lock);
     if(hop_xfer_tracking_matches(&s_send_status,batch) && s_send_status.count==0) {
         s_send_status.status.bytes_total=0;
-        for(int i=0;i<n && i<HOP_XFER_FILE_LIMIT;i++) {
+        retry_paths_clear();
+        int count = n < 0 ? 0 : (n > HOP_XFER_FILE_LIMIT ? HOP_XFER_FILE_LIMIT : n);
+        if (count) {
+            s_retry_paths = (char **)calloc((size_t)count, sizeof(*s_retry_paths));
+            if (s_retry_paths) s_retry_path_count = count;
+        }
+        for(int i=0;i<count;i++) {
             hop_xfer_tracking_file(&s_send_status,batch,(uint32_t)i+1,entries[i].rel?entries[i].rel:entries[i].name,
                 entries[i].size,(entries[i].flags&HOP_FILE_FLAG_DIR)!=0,HOP_XFER_FILE_QUEUED);
-            if(entries[i].full)s_retry_paths[i]=strdup(entries[i].full);
+            if(entries[i].full && s_retry_paths)s_retry_paths[i]=strdup(entries[i].full);
         }
         s_send_status.revision=++s_status_revision;
     }
@@ -299,7 +314,8 @@ int xfer_retry_file(uint32_t batch,int index) {
     pthread_mutex_lock(&s_status_lock);
     if(s_send_status.status.batch==batch && !s_send_status.status.active && index>=0 && index<s_send_status.count &&
        s_send_status.files[index].phase==HOP_XFER_FILE_FAILED &&
-       !s_send_status.files[index].is_directory && s_retry_paths[index])path=strdup(s_retry_paths[index]);
+       !s_send_status.files[index].is_directory && index<s_retry_path_count &&
+       s_retry_paths[index])path=strdup(s_retry_paths[index]);
     pthread_mutex_unlock(&s_status_lock);
     if(!path)return 0;
     const char *paths[1]={path};int ok=xfer_submit_paths(paths,1);free(path);return ok;
@@ -447,6 +463,8 @@ int send_small(int fd, uint8_t type, const uint8_t *p,
 void status_receive_set_total(uint32_t total) {
     pthread_mutex_lock(&s_status_lock);
     s_receive_status.status.files_total = total;
+    uint32_t required = total > HOP_XFER_FILE_LIMIT ? HOP_XFER_FILE_LIMIT : total;
+    (void)hop_xfer_tracking_reserve(&s_receive_status, required);
     pthread_mutex_unlock(&s_status_lock);
 }
 
@@ -682,6 +700,12 @@ int xfer_shutdown(void) {
         pthread_rwlock_unlock(&s_x_lifecycle_lock);
         return 0;
     }
+
+    pthread_mutex_lock(&s_status_lock);
+    retry_paths_clear();
+    hop_xfer_tracking_dispose(&s_send_status);
+    hop_xfer_tracking_dispose(&s_receive_status);
+    pthread_mutex_unlock(&s_status_lock);
 
     sender_context_ack_destroy();
     hop_xfer_task_history_store_close();

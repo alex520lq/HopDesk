@@ -1,6 +1,7 @@
 #include "xfer_tracking.h"
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 uint32_t hop_xfer_job_total(int image, int entries) {
@@ -16,10 +17,43 @@ int hop_xfer_tracking_matches(const hop_xfer_tracking *t, uint32_t batch) {
 }
 
 void hop_xfer_tracking_reset(hop_xfer_tracking *t) {
-    uint64_t revision = t ? t->revision : 0;
     if (!t) return;
+    hop_xfer_file_status *files = t->files;
+    int capacity = t->capacity;
+    uint64_t revision = t->revision;
     memset(t, 0, offsetof(hop_xfer_tracking, files));
+    t->files = files;
+    t->capacity = capacity;
     t->revision = revision;
+}
+
+int hop_xfer_tracking_reserve(hop_xfer_tracking *t, uint32_t capacity) {
+    if (!t || capacity > HOP_XFER_FILE_LIMIT) return 0;
+    if (capacity < (uint32_t)t->count) capacity = (uint32_t)t->count;
+    if (capacity == (uint32_t)t->capacity) return 1;
+    if (capacity == 0) {
+        free(t->files);
+        t->files = NULL;
+        t->capacity = 0;
+        return 1;
+    }
+    hop_xfer_file_status *files = (hop_xfer_file_status *)realloc(
+        t->files, (size_t)capacity * sizeof(*files));
+    if (!files) return 0;
+    if (capacity > (uint32_t)t->capacity)
+        memset(files + t->capacity, 0,
+               (size_t)(capacity - (uint32_t)t->capacity) * sizeof(*files));
+    t->files = files;
+    t->capacity = (int)capacity;
+    return 1;
+}
+
+void hop_xfer_tracking_dispose(hop_xfer_tracking *t) {
+    if (!t) return;
+    free(t->files);
+    t->files = NULL;
+    t->capacity = 0;
+    hop_xfer_tracking_reset(t);
 }
 
 void hop_xfer_tracking_add_time(hop_xfer_tracking *t, uint32_t batch,
@@ -33,6 +67,8 @@ void hop_xfer_tracking_add_time(hop_xfer_tracking *t, uint32_t batch,
 void hop_xfer_tracking_begin(hop_xfer_tracking *t, uint32_t batch,
         int direction, uint32_t files, uint64_t bytes, const char *name, int phase) {
     hop_xfer_tracking_reset(t);
+    uint32_t required = files > HOP_XFER_FILE_LIMIT ? HOP_XFER_FILE_LIMIT : files;
+    (void)hop_xfer_tracking_reserve(t, required);
     t->status.batch = batch; t->status.direction = direction;
     t->status.active = 1; t->status.phase = phase;
     t->status.files_total = files; t->status.bytes_total = bytes;
@@ -44,6 +80,7 @@ void hop_xfer_tracking_file(hop_xfer_tracking *t, uint32_t batch,
         uint32_t id, const char *path, uint64_t size, int directory, int phase) {
     if (!hop_xfer_tracking_matches(t, batch) || id == 0 || id > HOP_XFER_FILE_LIMIT) return;
     int i = (int)id - 1;
+    if (i >= t->capacity && !hop_xfer_tracking_reserve(t, id)) return;
     int first = i;
     hop_xfer_file_status *f = &t->files[i];
     if (i < t->count) {
@@ -137,6 +174,7 @@ int hop_xfer_tracking_files_page(const hop_xfer_tracking *t, uint32_t batch,
     if (total) *total = t->count;
     if (revision) *revision = t->revision;
     if (capacity == 0 || offset >= (uint32_t)t->count) return 0;
+    if (!t->files || t->count > t->capacity) return -1;
     uint32_t remaining = (uint32_t)t->count - offset;
     int count = remaining < (uint32_t)capacity ? (int)remaining : capacity;
     memcpy(out, &t->files[offset], (size_t)count * sizeof(*out));

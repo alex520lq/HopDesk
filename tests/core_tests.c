@@ -1023,11 +1023,14 @@ static void test_xfer_tracking_stage_timing(void) {
     CHECK(hop_xfer_tracking_end(&t,77,HOP_XFER_COMPLETED,"done"));
     hop_xfer_tracking_add_time(&t,77,HOP_XFER_TIME_SEND,1000);
     CHECK(t.stage_ns[HOP_XFER_TIME_SEND]==0); /* terminal tasks cannot accrue time */
+    hop_xfer_tracking_dispose(&t);
 }
 
 static void test_xfer_tracking_reset_and_sparse_ids(void) {
     static hop_xfer_tracking t;
+    CHECK(sizeof(hop_xfer_tracking) < 2048); /* file records live in a bounded heap allocation */
     hop_xfer_tracking_begin(&t, 1, HOP_XFER_DIR_RECEIVE, 4, 0, "old", HOP_XFER_RECEIVING);
+    CHECK(t.capacity == 4 && t.files != NULL);
     hop_xfer_tracking_file(&t, 1, 1, "old-first", 100, 0, HOP_XFER_FILE_RECEIVING);
     hop_xfer_tracking_chunk(&t, 1, 1, 0, 100, 1000);
     hop_xfer_tracking_phase(&t, 1, 0, HOP_XFER_FILE_COMPLETED, 1);
@@ -1043,26 +1046,38 @@ static void test_xfer_tracking_reset_and_sparse_ids(void) {
 
     hop_xfer_tracking_begin(&t, 2, HOP_XFER_DIR_RECEIVE, 3, 0, "new", HOP_XFER_RECEIVING);
     CHECK(t.revision > revision_before_reset);
-    CHECK(t.count == 0 && strcmp(t.files[3].relative_path, "old-tail") == 0);
+    CHECK(t.count == 0 && t.capacity == 3); /* the old four-entry table shrinks */
+
     hop_xfer_tracking_file(&t, 2, 3, "new-third", 30, 0, HOP_XFER_FILE_RECEIVING);
     CHECK(t.count == 3 && t.status.bytes_total == 30 && t.status.files_done == 0);
     CHECK(t.files[0].relative_path[0] == '\0' && t.files[0].bytes_total == 0 &&
           t.files[0].bytes_done == 0 && t.files[0].phase == HOP_XFER_FILE_QUEUED);
     CHECK(t.files[1].relative_path[0] == '\0' && t.files[1].bytes_total == 0);
     CHECK(strcmp(t.files[2].relative_path, "new-third") == 0);
-    CHECK(strcmp(t.files[3].relative_path, "old-tail") == 0);
 
     hop_xfer_tracking_file(&t, 2, 1, "new-first", 10, 0, HOP_XFER_FILE_RECEIVING);
     hop_xfer_tracking_chunk(&t, 1, 1, 0, 10, 1100);
     CHECK(t.status.bytes_total == 40 && t.status.bytes_done == 0);
     CHECK(strcmp(t.files[0].relative_path, "new-first") == 0);
     CHECK(strcmp(t.files[2].relative_path, "new-third") == 0);
+    CHECK(!hop_xfer_tracking_reserve(&t, HOP_XFER_FILE_LIMIT + 1u));
+    CHECK(t.capacity == 3);
+
+    /* An empty next batch releases the previous batch's retained file table;
+     * a later sparse file ID grows only as far as that ID. */
+    hop_xfer_tracking_begin(&t, 3, HOP_XFER_DIR_RECEIVE, 0, 0, "empty", HOP_XFER_RECEIVING);
+    CHECK(t.files == NULL && t.capacity == 0 && t.count == 0);
+    hop_xfer_tracking_file(&t, 3, 2, "late-entry", 1, 0, HOP_XFER_FILE_RECEIVING);
+    CHECK(t.capacity == 2 && t.count == 2);
+    hop_xfer_tracking_dispose(&t);
+    CHECK(t.files == NULL && t.capacity == 0 && t.count == 0);
 }
 
 static void test_xfer_tracking_file_pages(void) {
     static hop_xfer_tracking t;
     memset(&t, 0, sizeof(t));
     hop_xfer_tracking_begin(&t, 44, HOP_XFER_DIR_SEND, 3, 0, "page-test", HOP_XFER_SENDING);
+    CHECK(t.capacity == 3);
     hop_xfer_tracking_file(&t, 44, 1, "one.txt", 10, 0, HOP_XFER_FILE_SENDING);
     hop_xfer_tracking_file(&t, 44, 2, "two.txt", 20, 0, HOP_XFER_FILE_QUEUED);
     hop_xfer_tracking_file(&t, 44, 3, "three.txt", 30, 0, HOP_XFER_FILE_QUEUED);
@@ -1086,20 +1101,23 @@ static void test_xfer_tracking_file_pages(void) {
     CHECK(hop_xfer_tracking_files_page(&t, 45, 0, page, 1, &total, &revision) == 0);
     CHECK(total == 0 && revision == 0);
     CHECK(hop_xfer_tracking_files_page(&t, 44, 0, page, -1, &total, &revision) == -1);
+    hop_xfer_tracking_dispose(&t);
 }
 
 static void test_xfer_tracking_duplex_snapshot(void) {
-    /* Each tracker includes 8192 file records; never place them on the stack. */
+    /* File tables are heap-backed and grow only to the current batch size. */
     static hop_xfer_tracking tx, rx;
     hop_xfer_status_pair pair;
     memset(&tx,0,sizeof(tx)); memset(&rx,0,sizeof(rx));
     hop_xfer_tracking_snapshot_pair(&tx,&rx,0,&pair);
     CHECK(!pair.send.active && !pair.receive.active);
     hop_xfer_tracking_begin(&tx,77,HOP_XFER_DIR_SEND,1,0,"send",HOP_XFER_SENDING);
+    CHECK(tx.capacity == 1);
     hop_xfer_tracking_file(&tx,77,1,"send",100,0,HOP_XFER_FILE_SENDING);
     hop_xfer_tracking_chunk(&tx,77,1,0,30,1000);
     /* Batch IDs can collide across directions without aliasing their state. */
     hop_xfer_tracking_begin(&rx,77,HOP_XFER_DIR_RECEIVE,1,0,"receive",HOP_XFER_RECEIVING);
+    CHECK(rx.capacity == 1);
     hop_xfer_tracking_file(&rx,77,1,"receive",200,0,HOP_XFER_FILE_RECEIVING);
     hop_xfer_tracking_chunk(&rx,77,1,0,40,1000);
     tx.revision=1; rx.revision=2;
@@ -1116,6 +1134,8 @@ static void test_xfer_tracking_duplex_snapshot(void) {
     /* Copies must not change retroactively when trackers advance. */
     hop_xfer_tracking_chunk(&tx,77,1,30,20,1200);
     CHECK(pair.send.bytes_done==30 && tx.status.bytes_done==50);
+    hop_xfer_tracking_dispose(&tx);
+    hop_xfer_tracking_dispose(&rx);
 }
 
 static void test_xfer_tracking_speed_and_eta(void) {
@@ -1147,6 +1167,7 @@ static void test_xfer_tracking_speed_and_eta(void) {
     CHECK(tracking.status.last_progress_ms==0);
     CHECK(hop_xfer_tracking_end(&tracking,7,HOP_XFER_COMPLETED,"done"));
     CHECK(tracking.status.speed_bytes_per_sec==0&&tracking.status.eta_seconds==0);
+    hop_xfer_tracking_dispose(&tracking);
 }
 
 static void test_xfer_task_identity_and_lifecycle(void) {

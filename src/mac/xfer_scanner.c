@@ -56,7 +56,6 @@ void elist_free(elist *list) {
     if (!list) return;
     for (int i = 0; i < list->n; ++i) {
         free(list->v[i].full);
-        free(list->v[i].name);
         free(list->v[i].rel);
     }
     free(list->v);
@@ -96,30 +95,31 @@ static void walk_into(elist *list, const char *full, const char *relative, const
         return;
     }
 
-    const char *base = strrchr(full, '/');
-    base = base ? base + 1 : full;
     xf_entry entry;
     memset(&entry, 0, sizeof(entry));
     entry.full = strdup(full);
-    entry.name = strdup(base);
     entry.rel = relative ? strdup(relative) : NULL;
+    if (entry.rel) {
+        const char *base = strrchr(entry.rel, '/');
+        entry.name = base ? base + 1 : entry.rel;
+    }
     entry.mtime = (uint64_t)st.st_mtime;
-    if (!entry.full || !entry.name || !entry.rel) {
-        free(entry.full); free(entry.name); free(entry.rel);
+    if (!entry.full || !entry.rel || !entry.name) {
+        free(entry.full); free(entry.rel);
         scan_fail(list, HOP_XFER_SCAN_OUT_OF_MEMORY);
         return;
     }
 
     if (!S_ISDIR(st.st_mode)) {
         if (!S_ISREG(st.st_mode)) {
-            free(entry.full); free(entry.name); free(entry.rel);
+            free(entry.full); free(entry.rel);
             scan_fail(list, HOP_XFER_SCAN_UNSUPPORTED_ENTRY);
             return;
         }
         entry.size = (uint64_t)st.st_size;
         entry.flags = 0;
         if (!elist_push(list, &entry, services)) {
-            free(entry.full); free(entry.name); free(entry.rel);
+            free(entry.full); free(entry.rel);
         }
         return;
     }
@@ -127,7 +127,7 @@ static void walk_into(elist *list, const char *full, const char *relative, const
     entry.size = 0;
     entry.flags = HOP_FILE_FLAG_DIR;
     if (!elist_push(list, &entry, services)) {
-        free(entry.full); free(entry.name); free(entry.rel);
+        free(entry.full); free(entry.rel);
         return;
     }
 

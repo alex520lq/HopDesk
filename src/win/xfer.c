@@ -252,9 +252,7 @@ int xfer_get_files(int direction,uint32_t batch,hop_xfer_file_status *out,int ca
     if(!out||capacity<=0)return 0;
     AcquireSRWLockExclusive(&s_status_lock);
     hop_xfer_tracking *t=status_for(direction);
-    int n=t->status.batch==batch?t->count:0;if(n>capacity)n=capacity;
-    if (n > 0 && t->files) memcpy(out,t->files,(size_t)n*sizeof(*out));
-    else n = 0;
+    int n=hop_xfer_tracking_files_page(t,batch,0,out,capacity,NULL,NULL);
     ReleaseSRWLockExclusive(&s_status_lock);
     return n;
 }

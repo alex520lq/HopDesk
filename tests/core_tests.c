@@ -1039,7 +1039,8 @@ static void test_xfer_tracking_stage_timing(void) {
 
 static void test_xfer_tracking_reset_and_sparse_ids(void) {
     static hop_xfer_tracking t;
-    CHECK(sizeof(hop_xfer_tracking) < 2048); /* file records live in a bounded heap allocation */
+    CHECK(sizeof(hop_xfer_tracking) < 2048); /* records and paths live outside the tracker */
+    CHECK(sizeof(hop_xfer_file_record) < 64);
     hop_xfer_tracking_begin(&t, 1, HOP_XFER_DIR_RECEIVE, 4, 0, "old", HOP_XFER_RECEIVING);
     CHECK(t.capacity == 4 && t.files != NULL);
     hop_xfer_tracking_file(&t, 1, 1, "old-first", 100, 0, HOP_XFER_FILE_RECEIVING);
@@ -1053,7 +1054,8 @@ static void test_xfer_tracking_reset_and_sparse_ids(void) {
     hop_xfer_tracking_reset(&t);
     CHECK(t.count == 0 && !t.status.active && t.status.batch == 0 && t.revision == revision_before_reset);
     CHECK(t.sample_ms == 0 && t.sample_bytes == 0 && t.stage_ns[HOP_XFER_TIME_RECEIVE] == 0);
-    CHECK(strcmp(t.files[0].relative_path, "old-first") == 0);
+    CHECK(t.capacity == 4 && t.files != NULL);
+    CHECK(t.path_storage == NULL && t.path_used == 0 && t.path_capacity == 0);
 
     hop_xfer_tracking_begin(&t, 2, HOP_XFER_DIR_RECEIVE, 3, 0, "new", HOP_XFER_RECEIVING);
     CHECK(t.revision > revision_before_reset);
@@ -1061,16 +1063,25 @@ static void test_xfer_tracking_reset_and_sparse_ids(void) {
 
     hop_xfer_tracking_file(&t, 2, 3, "new-third", 30, 0, HOP_XFER_FILE_RECEIVING);
     CHECK(t.count == 3 && t.status.bytes_total == 30 && t.status.files_done == 0);
-    CHECK(t.files[0].relative_path[0] == '\0' && t.files[0].bytes_total == 0 &&
-          t.files[0].bytes_done == 0 && t.files[0].phase == HOP_XFER_FILE_QUEUED);
-    CHECK(t.files[1].relative_path[0] == '\0' && t.files[1].bytes_total == 0);
-    CHECK(strcmp(t.files[2].relative_path, "new-third") == 0);
+    CHECK(t.path_used == strlen("new-third") + 1);
+    hop_xfer_file_status snapshot[4];
+    CHECK(hop_xfer_tracking_files_page(&t, 2, 0, snapshot, 3, NULL, NULL) == 3);
+    CHECK(snapshot[0].relative_path[0] == '\0' && snapshot[0].bytes_total == 0 &&
+          snapshot[0].bytes_done == 0 && snapshot[0].phase == HOP_XFER_FILE_QUEUED);
+    CHECK(snapshot[1].relative_path[0] == '\0' && snapshot[1].bytes_total == 0);
+    CHECK(strcmp(snapshot[2].relative_path, "new-third") == 0);
 
     hop_xfer_tracking_file(&t, 2, 1, "new-first", 10, 0, HOP_XFER_FILE_RECEIVING);
     hop_xfer_tracking_chunk(&t, 1, 1, 0, 10, 1100);
     CHECK(t.status.bytes_total == 40 && t.status.bytes_done == 0);
-    CHECK(strcmp(t.files[0].relative_path, "new-first") == 0);
-    CHECK(strcmp(t.files[2].relative_path, "new-third") == 0);
+    CHECK(t.path_used == strlen("new-third") + strlen("new-first") + 2);
+    CHECK(t.path_capacity <= (size_t)HOP_XFER_FILE_LIMIT * sizeof(snapshot[0].relative_path));
+    CHECK(hop_xfer_tracking_files_page(&t, 2, 0, snapshot, 3, NULL, NULL) == 3);
+    CHECK(strcmp(snapshot[0].relative_path, "new-first") == 0);
+    CHECK(strcmp(snapshot[2].relative_path, "new-third") == 0);
+    size_t path_used_before_retry = t.path_used;
+    hop_xfer_tracking_file(&t, 2, 1, "new-first", 10, 0, HOP_XFER_FILE_RECEIVING);
+    CHECK(t.path_used == path_used_before_retry);
     CHECK(!hop_xfer_tracking_reserve(&t, HOP_XFER_FILE_LIMIT + 1u));
     CHECK(t.capacity == 3);
 
@@ -1078,10 +1089,13 @@ static void test_xfer_tracking_reset_and_sparse_ids(void) {
      * a later sparse file ID grows only as far as that ID. */
     hop_xfer_tracking_begin(&t, 3, HOP_XFER_DIR_RECEIVE, 0, 0, "empty", HOP_XFER_RECEIVING);
     CHECK(t.files == NULL && t.capacity == 0 && t.count == 0);
+    CHECK(t.path_storage == NULL && t.path_used == 0 && t.path_capacity == 0);
     hop_xfer_tracking_file(&t, 3, 2, "late-entry", 1, 0, HOP_XFER_FILE_RECEIVING);
     CHECK(t.capacity == 2 && t.count == 2);
+    CHECK(t.path_used == strlen("late-entry") + 1);
     hop_xfer_tracking_dispose(&t);
     CHECK(t.files == NULL && t.capacity == 0 && t.count == 0);
+    CHECK(t.path_storage == NULL && t.path_used == 0 && t.path_capacity == 0);
 }
 
 static void test_xfer_tracking_file_pages(void) {

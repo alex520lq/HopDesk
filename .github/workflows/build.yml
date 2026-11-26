@@ -102,6 +102,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
+      - name: Validate macOS memory profiler syntax
+        run: bash -n scripts/profile-memory-macos.sh
+
       - name: Build macOS app (timed)
         run: |
           VERSION=0.5.0

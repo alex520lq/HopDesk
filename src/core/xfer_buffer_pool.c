@@ -74,6 +74,31 @@ void hop_xfer_buffer_pool_release_locked(hop_xfer_buffer_pool *pool, int slot) {
     pool->slots[slot].in_use = 0;
 }
 
+int hop_xfer_buffer_pool_trim_idle_locked(hop_xfer_buffer_pool *pool,
+                                          uint64_t max_retained_bytes) {
+    if (!pool) return 0;
+    int keep = -1;
+    for (int i = 0; i < (int)HOP_XFER_DEFAULT_RX_QUEUE_SLOTS; ++i) {
+        const hop_xfer_buffer_slot *slot = &pool->slots[i];
+        if (slot->in_use) return 0;
+        if (slot->data && slot->capacity <= max_retained_bytes &&
+            (keep < 0 || slot->capacity > pool->slots[keep].capacity))
+            keep = i;
+    }
+
+    for (int i = 0; i < (int)HOP_XFER_DEFAULT_RX_QUEUE_SLOTS; ++i) {
+        hop_xfer_buffer_slot *slot = &pool->slots[i];
+        if (i == keep) continue;
+        free(slot->data);
+        slot->data = NULL;
+        slot->capacity = 0;
+        slot->in_use = 0;
+    }
+    pool->capacity = keep >= 0 ? pool->slots[keep].capacity : 0;
+    (void)hop_xfer_budget_set_rx_pool_bytes(pool->capacity);
+    return 1;
+}
+
 void hop_xfer_buffer_pool_dispose(hop_xfer_buffer_pool *pool) {
     if (!pool) return;
     for (int i = 0; i < (int)HOP_XFER_DEFAULT_RX_QUEUE_SLOTS; ++i) {

@@ -1837,6 +1837,13 @@ int main(void){
         if platform=='win':fixture='#define FIXTURE_WINDOWS 1\n'+fixture
         run('retry_guard_'+platform,fixture,[])
 
+    # Receive writer queues trim their reusable buffer pool after every drain.
+    for platform in ['win','mac']:
+        writer=(ROOT/f'src/{platform}/xfer_writer_queue.c').read_text(encoding='utf-8')
+        drain=extract(writer,'hop_writer_queue_drain')
+        assert 'hop_xfer_buffer_pool_trim_idle_locked' in drain
+        assert 'HOP_XFER_DEFAULT_RX_POOL_RETAIN_BYTES' in drain
+
     # The shared Core queue policy is production-linked by both platform workers.
     queue_core=(ROOT/'src/core/xfer_sender_queue.c').read_text(encoding='utf-8')
     queue_header=(ROOT/'src/core/xfer_sender_queue.h').read_text(encoding='utf-8')

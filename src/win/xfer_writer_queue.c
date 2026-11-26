@@ -264,6 +264,8 @@ void hop_writer_queue_drain(hop_writer_queue *queue) {
     EnterCriticalSection(&queue->lock);
     while (!hop_xfer_rx_queue_drained(&queue->accounting))
         SleepConditionVariableCS(&queue->cv_space, &queue->lock, INFINITE);
+    (void)hop_xfer_buffer_pool_trim_idle_locked(&queue->pool,
+        HOP_XFER_DEFAULT_RX_POOL_RETAIN_BYTES);
     LeaveCriticalSection(&queue->lock);
     watchdog_end(queue, guard);
 }

@@ -881,17 +881,28 @@ static void test_xfer_buffer_pool(void) {
     CHECK(slot == 1 && data == pool.slots[1].data && pool.capacity == 72);
     hop_xfer_buffer_pool_release_locked(&pool, slot);
     CHECK(!pool.slots[1].in_use);
+    /* After a drain, retain only the largest idle buffer within the cache cap. */
+    CHECK(hop_xfer_buffer_pool_trim_idle_locked(&pool, 32));
+    CHECK(pool.capacity == 8 && pool.slots[0].data != NULL && pool.slots[1].data == NULL);
+    hop_xfer_budget_snapshot snapshot;
+    hop_xfer_budget_get_snapshot(&snapshot);
+    CHECK(snapshot.rx_pool_bytes == 8);
+    CHECK(hop_xfer_buffer_pool_trim_idle_locked(&pool, 0));
+    CHECK(pool.capacity == 0 && pool.slots[0].data == NULL);
     hop_xfer_buffer_pool_dispose(&pool);
-    CHECK(pool.capacity == 0);
 
-    /* Growth replaces retained idle storage and remains inside the pool cap. */
+    /* An in-use slot prevents trimming; after release an oversized idle slot
+     * is dropped rather than retained beyond the configured idle budget. */
     hop_xfer_buffer_pool_init(&pool);
     slot = -1; data = NULL;
     CHECK(hop_xfer_buffer_pool_acquire_locked(&pool, 128, &slot, &data) == 1);
     CHECK(slot >= 0 && data != NULL && pool.capacity == 128);
+    CHECK(!hop_xfer_buffer_pool_trim_idle_locked(&pool, 64));
+    CHECK(pool.capacity == 128 && pool.slots[slot].in_use);
     hop_xfer_buffer_pool_release_locked(&pool, slot);
+    CHECK(hop_xfer_buffer_pool_trim_idle_locked(&pool, 64));
+    CHECK(pool.capacity == 0 && pool.slots[slot].data == NULL);
     hop_xfer_buffer_pool_dispose(&pool);
-    hop_xfer_budget_snapshot snapshot;
     hop_xfer_budget_get_snapshot(&snapshot);
     CHECK(snapshot.rx_pool_bytes == 0);
 }

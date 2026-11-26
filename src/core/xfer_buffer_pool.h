@@ -27,6 +27,11 @@ int hop_xfer_buffer_pool_acquire_locked(hop_xfer_buffer_pool *pool,
                                         uint32_t len, int *slot_out,
                                         uint8_t **data_out);
 void hop_xfer_buffer_pool_release_locked(hop_xfer_buffer_pool *pool, int slot);
+/* Caller holds the queue lock. Returns 0 without changing the pool if any slot
+ * is still pinned; otherwise retains at most one reusable buffer within the
+ * supplied idle-memory budget and frees all other idle buffers. */
+int hop_xfer_buffer_pool_trim_idle_locked(hop_xfer_buffer_pool *pool,
+                                          uint64_t max_retained_bytes);
 /* Call only after the writer queue has drained and all slots have been released. */
 void hop_xfer_buffer_pool_dispose(hop_xfer_buffer_pool *pool);
 

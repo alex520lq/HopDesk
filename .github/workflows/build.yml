@@ -40,6 +40,29 @@ jobs:
           $timer.Stop()
           "Windows MSVC compile and link: $([math]::Round($timer.Elapsed.TotalSeconds, 2)) sec" | Tee-Object -FilePath build-timing.txt
 
+      - name: Validate and smoke-test Windows memory profiler
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'scripts/profile-memory-windows.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            throw 'Windows memory profiler PowerShell syntax validation failed.'
+          }
+          $processId = $PID
+          $processName = (Get-Process -Id $processId).ProcessName
+          $output = Join-Path $env:TEMP 'hopdesk-memory-profiler-smoke.csv'
+          ./scripts/profile-memory-windows.ps1 -ProcessId $processId -ProcessName $processName -IntervalSeconds 0.1 -DurationSeconds 1 -Output $output
+          $samples = @(Import-Csv -LiteralPath $output)
+          if ($samples.Count -lt 1 -or -not $samples[0].rss_mb -or -not $samples[0].private_mb -or -not $samples[0].vsz_mb) {
+            throw 'Windows memory profiler smoke test did not produce valid samples.'
+          }
+
       - name: Run portable core tests
         shell: pwsh
         run: ./scripts/test-core.ps1

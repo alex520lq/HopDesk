@@ -2,6 +2,7 @@
 #define HOPDESK_MAC_SPLIT_UI_H
 
 #include "xfer.h"
+#include "split_ipc.h"
 #include "xfer_task_history.h"
 #include "../platform/audio_link.h"
 
@@ -13,11 +14,13 @@ void split_ui_refresh_connection(int *connected, int *sharing);
 int split_ui_data_connected(void);
 int split_ui_get_input_permissions(int *post, int *listen, int *accessibility);
 void split_ui_get_status_pair(hop_xfer_status_pair *out);
-int split_ui_get_tasks(hop_xfer_task_snapshot *out, int capacity, int *total);
+int split_ui_get_transfer_state(split_ipc_transfer_state *out);
+int split_ui_get_tasks(hop_xfer_task_snapshot *out, int capacity, int *total, uint64_t *revision);
 int split_ui_get_task(hop_xfer_task_id id, hop_xfer_task_snapshot *out);
 int split_ui_get_history(hop_xfer_task_history_record *out, int capacity, int direction,
-                         hop_xfer_task_state state, int newest, int *total);
-int split_ui_get_files(int direction, uint32_t batch, hop_xfer_file_status *out, int capacity);
+                         hop_xfer_task_state state, int newest, int *total, uint64_t *revision);
+int split_ui_get_files(int direction, uint32_t batch, uint32_t offset,
+                       hop_xfer_file_status *out, int capacity, int *total, uint64_t *revision);
 int split_ui_cancel_task(hop_xfer_task_id id);
 int split_ui_retry_file(uint32_t batch, int index);
 int split_ui_set_audio_mode(unsigned mode);

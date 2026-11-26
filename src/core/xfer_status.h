@@ -40,6 +40,7 @@ typedef struct {
     hop_xfer_status send;
     hop_xfer_status receive;
     int primary_direction;
+    uint64_t send_revision, receive_revision;
 } hop_xfer_status_pair;
 
 #define HOP_XFER_FILE_LIMIT 8192

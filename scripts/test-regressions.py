@@ -265,7 +265,7 @@ int main(void){
     mac_tray=(ROOT/'src/mac/statusbar.m').read_text(encoding='utf-8')
     assert 'audio_mode=%u' in audio_config and 'audio_mode' in audio_header
     assert 'c->audio_mode = HOP_AUDIO_PLAY' in audio_config and 'c->audio_mode = HOP_AUDIO_SEND' in audio_config
-    assert 'SPLIT_IPC_AUDIO_MODE_SET' in split_ipc and 'SPLIT_IPC_VERSION 2u' in split_ipc
+    assert 'SPLIT_IPC_AUDIO_MODE_SET' in split_ipc and 'SPLIT_IPC_VERSION 3u' in split_ipc
     assert 'SPLIT_IPC_AUDIO_MODE_SET' in split_agent and 'audio_requested' in split_agent
     assert 'hop_audio_set_mode(&g_app.cfg,g_app.cfg.audio_mode)' in win_main
     assert 'hop_audio_set_mode(&g_mac.cfg,g_mac.cfg.audio_mode)' in mac_main
@@ -283,22 +283,26 @@ int main(void){
     assert 'MessageBoxW' not in extract(win_ui,'save_settings')
     # Selecting a live task must drive the matching detail snapshot and file batch.
     assert all(x in mac_ui for x in ['tableViewSelectionDidChange',
-        'split_ui_get_task(selectedId,&selectedSnapshot)',
-        'split_ui_get_files(fileDirection,fileBatch', 'selected_visible_file_index',
-        'NSAlertSecondButtonReturn', 's_cancelTaskButtons[d].enabled=canCancel'])
+        'find_task_snapshot(selectedId)', 'split_ui_get_files(fileDirection, fileBatch',
+        'selected_visible_file_index', 'NSAlertSecondButtonReturn',
+        's_cancelTaskButtons[d].enabled=canCancel'])
     assert 'hop_xfer_task_get_snapshot(id, out)' in extract(mac_split_ui,'split_ui_get_task')
-    assert 'xfer_get_files(direction, batch, out, capacity)' in extract(mac_split_ui,'split_ui_get_files')
+    assert re.search(r'xfer_get_files_page\s*\(\s*direction\s*,\s*batch\s*,\s*offset\s*,\s*out\s*,\s*capacity\s*,\s*total\s*,\s*revision\s*\)', extract(mac_split_ui,'split_ui_get_files'))
     assert all(x in win_ui for x in ['UI_ID_SEND_TASKS', 'UI_ID_RECEIVE_TASKS',
         'hop_xfer_task_get_snapshot(selected_id,&selected_snapshot)',
         'xfer_get_files(file_direction,file_batch', 'selected_visible_file_index',
         'MB_DEFBUTTON2', 's_cancel_task_buttons[d]'])
-    assert '此任务的实时文件明细暂不可用' in mac_ui and '此任务的实时文件明细暂不可用' in win_ui
+    assert '任务正在准备或排队，开始后显示文件明细' in mac_ui and '此任务的实时文件明细暂不可用' in win_ui
     assert '暂无活动的发送任务' in mac_ui and '暂无活动的发送任务' in win_ui
-    assert 's_fileBatchActive=hasSelected?(hasTaskStatus && st.active):st.active' in mac_ui
+    assert re.search(r's_fileBatchActive\s*=\s*hasSelected\s*\?\s*\(hasTaskStatus\s*&&\s*st\.active\)\s*:\s*st\.active', mac_ui)
     assert 's_file_batch_active=has_selected?(has_task_status&&st.active):st.active' in win_ui
-    assert 'currentBatch=t->transfer_id && current.batch==t->transfer_id' in mac_ui
+    assert re.search(r'currentBatch\s*=\s*t->transfer_id\s*&&\s*current\.batch\s*==\s*t->transfer_id', mac_ui)
     assert 'current_batch=t->transfer_id && current.batch==t->transfer_id' in win_ui
     assert '等待开始' in mac_ui and '等待开始' in win_ui
+    assert 'UI_FILE_PAGE_SIZE = 128' in mac_ui
+    assert 's_fileSnapshotFrozen' in mac_ui and 's_fileRevisionSeen' in mac_ui
+    assert 'hop_xfer_tracking_files_page' in (ROOT/'src/core/xfer_tracking.c').read_text(encoding='utf-8')
+    assert 'hop_xfer_task_list_revisioned' in (ROOT/'src/core/xfer_task.c').read_text(encoding='utf-8')
     assert '!(s_fileBatch & HOP_XFER_PASTE_BATCH_FLAG)' in mac_ui
     assert '!(s_file_batch & HOP_XFER_PASTE_BATCH_FLAG)' in win_ui
 

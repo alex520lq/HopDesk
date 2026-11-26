@@ -90,6 +90,11 @@ int hop_xfer_task_reconcile(hop_xfer_task_audit *out);
 
 int hop_xfer_task_get_snapshot(hop_xfer_task_id id, hop_xfer_task_snapshot *out);
 int hop_xfer_task_list(hop_xfer_task_snapshot *out, int capacity, int *total);
+/* Atomically pair a live-task list with the revision that describes it. */
+int hop_xfer_task_list_revisioned(hop_xfer_task_snapshot *out, int capacity,
+                                  int *total, uint64_t *revision);
+/* Monotonic UI cache revisions: live task data and terminal history advance independently. */
+void hop_xfer_task_get_revisions(uint64_t *tasks, uint64_t *history);
 /* Terminal user-facing snapshots in finish order. direction NONE and state
  * EMPTY mean no filter; otherwise pass SEND/RECEIVE and a terminal state.
  * newest_first must be 0 or 1. Returns copied count, or -1 on invalid args;

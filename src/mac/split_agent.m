@@ -88,28 +88,62 @@ static bool reply_list(int fd, const split_ipc_header *request, const split_ipc_
         item_size = sizeof(hop_xfer_file_status);
         max_items = HOP_XFER_FILE_LIMIT;
     }
-    if (q->capacity <= 0 || (size_t)q->capacity > max_items ||
-        (size_t)q->capacity > (SPLIT_IPC_MAX_PAYLOAD - sizeof(split_ipc_list)) / item_size)
+    if (q->capacity < 0 || (size_t)q->capacity > max_items || q->offset < 0)
         return false;
-    void *items = calloc((size_t)q->capacity, item_size);
-    if (!items) return false;
-    int total = 0, count;
+
+    int total = 0, count = 0;
+    uint64_t revision = 0;
+    size_t allocated = 0;
+    void *items = NULL;
+
     if (operation == SPLIT_IPC_TASKS_GET) {
-        count = hop_xfer_task_list(items, q->capacity, &total);
+        (void)hop_xfer_task_list_revisioned(NULL, 0, &total, &revision);
+        allocated = (size_t)q->capacity < (size_t)total ? (size_t)q->capacity : (size_t)total;
+        if (allocated) items = calloc(allocated, item_size);
+        if (allocated && !items) return false;
+        count = hop_xfer_task_list_revisioned(items, (int)allocated, &total, &revision);
     } else if (operation == SPLIT_IPC_HISTORY_GET) {
-        count = hop_xfer_task_history_store_list(items, q->capacity, q->direction,
-                                                 (hop_xfer_task_state)q->state, q->newest, &total);
+        bool stable = false;
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            uint64_t before = 0, after = 0;
+            hop_xfer_task_get_revisions(NULL, &before);
+            count = hop_xfer_task_history_store_list(NULL, 0, q->direction,
+                (hop_xfer_task_state)q->state, q->newest, &total);
+            if (count < 0) { free(items); return false; }
+            allocated = (size_t)q->capacity < (size_t)total ? (size_t)q->capacity : (size_t)total;
+            free(items); items = NULL;
+            if (allocated) items = calloc(allocated, item_size);
+            if (allocated && !items) return false;
+            count = hop_xfer_task_history_store_list(items, (int)allocated, q->direction,
+                (hop_xfer_task_state)q->state, q->newest, &total);
+            hop_xfer_task_get_revisions(NULL, &after);
+            if (before == after) { revision = after; stable = true; break; }
+        }
+        if (!stable) { free(items); return false; }
     } else {
-        count = xfer_get_files(q->direction, q->batch, items, q->capacity);
-        total = count;
+        if (xfer_get_files_page(q->direction, q->batch, (uint32_t)q->offset,
+                                NULL, 0, &total, &revision) < 0)
+            return false;
+        if (q->offset < total) {
+            size_t available = (size_t)(total - q->offset);
+            allocated = (size_t)q->capacity < available ? (size_t)q->capacity : available;
+        }
+        if (allocated) items = calloc(allocated, item_size);
+        if (allocated && !items) return false;
+        count = xfer_get_files_page(q->direction, q->batch, (uint32_t)q->offset,
+                                    items, (int)allocated, &total, &revision);
     }
-    bool valid = count >= 0 && count <= q->capacity && total >= count;
+
+    bool valid = count >= 0 && (size_t)count <= allocated && total >= count &&
+        allocated <= (SPLIT_IPC_MAX_PAYLOAD - sizeof(split_ipc_list)) / item_size;
+    bool sent = false;
     if (valid) {
-        split_ipc_list list = {.count = count, .total = total};
-        (void)reply(fd, request, true, &list, sizeof(list), items, (size_t)count * item_size, deadline);
+        split_ipc_list list = {.count = count, .total = total, .revision = revision};
+        sent = reply(fd, request, true, &list, sizeof(list), items,
+                     (size_t)count * item_size, deadline);
     }
     free(items);
-    return valid;
+    return sent;
 }
 
 static void stop_run_loop(void) {
@@ -171,9 +205,10 @@ static void serve(int fd) {
         (void)reply(fd, &header, true, &g_mac.cfg, sizeof(g_mac.cfg), NULL, 0, deadline);
         return;
     case SPLIT_IPC_XFER_STATUS: {
-        hop_xfer_status_pair status = {0};
-        xfer_get_status_pair(&status);
-        (void)reply(fd, &header, true, &status, sizeof(status), NULL, 0, deadline);
+        split_ipc_transfer_state state = {0};
+        xfer_get_status_pair(&state.status);
+        hop_xfer_task_get_revisions(&state.task_revision, &state.history_revision);
+        (void)reply(fd, &header, true, &state, sizeof(state), NULL, 0, deadline);
         return;
     }
     case SPLIT_IPC_AUDIO_MODE_SET: {

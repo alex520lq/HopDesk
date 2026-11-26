@@ -1034,13 +1034,15 @@ static void test_xfer_tracking_reset_and_sparse_ids(void) {
     hop_xfer_tracking_file(&t, 1, 4, "old-tail", 1, 0, HOP_XFER_FILE_RECEIVING);
     hop_xfer_tracking_add_time(&t, 1, HOP_XFER_TIME_RECEIVE, 100);
     t.revision = 2;
+    uint64_t revision_before_reset = t.revision;
 
     hop_xfer_tracking_reset(&t);
-    CHECK(t.count == 0 && !t.status.active && t.status.batch == 0 && t.revision == 0);
+    CHECK(t.count == 0 && !t.status.active && t.status.batch == 0 && t.revision == revision_before_reset);
     CHECK(t.sample_ms == 0 && t.sample_bytes == 0 && t.stage_ns[HOP_XFER_TIME_RECEIVE] == 0);
     CHECK(strcmp(t.files[0].relative_path, "old-first") == 0);
 
     hop_xfer_tracking_begin(&t, 2, HOP_XFER_DIR_RECEIVE, 3, 0, "new", HOP_XFER_RECEIVING);
+    CHECK(t.revision > revision_before_reset);
     CHECK(t.count == 0 && strcmp(t.files[3].relative_path, "old-tail") == 0);
     hop_xfer_tracking_file(&t, 2, 3, "new-third", 30, 0, HOP_XFER_FILE_RECEIVING);
     CHECK(t.count == 3 && t.status.bytes_total == 30 && t.status.files_done == 0);
@@ -1055,6 +1057,35 @@ static void test_xfer_tracking_reset_and_sparse_ids(void) {
     CHECK(t.status.bytes_total == 40 && t.status.bytes_done == 0);
     CHECK(strcmp(t.files[0].relative_path, "new-first") == 0);
     CHECK(strcmp(t.files[2].relative_path, "new-third") == 0);
+}
+
+static void test_xfer_tracking_file_pages(void) {
+    static hop_xfer_tracking t;
+    memset(&t, 0, sizeof(t));
+    hop_xfer_tracking_begin(&t, 44, HOP_XFER_DIR_SEND, 3, 0, "page-test", HOP_XFER_SENDING);
+    hop_xfer_tracking_file(&t, 44, 1, "one.txt", 10, 0, HOP_XFER_FILE_SENDING);
+    hop_xfer_tracking_file(&t, 44, 2, "two.txt", 20, 0, HOP_XFER_FILE_QUEUED);
+    hop_xfer_tracking_file(&t, 44, 3, "three.txt", 30, 0, HOP_XFER_FILE_QUEUED);
+
+    int total = -1;
+    uint64_t revision = 0;
+    CHECK(hop_xfer_tracking_files_page(&t, 44, 0, NULL, 0, &total, &revision) == 0);
+    CHECK(total == 3 && revision == t.revision);
+    hop_xfer_file_status page[2];
+    memset(page, 0, sizeof(page));
+    int n = hop_xfer_tracking_files_page(&t, 44, 1, page, 2, &total, &revision);
+    CHECK(n == 2 && total == 3);
+    CHECK(strcmp(page[0].relative_path, "two.txt") == 0);
+    CHECK(strcmp(page[1].relative_path, "three.txt") == 0);
+
+    uint64_t before = revision;
+    hop_xfer_tracking_chunk(&t, 44, 1, 0, 5, 1000);
+    CHECK(t.revision > before);
+    CHECK(hop_xfer_tracking_files_page(&t, 44, 0, page, 1, &total, &revision) == 1);
+    CHECK(revision == t.revision && page[0].bytes_done == 5);
+    CHECK(hop_xfer_tracking_files_page(&t, 45, 0, page, 1, &total, &revision) == 0);
+    CHECK(total == 0 && revision == 0);
+    CHECK(hop_xfer_tracking_files_page(&t, 44, 0, page, -1, &total, &revision) == -1);
 }
 
 static void test_xfer_tracking_duplex_snapshot(void) {
@@ -1435,6 +1466,39 @@ static void counting_sink(const hop_xfer_task_snapshot *snap) {
     ++g_sink_calls; g_sink_last=*snap;
 }
 
+static void test_xfer_task_revisions(void) {
+    hop_xfer_task_set_terminal_sink(NULL);
+    uint64_t tasks_before = 0, history_before = 0;
+    hop_xfer_task_get_revisions(&tasks_before, &history_before);
+    hop_xfer_task task;
+    memset(&task, 0, sizeof(task));
+    CHECK(hop_xfer_task_init_classified(&task, 11, 12, 13,
+        HOP_XFER_DIR_SEND, HOP_TASK_KIND_FILES));
+    uint64_t tasks_created = 0, history_created = 0;
+    hop_xfer_task_get_revisions(&tasks_created, &history_created);
+    CHECK(tasks_created > tasks_before && history_created == history_before);
+    int live_total = 0;
+    uint64_t list_revision = 0;
+    CHECK(hop_xfer_task_list_revisioned(NULL, 0, &live_total, &list_revision) == 0);
+    CHECK(live_total >= 1 && list_revision == tasks_created);
+
+    CHECK(hop_xfer_task_set_state(&task, HOP_XFER_TASK_SCANNING));
+    CHECK(hop_xfer_task_set_summary(&task, 1, 2, 10, 20, "revision.bin", "scanning"));
+    uint64_t tasks_updated = 0;
+    hop_xfer_task_get_revisions(&tasks_updated, NULL);
+    CHECK(tasks_updated > tasks_created);
+
+    CHECK(hop_xfer_task_finish(&task, HOP_XFER_TASK_COMPLETED));
+    uint64_t tasks_finished = 0, history_finished = 0;
+    hop_xfer_task_get_revisions(&tasks_finished, &history_finished);
+    CHECK(tasks_finished > tasks_updated && history_finished > history_before);
+
+    hop_xfer_task_dispose(&task);
+    uint64_t tasks_disposed = 0, history_disposed = 0;
+    hop_xfer_task_get_revisions(&tasks_disposed, &history_disposed);
+    CHECK(tasks_disposed > tasks_finished && history_disposed == history_finished);
+}
+
 static void test_xfer_task_summary_and_sink(void) {
     hop_xfer_task_set_terminal_sink(NULL);
     g_sink_calls=0;
@@ -1640,6 +1704,7 @@ int main(void) {
     RUN_TEST(test_xfer_rate_limiter);
     RUN_TEST(test_xfer_tracking_stage_timing);
     RUN_TEST(test_xfer_tracking_reset_and_sparse_ids);
+    RUN_TEST(test_xfer_tracking_file_pages);
     RUN_TEST(test_xfer_tracking_duplex_snapshot);
     RUN_TEST(test_xfer_tracking_speed_and_eta);
     RUN_TEST(test_xfer_task_identity_and_lifecycle);
@@ -1648,6 +1713,7 @@ int main(void) {
     RUN_TEST(test_xfer_task_cancel_timeout_race);
     RUN_TEST(test_xfer_task_concurrent_ledger_stress);
     RUN_TEST(test_xfer_task_image_buffer_transfer);
+    RUN_TEST(test_xfer_task_revisions);
     RUN_TEST(test_xfer_task_summary_and_sink);
     RUN_TEST(test_xfer_task_history_store_persistence);
     RUN_TEST(test_xfer_task_history_store_legacy_migration);

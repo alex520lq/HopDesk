@@ -40,6 +40,16 @@ static task_record *s_tasks;
 static task_record *s_task_index[HOP_TASK_INDEX_BUCKETS];
 static uint64_t s_next_task_id;
 static unsigned s_task_count;
+static uint64_t s_task_revision=1, s_history_revision=1;
+static void bump_revision(uint64_t *revision) {
+    if (revision && ++*revision == 0) ++*revision;
+}
+void hop_xfer_task_get_revisions(uint64_t *tasks, uint64_t *history) {
+    LOCK();
+    if (tasks) *tasks=s_task_revision;
+    if (history) *history=s_history_revision;
+    UNLOCK();
+}
 /* Descriptive snapshots only: never own handles, budget, or lifecycle state.
  * The manager appends exactly once at the terminal transition under its lock. */
 static hop_xfer_task_snapshot s_history[HOP_TASK_HISTORY_CAPACITY];
@@ -86,7 +96,7 @@ int hop_xfer_task_request_cancel(hop_xfer_task_id id) {
     LOCK(); task_record *r=find_id(id);
     int ok=r && !terminal(r->state) && !r->completing &&
         (r->direction==HOP_XFER_DIR_SEND || r->direction==HOP_XFER_DIR_RECEIVE);
-    if (ok) r->cancel_requested=1;
+    if (ok && !r->cancel_requested) { r->cancel_requested=1; bump_revision(&s_task_revision); }
     UNLOCK(); return ok;
 }
 int hop_xfer_task_cancel_requested(hop_xfer_task_id id) {
@@ -97,7 +107,7 @@ int hop_xfer_task_cancel_requested(hop_xfer_task_id id) {
 int hop_xfer_task_begin_completion(const hop_xfer_task *task) {
     LOCK(); task_record *r=owned(task);
     int ok=r && !terminal(r->state) && !r->cancel_requested && !r->completing;
-    if (ok) r->completing=1;
+    if (ok) { r->completing=1; bump_revision(&s_task_revision); }
     UNLOCK(); return ok;
 }
 int hop_xfer_task_rx_disconnect_expired(const hop_xfer_task *task, int connected,
@@ -105,12 +115,16 @@ int hop_xfer_task_rx_disconnect_expired(const hop_xfer_task *task, int connected
     if (!budget_ms) return 0;
     LOCK(); task_record *r=owned(task); int expired=0;
     if (r && r->direction==HOP_XFER_DIR_RECEIVE && r->state==HOP_XFER_TASK_ACTIVE && !r->completing && !r->cancel_requested) {
-        if (connected) { r->rx_disconnected=0; r->rx_disconnect_ms=0; }
-        else if (!r->rx_disconnected || now_ms<r->rx_disconnect_ms) {
+        if (connected) {
+            if (r->rx_disconnected || r->rx_disconnect_ms) {
+                r->rx_disconnected=0; r->rx_disconnect_ms=0;
+            }
+        } else if (!r->rx_disconnected || now_ms<r->rx_disconnect_ms) {
             r->rx_disconnected=1; r->rx_disconnect_ms=now_ms;
         } else if (now_ms-r->rx_disconnect_ms>=budget_ms) {
             /* Claim terminal processing under the same lock as cancel. */
             r->completing=1; expired=1;
+            bump_revision(&s_task_revision);
         }
     }
     UNLOCK(); return expired;
@@ -155,16 +169,21 @@ int hop_xfer_task_get_snapshot(hop_xfer_task_id id, hop_xfer_task_snapshot *out)
     if (r) snapshot(r,out);
     UNLOCK(); return found;
 }
-int hop_xfer_task_list(hop_xfer_task_snapshot *out, int capacity, int *total) {
+int hop_xfer_task_list_revisioned(hop_xfer_task_snapshot *out, int capacity,
+                                  int *total, uint64_t *revision) {
     if (capacity < 0 || (capacity && !out)) return -1;
     int n=0, all=0;
     LOCK();
+    if (revision) *revision=s_task_revision;
     for (task_record *r=s_tasks; r; r=r->next) {
         if (n<capacity) snapshot(r,&out[n++]);
         ++all;
     }
     if (total) *total=all;
     UNLOCK(); return n;
+}
+int hop_xfer_task_list(hop_xfer_task_snapshot *out, int capacity, int *total) {
+    return hop_xfer_task_list_revisioned(out,capacity,total,NULL);
 }
 int hop_xfer_task_history_list(hop_xfer_task_snapshot *out, int capacity,
                                int direction, hop_xfer_task_state state,
@@ -209,6 +228,7 @@ int hop_xfer_task_init_classified(hop_xfer_task *task, uint64_t offer, uint32_t 
     unsigned bucket=(unsigned)(r->id % HOP_TASK_INDEX_BUCKETS);
     r->hash_next=s_task_index[bucket]; s_task_index[bucket]=r; ++s_task_count;
     task->id=r->id; task->initialized=1;
+    bump_revision(&s_task_revision);
     UNLOCK(); return 1;
 }
 int hop_xfer_task_init(hop_xfer_task *task, uint64_t offer, uint32_t request, uint32_t transfer) {
@@ -220,13 +240,17 @@ int hop_xfer_task_bind_session(const hop_xfer_task *task, const uint8_t session[
     if (!valid) return 0;
     LOCK(); task_record *r=owned(task);
     int ok=r && !terminal(r->state);
-    if (ok) memcpy(r->session,session,HOP_TASK_SESSION_BYTES);
+    if (ok && memcmp(r->session,session,HOP_TASK_SESSION_BYTES)!=0) {
+        memcpy(r->session,session,HOP_TASK_SESSION_BYTES);
+        bump_revision(&s_task_revision);
+    }
     UNLOCK(); return ok;
 }
 int hop_xfer_task_set_kind(const hop_xfer_task *task, hop_xfer_task_kind kind) {
     if (kind < HOP_TASK_KIND_FILES || kind > HOP_TASK_KIND_IMAGE_WORK) return 0;
     LOCK(); task_record *r=owned(task);
     int ok=r && !terminal(r->state);
+    hop_xfer_task_kind previous = r ? r->kind : HOP_TASK_KIND_UNSPECIFIED;
     if (ok) {
         if (r->kind==HOP_TASK_KIND_UNSPECIFIED) r->kind=kind;
         else if (r->kind!=kind) {
@@ -235,6 +259,7 @@ int hop_xfer_task_set_kind(const hop_xfer_task *task, hop_xfer_task_kind kind) {
             else ok=0;
         }
     }
+    if (ok && r->kind != previous) bump_revision(&s_task_revision);
     UNLOCK(); return ok;
 }
 static void copy_summary_text(char *dst, const char *src, size_t cap) {
@@ -249,10 +274,19 @@ int hop_xfer_task_set_summary(const hop_xfer_task *task, uint32_t files_done,
     LOCK(); task_record *r=owned(task);
     int ok=r && !terminal(r->state);
     if (ok) {
-        r->files_done=files_done; r->files_total=files_total;
-        r->bytes_done=bytes_done; r->bytes_total=bytes_total;
-        copy_summary_text(r->name,name,sizeof(r->name));
-        copy_summary_text(r->detail,detail,sizeof(r->detail));
+        char next_name[HOP_XFER_STATUS_NAME] = {0}, next_detail[HOP_XFER_STATUS_DETAIL] = {0};
+        copy_summary_text(next_name,name,sizeof(next_name));
+        copy_summary_text(next_detail,detail,sizeof(next_detail));
+        int changed = r->files_done!=files_done || r->files_total!=files_total ||
+            r->bytes_done!=bytes_done || r->bytes_total!=bytes_total ||
+            strcmp(r->name,next_name)!=0 || strcmp(r->detail,next_detail)!=0;
+        if (changed) {
+            r->files_done=files_done; r->files_total=files_total;
+            r->bytes_done=bytes_done; r->bytes_total=bytes_total;
+            memcpy(r->name,next_name,sizeof(r->name));
+            memcpy(r->detail,next_detail,sizeof(r->detail));
+            bump_revision(&s_task_revision);
+        }
     }
     UNLOCK(); return ok;
 }
@@ -277,7 +311,7 @@ int hop_xfer_task_set_state(hop_xfer_task *task, hop_xfer_task_state state) {
            (r->state==HOP_XFER_TASK_SCANNING && state==HOP_XFER_TASK_QUEUED) ||
            (r->state==HOP_XFER_TASK_QUEUED && state==HOP_XFER_TASK_ACTIVE) ||
            (r->state==HOP_XFER_TASK_ACTIVE && state==HOP_XFER_TASK_QUEUED);
-        if (ok) r->state=state;
+        if (ok) { r->state=state; bump_revision(&s_task_revision); }
     }
     UNLOCK(); return ok;
 }
@@ -285,9 +319,9 @@ int hop_xfer_task_set_state(hop_xfer_task *task, hop_xfer_task_state state) {
  * completion wins. Releases remain legal so queued/in-flight writer commands
  * can return their exact reservations while termination drains the queue. */
 #define RESERVE_WRAPPER(name,fn) \
-int name(hop_xfer_task *task) { LOCK(); task_record *r=owned(task); int ok=r && !terminal(r->state) && !r->cancel_requested && !r->completing && fn(&r->reservation); UNLOCK(); return ok; }
+int name(hop_xfer_task *task) { LOCK(); task_record *r=owned(task); int ok=r && !terminal(r->state) && !r->cancel_requested && !r->completing && fn(&r->reservation); if (ok) bump_revision(&s_task_revision); UNLOCK(); return ok; }
 #define BYTES_WRAPPER(name,fn,live) \
-int name(hop_xfer_task *task, uint64_t bytes) { LOCK(); task_record *r=owned(task); int ok=r && (!(live) || (!terminal(r->state) && !r->cancel_requested && !r->completing)) && fn(&r->reservation,bytes); UNLOCK(); return ok; }
+int name(hop_xfer_task *task, uint64_t bytes) { LOCK(); task_record *r=owned(task); int ok=r && (!(live) || (!terminal(r->state) && !r->cancel_requested && !r->completing)) && fn(&r->reservation,bytes); if (ok) bump_revision(&s_task_revision); UNLOCK(); return ok; }
 RESERVE_WRAPPER(hop_xfer_task_reserve_job,hop_xfer_budget_reserve_job)
 BYTES_WRAPPER(hop_xfer_task_reserve_entry,hop_xfer_budget_reserve_entry,1)
 BYTES_WRAPPER(hop_xfer_task_reserve_image,hop_xfer_budget_reserve_image,1)
@@ -299,6 +333,7 @@ int hop_xfer_task_transfer_image_temp(hop_xfer_task *from, hop_xfer_task *to, ui
     LOCK(); task_record *a=owned(from), *b=owned(to);
     int ok=a && b && a!=b && !terminal(a->state) && !terminal(b->state) &&
         hop_xfer_budget_transfer_image_temp(&a->reservation,&b->reservation,bytes);
+    if (ok) bump_revision(&s_task_revision);
     UNLOCK(); return ok;
 }
 static int finish(task_record *r, hop_xfer_task_state state,
@@ -307,6 +342,7 @@ static int finish(task_record *r, hop_xfer_task_state state,
         r->reservation.rx_queue_bytes || r->reservation.image_temp_bytes) return 0;
     if (!hop_xfer_budget_release(&r->reservation)) return 0;
     r->state=state;
+    bump_revision(&s_task_revision);
     if (r->direction==HOP_XFER_DIR_SEND || r->direction==HOP_XFER_DIR_RECEIVE) {
         r->finished_at=hop_wallclock_ms();
         snapshot(r,&s_history[s_history_next]);
@@ -323,7 +359,10 @@ int hop_xfer_task_finish(hop_xfer_task *task, hop_xfer_task_state state) {
     int ok=finish(owned(task),state,&fired);
     hop_xfer_task_terminal_sink sink=s_terminal_sink;
     UNLOCK();
-    if (ok && sink && fired.id) sink(&fired);
+    if (ok && fired.id) {
+        if (sink) sink(&fired);
+        LOCK(); bump_revision(&s_history_revision); UNLOCK();
+    }
     return ok;
 }
 void hop_xfer_task_dispose(hop_xfer_task *task) {
@@ -343,8 +382,12 @@ void hop_xfer_task_dispose(hop_xfer_task *task) {
         while (*h && *h!=r) h=&(*h)->hash_next;
         if (!*h) { UNLOCK(); return; } /* never free a record still in the index */
         *h=r->hash_next; *p=r->next; --s_task_count; memset(task,0,sizeof(*task)); free(r);
+        bump_revision(&s_task_revision);
     }
     hop_xfer_task_terminal_sink sink=s_terminal_sink;
     UNLOCK();
-    if (sink && fired.id) sink(&fired);
+    if (fired.id) {
+        if (sink) sink(&fired);
+        LOCK(); bump_revision(&s_history_revision); UNLOCK();
+    }
 }

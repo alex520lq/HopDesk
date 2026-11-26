@@ -37,7 +37,8 @@ SRWLOCK s_status_lock = SRWLOCK_INIT;
 SRWLOCK s_x_lifecycle_lock = SRWLOCK_INIT;
 hop_xfer_tracking s_send_status, s_receive_status;
 static uint64_t s_status_revision;
-static wchar_t *s_retry_paths[HOP_XFER_FILE_LIMIT];
+static wchar_t **s_retry_paths;
+static int s_retry_path_count;
 static hop_xfer_history_entry s_history[HOP_XFER_HISTORY_LIMIT];
 static int s_history_count;
 static SRWLOCK s_history_io_lock = SRWLOCK_INIT;
@@ -121,14 +122,21 @@ static void history_save(void) {
 static hop_xfer_tracking *status_for(int direction) {
     return direction == HOP_XFER_DIR_SEND ? &s_send_status : &s_receive_status;
 }
+
+/* Caller holds s_status_lock. Keep retry paths only for the latest send batch. */
+static void retry_paths_clear(void) {
+    for (int i = 0; i < s_retry_path_count; ++i) free(s_retry_paths[i]);
+    free(s_retry_paths);
+    s_retry_paths = NULL;
+    s_retry_path_count = 0;
+}
 int status_begin(uint32_t batch,int direction,uint32_t files,uint64_t bytes,const char *name,int phase) {
     int created=0;
     AcquireSRWLockExclusive(&s_status_lock);
     hop_xfer_tracking *t = status_for(direction);
     /* The FIFO sender retains this snapshot while retrying the same job. */
     if (!hop_xfer_tracking_matches(t,batch)) {
-        if (direction == HOP_XFER_DIR_SEND)
-            for(int i=0;i<HOP_XFER_FILE_LIMIT;i++){free(s_retry_paths[i]);s_retry_paths[i]=NULL;}
+        if (direction == HOP_XFER_DIR_SEND) retry_paths_clear();
         hop_xfer_tracking_begin(t,batch,direction,files,bytes,name,phase);
         created=1;
     } else t->status.phase=phase;
@@ -199,10 +207,16 @@ static void status_set_files(uint32_t batch,const xfer_entry *entries,int n) {
     AcquireSRWLockExclusive(&s_status_lock);
     if(hop_xfer_tracking_matches(&s_send_status,batch) && s_send_status.count==0) {
         s_send_status.status.bytes_total=0;
-        for(int i=0;i<n && i<HOP_XFER_FILE_LIMIT;i++) {
+        retry_paths_clear();
+        int count = n < 0 ? 0 : (n > HOP_XFER_FILE_LIMIT ? HOP_XFER_FILE_LIMIT : n);
+        if (count) {
+            s_retry_paths = (wchar_t **)calloc((size_t)count, sizeof(*s_retry_paths));
+            if (s_retry_paths) s_retry_path_count = count;
+        }
+        for(int i=0;i<count;i++) {
             hop_xfer_tracking_file(&s_send_status,batch,(uint32_t)i+1,entries[i].rel?entries[i].rel:entries[i].name,
                 entries[i].size,(entries[i].flags&HOP_FILE_FLAG_DIR)!=0,HOP_XFER_FILE_QUEUED);
-            if(entries[i].full)s_retry_paths[i]=_wcsdup(entries[i].full);
+            if(entries[i].full && s_retry_paths)s_retry_paths[i]=_wcsdup(entries[i].full);
         }
     }
     ReleaseSRWLockExclusive(&s_status_lock);
@@ -239,7 +253,8 @@ int xfer_get_files(int direction,uint32_t batch,hop_xfer_file_status *out,int ca
     AcquireSRWLockExclusive(&s_status_lock);
     hop_xfer_tracking *t=status_for(direction);
     int n=t->status.batch==batch?t->count:0;if(n>capacity)n=capacity;
-    memcpy(out,t->files,(size_t)n*sizeof(*out));
+    if (n > 0 && t->files) memcpy(out,t->files,(size_t)n*sizeof(*out));
+    else n = 0;
     ReleaseSRWLockExclusive(&s_status_lock);
     return n;
 }
@@ -253,7 +268,8 @@ int xfer_retry_file(uint32_t batch,int index) {
     AcquireSRWLockExclusive(&s_status_lock);
     if(s_send_status.status.batch==batch && !s_send_status.status.active && index>=0 && index<s_send_status.count &&
        s_send_status.files[index].phase==HOP_XFER_FILE_FAILED &&
-       !s_send_status.files[index].is_directory && s_retry_paths[index])path=_wcsdup(s_retry_paths[index]);
+       !s_send_status.files[index].is_directory && index<s_retry_path_count &&
+       s_retry_paths[index])path=_wcsdup(s_retry_paths[index]);
     ReleaseSRWLockExclusive(&s_status_lock);
     if(!path)return 0;
     const wchar_t *paths[1]={path};int ok=xfer_submit_paths(paths,1);free(path);return ok;
@@ -423,6 +439,8 @@ int send_small(SOCKET c, uint8_t type, const uint8_t *p,
 void status_receive_set_total(uint32_t total) {
     AcquireSRWLockExclusive(&s_status_lock);
     s_receive_status.status.files_total = total;
+    uint32_t required = total > HOP_XFER_FILE_LIMIT ? HOP_XFER_FILE_LIMIT : total;
+    (void)hop_xfer_tracking_reserve(&s_receive_status, required);
     ReleaseSRWLockExclusive(&s_status_lock);
 }
 
@@ -632,6 +650,12 @@ int xfer_shutdown(void) {
         ReleaseSRWLockExclusive(&s_x_lifecycle_lock);
         return 0;
     }
+
+    AcquireSRWLockExclusive(&s_status_lock);
+    retry_paths_clear();
+    hop_xfer_tracking_dispose(&s_send_status);
+    hop_xfer_tracking_dispose(&s_receive_status);
+    ReleaseSRWLockExclusive(&s_status_lock);
 
     hop_xfer_task_history_store_close();
     if (s_x.stop) { CloseHandle(s_x.stop); s_x.stop = NULL; }

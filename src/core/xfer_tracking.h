@@ -19,14 +19,15 @@ typedef enum {
 typedef struct {
     hop_xfer_status status;
     int count;
+    int capacity;
     uint64_t revision;
     uint64_t sample_ms;
     uint64_t sample_bytes;
     /* Per-batch cumulative wall time by stage; durations may overlap across
      * receive parsing and the asynchronous disk writer. */
     uint64_t stage_ns[HOP_XFER_TIME_COUNT];
-    /* Keep resettable metadata above this table. Only the first count entries are visible. */
-    hop_xfer_file_status files[HOP_XFER_FILE_LIMIT];
+    /* File details are allocated only up to the current batch's required count. */
+    hop_xfer_file_status *files;
 } hop_xfer_tracking;
 
 #ifdef __cplusplus
@@ -38,6 +39,10 @@ uint32_t hop_xfer_job_total(int image, int entries);
 int hop_xfer_tracking_matches(const hop_xfer_tracking *t, uint32_t batch);
 
 void hop_xfer_tracking_reset(hop_xfer_tracking *t);
+/* Resize the owned file table to the requested capacity (bounded by FILE_LIMIT). */
+int hop_xfer_tracking_reserve(hop_xfer_tracking *t, uint32_t capacity);
+/* Release the table after all readers/writers have stopped. */
+void hop_xfer_tracking_dispose(hop_xfer_tracking *t);
 
 void hop_xfer_tracking_add_time(hop_xfer_tracking *t, uint32_t batch,
         int stage, uint64_t elapsed_ns);

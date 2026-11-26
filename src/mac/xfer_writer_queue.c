@@ -275,6 +275,8 @@ void hop_writer_queue_drain(hop_writer_queue *queue) {
     pthread_mutex_lock(&queue->lock);
     while (!hop_xfer_rx_queue_drained(&queue->accounting))
         pthread_cond_wait(&queue->cv_space, &queue->lock);
+    (void)hop_xfer_buffer_pool_trim_idle_locked(&queue->pool,
+        HOP_XFER_DEFAULT_RX_POOL_RETAIN_BYTES);
     pthread_mutex_unlock(&queue->lock);
     watchdog_end(queue, guard);
 }

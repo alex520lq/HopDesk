@@ -84,6 +84,9 @@ int main(void) {
         if (list.v[i].flags & HOP_FILE_FLAG_DIR) ++dirs;
         else ++files;
         assert(list.v[i].name && list.v[i].rel);
+        const char *slash = strrchr(list.v[i].rel, '/');
+        const char *expected_name = slash ? slash + 1 : list.v[i].rel;
+        assert(list.v[i].name == expected_name);
     }
     assert(dirs == 2 && files == 2);
     elist_free(&list);
@@ -149,6 +152,9 @@ int main(void) {
         if (list.v[i].flags & HOP_FILE_FLAG_DIR) ++dirs;
         else ++files;
         assert(list.v[i].name && list.v[i].rel);
+        const char *slash = strrchr(list.v[i].rel, '/');
+        const char *expected_name = slash ? slash + 1 : list.v[i].rel;
+        assert(list.v[i].name == expected_name);
     }
     assert(dirs == 2 && files == 2);
     elist_free(&list);

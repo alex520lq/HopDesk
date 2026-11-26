@@ -9,7 +9,7 @@
 #include <wchar.h>
 typedef struct {
     wchar_t *full;
-    char *name;
+    const char *name; /* borrowed basename view into rel */
     char *rel;
     uint64_t size;
     uint64_t mtime;
@@ -21,7 +21,7 @@ typedef const wchar_t *hop_xfer_scan_path;
 #else
 typedef struct {
     char *full;
-    char *name;
+    const char *name; /* borrowed basename view into rel */
     char *rel;
     uint64_t size;
     uint64_t mtime;

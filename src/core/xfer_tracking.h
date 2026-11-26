@@ -3,6 +3,7 @@
 /* Caller serializes access. One tracker per direction; batch IDs are not
  * globally unique across the two endpoints. No networking or GUI dependencies. */
 #include "xfer_status.h"
+#include <stddef.h>
 #include <stdint.h>
 
 typedef enum {
@@ -16,6 +17,19 @@ typedef enum {
     HOP_XFER_TIME_COUNT
 } hop_xfer_timing_stage;
 
+/* Compact internal record: the relative path is stored once in the
+ * tracking arena and materialized into hop_xfer_file_status only at the UI API. */
+typedef struct {
+    uint32_t index;
+    int phase;
+    int is_directory;
+    uint32_t attempts;
+    uint64_t bytes_done;
+    uint64_t bytes_total;
+    uint32_t path_offset;
+    uint16_t path_length;
+} hop_xfer_file_record;
+
 typedef struct {
     hop_xfer_status status;
     int count;
@@ -26,8 +40,11 @@ typedef struct {
     /* Per-batch cumulative wall time by stage; durations may overlap across
      * receive parsing and the asynchronous disk writer. */
     uint64_t stage_ns[HOP_XFER_TIME_COUNT];
-    /* File details are allocated only up to the current batch's required count. */
-    hop_xfer_file_status *files;
+    /* Compact file records and one variable-length UTF-8 path arena per batch. */
+    hop_xfer_file_record *files;
+    char *path_storage;
+    size_t path_used;
+    size_t path_capacity;
 } hop_xfer_tracking;
 
 #ifdef __cplusplus
@@ -39,9 +56,9 @@ uint32_t hop_xfer_job_total(int image, int entries);
 int hop_xfer_tracking_matches(const hop_xfer_tracking *t, uint32_t batch);
 
 void hop_xfer_tracking_reset(hop_xfer_tracking *t);
-/* Resize the owned file table to the requested capacity (bounded by FILE_LIMIT). */
+/* Resize the compact record table to the requested capacity (bounded by FILE_LIMIT). */
 int hop_xfer_tracking_reserve(hop_xfer_tracking *t, uint32_t capacity);
-/* Release the table after all readers/writers have stopped. */
+/* Release records and the path arena after all readers/writers have stopped. */
 void hop_xfer_tracking_dispose(hop_xfer_tracking *t);
 
 void hop_xfer_tracking_add_time(hop_xfer_tracking *t, uint32_t batch,

@@ -81,7 +81,6 @@ void elist_free(elist *list) {
     if (!list) return;
     for (int i = 0; i < list->n; ++i) {
         free(list->v[i].full);
-        free(list->v[i].rel);
     }
     free(list->v);
     list->v = NULL;
@@ -121,15 +120,27 @@ static void walk_into(elist *list, const wchar_t *full, const char *relative, co
     int is_dir = (attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
     xfer_entry entry;
     memset(&entry, 0, sizeof(entry));
-    entry.full = _wcsdup(full);
-    entry.rel = relative ? _strdup(relative) : NULL;
-    if (entry.rel) {
-        const char *base = strrchr(entry.rel, '/');
-        entry.name = base ? base + 1 : entry.rel;
+    if (relative) {
+        size_t full_chars = wcslen(full), rel_len = strlen(relative);
+        if (full_chars < SIZE_MAX / sizeof(wchar_t) && rel_len < SIZE_MAX) {
+            size_t full_bytes = (full_chars + 1) * sizeof(wchar_t);
+            size_t rel_bytes = rel_len + 1;
+            if (full_bytes <= SIZE_MAX - rel_bytes) {
+                char *storage = (char *)malloc(full_bytes + rel_bytes);
+                if (storage) {
+                    entry.full = (wchar_t *)storage;
+                    memcpy(entry.full, full, full_bytes);
+                    entry.rel = storage + full_bytes;
+                    memcpy((char *)entry.rel, relative, rel_bytes);
+                    const char *base = strrchr(entry.rel, '/');
+                    entry.name = base ? base + 1 : entry.rel;
+                }
+            }
+        }
     }
     entry.mtime = ft_to_unix(&attributes.ftLastWriteTime);
     if (!entry.full || !entry.rel || !entry.name) {
-        free(entry.full); free(entry.rel);
+        free(entry.full);
         scan_fail(list, HOP_XFER_SCAN_OUT_OF_MEMORY);
         return;
     }
@@ -138,7 +149,7 @@ static void walk_into(elist *list, const wchar_t *full, const char *relative, co
         entry.size = ((uint64_t)attributes.nFileSizeHigh << 32) | attributes.nFileSizeLow;
         entry.flags = 0;
         if (!elist_push(list, &entry, services)) {
-            free(entry.full); free(entry.rel);
+            free(entry.full);
         }
         return;
     }
@@ -146,7 +157,7 @@ static void walk_into(elist *list, const wchar_t *full, const char *relative, co
     entry.size = 0;
     entry.flags = HOP_FILE_FLAG_DIR;
     if (!elist_push(list, &entry, services)) {
-        free(entry.full); free(entry.rel);
+        free(entry.full);
         return;
     }
 

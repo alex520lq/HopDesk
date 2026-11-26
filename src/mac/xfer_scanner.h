@@ -8,9 +8,9 @@
 #ifdef _WIN32
 #include <wchar.h>
 typedef struct {
-    wchar_t *full;
+    wchar_t *full; /* allocation base; owns full path and relative path */
     const char *name; /* borrowed basename view into rel */
-    char *rel;
+    const char *rel; /* borrowed UTF-8 path view inside full allocation */
     uint64_t size;
     uint64_t mtime;
     uint32_t flags;
@@ -20,9 +20,9 @@ typedef xfer_entry *hop_xfer_scan_entry_array;
 typedef const wchar_t *hop_xfer_scan_path;
 #else
 typedef struct {
-    char *full;
+    char *full; /* allocation base; owns full path and relative path */
     const char *name; /* borrowed basename view into rel */
-    char *rel;
+    const char *rel; /* borrowed path view inside full allocation */
     uint64_t size;
     uint64_t mtime;
     uint32_t flags;

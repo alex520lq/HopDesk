@@ -542,7 +542,6 @@ static void sender_job_free_storage(void *user, void *opaque) {
     (void)user;
     for (int i = 0; i < j->n; ++i) {
         free(j->e[i].full);
-        free(j->e[i].rel);
     }
     free(j->e);
     free(j);

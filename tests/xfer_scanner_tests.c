@@ -84,6 +84,12 @@ int main(void) {
         if (list.v[i].flags & HOP_FILE_FLAG_DIR) ++dirs;
         else ++files;
         assert(list.v[i].name && list.v[i].rel);
+#ifdef _WIN32
+        const char *expected_rel = (const char *)(list.v[i].full + wcslen(list.v[i].full) + 1);
+#else
+        const char *expected_rel = list.v[i].full + strlen(list.v[i].full) + 1;
+#endif
+        assert(list.v[i].rel == expected_rel);
         const char *slash = strrchr(list.v[i].rel, '/');
         const char *expected_name = slash ? slash + 1 : list.v[i].rel;
         assert(list.v[i].name == expected_name);
@@ -152,6 +158,12 @@ int main(void) {
         if (list.v[i].flags & HOP_FILE_FLAG_DIR) ++dirs;
         else ++files;
         assert(list.v[i].name && list.v[i].rel);
+#ifdef _WIN32
+        const char *expected_rel = (const char *)(list.v[i].full + wcslen(list.v[i].full) + 1);
+#else
+        const char *expected_rel = list.v[i].full + strlen(list.v[i].full) + 1;
+#endif
+        assert(list.v[i].rel == expected_rel);
         const char *slash = strrchr(list.v[i].rel, '/');
         const char *expected_name = slash ? slash + 1 : list.v[i].rel;
         assert(list.v[i].name == expected_name);

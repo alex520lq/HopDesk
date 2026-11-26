@@ -301,6 +301,10 @@ int main(void){
     assert '等待开始' in mac_ui and '等待开始' in win_ui
     assert 'UI_FILE_PAGE_SIZE = 128' in mac_ui
     assert 's_fileSnapshotFrozen' in mac_ui and 's_fileRevisionSeen' in mac_ui
+    assert 'calloc(HOP_XFER_FILE_LIMIT' not in win_ui
+    assert 'resize_file_snapshot(requested_file_count)' in win_ui
+    assert 'file_details_available = !has_selected || has_task_status' in win_ui
+    assert 'files_total > HOP_XFER_FILE_LIMIT' in win_ui
     assert 'hop_xfer_tracking_files_page' in (ROOT/'src/core/xfer_tracking.c').read_text(encoding='utf-8')
     assert 'hop_xfer_task_list_revisioned' in (ROOT/'src/core/xfer_task.c').read_text(encoding='utf-8')
     assert '!(s_fileBatch & HOP_XFER_PASTE_BATCH_FLAG)' in mac_ui

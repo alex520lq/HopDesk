@@ -90,6 +90,23 @@ static int dip(int v){return MulDiv(v,(int)s_dpi,96);}
 static void layout_main(HWND h);
 static void layout_nodes(void);
 static hop_xfer_file_status *s_file_snapshot;
+static int s_file_snapshot_capacity;
+static int resize_file_snapshot(int capacity) {
+    if (capacity < 0 || capacity > HOP_XFER_FILE_LIMIT) return 0;
+    if (capacity == s_file_snapshot_capacity) return 1;
+    if (capacity == 0) {
+        free(s_file_snapshot);
+        s_file_snapshot = NULL;
+        s_file_snapshot_capacity = 0;
+        return 1;
+    }
+    hop_xfer_file_status *next = (hop_xfer_file_status *)realloc(
+        s_file_snapshot, (size_t)capacity * sizeof(*s_file_snapshot));
+    if (!next) return 0;
+    s_file_snapshot = next;
+    s_file_snapshot_capacity = capacity;
+    return 1;
+}
 static int s_collapsed[HOP_XFER_FILE_LIMIT];
 static int s_visible_indices[HOP_XFER_FILE_LIMIT];
 static int s_visible_count;
@@ -808,9 +825,19 @@ static void refresh_transfers(void) {
     int file_direction=has_selected?selected_snapshot.direction:st.direction;
     uint32_t file_batch=has_selected?selected_snapshot.transfer_id:st.batch;
     s_file_batch_active=has_selected?(has_task_status&&st.active):st.active;
-    if(!s_file_snapshot)s_file_snapshot=(hop_xfer_file_status*)calloc(HOP_XFER_FILE_LIMIT,sizeof(*s_file_snapshot));
-    int n=s_file_snapshot&&file_direction!=HOP_XFER_DIR_NONE&&file_batch?
-        xfer_get_files(file_direction,file_batch,s_file_snapshot,HOP_XFER_FILE_LIMIT):0;
+    /* File snapshots are display-only copies. Size them to this task's actual
+     * entry count instead of reserving the maximum 8,192-record table. */
+    int requested_file_count = 0;
+    int file_details_available = !has_selected || has_task_status;
+    if (file_details_available && file_direction != HOP_XFER_DIR_NONE && file_batch)
+        requested_file_count = files_total > HOP_XFER_FILE_LIMIT ?
+            HOP_XFER_FILE_LIMIT : (int)files_total;
+    int snapshot_ready = resize_file_snapshot(requested_file_count);
+    if (!snapshot_ready && s_file_snapshot &&
+        s_file_snapshot_capacity >= requested_file_count)
+        snapshot_ready = 1; /* keep rendering if a best-effort shrink failed */
+    int n = snapshot_ready && requested_file_count > 0 ?
+        xfer_get_files(file_direction,file_batch,s_file_snapshot,requested_file_count) : 0;
     if(s_file_batch!=file_batch || s_file_direction!=file_direction){
         memset(s_collapsed,0,sizeof(s_collapsed));s_file_batch=file_batch;s_file_direction=file_direction;
     }
@@ -1195,6 +1222,7 @@ static LRESULT CALLBACK main_wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_DESTROY:
             KillTimer(h,UI_TIMER);
             if(s_file_snapshot){free(s_file_snapshot);s_file_snapshot=NULL;}
+            s_file_snapshot_capacity=0;
             if(s_font)DeleteObject(s_font);
             if(s_font_title)DeleteObject(s_font_title);
             if(s_font_small)DeleteObject(s_font_small);

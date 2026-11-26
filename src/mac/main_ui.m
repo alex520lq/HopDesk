@@ -47,7 +47,8 @@ static NSPopUpButton *s_edgePopups[2];
 static NSTextField *s_xferTitle, *s_xferDetail, *s_xferCounts;
 static NSProgressIndicator *s_xferProgress;
 static NSTextView *s_xferFiles, *s_logView, *s_taskHistory;
-static NSTextField *s_logNote;
+static NSTextField *s_logNote, *s_filePageLabel;
+static NSButton *s_filePreviousButton, *s_fileNextButton;
 static BOOL s_fileSelectionValid;
 static NSPopUpButton *s_historyDirection, *s_historyState, *s_historyOrder;
 static NSButton *s_retryButton, *s_cancelTaskButtons[2];
@@ -55,16 +56,24 @@ static BOOL s_refreshingTransfers, s_syncTaskSelection, s_fileBatchActive;
 static NSTableView *s_taskTables[2];
 static NSArray<NSDictionary *> *s_taskRows[2];
 static hop_xfer_task_snapshot *s_tasksSnapshot;
-#define UI_TASK_CAP HOP_TASK_MANAGER_MAX_LIVE
+static int s_tasksSnapshotCapacity, s_tasksSnapshotCount;
+static uint64_t s_taskRevisionSeen, s_taskSendRevisionSeen, s_taskReceiveRevisionSeen;
+static uint64_t s_historyRevisionSeen;
+static NSInteger s_historyDirectionSeen=-1, s_historyStateSeen=-1, s_historyOrderSeen=-1;
 static NSTextField *s_updateVersion, *s_updateSource;
 static NSTimer *s_mainTimer;
 static NSObject *s_uiController;
 static int s_page;
 static int s_connected, s_sharing;
 static hop_xfer_file_status *s_fileSnapshot;
-static int s_collapsedFolders[HOP_XFER_FILE_LIMIT];
-static int s_visibleFileIndices[HOP_XFER_FILE_LIMIT];
+enum { UI_FILE_PAGE_SIZE = 128 };
+static int s_fileSnapshotCapacity, s_fileSnapshotCount;
+static int s_visibleFileIndices[UI_FILE_PAGE_SIZE];
 static int s_visibleFileCount;
+static NSMutableSet<NSString *> *s_collapsedFolderPaths;
+static int s_filePageIndex, s_filePageOffset, s_fileTotalCount;
+static uint64_t s_fileRevisionSeen;
+static BOOL s_fileSnapshotFrozen, s_filePresentationDirty;
 static uint32_t s_fileBatch;
 static int s_fileDirection;
 static BOOL s_startupPermissionsChecked;
@@ -187,6 +196,8 @@ static NSString *const kPageNames[UI_PAGE_COUNT] = {@"概览",@"设备",@"传输
 - (void)textViewDidChangeSelection:(NSNotification *)notification;
 - (void)retryFile:(id)sender;
 - (void)toggleFolder:(id)sender;
+- (void)previousFilePage:(id)sender;
+- (void)nextFilePage:(id)sender;
 - (void)refreshLogs:(id)sender;
 - (void)copyLogs:(id)sender;
 - (void)checkUpdates:(id)sender;
@@ -470,82 +481,172 @@ static hop_xfer_task_id selected_task(int d) {
     NSInteger row=s_taskTables[d].selectedRow;
     return row>=0 && (NSUInteger)row<s_taskRows[d].count ? [s_taskRows[d][(NSUInteger)row][@"id"] unsignedLongLongValue] : 0;
 }
-static void refresh_task_lists(void) {
-    if(!s_taskTables[0]||!s_taskTables[1])return;
-    if(!s_tasksSnapshot)s_tasksSnapshot=calloc(UI_TASK_CAP,sizeof(*s_tasksSnapshot));
-    if(!s_tasksSnapshot)return;
-    hop_xfer_task_id selected[2]={selected_task(0),selected_task(1)};
-    int total=0,n=split_ui_get_tasks(s_tasksSnapshot,UI_TASK_CAP,&total);
-    if(n<0)return;
-    hop_xfer_status_pair pair;memset(&pair,0,sizeof(pair));split_ui_get_status_pair(&pair);
-    NSMutableArray<NSDictionary *> *rows[2]={[NSMutableArray array],[NSMutableArray array]};
-    for(int i=0;i<n;++i){
-        hop_xfer_task_snapshot *t=&s_tasksSnapshot[i];
-        int d=t->direction==HOP_XFER_DIR_SEND?0:t->direction==HOP_XFER_DIR_RECEIVE?1:-1;
-        if(d<0)continue;
-        if(t->state>=HOP_XFER_TASK_COMPLETED || t->kind==HOP_TASK_KIND_IMAGE_WORK)continue;
-        hop_xfer_status current=d==0?pair.send:pair.receive;
-        BOOL currentBatch=t->transfer_id && current.batch==t->transfer_id;
-        NSString *name=utf8(t->name);
-        if(!name.length && currentBatch && current.name[0])name=utf8(current.name);
-        if(!name.length)name=[NSString stringWithFormat:@"任务 #%llu",(unsigned long long)t->id];
-        uint32_t done=currentBatch?current.files_done:t->files_done;
-        uint32_t count=currentBatch?current.files_total:t->files_total;
-        uint64_t bytesDone=currentBatch?current.bytes_done:t->bytes_done;
-        uint64_t bytesTotal=currentBatch?current.bytes_total:t->bytes_total;
-        double progress=bytesTotal?MIN(100.0,100.0*(double)bytesDone/(double)bytesTotal):0.0;
-        NSString *progressText=currentBatch||bytesTotal?
-            [NSString stringWithFormat:@"%.0f%%  ·  文件 %u/%u  ·  %@/%@",progress,done,count,byte_count(bytesDone),byte_count(bytesTotal)]:
-            (t->state==HOP_XFER_TASK_SCANNING?@"正在准备":@"等待开始");
-        NSString *text=[NSString stringWithFormat:@"%@  ·  %@  ·  %@",
-            name,task_state_name(t),progressText];
-        [rows[d] addObject:@{@"id":@(t->id),@"text":text}];
+static BOOL resize_task_snapshot(int capacity) {
+    if (capacity < 0 || capacity > HOP_TASK_MANAGER_MAX_LIVE) return NO;
+    if (capacity == s_tasksSnapshotCapacity) return YES;
+    if (capacity == 0) {
+        free(s_tasksSnapshot);
+        s_tasksSnapshot = NULL;
+        s_tasksSnapshotCapacity = 0;
+        return YES;
     }
-    for(int d=0;d<2;++d)if(rows[d].count==0)
-        [rows[d] addObject:@{@"id":@0,@"text":d?@"暂无活动的接收任务":@"暂无活动的发送任务"}];
-    NSPoint scrollOrigins[2]={NSZeroPoint,NSZeroPoint};
-    for(int d=0;d<2;++d){
-        NSScrollView *scroll=s_taskTables[d].enclosingScrollView;
-        if(scroll)scrollOrigins[d]=scroll.contentView.bounds.origin;
-        s_taskRows[d]=[rows[d] copy];[s_taskTables[d] reloadData];[s_taskTables[d] deselectAll:nil];
-        if(selected[d])for(NSUInteger i=0;i<s_taskRows[d].count;++i)
-            if([s_taskRows[d][i][@"id"] unsignedLongLongValue]==selected[d]){
-                [s_taskTables[d] selectRowIndexes:[NSIndexSet indexSetWithIndex:i] byExtendingSelection:NO];break;
+    hop_xfer_task_snapshot *next = realloc(s_tasksSnapshot,
+        (size_t)capacity * sizeof(*s_tasksSnapshot));
+    if (!next) return NO;
+    s_tasksSnapshot = next;
+    s_tasksSnapshotCapacity = capacity;
+    return YES;
+}
+
+static void refresh_task_lists(const hop_xfer_status_pair *pair, uint64_t taskRevision) {
+    if (!s_taskTables[0] || !s_taskTables[1] || !pair) return;
+    if (taskRevision == s_taskRevisionSeen &&
+        pair->send_revision == s_taskSendRevisionSeen &&
+        pair->receive_revision == s_taskReceiveRevisionSeen)
+        return;
+
+    hop_xfer_task_id selected[2] = {selected_task(0), selected_task(1)};
+    int total = 0, n = -1;
+    uint64_t revision = 0;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        if (split_ui_get_tasks(NULL, 0, &total, &revision) < 0 ||
+            total < 0 || total > HOP_TASK_MANAGER_MAX_LIVE)
+            return;
+        if (!resize_task_snapshot(total)) return;
+        int actualTotal = 0;
+        uint64_t actualRevision = 0;
+        n = split_ui_get_tasks(s_tasksSnapshot, total, &actualTotal, &actualRevision);
+        if (n < 0) return;
+        revision = actualRevision;
+        if (n == actualTotal) {
+            total = actualTotal;
+            if (actualTotal < s_tasksSnapshotCapacity && !resize_task_snapshot(actualTotal)) return;
+            break;
+        }
+        total = actualTotal;
+        n = -1;
+    }
+    if (n < 0 || n != total) return;
+    s_tasksSnapshotCount = n;
+
+    NSMutableArray<NSDictionary *> *rows[2] = {[NSMutableArray array], [NSMutableArray array]};
+    for (int i = 0; i < n; ++i) {
+        hop_xfer_task_snapshot *t = &s_tasksSnapshot[i];
+        int d = t->direction == HOP_XFER_DIR_SEND ? 0 :
+                t->direction == HOP_XFER_DIR_RECEIVE ? 1 : -1;
+        if (d < 0 || t->state >= HOP_XFER_TASK_COMPLETED ||
+            t->kind == HOP_TASK_KIND_IMAGE_WORK) continue;
+        hop_xfer_status current = d == 0 ? pair->send : pair->receive;
+        BOOL currentBatch = t->transfer_id && current.batch == t->transfer_id;
+        NSString *name = utf8(t->name);
+        if (!name.length && currentBatch && current.name[0]) name = utf8(current.name);
+        if (!name.length) name = [NSString stringWithFormat:@"任务 #%llu", (unsigned long long)t->id];
+        uint32_t done = currentBatch ? current.files_done : t->files_done;
+        uint32_t count = currentBatch ? current.files_total : t->files_total;
+        uint64_t bytesDone = currentBatch ? current.bytes_done : t->bytes_done;
+        uint64_t bytesTotal = currentBatch ? current.bytes_total : t->bytes_total;
+        double progress = bytesTotal ? MIN(100.0, 100.0 * (double)bytesDone / (double)bytesTotal) : 0.0;
+        NSString *progressText = currentBatch || bytesTotal ?
+            [NSString stringWithFormat:@"%.0f%%  ·  文件 %u/%u  ·  %@/%@",
+                progress, done, count, byte_count(bytesDone), byte_count(bytesTotal)] :
+            (t->state == HOP_XFER_TASK_SCANNING ? @"正在准备" : @"等待开始");
+        NSString *text = [NSString stringWithFormat:@"%@  ·  %@  ·  %@", name, task_state_name(t), progressText];
+        [rows[d] addObject:@{@"id": @(t->id), @"text": text}];
+    }
+    for (int d = 0; d < 2; ++d) if (rows[d].count == 0)
+        [rows[d] addObject:@{@"id": @0, @"text": d ? @"暂无活动的接收任务" : @"暂无活动的发送任务"}];
+
+    for (int d = 0; d < 2; ++d) {
+        NSArray<NSDictionary *> *nextRows = [rows[d] copy];
+        if ([s_taskRows[d] isEqualToArray:nextRows]) continue;
+        NSScrollView *scroll = s_taskTables[d].enclosingScrollView;
+        NSPoint origin = scroll ? scroll.contentView.bounds.origin : NSZeroPoint;
+        s_taskRows[d] = nextRows;
+        [s_taskTables[d] reloadData];
+        [s_taskTables[d] deselectAll:nil];
+        if (selected[d]) for (NSUInteger i = 0; i < s_taskRows[d].count; ++i) {
+            if ([s_taskRows[d][i][@"id"] unsignedLongLongValue] == selected[d]) {
+                [s_taskTables[d] selectRowIndexes:[NSIndexSet indexSetWithIndex:i]
+                                byExtendingSelection:NO];
+                break;
             }
-        if(scroll){
-            NSClipView *clip=scroll.contentView;[clip scrollToPoint:scrollOrigins[d]];
+        }
+        if (scroll) {
+            NSClipView *clip = scroll.contentView;
+            [clip scrollToPoint:origin];
             [scroll reflectScrolledClipView:clip];
         }
     }
-    (void)total;
+
+    s_taskRevisionSeen = revision;
+    s_taskSendRevisionSeen = pair->send_revision;
+    s_taskReceiveRevisionSeen = pair->receive_revision;
 }
-static void refresh_task_history(void) {
-    if(!s_taskHistory || !s_historyDirection || !s_historyState || !s_historyOrder)return;
-    static const int directions[]={HOP_XFER_DIR_NONE,HOP_XFER_DIR_SEND,HOP_XFER_DIR_RECEIVE};
-    static const hop_xfer_task_state states[]={HOP_XFER_TASK_EMPTY,HOP_XFER_TASK_COMPLETED,
-        HOP_XFER_TASK_PARTIAL,HOP_XFER_TASK_FAILED,HOP_XFER_TASK_CANCELLED,HOP_XFER_TASK_INTERRUPTED};
-    NSInteger d=s_historyDirection.indexOfSelectedItem,st=s_historyState.indexOfSelectedItem,order=s_historyOrder.indexOfSelectedItem;
-    if(d<0 || d>2 || st<0 || st>5 || order<0 || order>1)return;
-    hop_xfer_task_history_record history[HOP_TASK_HISTORY_CAPACITY];
-    int total=0,n=split_ui_get_history(history,HOP_TASK_HISTORY_CAPACITY,directions[d],states[st],order==0,&total);
-    if(n<0)return;
-    NSMutableString *rows=[NSMutableString string];
-    for(int i=0;i<n;++i){const hop_xfer_task_history_record *t=&history[i];
-        hop_xfer_task_snapshot display={0};display.state=(hop_xfer_task_state)t->state;
-        NSString *name=utf8(t->name);
-        if(!name.length)name=[NSString stringWithFormat:@"任务 #%llu",(unsigned long long)t->record_id];
+
+static void refresh_task_history(uint64_t historyRevision) {
+    if (!s_taskHistory || !s_historyDirection || !s_historyState || !s_historyOrder) return;
+    static const int directions[] = {HOP_XFER_DIR_NONE, HOP_XFER_DIR_SEND, HOP_XFER_DIR_RECEIVE};
+    static const hop_xfer_task_state states[] = {HOP_XFER_TASK_EMPTY, HOP_XFER_TASK_COMPLETED,
+        HOP_XFER_TASK_PARTIAL, HOP_XFER_TASK_FAILED, HOP_XFER_TASK_CANCELLED, HOP_XFER_TASK_INTERRUPTED};
+    NSInteger d = s_historyDirection.indexOfSelectedItem;
+    NSInteger st = s_historyState.indexOfSelectedItem;
+    NSInteger order = s_historyOrder.indexOfSelectedItem;
+    if (d < 0 || d > 2 || st < 0 || st > 5 || order < 0 || order > 1) return;
+    if (historyRevision == s_historyRevisionSeen &&
+        d == s_historyDirectionSeen && st == s_historyStateSeen && order == s_historyOrderSeen)
+        return;
+
+    int total = 0;
+    uint64_t revision = 0;
+    if (split_ui_get_history(NULL, 0, directions[d], states[st], order == 0,
+                             &total, &revision) < 0 || total < 0 ||
+        total > HOP_TASK_HISTORY_CAPACITY) return;
+    hop_xfer_task_history_record *history = total ?
+        calloc((size_t)total, sizeof(*history)) : NULL;
+    if (total && !history) return;
+    int actualTotal = 0;
+    uint64_t actualRevision = 0;
+    int n = split_ui_get_history(history, total, directions[d], states[st], order == 0,
+                                 &actualTotal, &actualRevision);
+    if (n < 0) { free(history); return; }
+    if (n != actualTotal) {
+        free(history);
+        total = actualTotal;
+        history = total ? calloc((size_t)total, sizeof(*history)) : NULL;
+        if (total && !history) return;
+        n = split_ui_get_history(history, total, directions[d], states[st], order == 0,
+                                 &actualTotal, &actualRevision);
+        if (n < 0 || n != actualTotal) { free(history); return; }
+    }
+    revision = actualRevision;
+
+    NSMutableString *rows = [NSMutableString string];
+    for (int i = 0; i < n; ++i) {
+        const hop_xfer_task_history_record *t = &history[i];
+        hop_xfer_task_snapshot display = {0};
+        display.state = (hop_xfer_task_state)t->state;
+        NSString *name = utf8(t->name);
+        if (!name.length) name = [NSString stringWithFormat:@"任务 #%llu", (unsigned long long)t->record_id];
         [rows appendFormat:@"%@  ·  %@  ·  %@  ·  文件 %u/%u  ·  %@/%@\n",
-         t->direction==HOP_XFER_DIR_SEND?@"发送":@"接收",name,task_state_name(&display),
-         t->files_done,t->files_total,byte_count(t->bytes_done),byte_count(t->bytes_total)];
+            t->direction == HOP_XFER_DIR_SEND ? @"发送" : @"接收", name, task_state_name(&display),
+            t->files_done, t->files_total, byte_count(t->bytes_done), byte_count(t->bytes_total)];
     }
-    NSString *next=rows.length?rows:@"暂无符合条件的任务";
-    if(![s_taskHistory.string isEqualToString:next]){
-        NSScrollView *scroll=s_taskHistory.enclosingScrollView;
-        NSPoint origin=scroll?scroll.contentView.bounds.origin:NSZeroPoint;
-        s_taskHistory.string=next;
-        if(scroll){NSClipView *clip=scroll.contentView;[clip scrollToPoint:origin];[scroll reflectScrolledClipView:clip];}
+    free(history);
+    NSString *next = rows.length ? rows : @"暂无符合条件的任务";
+    if (![s_taskHistory.string isEqualToString:next]) {
+        NSScrollView *scroll = s_taskHistory.enclosingScrollView;
+        NSPoint origin = scroll ? scroll.contentView.bounds.origin : NSZeroPoint;
+        s_taskHistory.string = next;
+        if (scroll) {
+            NSClipView *clip = scroll.contentView;
+            [clip scrollToPoint:origin];
+            [scroll reflectScrolledClipView:clip];
+        }
     }
-    (void)total;
+    s_historyRevisionSeen = revision;
+    s_historyDirectionSeen = d;
+    s_historyStateSeen = st;
+    s_historyOrderSeen = order;
 }
 static int selected_visible_file_index(void) {
     if(!s_fileSelectionValid || !s_xferFiles || !s_fileSnapshot)return -1;
@@ -555,167 +656,308 @@ static int selected_visible_file_index(void) {
     if(line>=(NSUInteger)s_visibleFileCount)return -1;
     return s_visibleFileIndices[line];
 }
+static const hop_xfer_file_status *selected_file_status(void) {
+    int index = selected_visible_file_index();
+    int local = index - s_filePageOffset;
+    return index >= 0 && local >= 0 && local < s_fileSnapshotCount ? &s_fileSnapshot[local] : NULL;
+}
+static BOOL resize_file_snapshot(int capacity) {
+    if (capacity < 0 || capacity > UI_FILE_PAGE_SIZE) return NO;
+    if (capacity == s_fileSnapshotCapacity) return YES;
+    if (capacity == 0) {
+        free(s_fileSnapshot); s_fileSnapshot = NULL; s_fileSnapshotCapacity = 0;
+        return YES;
+    }
+    hop_xfer_file_status *next = realloc(s_fileSnapshot, (size_t)capacity * sizeof(*s_fileSnapshot));
+    if (!next) return NO;
+    s_fileSnapshot = next; s_fileSnapshotCapacity = capacity;
+    return YES;
+}
+static const hop_xfer_task_snapshot *find_task_snapshot(hop_xfer_task_id id) {
+    if (!id || !s_tasksSnapshot) return NULL;
+    for (int i = 0; i < s_tasksSnapshotCount; ++i)
+        if (s_tasksSnapshot[i].id == id) return &s_tasksSnapshot[i];
+    return NULL;
+}
+static void set_label_if_changed(NSTextField *field, NSString *value) {
+    if (field && ![field.stringValue isEqualToString:value ?: @""])
+        field.stringValue = value ?: @"";
+}
 static void update_transfer_actions(void) {
-    int index=selected_visible_file_index();
+    const hop_xfer_file_status *file=selected_file_status();
     BOOL canRetry=s_fileDirection==HOP_XFER_DIR_SEND && !s_fileBatchActive &&
-        !(s_fileBatch & HOP_XFER_PASTE_BATCH_FLAG) &&
-        index>=0 && index<HOP_XFER_FILE_LIMIT &&
-        s_fileSnapshot[index].phase==HOP_XFER_FILE_FAILED && !s_fileSnapshot[index].is_directory;
+        !(s_fileBatch & HOP_XFER_PASTE_BATCH_FLAG) && file &&
+        file->phase==HOP_XFER_FILE_FAILED && !file->is_directory;
     if(s_retryButton)s_retryButton.enabled=canRetry;
     for(int d=0;d<2;++d){
         BOOL canCancel=NO;
-        hop_xfer_task_snapshot task;
         hop_xfer_task_id id=selected_task(d);
-        if(id && split_ui_get_task(id,&task))
-            canCancel=task.state<HOP_XFER_TASK_COMPLETED && !task.cancel_requested && !task.completing;
+        const hop_xfer_task_snapshot *task=find_task_snapshot(id);
+        if(task) canCancel=task->state<HOP_XFER_TASK_COMPLETED && !task->cancel_requested && !task->completing;
         if(s_cancelTaskButtons[d])s_cancelTaskButtons[d].enabled=canCancel;
     }
 }
 static void refresh_transfer_page(void) {
-    if(!s_xferTitle || s_refreshingTransfers)return;
-    int oldSelectedFileIndex=selected_visible_file_index();
-    uint32_t oldFileBatch=s_fileBatch;int oldFileDirection=s_fileDirection;
-    NSScrollView *fileScroll=s_xferFiles.enclosingScrollView;
-    NSPoint oldFileScrollOrigin=fileScroll?fileScroll.contentView.bounds.origin:NSZeroPoint;
-    s_refreshingTransfers=YES;
-    refresh_task_lists();
-    refresh_task_history();
-    hop_xfer_status_pair pair; memset(&pair,0,sizeof(pair)); split_ui_get_status_pair(&pair);
+    if (!s_xferTitle || s_refreshingTransfers) return;
+    int oldSelectedFileIndex = selected_visible_file_index();
+    uint32_t oldFileBatch = s_fileBatch;
+    int oldFileDirection = s_fileDirection;
+    int oldFilePageIndex = s_filePageOffset >= 0 ? s_filePageOffset / UI_FILE_PAGE_SIZE : s_filePageIndex;
+    NSScrollView *fileScroll = s_xferFiles.enclosingScrollView;
+    NSPoint oldFileScrollOrigin = fileScroll ? fileScroll.contentView.bounds.origin : NSZeroPoint;
+    s_refreshingTransfers = YES;
 
-    hop_xfer_task_snapshot selectedSnapshot;memset(&selectedSnapshot,0,sizeof(selectedSnapshot));
-    hop_xfer_task_id selectedId=selected_task(0);
-    if(!selectedId)selectedId=selected_task(1);
-    BOOL hasSelected=selectedId && split_ui_get_task(selectedId,&selectedSnapshot);
-    BOOL hasTaskStatus=NO;
-    hop_xfer_status st=pair.primary_direction==HOP_XFER_DIR_SEND?pair.send:pair.receive;
-    if(hasSelected){
-        hop_xfer_status candidate=selectedSnapshot.direction==HOP_XFER_DIR_SEND?pair.send:pair.receive;
-        if(selectedSnapshot.transfer_id && candidate.batch==selectedSnapshot.transfer_id){
-            st=candidate;hasTaskStatus=YES;
-        }else{
-            memset(&st,0,sizeof(st));st.direction=selectedSnapshot.direction;
+    split_ipc_transfer_state transfer = {0};
+    (void)split_ui_get_transfer_state(&transfer);
+    hop_xfer_status_pair pair = transfer.status;
+    refresh_task_lists(&pair, transfer.task_revision);
+    refresh_task_history(transfer.history_revision);
+
+    hop_xfer_task_snapshot selectedSnapshot = {0};
+    hop_xfer_task_id selectedId = selected_task(0);
+    if (!selectedId) selectedId = selected_task(1);
+    const hop_xfer_task_snapshot *selected = find_task_snapshot(selectedId);
+    BOOL hasSelected = selected != NULL;
+    if (selected) selectedSnapshot = *selected;
+
+    BOOL hasTaskStatus = NO;
+    hop_xfer_status st = pair.primary_direction == HOP_XFER_DIR_SEND ? pair.send : pair.receive;
+    if (hasSelected) {
+        hop_xfer_status candidate = selectedSnapshot.direction == HOP_XFER_DIR_SEND ? pair.send : pair.receive;
+        if (selectedSnapshot.transfer_id && candidate.batch == selectedSnapshot.transfer_id) {
+            st = candidate;
+            hasTaskStatus = YES;
+        } else {
+            memset(&st, 0, sizeof(st));
+            st.direction = selectedSnapshot.direction;
         }
     }
 
-    NSString *name=hasSelected?utf8(selectedSnapshot.name):utf8(st.name);
-    if(!name.length && hasTaskStatus && st.name[0])name=utf8(st.name);
-    if(!name.length)name=hasSelected?
-        [NSString stringWithFormat:@"%@任务 #%llu",selectedSnapshot.direction==HOP_XFER_DIR_SEND?@"发送":@"接收",(unsigned long long)selectedId]:
-        (st.name[0]?utf8(st.name):@"暂无传输任务");
+    NSString *name = hasSelected ? utf8(selectedSnapshot.name) : utf8(st.name);
+    if (!name.length && hasTaskStatus && st.name[0]) name = utf8(st.name);
+    if (!name.length) name = hasSelected ?
+        [NSString stringWithFormat:@"%@任务 #%llu",
+            selectedSnapshot.direction == HOP_XFER_DIR_SEND ? @"发送" : @"接收",
+            (unsigned long long)selectedId] :
+        (st.name[0] ? utf8(st.name) : @"暂无传输任务");
 
-    NSString *phase=@"空闲";
-    switch(st.phase){
-        case HOP_XFER_QUEUED:phase=@"排队中";break; case HOP_XFER_SCANNING:phase=@"扫描中";break;
-        case HOP_XFER_SENDING:phase=@"发送中";break; case HOP_XFER_RECEIVING:phase=@"接收中";break;
-        case HOP_XFER_VERIFYING:phase=@"校验中";break; case HOP_XFER_COMPLETED:phase=@"已完成";break;
-        case HOP_XFER_PARTIAL:phase=@"部分失败";break; case HOP_XFER_FAILED:phase=@"失败";break;
-        case HOP_XFER_CANCELLED:phase=@"已取消";break;
+    NSString *phase = @"空闲";
+    switch (st.phase) {
+        case HOP_XFER_QUEUED: phase = @"排队中"; break;
+        case HOP_XFER_SCANNING: phase = @"扫描中"; break;
+        case HOP_XFER_SENDING: phase = @"发送中"; break;
+        case HOP_XFER_RECEIVING: phase = @"接收中"; break;
+        case HOP_XFER_VERIFYING: phase = @"校验中"; break;
+        case HOP_XFER_COMPLETED: phase = @"已完成"; break;
+        case HOP_XFER_PARTIAL: phase = @"部分失败"; break;
+        case HOP_XFER_FAILED: phase = @"失败"; break;
+        case HOP_XFER_CANCELLED: phase = @"已取消"; break;
     }
-    if(hasSelected && !hasTaskStatus)phase=task_state_name(&selectedSnapshot);
-    NSString *direction=hasSelected?
-        (selectedSnapshot.direction==HOP_XFER_DIR_SEND?@"发送":@"接收"):
-        (st.direction==HOP_XFER_DIR_SEND?@"发送":st.direction==HOP_XFER_DIR_RECEIVE?@"接收":@"待机");
-    uint64_t now_ms=hop_monotonic_ms(),speed=hasTaskStatus?st.speed_bytes_per_sec:0;
-    if(!st.last_progress_ms || now_ms<st.last_progress_ms || now_ms-st.last_progress_ms>2000)speed=0;
-    NSString *rate=speed?[NSString stringWithFormat:@"%@/s",byte_count(speed)]:@"速率 --";
-    NSString *eta=speed?[NSString stringWithFormat:@"ETA %llus",(unsigned long long)st.eta_seconds]:@"ETA --";
-    NSString *detail=hasTaskStatus?utf8(st.detail):(hasSelected?utf8(selectedSnapshot.detail):@"等待文件传输");
-    if(!detail.length)detail=hasSelected&&!hasTaskStatus?@"实时进度将在任务开始后显示":@"";
-    s_xferTitle.stringValue=name;
-    s_xferDetail.stringValue=[NSString stringWithFormat:@"%@  ·  %@  ·  %@  ·  %@  ·  %@",
-        direction,phase,detail,rate,eta];
+    if (hasSelected && !hasTaskStatus) phase = task_state_name(&selectedSnapshot);
+    NSString *direction = hasSelected ?
+        (selectedSnapshot.direction == HOP_XFER_DIR_SEND ? @"发送" : @"接收") :
+        (st.direction == HOP_XFER_DIR_SEND ? @"发送" :
+         st.direction == HOP_XFER_DIR_RECEIVE ? @"接收" : @"待机");
 
-    double progress=0;
-    uint32_t filesDone=0,filesTotal=0,queued=0;
-    uint64_t bytesDone=0,bytesTotal=0;
-    if(hasTaskStatus){
-        bytesDone=st.bytes_done;bytesTotal=st.bytes_total;
-        filesDone=st.files_done;filesTotal=st.files_total;queued=st.queued_count;
-    }else if(hasSelected){
-        bytesDone=selectedSnapshot.bytes_done;bytesTotal=selectedSnapshot.bytes_total;
-        filesDone=selectedSnapshot.files_done;filesTotal=selectedSnapshot.files_total;
-    }else{
-        bytesDone=st.bytes_done;bytesTotal=st.bytes_total;
-        filesDone=st.files_done;filesTotal=st.files_total;queued=st.queued_count;
-    }
-    progress=bytesTotal?MIN(100.0,100.0*(double)bytesDone/(double)bytesTotal):
-        (hasTaskStatus&&st.phase==HOP_XFER_COMPLETED?100.0:0.0);
-    if(hasSelected && !hasTaskStatus && !bytesTotal && !filesTotal)
-        s_xferCounts.stringValue=@"任务正在准备或排队，开始后显示实时进度";
-    else{
-        s_xferCounts.stringValue=[NSString stringWithFormat:@"%.0f%%  ·  文件 %u / %u    排队 %u    数据 %@ / %@",
-            progress,filesDone,filesTotal,queued,byte_count(bytesDone),byte_count(bytesTotal)];
-        if(!hasSelected && pair.send.active && pair.receive.active)
-            s_xferCounts.stringValue=[NSString stringWithFormat:@"双向传输  ·  发送 %@/%@  ·  接收 %@/%@  ·  排队 %u",
-                byte_count(pair.send.bytes_done),byte_count(pair.send.bytes_total),
-                byte_count(pair.receive.bytes_done),byte_count(pair.receive.bytes_total),pair.send.queued_count];
-    }
-    s_xferProgress.doubleValue=progress;
+    uint64_t now_ms = hop_monotonic_ms();
+    uint64_t speed = hasTaskStatus ? st.speed_bytes_per_sec : 0;
+    if (!st.last_progress_ms || now_ms < st.last_progress_ms || now_ms - st.last_progress_ms > 2000)
+        speed = 0;
+    NSString *rate = speed ? [NSString stringWithFormat:@"%@/s", byte_count(speed)] : @"速率 --";
+    NSString *eta = speed ? [NSString stringWithFormat:@"ETA %llus", (unsigned long long)st.eta_seconds] : @"ETA --";
+    NSString *detail = hasTaskStatus ? utf8(st.detail) :
+        (hasSelected ? utf8(selectedSnapshot.detail) : @"等待文件传输");
+    if (!detail.length) detail = hasSelected && !hasTaskStatus ? @"实时进度将在任务开始后显示" : @"";
+    set_label_if_changed(s_xferTitle, name);
+    set_label_if_changed(s_xferDetail,
+        [NSString stringWithFormat:@"%@  ·  %@  ·  %@  ·  %@  ·  %@", direction, phase, detail, rate, eta]);
 
-    int fileDirection=hasSelected?selectedSnapshot.direction:st.direction;
-    uint32_t fileBatch=hasSelected?selectedSnapshot.transfer_id:st.batch;
-    s_fileBatchActive=hasSelected?(hasTaskStatus && st.active):st.active;
-    if(!s_fileSnapshot)s_fileSnapshot=calloc(HOP_XFER_FILE_LIMIT,sizeof(*s_fileSnapshot));
-    int count=s_fileSnapshot&&fileDirection!=HOP_XFER_DIR_NONE&&fileBatch?
-        split_ui_get_files(fileDirection,fileBatch,s_fileSnapshot,HOP_XFER_FILE_LIMIT):0;
-    if(s_fileBatch!=fileBatch || s_fileDirection!=fileDirection){
-        memset(s_collapsedFolders,0,sizeof(s_collapsedFolders));
-        s_fileBatch=fileBatch;s_fileDirection=fileDirection;
+    uint32_t filesDone = 0, filesTotal = 0, queued = 0;
+    uint64_t bytesDone = 0, bytesTotal = 0;
+    if (hasTaskStatus) {
+        bytesDone = st.bytes_done; bytesTotal = st.bytes_total;
+        filesDone = st.files_done; filesTotal = st.files_total; queued = st.queued_count;
+    } else if (hasSelected) {
+        bytesDone = selectedSnapshot.bytes_done; bytesTotal = selectedSnapshot.bytes_total;
+        filesDone = selectedSnapshot.files_done; filesTotal = selectedSnapshot.files_total;
+    } else {
+        bytesDone = st.bytes_done; bytesTotal = st.bytes_total;
+        filesDone = st.files_done; filesTotal = st.files_total; queued = st.queued_count;
     }
-    NSMutableString *files=[NSMutableString string];s_visibleFileCount=0;
-    for(int i=0;i<count;++i){
-        NSString *path=utf8(s_fileSnapshot[i].relative_path);BOOL hidden=NO;
-        for(int p=0;p<i;++p){
-            if(!s_collapsedFolders[p]||!s_fileSnapshot[p].is_directory)continue;
-            NSString *parent=utf8(s_fileSnapshot[p].relative_path);
-            if([path hasPrefix:[parent stringByAppendingString:@"/"]]){hidden=YES;break;}
+    double progress = bytesTotal ? MIN(100.0, 100.0 * (double)bytesDone / (double)bytesTotal) :
+        (hasTaskStatus && st.phase == HOP_XFER_COMPLETED ? 100.0 : 0.0);
+    NSString *counts = nil;
+    if (hasSelected && !hasTaskStatus && !bytesTotal && !filesTotal) {
+        counts = @"任务正在准备或排队，开始后显示实时进度";
+    } else {
+        counts = [NSString stringWithFormat:@"%.0f%%  ·  文件 %u / %u    排队 %u    数据 %@ / %@",
+            progress, filesDone, filesTotal, queued, byte_count(bytesDone), byte_count(bytesTotal)];
+        if (!hasSelected && pair.send.active && pair.receive.active)
+            counts = [NSString stringWithFormat:@"双向传输  ·  发送 %@/%@  ·  接收 %@/%@  ·  排队 %u",
+                byte_count(pair.send.bytes_done), byte_count(pair.send.bytes_total),
+                byte_count(pair.receive.bytes_done), byte_count(pair.receive.bytes_total), pair.send.queued_count];
+    }
+    set_label_if_changed(s_xferCounts, counts);
+    if (s_xferProgress.doubleValue != progress) s_xferProgress.doubleValue = progress;
+
+    int fileDirection = hasSelected ? selectedSnapshot.direction : st.direction;
+    uint32_t fileBatch = hasSelected ? selectedSnapshot.transfer_id : st.batch;
+    s_fileBatchActive = hasSelected ? (hasTaskStatus && st.active) : st.active;
+    BOOL contextChanged = oldFileBatch != fileBatch || oldFileDirection != fileDirection;
+    if (contextChanged) {
+        s_fileBatch = fileBatch;
+        s_fileDirection = fileDirection;
+        s_filePageIndex = 0;
+        s_filePageOffset = -1;
+        s_fileTotalCount = 0;
+        s_fileSnapshotCount = 0;
+        (void)resize_file_snapshot(0);
+        s_fileRevisionSeen = 0;
+        s_fileSnapshotFrozen = NO;
+        s_filePresentationDirty = YES;
+        s_fileSelectionValid = NO;
+        [s_collapsedFolderPaths removeAllObjects];
+    }
+
+    hop_xfer_status fileStatus = fileDirection == HOP_XFER_DIR_SEND ? pair.send : pair.receive;
+    uint64_t fileRevision = fileStatus.batch == fileBatch ?
+        (fileDirection == HOP_XFER_DIR_SEND ? pair.send_revision : pair.receive_revision) : 0;
+    BOOL fileTerminal = !s_fileBatchActive && fileStatus.batch == fileBatch &&
+        (fileStatus.phase == HOP_XFER_COMPLETED || fileStatus.phase == HOP_XFER_PARTIAL ||
+         fileStatus.phase == HOP_XFER_FAILED || fileStatus.phase == HOP_XFER_CANCELLED);
+
+    if (fileBatch && fileDirection != HOP_XFER_DIR_NONE) {
+        int pages = s_fileTotalCount > 0 ?
+            (s_fileTotalCount + UI_FILE_PAGE_SIZE - 1) / UI_FILE_PAGE_SIZE : 1;
+        if (s_filePageIndex >= pages) s_filePageIndex = pages - 1;
+        if (s_filePageIndex < 0) s_filePageIndex = 0;
+    } else {
+        s_filePageIndex = 0;
+        s_fileTotalCount = 0;
+        s_fileSnapshotCount = 0;
+        (void)resize_file_snapshot(0);
+    }
+
+    int requestedOffset = s_filePageIndex * UI_FILE_PAGE_SIZE;
+    BOOL pageChanged = requestedOffset != s_filePageOffset;
+    BOOL needFetch = contextChanged || pageChanged || fileRevision != s_fileRevisionSeen;
+    if (s_fileSnapshotFrozen && !contextChanged && !pageChanged) needFetch = NO;
+
+    if (needFetch && fileBatch && fileDirection != HOP_XFER_DIR_NONE) {
+        int total = 0, count = 0;
+        uint64_t revision = 0;
+        BOOL fetched = NO;
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            if (split_ui_get_files(fileDirection, fileBatch, (uint32_t)requestedOffset,
+                                   NULL, 0, &total, &revision) < 0 || total < 0) break;
+            int desired = requestedOffset < total ? MIN(UI_FILE_PAGE_SIZE, total - requestedOffset) : 0;
+            if (!resize_file_snapshot(desired)) break;
+            int actualTotal = 0;
+            uint64_t actualRevision = 0;
+            count = split_ui_get_files(fileDirection, fileBatch, (uint32_t)requestedOffset,
+                s_fileSnapshot, desired, &actualTotal, &actualRevision);
+            if (count < 0) break;
+            total = actualTotal;
+            revision = actualRevision;
+            if (count == (requestedOffset < total ? MIN(UI_FILE_PAGE_SIZE, total - requestedOffset) : 0))
+                { fetched = YES; break; }
         }
-        if(hidden)continue;
-        s_visibleFileIndices[s_visibleFileCount++]=i;
-        NSUInteger depth=[[path componentsSeparatedByString:@"/"] count]-1;
-        NSString *indent=[@"" stringByPaddingToLength:MIN(depth*2,24) withString:@" " startingAtIndex:0];
-        NSString *state=s_fileSnapshot[i].phase==HOP_XFER_FILE_COMPLETED?@"完成":
-            s_fileSnapshot[i].phase==HOP_XFER_FILE_FAILED?@"失败":
-            s_fileSnapshot[i].phase==HOP_XFER_FILE_SENDING?@"发送中":
-            s_fileSnapshot[i].phase==HOP_XFER_FILE_RECEIVING?@"接收中":
-            s_fileSnapshot[i].phase==HOP_XFER_FILE_VERIFYING?@"校验中":@"排队中";
-        NSString *kind=s_fileSnapshot[i].is_directory?(s_collapsedFolders[i]?@"▸ 目录":@"▾ 目录"):@"文件";
-        [files appendFormat:@"%@%@ %@    %@ / %@    %@\n",indent,kind,path,
-            byte_count(s_fileSnapshot[i].bytes_done),byte_count(s_fileSnapshot[i].bytes_total),state];
+        if (fetched) {
+            s_fileSnapshotCount = count;
+            s_fileTotalCount = total;
+            s_filePageOffset = requestedOffset;
+            s_fileRevisionSeen = revision;
+            if (fileTerminal) s_fileSnapshotFrozen = YES;
+        }
+    } else if (needFetch && (!fileBatch || fileDirection == HOP_XFER_DIR_NONE)) {
+        s_filePageOffset = requestedOffset;
+        s_fileRevisionSeen = 0;
+        s_fileSnapshotCount = 0;
+        s_fileTotalCount = 0;
     }
-    NSString *nextFiles=files.length?files:
-        (hasSelected?(selectedSnapshot.state<=HOP_XFER_TASK_QUEUED?@"任务正在准备或排队，开始后显示文件明细":@"此任务的实时文件明细暂不可用"):@"当前没有文件明细");
-    BOOL sameFileContext=oldFileBatch==fileBatch&&oldFileDirection==fileDirection;
-    if(![s_xferFiles.string isEqualToString:nextFiles]){
-        s_xferFiles.string=nextFiles;
-        s_fileSelectionValid=NO;
-        if(sameFileContext&&oldSelectedFileIndex>=0){
-            for(int line=0;line<s_visibleFileCount;++line)if(s_visibleFileIndices[line]==oldSelectedFileIndex){
-                NSUInteger start=0;
-                for(int row=0;row<line;++row){
-                    NSRange newline=[nextFiles rangeOfString:@"\n" options:0
-                        range:NSMakeRange(start,nextFiles.length-start)];
-                    if(newline.location==NSNotFound){start=nextFiles.length;break;}
-                    start=NSMaxRange(newline);
-                }
-                NSRange newline=[nextFiles rangeOfString:@"\n" options:0
-                    range:NSMakeRange(start,nextFiles.length-start)];
-                NSUInteger end=newline.location==NSNotFound?nextFiles.length:newline.location;
-                if(end>start){[s_xferFiles setSelectedRange:NSMakeRange(start,end-start)];s_fileSelectionValid=YES;}
-                break;
+
+    int pageCount = s_fileTotalCount > 0 ?
+        (s_fileTotalCount + UI_FILE_PAGE_SIZE - 1) / UI_FILE_PAGE_SIZE : 1;
+    if (s_filePageLabel) {
+        NSString *label = s_fileTotalCount ?
+            [NSString stringWithFormat:@"第 %d / %d 页  ·  共 %d 项", s_filePageIndex + 1, pageCount, s_fileTotalCount] :
+            @"暂无文件明细";
+        set_label_if_changed(s_filePageLabel, label);
+    }
+    if (s_filePreviousButton) s_filePreviousButton.enabled = s_filePageIndex > 0;
+    if (s_fileNextButton) s_fileNextButton.enabled = s_fileTotalCount > requestedOffset + UI_FILE_PAGE_SIZE;
+
+    BOOL sameFileContext = oldFileBatch == fileBatch && oldFileDirection == fileDirection;
+    BOOL sameFilePage = sameFileContext && oldFilePageIndex == s_filePageIndex;
+    BOOL renderFiles = needFetch || s_filePresentationDirty;
+    if (renderFiles && s_filePageOffset == requestedOffset) {
+        NSMutableString *files = [NSMutableString string];
+        s_visibleFileCount = 0;
+        for (int i = 0; i < s_fileSnapshotCount; ++i) {
+            NSString *path = utf8(s_fileSnapshot[i].relative_path);
+            BOOL hidden = NO;
+            for (NSString *folder in s_collapsedFolderPaths) {
+                if ([path hasPrefix:[folder stringByAppendingString:@"/"]]) { hidden = YES; break; }
             }
+            if (hidden) continue;
+            int globalIndex = requestedOffset + i;
+            s_visibleFileIndices[s_visibleFileCount++] = globalIndex;
+            NSUInteger depth = [[path componentsSeparatedByString:@"/"] count] - 1;
+            NSString *indent = [@"" stringByPaddingToLength:MIN(depth * 2, 24)
+                withString:@" " startingAtIndex:0];
+            int filePhase = s_fileSnapshot[i].phase;
+            NSString *state = filePhase == HOP_XFER_FILE_COMPLETED ? @"完成" :
+                filePhase == HOP_XFER_FILE_FAILED ? @"失败" :
+                filePhase == HOP_XFER_FILE_SENDING ? @"发送中" :
+                filePhase == HOP_XFER_FILE_RECEIVING ? @"接收中" :
+                filePhase == HOP_XFER_FILE_VERIFYING ? @"校验中" : @"排队中";
+            NSString *kind = s_fileSnapshot[i].is_directory ?
+                ([s_collapsedFolderPaths containsObject:path] ? @"▸ 目录" : @"▾ 目录") : @"文件";
+            [files appendFormat:@"%@%@ %@    %@ / %@    %@\n", indent, kind, path,
+                byte_count(s_fileSnapshot[i].bytes_done), byte_count(s_fileSnapshot[i].bytes_total), state];
         }
-    }else if(!sameFileContext){
-        [s_xferFiles setSelectedRange:NSMakeRange(0,0)];s_fileSelectionValid=NO;
+        NSString *nextFiles = files.length ? files :
+            (s_fileTotalCount ? @"当前页中的目录内容已折叠" :
+             (hasSelected ? (selectedSnapshot.state <= HOP_XFER_TASK_QUEUED ?
+                @"任务正在准备或排队，开始后显示文件明细" : @"此任务暂无文件明细") : @"当前没有文件明细"));
+        if (![s_xferFiles.string isEqualToString:nextFiles]) {
+            s_xferFiles.string = nextFiles;
+            s_fileSelectionValid = NO;
+            if (sameFilePage && oldSelectedFileIndex >= 0) {
+                for (int line = 0; line < s_visibleFileCount; ++line)
+                    if (s_visibleFileIndices[line] == oldSelectedFileIndex) {
+                        NSUInteger start = 0;
+                        for (int row = 0; row < line; ++row) {
+                            NSRange newline = [nextFiles rangeOfString:@"\n" options:0
+                                range:NSMakeRange(start, nextFiles.length - start)];
+                            if (newline.location == NSNotFound) { start = nextFiles.length; break; }
+                            start = NSMaxRange(newline);
+                        }
+                        NSRange newline = [nextFiles rangeOfString:@"\n" options:0
+                            range:NSMakeRange(start, nextFiles.length - start)];
+                        NSUInteger end = newline.location == NSNotFound ? nextFiles.length : newline.location;
+                        if (end > start) {
+                            [s_xferFiles setSelectedRange:NSMakeRange(start, end - start)];
+                            s_fileSelectionValid = YES;
+                        }
+                        break;
+                    }
+            }
+        } else if (!sameFilePage) {
+            [s_xferFiles setSelectedRange:NSMakeRange(0, 0)];
+            s_fileSelectionValid = NO;
+        }
+        if (fileScroll) {
+            NSClipView *clip = fileScroll.contentView;
+            if (sameFilePage) [clip scrollToPoint:oldFileScrollOrigin];
+            else [s_xferFiles scrollRangeToVisible:NSMakeRange(0, 0)];
+            [fileScroll reflectScrolledClipView:clip];
+        }
+        s_filePresentationDirty = NO;
     }
-    if(fileScroll){
-        NSClipView *clip=fileScroll.contentView;
-        if(sameFileContext)[clip scrollToPoint:oldFileScrollOrigin];
-        else [s_xferFiles scrollRangeToVisible:NSMakeRange(0,0)];
-        [fileScroll reflectScrolledClipView:clip];
-    }
+
     update_transfer_actions();
-    s_refreshingTransfers=NO;
+    s_refreshingTransfers = NO;
 }
 static BOOL log_result_is_error(NSString *text) {
     return !text || [text hasPrefix:@"读取"] || [text hasPrefix:@"无法"] ||
@@ -787,37 +1029,37 @@ static void refresh_audio_status(void) {
             (audio.unavailable & HOP_AUDIO_PLAY)?@"不可用":@"等待对端发送";
         [parts addObject:[NSString stringWithFormat:@"播放：%@",state]];
     }
-    s_audioStatus.stringValue=parts.count?[parts componentsJoinedByString:@"    ·    "]:@"音频已关闭";
+    set_label_if_changed(s_audioStatus, parts.count ? [parts componentsJoinedByString:@"    ·    "] : @"音频已关闭");
 }
 static void refresh_connection_labels(void) {
     NSString *status=link_status();
-    s_headerStatus.stringValue=status;
-    s_overviewStatus.stringValue=status;
-    s_overviewPeer.stringValue=[NSString stringWithFormat:@"%@  ·  %@  ·  控制端口 %u  ·  数据端口 %u",
-        g_mac.cfg.role==HOP_ROLE_SERVER?@"服务器 · 提供键鼠":@"客户端 · 接收键鼠",g_mac.cfg.role==HOP_ROLE_SERVER?s_addresses:utf8(g_mac.cfg.peer_host), (unsigned)g_mac.cfg.port,(unsigned)g_mac.cfg.data_port];
-    s_overviewControl.stringValue=s_connected?@"已连接":@"等待连接";
-    s_overviewData.stringValue=split_ui_data_connected()?@"已连接":@"等待连接";
-    s_overviewSharing.stringValue=s_sharing?
+    set_label_if_changed(s_headerStatus,status);
+    set_label_if_changed(s_overviewStatus,status);
+    set_label_if_changed(s_overviewPeer,[NSString stringWithFormat:@"%@  ·  %@  ·  控制端口 %u  ·  数据端口 %u",
+        g_mac.cfg.role==HOP_ROLE_SERVER?@"服务器 · 提供键鼠":@"客户端 · 接收键鼠",g_mac.cfg.role==HOP_ROLE_SERVER?s_addresses:utf8(g_mac.cfg.peer_host), (unsigned)g_mac.cfg.port,(unsigned)g_mac.cfg.data_port]);
+    set_label_if_changed(s_overviewControl,s_connected?@"已连接":@"等待连接");
+    set_label_if_changed(s_overviewData,split_ui_data_connected()?@"已连接":@"等待连接");
+    set_label_if_changed(s_overviewSharing,s_sharing?
         (g_mac.cfg.role==HOP_ROLE_SERVER?@"已移交客户端":@"正在接收输入"):
-        s_connected?@"已就绪 · 等待边缘移交":@"等待连接";
-    s_connectionRole.stringValue=g_mac.cfg.role==HOP_ROLE_SERVER?@"本机角色：服务器 · 提供键鼠":@"本机角色：客户端 · 接收键鼠";
-    s_connectionStatus.stringValue=status;
-    s_connectionPeer.stringValue=g_mac.cfg.role==HOP_ROLE_SERVER?[NSString stringWithFormat:@"本机 IP：%@",s_addresses]:[NSString stringWithFormat:@"服务器 IP：%@",utf8(g_mac.cfg.peer_host)];
-    s_connectionPorts.stringValue=[NSString stringWithFormat:@"控制端口：%u    数据端口：%u",
-        (unsigned)g_mac.cfg.port,(unsigned)g_mac.cfg.data_port];
-    s_footer.stringValue=[NSString stringWithFormat:@"HopDesk  v%s    ·    %@",HOP_VERSION,status];
+        s_connected?@"已就绪 · 等待边缘移交":@"等待连接");
+    set_label_if_changed(s_connectionRole,g_mac.cfg.role==HOP_ROLE_SERVER?@"本机角色：服务器 · 提供键鼠":@"本机角色：客户端 · 接收键鼠");
+    set_label_if_changed(s_connectionStatus,status);
+    set_label_if_changed(s_connectionPeer,g_mac.cfg.role==HOP_ROLE_SERVER?[NSString stringWithFormat:@"本机 IP：%@",s_addresses]:[NSString stringWithFormat:@"服务器 IP：%@",utf8(g_mac.cfg.peer_host)]);
+    set_label_if_changed(s_connectionPorts,[NSString stringWithFormat:@"控制端口：%u    数据端口：%u",
+        (unsigned)g_mac.cfg.port,(unsigned)g_mac.cfg.data_port]);
+    set_label_if_changed(s_footer,[NSString stringWithFormat:@"HopDesk  v%s    ·    %@",HOP_VERSION,status]);
     ui_apply_status_badge(s_headerStatus,s_connected,s_sharing);
     ui_apply_status_badge(s_overviewStatus,s_connected,s_sharing);
     ui_apply_status_badge(s_overviewControl,s_connected,s_sharing);
     ui_apply_status_badge(s_overviewData,split_ui_data_connected(),NO);
     ui_apply_status_badge(s_overviewSharing,s_connected,s_sharing);
     NSString *permissions = input_permissions_status();
-    s_inputPermissionsStatus.stringValue = permissions;
-    s_overviewPermissions.stringValue = permissions;
+    set_label_if_changed(s_inputPermissionsStatus, permissions);
+    set_label_if_changed(s_overviewPermissions, permissions);
     int post = 0, listen = 0, accessibility = 0;
     BOOL known = input_permissions(&post, &listen, &accessibility);
     if (!known || !post || !listen || !accessibility) {
-        s_overviewSharing.stringValue = known ? @"权限不足 · 请检查键鼠权限" : @"后台未连接 · 权限未知";
+        set_label_if_changed(s_overviewSharing, known ? @"权限不足 · 请检查键鼠权限" : @"后台未连接 · 权限未知");
         s_overviewSharing.textColor = NSColor.systemOrangeColor;
     }
     refresh_audio_status();
@@ -991,6 +1233,11 @@ static void build_pages(NSView *root) {
     s_xferFiles.editable=NO;s_xferFiles.font=[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
     s_xferFiles.delegate=(id<NSTextViewDelegate>)s_uiController;
     scroll.documentView=s_xferFiles;[card addSubview:scroll];
+    s_filePreviousButton=ui_button(card,@"上一页",NSMakeRect(18,8,78,30),s_uiController,@selector(previousFilePage:));
+    s_filePageLabel=ui_label(card,@"暂无文件明细",NSMakeRect(104,12,210,22),11,NO);
+    s_filePreviousButton.enabled=NO;
+    s_fileNextButton=ui_button(card,@"下一页",NSMakeRect(322,8,78,30),s_uiController,@selector(nextFilePage:));
+    s_fileNextButton.enabled=NO;
     ui_button(card,@"展开/折叠目录",NSMakeRect(500,8,140,30),s_uiController,@selector(toggleFolder:));
     s_retryButton=ui_button(card,@"重试选中文件",NSMakeRect(654,8,150,30),s_uiController,@selector(retryFile:));
 
@@ -1119,11 +1366,22 @@ static void build_pages(NSView *root) {
 }
 - (void)toggleFolder:(id)sender {
     (void)sender;
-    int index=selected_visible_file_index();
-    if(index>=0 && s_fileSnapshot[index].is_directory){
-        s_collapsedFolders[index]=!s_collapsedFolders[index];
+    const hop_xfer_file_status *file=selected_file_status();
+    if(file && file->is_directory){
+        NSString *path=utf8(file->relative_path);
+        if([s_collapsedFolderPaths containsObject:path]) [s_collapsedFolderPaths removeObject:path];
+        else [s_collapsedFolderPaths addObject:path];
+        s_filePresentationDirty=YES;
         refresh_transfer_page();
     }
+}
+- (void)previousFilePage:(id)sender {
+    (void)sender;
+    if(s_filePageIndex>0){--s_filePageIndex;refresh_transfer_page();}
+}
+- (void)nextFilePage:(id)sender {
+    (void)sender;
+    if((s_filePageIndex+1)*UI_FILE_PAGE_SIZE<s_fileTotalCount){++s_filePageIndex;refresh_transfer_page();}
 }
 - (void)refreshLogs:(id)sender {(void)sender;refresh_logs();}
 - (void)copyLogs:(id)sender {
@@ -1178,7 +1436,8 @@ static void main_ui_destroy(void) {
     s_audioSend=nil;s_audioPlay=nil;s_audioStatus=nil;
     s_edgePopups[0]=nil;s_edgePopups[1]=nil;
     s_xferTitle=nil;s_xferDetail=nil;s_xferCounts=nil;s_xferProgress=nil;
-    s_xferFiles=nil;s_logView=nil;s_taskHistory=nil;s_logNote=nil;
+    s_xferFiles=nil;s_logView=nil;s_taskHistory=nil;s_logNote=nil;s_filePageLabel=nil;
+    s_filePreviousButton=nil;s_fileNextButton=nil;
     s_historyDirection=nil;s_historyState=nil;s_historyOrder=nil;
     s_retryButton=nil;s_cancelTaskButtons[0]=nil;s_cancelTaskButtons[1]=nil;
     s_taskTables[0]=nil;s_taskTables[1]=nil;
@@ -1186,12 +1445,15 @@ static void main_ui_destroy(void) {
     s_updateVersion=nil;s_updateSource=nil;
     s_inputPermissionsStatus=nil;s_overviewPermissions=nil;
     s_uiController=nil;
-    free(s_fileSnapshot);s_fileSnapshot=NULL;
-    free(s_tasksSnapshot);s_tasksSnapshot=NULL;
+    free(s_fileSnapshot);s_fileSnapshot=NULL;s_fileSnapshotCapacity=0;s_fileSnapshotCount=0;
+    free(s_tasksSnapshot);s_tasksSnapshot=NULL;s_tasksSnapshotCapacity=0;s_tasksSnapshotCount=0;
     s_saveBusy=NO;s_logBusy=NO;s_settingsDirty=NO;s_populatingSettings=NO;
     s_fileSelectionValid=NO;s_refreshingTransfers=NO;s_syncTaskSelection=NO;s_fileBatchActive=NO;
     s_visibleFileCount=0;s_fileBatch=0;s_fileDirection=HOP_XFER_DIR_NONE;s_page=0;
-    memset(s_collapsedFolders,0,sizeof(s_collapsedFolders));
+    s_filePageIndex=0;s_filePageOffset=-1;s_fileTotalCount=0;s_fileRevisionSeen=0;s_fileSnapshotFrozen=NO;s_filePresentationDirty=NO;
+    s_taskRevisionSeen=0;s_taskSendRevisionSeen=0;s_taskReceiveRevisionSeen=0;s_historyRevisionSeen=0;
+    s_historyDirectionSeen=-1;s_historyStateSeen=-1;s_historyOrderSeen=-1;
+    [s_collapsedFolderPaths removeAllObjects];s_collapsedFolderPaths=nil;
     memset(s_visibleFileIndices,0,sizeof(s_visibleFileIndices));
     (void)malloc_zone_pressure_relief(NULL,0);
 }
@@ -1209,6 +1471,8 @@ static void create_main_window(void) {
     s_mainWindow.title=@"HopDesk";
     s_mainWindow.minSize=NSMakeSize(1140,620);
     s_uiController=[[HopDeskMainController alloc] init];
+    s_collapsedFolderPaths=[NSMutableSet set];
+    s_filePageOffset=-1;
     s_mainWindow.delegate=(id<NSWindowDelegate>)s_uiController;
     NSView *root=s_mainWindow.contentView;
     root.wantsLayer=YES;root.layer.backgroundColor=[NSColor windowBackgroundColor].CGColor;

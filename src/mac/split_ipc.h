@@ -10,7 +10,7 @@
 #include "../core/xfer_status.h"
 #include "xfer.h"
 
-#define SPLIT_IPC_VERSION 2u
+#define SPLIT_IPC_VERSION 3u
 #define SPLIT_IPC_ERROR 0x80000000u
 #define SPLIT_IPC_TIMEOUT_MS 200u
 #define SPLIT_IPC_MAX_PAYLOAD (16u * 1024u * 1024u)
@@ -24,8 +24,13 @@ typedef struct {
     uint64_t id;
     int32_t capacity, direction, state, newest, index;
     uint32_t batch;
+    int32_t offset;
 } split_ipc_query;
-typedef struct { int32_t count, total; } split_ipc_list;
+typedef struct { int32_t count, total; uint64_t revision; } split_ipc_list;
+typedef struct {
+    hop_xfer_status_pair status;
+    uint64_t task_revision, history_revision;
+} split_ipc_transfer_state;
 typedef struct { int32_t result; } split_ipc_result;
 
 static inline int split_ipc_socket_path(char *out, size_t capacity) {

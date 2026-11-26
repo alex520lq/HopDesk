@@ -177,7 +177,9 @@ void status_chunk_timed(int direction,uint32_t batch,uint32_t id,uint64_t off,ui
         uint64_t read_ns,uint64_t crc_ns,uint64_t send_ns,uint64_t receive_ns) {
     pthread_mutex_lock(&s_status_lock);
     hop_xfer_tracking *t=status_for(direction);
+    uint64_t before=t->revision;
     hop_xfer_tracking_chunk(t,batch,id,off,n,hop_monotonic_ms());
+    if(t->revision!=before)t->revision=++s_status_revision;
     hop_xfer_tracking_add_time(t,batch,HOP_XFER_TIME_READ,read_ns);
     hop_xfer_tracking_add_time(t,batch,HOP_XFER_TIME_CRC,crc_ns);
     hop_xfer_tracking_add_time(t,batch,HOP_XFER_TIME_SEND,send_ns);
@@ -191,7 +193,10 @@ void status_stage_time(int direction,uint32_t batch,int stage,uint64_t elapsed_n
 }
 void status_file_phase(int direction,uint32_t batch,int index,int phase,uint32_t attempts) {
     pthread_mutex_lock(&s_status_lock);
-    hop_xfer_tracking_phase(status_for(direction),batch,index,phase,attempts);
+    hop_xfer_tracking *t=status_for(direction);
+    uint64_t before=t->revision;
+    hop_xfer_tracking_phase(t,batch,index,phase,attempts);
+    if(t->revision!=before)t->revision=++s_status_revision;
     pthread_mutex_unlock(&s_status_lock);
 }
 void status_end(int direction,uint32_t batch,int phase,const char *detail) {
@@ -235,6 +240,7 @@ static void status_set_files(uint32_t batch,const xf_entry *entries,int n) {
                 entries[i].size,(entries[i].flags&HOP_FILE_FLAG_DIR)!=0,HOP_XFER_FILE_QUEUED);
             if(entries[i].full)s_retry_paths[i]=strdup(entries[i].full);
         }
+        s_send_status.revision=++s_status_revision;
     }
     pthread_mutex_unlock(&s_status_lock);
 }
@@ -245,13 +251,16 @@ void status_image(uint32_t batch,int direction,uint64_t size) {
         if(t->count==0)t->status.bytes_total=0;
         hop_xfer_tracking_file(t,batch,1,"Image",size,0,
             direction==HOP_XFER_DIR_SEND?HOP_XFER_FILE_SENDING:HOP_XFER_FILE_RECEIVING);
+        t->revision=++s_status_revision;
     }
     pthread_mutex_unlock(&s_status_lock);
 }
 void status_add_received_file(uint32_t batch,uint32_t id,const char *path,uint64_t size,int directory) {
     pthread_mutex_lock(&s_status_lock);
+    uint64_t before=s_receive_status.revision;
     hop_xfer_tracking_file(&s_receive_status,batch,id,path,size,directory,HOP_XFER_FILE_RECEIVING);
-    if(hop_xfer_tracking_matches(&s_receive_status,batch) && path)
+    if(s_receive_status.revision!=before)s_receive_status.revision=++s_status_revision;
+    if(s_receive_status.status.batch==batch && path)
         snprintf(s_receive_status.status.name,sizeof(s_receive_status.status.name),"%s",path);
     pthread_mutex_unlock(&s_status_lock);
 }
@@ -265,14 +274,20 @@ void status_start_job(const xf_job *j) {
     if(j->is_image)status_image(j->batch,HOP_XFER_DIR_SEND,total_bytes);
     else status_set_files(j->batch,j->e,j->n);
 }
-int xfer_get_files(int direction,uint32_t batch,hop_xfer_file_status *out,int capacity) {
-    if(!out||capacity<=0)return 0;
+int xfer_get_files_page(int direction,uint32_t batch,uint32_t offset,
+                        hop_xfer_file_status *out,int capacity,
+                        int *total,uint64_t *revision) {
+    if(direction!=HOP_XFER_DIR_SEND && direction!=HOP_XFER_DIR_RECEIVE) return -1;
     pthread_mutex_lock(&s_status_lock);
-    hop_xfer_tracking *t=status_for(direction);
-    int n=t->status.batch==batch?t->count:0;if(n>capacity)n=capacity;
-    memcpy(out,t->files,(size_t)n*sizeof(*out));
+    int n=hop_xfer_tracking_files_page(status_for(direction),batch,offset,
+                                       out,capacity,total,revision);
     pthread_mutex_unlock(&s_status_lock);
     return n;
+}
+
+int xfer_get_files(int direction,uint32_t batch,hop_xfer_file_status *out,int capacity) {
+    if(!out||capacity<=0)return 0;
+    return xfer_get_files_page(direction,batch,0,out,capacity,NULL,NULL);
 }
 int xfer_retry_file(uint32_t batch,int index) {
     /* A paste batch carries a request and clipboard-version destination. A new

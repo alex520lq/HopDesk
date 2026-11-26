@@ -53,6 +53,11 @@ void hop_xfer_tracking_chunk(hop_xfer_tracking *t, uint32_t batch,
 
 void hop_xfer_tracking_phase(hop_xfer_tracking *t, uint32_t batch,
         int index, int phase, uint32_t attempts);
+/* Copy one bounded page of a retained batch. A NULL output with capacity zero
+ * is a count/revision-only query. The caller serializes access to the tracker. */
+int hop_xfer_tracking_files_page(const hop_xfer_tracking *t, uint32_t batch,
+        uint32_t offset, hop_xfer_file_status *out, int capacity,
+        int *total, uint64_t *revision);
 
 int hop_xfer_tracking_end(hop_xfer_tracking *t, uint32_t batch,
         int phase, const char *detail);

@@ -96,9 +96,11 @@ static int exchange(split_ipc_operation operation, split_ipc_query *query,
 }
 
 static int exchange_list(split_ipc_operation operation, split_ipc_query *query,
-                         void *result, size_t element_size, int *total) {
+                         void *result, size_t element_size, int *total, uint64_t *revision) {
     if (total) *total = 0;
-    if (!s_agentAvailable || !result || query->capacity <= 0) return 0;
+    if (revision) *revision = 0;
+    if (!s_agentAvailable) return 0;
+    if (query->capacity < 0 || (query->capacity && !result)) return -1;
 
     const uint64_t deadline = hop_monotonic_ms() + 250;
     size_t size = 0;
@@ -109,11 +111,13 @@ static int exchange_list(split_ipc_operation operation, split_ipc_query *query,
              rows.count >= 0 && rows.count <= query->capacity && rows.total >= rows.count;
     if (ok) {
         size_t bytes = (size_t)rows.count * element_size;
-        ok = size - sizeof(rows) == bytes && copy_socket(fd, result, bytes, 0, deadline);
+        ok = size - sizeof(rows) == bytes &&
+             (!bytes || (result && copy_socket(fd, result, bytes, 0, deadline)));
     }
     close(fd);
     if (!ok) return -1;
     if (total) *total = rows.total;
+    if (revision) *revision = rows.revision;
     return rows.count;
 }
 
@@ -144,19 +148,29 @@ int split_ui_data_connected(void) {
     return s_splitUI ? s_agentAvailable && s_status.data : xfer_connected();
 }
 
-void split_ui_get_status_pair(hop_xfer_status_pair *out) {
-    if (!s_splitUI) {
-        xfer_get_status_pair(out);
-        return;
-    }
+int split_ui_get_transfer_state(split_ipc_transfer_state *out) {
+    if (!out) return 0;
     memset(out, 0, sizeof(*out));
-    if (s_agentAvailable) (void)exchange(SPLIT_IPC_XFER_STATUS, NULL, out, sizeof(*out));
+    if (!s_splitUI) {
+        xfer_get_status_pair(&out->status);
+        hop_xfer_task_get_revisions(&out->task_revision, &out->history_revision);
+        return 1;
+    }
+    return s_agentAvailable && exchange(SPLIT_IPC_XFER_STATUS, NULL, out, sizeof(*out));
 }
 
-int split_ui_get_tasks(hop_xfer_task_snapshot *out, int capacity, int *total) {
-    if (!s_splitUI) return hop_xfer_task_list(out, capacity, total);
+void split_ui_get_status_pair(hop_xfer_status_pair *out) {
+    if (!out) return;
+    split_ipc_transfer_state state = {0};
+    if (split_ui_get_transfer_state(&state)) *out = state.status;
+    else memset(out, 0, sizeof(*out));
+}
+
+int split_ui_get_tasks(hop_xfer_task_snapshot *out, int capacity, int *total, uint64_t *revision) {
+    if (!s_splitUI)
+        return hop_xfer_task_list_revisioned(out, capacity, total, revision);
     split_ipc_query query = {.capacity = capacity};
-    return exchange_list(SPLIT_IPC_TASKS_GET, &query, out, sizeof(*out), total);
+    return exchange_list(SPLIT_IPC_TASKS_GET, &query, out, sizeof(*out), total, revision);
 }
 
 int split_ui_get_task(hop_xfer_task_id id, hop_xfer_task_snapshot *out) {
@@ -166,17 +180,30 @@ int split_ui_get_task(hop_xfer_task_id id, hop_xfer_task_snapshot *out) {
 }
 
 int split_ui_get_history(hop_xfer_task_history_record *out, int capacity, int direction,
-                         hop_xfer_task_state state, int newest, int *total) {
-    if (!s_splitUI) return hop_xfer_task_history_store_list(out, capacity, direction, state, newest, total);
+                         hop_xfer_task_state state, int newest, int *total, uint64_t *revision) {
+    if (!s_splitUI) {
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            uint64_t before = 0, after = 0;
+            hop_xfer_task_get_revisions(NULL, &before);
+            int n=hop_xfer_task_history_store_list(out, capacity, direction, state, newest, total);
+            if (n < 0) return n;
+            hop_xfer_task_get_revisions(NULL, &after);
+            if (before == after) {
+                if (revision) *revision = after;
+                return n;
+            }
+        }
+        return -1;
+    }
     split_ipc_query query = {.capacity = capacity, .direction = direction, .state = state, .newest = newest};
-    return exchange_list(SPLIT_IPC_HISTORY_GET, &query, out, sizeof(*out), total);
+    return exchange_list(SPLIT_IPC_HISTORY_GET, &query, out, sizeof(*out), total, revision);
 }
 
-int split_ui_get_files(int direction, uint32_t batch, hop_xfer_file_status *out, int capacity) {
-    if (!s_splitUI) return xfer_get_files(direction, batch, out, capacity);
-    split_ipc_query query = {.capacity = capacity, .direction = direction, .batch = batch};
-    int count = exchange_list(SPLIT_IPC_FILES_GET, &query, out, sizeof(*out), NULL);
-    return count > 0 ? count : 0;
+int split_ui_get_files(int direction, uint32_t batch, uint32_t offset,
+                       hop_xfer_file_status *out, int capacity, int *total, uint64_t *revision) {
+    if (!s_splitUI) return xfer_get_files_page(direction, batch, offset, out, capacity, total, revision);
+    split_ipc_query query = {.capacity = capacity, .direction = direction, .batch = batch, .offset = (int32_t)offset};
+    return exchange_list(SPLIT_IPC_FILES_GET, &query, out, sizeof(*out), total, revision);
 }
 
 static int action(split_ipc_operation operation, split_ipc_query *query) {
@@ -256,6 +283,91 @@ static BOOL launchctl(NSArray<NSString *> *arguments) {
     if (![task launchAndReturnError:NULL]) return NO;
     [task waitUntilExit];
     return task.terminationStatus == 0;
+}
+
+typedef struct {
+    uint64_t id;
+    int32_t capacity, direction, state, newest, index;
+    uint32_t batch;
+} legacy_split_ipc_query;
+typedef struct { int32_t count, total; } legacy_split_ipc_list;
+
+static int legacy_open_exchange(split_ipc_operation operation, const void *query,
+                                size_t query_size, uint64_t deadline, size_t *payload_size) {
+    int fd = connect_agent(deadline);
+    if (fd < 0) return -1;
+    split_ipc_header header = {htonl(2u), htonl((uint32_t)operation),
+        htonl((uint32_t)query_size), htonl(1)};
+    split_ipc_reply reply;
+    if (copy_socket(fd, &header, sizeof(header), 1, deadline) &&
+        (!query_size || copy_socket(fd, (void *)query, query_size, 1, deadline)) &&
+        copy_socket(fd, &reply, sizeof(reply), 0, deadline) &&
+        ntohl(reply.version) == 2u && ntohl(reply.request_id) == 1u &&
+        ntohl(reply.operation) == (uint32_t)operation &&
+        ntohl(reply.payload_size) <= SPLIT_IPC_MAX_PAYLOAD) {
+        *payload_size = ntohl(reply.payload_size);
+        return fd;
+    }
+    close(fd);
+    return -1;
+}
+
+/* A newly updated UI can find an older launch-agent still running. Probe its
+ * v2 task list before restarting it; never kill an agent that still owns jobs. */
+static int legacy_agent_available(void) {
+    uint64_t deadline = hop_monotonic_ms() + 300;
+    size_t size = 0;
+    int fd = legacy_open_exchange(SPLIT_IPC_STATUS, NULL, 0, deadline, &size);
+    if (fd < 0) return 0;
+    split_ipc_status status = {0};
+    int ok = size == sizeof(status) && copy_socket(fd, &status, sizeof(status), 0, deadline);
+    close(fd);
+    return ok && status.pid > 0;
+}
+
+static int legacy_agent_has_active_tasks(void) {
+    legacy_split_ipc_query query = {.capacity = HOP_TASK_MANAGER_MAX_LIVE};
+    uint64_t deadline = hop_monotonic_ms() + 500;
+    size_t size = 0;
+    int fd = legacy_open_exchange(SPLIT_IPC_TASKS_GET, &query, sizeof(query), deadline, &size);
+    if (fd < 0 || size < sizeof(legacy_split_ipc_list)) {
+        if (fd >= 0) close(fd);
+        return -1;
+    }
+    legacy_split_ipc_list list = {0};
+    int ok = copy_socket(fd, &list, sizeof(list), 0, deadline);
+    if (!ok || list.count < 0 || list.total < list.count ||
+        size != sizeof(list) + (size_t)list.count * sizeof(hop_xfer_task_snapshot)) {
+        close(fd);
+        return -1;
+    }
+    hop_xfer_task_snapshot *tasks = list.count ?
+        calloc((size_t)list.count, sizeof(*tasks)) : NULL;
+    if (list.count && !tasks) { close(fd); return -1; }
+    ok = !list.count || copy_socket(fd, tasks,
+        (size_t)list.count * sizeof(*tasks), 0, deadline);
+    close(fd);
+    if (!ok) { free(tasks); return -1; }
+    int active = 0;
+    for (int i = 0; i < list.count; ++i) {
+        if (tasks[i].state < HOP_XFER_TASK_COMPLETED) { active = 1; break; }
+    }
+    free(tasks);
+    return active;
+}
+
+static BOOL legacy_agent_stop_if_idle(void) {
+    uint64_t deadline = hop_monotonic_ms() + 500;
+    size_t size = 0;
+    int fd = legacy_open_exchange(SPLIT_IPC_STOP, NULL, 0, deadline, &size);
+    if (fd < 0 || size != sizeof(split_ipc_result)) {
+        if (fd >= 0) close(fd);
+        return NO;
+    }
+    split_ipc_result result = {0};
+    int ok = copy_socket(fd, &result, sizeof(result), 0, deadline);
+    close(fd);
+    return ok && result.result;
 }
 
 static BOOL start_agent_job(void) {
@@ -348,13 +460,41 @@ int split_ui_run(int start_agent) {
             return 0;
         }
         /* Retain the lock until AppKit exits so settings have one writer. */
-
-        if (start_agent && !split_ui_agent_available() && start_agent_job()) {
-            uint64_t deadline = hop_monotonic_ms() + 4000;
-            while (!split_ui_agent_available() && hop_monotonic_ms() < deadline)
-                usleep(50000);
-        }
         NSApplication *app = [NSApplication sharedApplication];
+
+        if (start_agent && !split_ui_agent_available()) {
+            int legacy_tasks = legacy_agent_available() ? legacy_agent_has_active_tasks() : -2;
+            if (legacy_tasks > 0 || legacy_tasks == -1) {
+                show_message(@"后台需要安全更新",
+                    legacy_tasks > 0 ?
+                    @"检测到旧版后台仍在执行传输任务。为避免中断文件传输，请等待任务完成后重新打开 HopDesk。" :
+                    @"检测到旧版后台，但暂时无法确认它是否仍拥有传输任务。为避免数据丢失，请先从旧版 HopDesk 确认所有任务结束，再重新打开。");
+                close(lock);
+                return 1;
+            }
+            if (legacy_tasks == 0) {
+                if (!legacy_agent_stop_if_idle()) {
+                    show_message(@"后台暂时无法更新",
+                        @"旧版后台拒绝停止，可能仍有任务或连接正在收尾。请稍后重新打开 HopDesk。");
+                    close(lock);
+                    return 1;
+                }
+                uint64_t stop_deadline = hop_monotonic_ms() + 2000;
+                while (legacy_agent_available() && hop_monotonic_ms() < stop_deadline)
+                    usleep(50000);
+                if (legacy_agent_available()) {
+                    show_message(@"后台正在退出",
+                        @"旧版后台尚未完全退出。请稍后重新打开 HopDesk。");
+                    close(lock);
+                    return 1;
+                }
+            }
+            if (start_agent_job()) {
+                uint64_t deadline = hop_monotonic_ms() + 4000;
+                while (!split_ui_agent_available() && hop_monotonic_ms() < deadline)
+                    usleep(50000);
+            }
+        }
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
         s_splitUI = YES;
         if (!exchange(SPLIT_IPC_CONFIG_GET, NULL, &g_mac.cfg, sizeof(g_mac.cfg))) {

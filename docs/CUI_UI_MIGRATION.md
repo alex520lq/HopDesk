@@ -19,7 +19,9 @@ Opening the main window creates a CUI app/context and its renderer. Closing the
 window destroys the CUI app, renderer, font atlas and UI-owned snapshots. The
 native tray/status item and background services remain alive. This avoids keeping
 a hidden native control tree and its UI allocations resident after the window is
-closed.
+closed. The macOS host restores the activation policy it had before opening CUI:
+the menu-bar process returns to Accessory mode, while the separate UI process
+remains Regular.
 
 The UI model is revision-driven:
 

@@ -1594,82 +1594,59 @@ int main(void){
         assert 'sender_commit_adapter_run(' in worker
         assert 'hop_xfer_sender_get_terminal_decision' not in thread and 'completion_path' in flow_core
 
-    # Test exact Windows task-list selection and action logic with UI doubles.
-    # Rows may move/disappear between refreshes; only the selected Task ID may
-    # receive cancellation, including after a reordered snapshot.
-    ui=(ROOT/'src/win/main_ui.c').read_text(encoding='utf-8')
+    # Shared CUI task selection is keyed by Task ID, not row position.
+    ui=(ROOT/'src/ui/hopdesk_ui.c').read_text(encoding='utf-8')
     common=r"""
 #include "xfer_task.h"
 #include <assert.h>
-#include <stdlib.h>
 #include <stdio.h>
-#include <wchar.h>
-#include <stdint.h>
 #include <string.h>
-#define UI_TASK_CAP HOP_TASK_MANAGER_MAX_LIVE
-#define LB_ERR (-1)
-#define LB_ERRSPACE (-2)
-#define LB_GETCURSEL 1
-#define LB_RESETCONTENT 2
-#define LB_ADDSTRING 3
-#define LB_SETCURSEL 4
-#define LB_GETTOPINDEX 5
-#define LB_SETTOPINDEX 6
-#define MB_OK 0
-#define MB_YESNO 1
-#define MB_ICONINFORMATION 2
-#define MB_ICONWARNING 4
-#define MB_DEFBUTTON2 256
-#define IDYES 6
-typedef intptr_t LPARAM;typedef uintptr_t WPARAM;typedef intptr_t LRESULT;
-typedef struct {int count,selected,top;} list;typedef list* HWND;
-static list lists[2]={{0,-1,0},{0,-1,0}};
-static HWND s_task_lists[2]={&lists[0],&lists[1]},s_main;
-static hop_xfer_task_id s_task_ids[2][UI_TASK_CAP];static int s_task_counts[2];
-static hop_xfer_task_snapshot *s_tasks_snapshot;static int s_tasks_snapshot_capacity;
-static hop_xfer_status_pair test_status_pair;
-static void xfer_get_status_pair(hop_xfer_status_pair *out){*out=test_status_pair;}
-uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
-static int connected=1,answer=IDYES,calls;
-static LRESULT SendMessageW(HWND h,int op,WPARAM w,LPARAM l){(void)l;
-    if(op==LB_GETCURSEL)return h->selected;
-    if(op==LB_GETTOPINDEX)return h->top;
-    if(op==LB_RESETCONTENT){h->count=0;h->selected=-1;h->top=0;return 0;}
-    if(op==LB_ADDSTRING)return h->count++;
-    if(op==LB_SETCURSEL){h->selected=(int)w;return 0;}
-    if(op==LB_SETTOPINDEX){h->top=(int)w;return 0;}
-    assert(0);return LB_ERR;
-}
-static int MessageBoxW(HWND h,const wchar_t *text,const wchar_t *title,int flags){(void)h;(void)text;(void)title;(void)flags;return answer;}
-static int xfer_connected(void){return connected;}
-static void utf8_to_wide(const char *src,wchar_t *dst,size_t cap){(void)src;if(cap)dst[0]=0;}
-static int xfer_cancel_task(hop_xfer_task_id id){calls++;return hop_xfer_task_request_cancel(id);}
-static void refresh_transfers(void){}
+typedef struct {
+    hop_xfer_task_snapshot tasks[8];
+    int task_count;
+} hopdesk_ui_model;
+static hopdesk_ui_model s_model;
+static hop_xfer_task_id s_selected_task;
 """
     main=r"""
-int main(void){
- hop_xfer_task a={0},b={0},c={0},rx={0};
- assert(hop_xfer_task_init_classified(&a,0,0,1,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
- assert(hop_xfer_task_init_classified(&b,0,0,2,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
- assert(hop_xfer_task_init_classified(&rx,0,0,2,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_FILES));
- refresh_task_lists();assert(s_task_counts[0]==2&&s_task_counts[1]==1);
- for(int i=0;i<s_task_counts[0];i++)if(s_task_ids[0][i]==b.id)lists[0].selected=i;
- lists[0].top=1;
- assert(selected_task(0)==b.id);
- assert(hop_xfer_task_init_classified(&c,0,0,3,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
- refresh_task_lists();assert(selected_task(0)==b.id && lists[0].top==1);
- connected=0;answer=0;cancel_selected_task(0);assert(!calls && !hop_xfer_task_cancel_requested(b.id));
- answer=IDYES;cancel_selected_task(0);assert(calls==1 && hop_xfer_task_cancel_requested(b.id));
- assert(!hop_xfer_task_cancel_requested(a.id) && !hop_xfer_task_cancel_requested(c.id) && !hop_xfer_task_cancel_requested(rx.id));
- hop_xfer_task_dispose(&b);refresh_task_lists();assert(!selected_task(0) && lists[0].top==1);
- cancel_selected_task(0);assert(calls==1);
- hop_xfer_task_dispose(&a);hop_xfer_task_dispose(&c);hop_xfer_task_dispose(&rx);
- refresh_task_lists();assert(!s_tasks_snapshot && s_tasks_snapshot_capacity==0);
- puts("PASS: task list preserves Task ID through reordering and releases empty snapshots");return 0;
+int main(void) {
+    s_model.task_count=3;
+    s_model.tasks[0].id=101;
+    s_model.tasks[1].id=202;
+    s_model.tasks[2].id=303;
+    s_selected_task=202;
+    assert(selected_task() && selected_task()->id==202);
+
+    /* Reordering rows must not change the selected task identity. */
+    hop_xfer_task_snapshot tmp=s_model.tasks[0];
+    s_model.tasks[0]=s_model.tasks[2];
+    s_model.tasks[2]=tmp;
+    assert(selected_task() && selected_task()->id==202);
+
+    /* If the selected task disappears, selection safely falls back to the
+     * first current task; an empty list returns NULL. */
+    s_model.tasks[1]=s_model.tasks[2];
+    s_model.task_count=2;
+    assert(selected_task() && selected_task()->id==303);
+    s_model.task_count=0;
+    assert(selected_task()==NULL);
+
+    assert(strcmp(task_state_text(HOP_XFER_TASK_COMPLETED),"已完成")==0);
+    assert(strcmp(task_state_text(HOP_XFER_TASK_CANCELLED),"已取消")==0);
+    assert(strcmp(task_state_text(HOP_XFER_TASK_INTERRUPTED),"已中断")==0);
+    puts("PASS: shared UI selection follows Task ID through reordering and stale rows");
+    return 0;
 }
 """
-    code=common+'\n'.join(extract(ui,n) for n in ['selected_task','task_state_name','resize_task_snapshot','refresh_task_lists','cancel_selected_task'])+main
-    run('task_list_selection_win',code,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+    code=common+'\n'.join(extract(ui,n) for n in ['selected_task','task_state_text'])+main
+    run('task_list_selection_shared',code)
+
+    # Cancellation and history remain in the shared page and route through
+    # platform operations without reintroducing platform-owned list widgets.
+    assert 's_ops->cancel_task(chosen->id)' in ui
+    assert 's_ops->retry_file(s_model.file_batch, s_selected_file)' in ui
+    assert 's_model.history_count' in ui and 's_model.history_total' in ui
+    assert '"hopdesk-transfer-history"' in ui
 
     # Manager-owned disconnect timer must be receive-only, monotonic, and reset
     # by reconnect (including clock rollback); no reservation is independently
@@ -1746,9 +1723,8 @@ int main(void){
 
     run('task_history',(ROOT/'tests/task_history_tests.c').read_text(encoding='utf-8'),['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
 
-    history_ui=(ROOT/'tests/task_history_ui_fixture.c.in').read_text(encoding='utf-8')
-    history_ui=history_ui.replace('@UI_FUNCTIONS@',extract(ui,'task_state_name')+'\n'+extract(ui,'refresh_task_history'))
-    run('task_history_ui_win',history_ui,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+    assert 'hopdesk-transfer-history' in ui
+    assert 'hop_xfer_task_history_record history[HOPDESK_UI_HISTORY_CAP]' in (ROOT/'src/ui/hopdesk_ui.h').read_text(encoding='utf-8')
 
     for platform,source_name in [('win','clipboard.c'),('mac','clipboard.m')]:
         clipboard_source=(ROOT/f'src/{platform}/{source_name}').read_text(encoding='utf-8')

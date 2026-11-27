@@ -3,6 +3,8 @@
  * These tests intentionally exercise only platform-independent code.
  */
 #include "hop.h"
+#include "config_schema.h"
+#include "cli.h"
 #include "update_manifest.h"
 #include "xfer_budget.h"
 #include "xfer_task.h"
@@ -1789,6 +1791,235 @@ static void test_xfer_task_history_store_legacy_migration(void) {
     remove("hop-core-history-store.bin.tmp");
 }
 
+typedef struct {
+    char out[32768];
+    size_t out_len;
+    char err[4096];
+    size_t err_len;
+    int agent_running;
+    int save_calls;
+    int action_calls;
+    hop_cli_action last_action;
+    hop_config live_cfg;
+} test_cli_capture;
+
+static void test_cli_write_out(void *ctx, const char *data, size_t len) {
+    test_cli_capture *c = (test_cli_capture *)ctx;
+    size_t avail = sizeof(c->out) - 1 - c->out_len;
+    if (len > avail) len = avail;
+    memcpy(c->out + c->out_len, data, len);
+    c->out_len += len;
+    c->out[c->out_len] = '\0';
+}
+
+static void test_cli_write_err(void *ctx, const char *data, size_t len) {
+    test_cli_capture *c = (test_cli_capture *)ctx;
+    size_t avail = sizeof(c->err) - 1 - c->err_len;
+    if (len > avail) len = avail;
+    memcpy(c->err + c->err_len, data, len);
+    c->err_len += len;
+    c->err[c->err_len] = '\0';
+}
+
+static void test_cli_reset_buf(test_cli_capture *c) {
+    c->out_len = 0; c->out[0] = '\0';
+    c->err_len = 0; c->err[0] = '\0';
+}
+
+static int test_cli_agent_status(void *ctx, hop_cli_status *out) {
+    test_cli_capture *c = (test_cli_capture *)ctx;
+    if (!c->agent_running) return 0;
+    memset(out, 0, sizeof(*out));
+    out->running = 1;
+    out->agent_pid = 4242;
+    out->connected = 1;
+    out->role = c->live_cfg.role;
+    out->input_mode = c->live_cfg.input_mode;
+    out->audio_requested = c->live_cfg.audio_mode;
+    snprintf(out->peer_label, sizeof(out->peer_label), "%s", "MacPeer");
+    return 1;
+}
+
+static int test_cli_agent_get_cfg(void *ctx, hop_config *out) {
+    test_cli_capture *c = (test_cli_capture *)ctx;
+    if (!c->agent_running) return 0;
+    *out = c->live_cfg;
+    return 1;
+}
+
+static int test_cli_agent_save_cfg(void *ctx, const hop_config *cfg) {
+    test_cli_capture *c = (test_cli_capture *)ctx;
+    if (!c->agent_running) return 0;
+    c->live_cfg = *cfg;
+    c->save_calls++;
+    return 1;
+}
+
+static int test_cli_agent_action(void *ctx, hop_cli_action action) {
+    test_cli_capture *c = (test_cli_capture *)ctx;
+    if (!c->agent_running) return 0;
+    c->action_calls++;
+    c->last_action = action;
+    return 1;
+}
+
+static void test_config_schema_and_runtime_apply(void) {
+    CHECK(hop_config_spec_count() >= 50u);
+    CHECK(hop_config_spec_find("port") != NULL);
+    CHECK(hop_config_spec_find("audio_port") != NULL);
+    CHECK(hop_config_spec_find("switch_push_ms") == hop_config_spec_find("switch_delay_ms"));
+    CHECK(hop_config_spec_find("nonexistent_key") == NULL);
+
+    hop_config c;
+    hop_config_defaults(&c);
+    char err[128] = {0};
+    CHECK(hop_config_validate(&c, 0, err, sizeof(err)) == 1);
+    CHECK(hop_config_validate(&c, 1, err, sizeof(err)) == 0); /* empty name/token */
+
+    /* Named edge & bool & modifier enums */
+    CHECK(hop_config_set_kv(&c, "server_edge", "bottom", err, sizeof(err)) == 1);
+    CHECK(c.server_edge == HOP_EDGE_BOTTOM);
+    CHECK(hop_config_set_kv(&c, "client_edge", "2", err, sizeof(err)) == 1);
+    CHECK(c.client_edge == HOP_EDGE_TOP);
+    CHECK(hop_config_set_kv(&c, "wheel_invert", "true", err, sizeof(err)) == 1);
+    CHECK(c.wheel_invert == 1);
+    CHECK(hop_config_set_kv(&c, "mod_ctrl", "control", err, sizeof(err)) == 1);
+    CHECK(c.mod_ctrl == HOP_MOD_TARGET_CONTROL);
+    CHECK(hop_config_set_kv(&c, "audio_port", "24829", err, sizeof(err)) == 1);
+    CHECK(c.audio_port == 24829);
+
+    /* Cross-field validation checks */
+    c.audio_port = c.port;
+    CHECK(hop_config_validate(&c, 0, err, sizeof(err)) == 0);
+    c.audio_port = 24829;
+    c.net_heartbeat_timeout_ms = c.net_heartbeat_interval_ms;
+    CHECK(hop_config_validate(&c, 0, err, sizeof(err)) == 0);
+    c.net_heartbeat_timeout_ms = 6000;
+    c.net_ctrl_queue_hard = c.net_ctrl_queue_soft - 1;
+    CHECK(hop_config_validate(&c, 0, err, sizeof(err)) == 0);
+    c.net_ctrl_queue_hard = 4096;
+    c.xfer_max_image_temp_mb = c.xfer_max_image_mb - 1;
+    CHECK(hop_config_validate(&c, 0, err, sizeof(err)) == 0);
+    c.xfer_max_image_temp_mb = 512;
+    CHECK(hop_config_validate(&c, 0, err, sizeof(err)) == 1);
+
+    /* Runtime propagation to keymap, protocol, budget */
+    c.mod_ctrl = HOP_MOD_TARGET_CONTROL;
+    c.mod_win = HOP_MOD_TARGET_COMMAND;
+    c.net_heartbeat_interval_ms = 1500;
+    c.net_heartbeat_timeout_ms = 4500;
+    c.xfer_max_jobs = 24;
+    hop_runtime_apply_config(&c);
+    CHECK(hop_vk_to_mac(0xA2) == 0x3B); /* VK_LCONTROL -> Mac Control */
+    CHECK(hop_vk_to_mac(0x5B) == 0x37); /* VK_LWIN -> Mac Command */
+    CHECK(hop_protocol_heartbeat_interval_ms() == 1500u);
+    CHECK(hop_protocol_heartbeat_timeout_ms() == 4500u);
+    hop_xfer_budget_snapshot snap;
+    hop_xfer_budget_get_snapshot(&snap);
+    CHECK(snap.limits.max_jobs == 24u);
+
+    /* Restore defaults so subsequent tests see standard values */
+    hop_config def;
+    hop_config_defaults(&def);
+    hop_runtime_apply_config(&def);
+    CHECK(hop_vk_to_mac(0xA2) == 0x37);
+    CHECK(hop_protocol_heartbeat_interval_ms() == HOP_HEARTBEAT_INTERVAL_MS);
+}
+
+static void test_cli_engine(void) {
+    const char *path = "hopdesk-cli-test.conf";
+    remove(path);
+
+    test_cli_capture cap;
+    memset(&cap, 0, sizeof(cap));
+    hop_config_defaults(&cap.live_cfg);
+    snprintf(cap.live_cfg.device_name, sizeof(cap.live_cfg.device_name), "%s", "LiveBox");
+
+    hop_cli_ops ops;
+    memset(&ops, 0, sizeof(ops));
+    ops.default_config_path = path;
+    ops.default_log_path = "hopdesk-cli-test.log";
+    ops.default_device_name = "TestDev";
+    ops.write_out = test_cli_write_out;
+    ops.write_err = test_cli_write_err;
+    ops.io_ctx = &cap;
+    ops.agent_get_status = test_cli_agent_status;
+    ops.agent_get_config = test_cli_agent_get_cfg;
+    ops.agent_save_config = test_cli_agent_save_cfg;
+    ops.agent_action = test_cli_agent_action;
+
+    const char *a_cli[] = {"hopdesk", "config", "schema", "--json"};
+    CHECK(hop_cli_is_invocation(4, a_cli) == 1);
+    const char *a_agent[] = {"hopdesk", "--agent", "--config", "x.conf"};
+    CHECK(hop_cli_is_invocation(4, a_agent) == 0);
+    CHECK(strcmp(hop_cli_extract_config_flag(4, a_agent), "x.conf") == 0);
+
+    /* 1. Schema JSON export */
+    test_cli_reset_buf(&cap);
+    CHECK(hop_cli_run(4, a_cli, &ops) == 0);
+    CHECK(strstr(cap.out, "\"ok\":true") != NULL);
+    CHECK(strstr(cap.out, "\"audio_port\"") != NULL);
+    CHECK(strstr(cap.out, "\"mouse_scale_pct\"") != NULL);
+
+    /* 2. Offline config set + atomic save + warnings */
+    test_cli_reset_buf(&cap);
+    const char *a_set[] = {"hopdesk", "config", "set",
+                           "host=127.0.0.1", "token=my-secret", "mouse_scale_pct=125",
+                           "wheel_invert=true", "audio_port=24820", "--json"};
+    CHECK(hop_cli_run(9, a_set, &ops) == 0);
+    CHECK(strstr(cap.out, "\"ok\":true") != NULL);
+    CHECK(strstr(cap.out, "\"agent_notified\":false") != NULL);
+    CHECK(strstr(cap.out, "\"mouse_scale_pct\"") != NULL);
+    CHECK(strstr(cap.out, "\"audio_port\"") != NULL);
+
+    /* 3. Secret masking on get vs --show-secret */
+    test_cli_reset_buf(&cap);
+    const char *a_get[] = {"hopdesk", "config", "get", "token", "mouse_scale_pct", "--json"};
+    CHECK(hop_cli_run(6, a_get, &ops) == 0);
+    CHECK(strstr(cap.out, "\"token\":\"***\"") != NULL);
+    CHECK(strstr(cap.out, "\"mouse_scale_pct\":125") != NULL);
+
+    test_cli_reset_buf(&cap);
+    const char *a_get_sec[] = {"hopdesk", "config", "get", "token", "--show-secret", "--json"};
+    CHECK(hop_cli_run(6, a_get_sec, &ops) == 0);
+    CHECK(strstr(cap.out, "\"token\":\"my-secret\"") != NULL);
+
+    /* 4. Strict validation passes once token & name are set */
+    test_cli_reset_buf(&cap);
+    const char *a_val[] = {"hopdesk", "config", "validate", "--strict", "--json"};
+    CHECK(hop_cli_run(5, a_val, &ops) == 0);
+    CHECK(strstr(cap.out, "\"valid\":true") != NULL);
+
+    /* 5. Invalid range rejected without corrupting file */
+    test_cli_reset_buf(&cap);
+    const char *a_bad[] = {"hopdesk", "config", "set", "mouse_scale_pct=999", "--json"};
+    CHECK(hop_cli_run(5, a_bad, &ops) == 1);
+    CHECK(strstr(cap.out, "\"ok\":false") != NULL);
+
+    /* 6. Live agent IPC path: status, set, action */
+    cap.agent_running = 1;
+    test_cli_reset_buf(&cap);
+    const char *a_st[] = {"hopdesk", "status", "--json"};
+    CHECK(hop_cli_run(3, a_st, &ops) == 0);
+    CHECK(strstr(cap.out, "\"running\":true") != NULL);
+    CHECK(strstr(cap.out, "\"agent_pid\":4242") != NULL);
+
+    test_cli_reset_buf(&cap);
+    const char *a_live_set[] = {"hopdesk", "config", "set", "switch_delay_ms=180", "--json"};
+    CHECK(hop_cli_run(5, a_live_set, &ops) == 0);
+    CHECK(cap.save_calls == 1);
+    CHECK(cap.live_cfg.switch_delay_ms == 180);
+    CHECK(strstr(cap.out, "\"agent_notified\":true") != NULL);
+    CHECK(strstr(cap.out, "\"applied_hot\":[\"switch_delay_ms\"]") != NULL);
+
+    test_cli_reset_buf(&cap);
+    const char *a_act[] = {"hopdesk", "action", "reload", "--json"};
+    CHECK(hop_cli_run(4, a_act, &ops) == 0);
+    CHECK(cap.action_calls == 1 && cap.last_action == HOP_CLI_ACTION_RELOAD);
+
+    remove(path);
+}
+
 int main(void) {
     hop_crc32_init();
 
@@ -1799,6 +2030,8 @@ int main(void) {
     RUN_TEST(test_token_authentication);
     RUN_TEST(test_config_defaults_and_loading);
     RUN_TEST(test_dual_roles);
+    RUN_TEST(test_config_schema_and_runtime_apply);
+    RUN_TEST(test_cli_engine);
     RUN_TEST(test_keymap);
     RUN_TEST(test_keymap_ranges);
     RUN_TEST(test_decoder_reset_mid_frame);

@@ -163,7 +163,9 @@ static int accept_control(void){
 static int do_connect(void) {
     const char *host = g_mac.cfg.peer_host;
     if(!host[0])return -1;
-    return net_connect_timeout(host, g_mac.cfg.port, HOP_CONNECT_TIMEOUT_MS);
+    unsigned connect_ms = g_mac.cfg.net_connect_timeout_ms >= 500
+        ? (unsigned)g_mac.cfg.net_connect_timeout_ms : (unsigned)HOP_CONNECT_TIMEOUT_MS;
+    return net_connect_timeout(host, g_mac.cfg.port, connect_ms);
 }
 
 /* 给已连接的 socket 打开 TCP keepalive（控制通道与数据通道都用）。
@@ -316,7 +318,8 @@ static void *net_thread(void *arg) {
                 hop_log(HOP_LOG_WARN,"net: TCP control connection failed: host=%s port=%u; check address, network and firewall",
                         g_mac.cfg.peer_host,(unsigned)g_mac.cfg.port);
             for(int i=0;i<backoff*10&&!s_stop&&!s_manual_disconnect&&!s_drop_requested;++i)usleep(100000);
-            backoff = s_drop_requested ? 1 : (backoff < 10 ? backoff * 2 : 10);
+            int max_b = g_mac.cfg.net_reconnect_max_sec >= 1 ? g_mac.cfg.net_reconnect_max_sec : 10;
+            backoff = s_drop_requested ? 1 : (backoff < max_b ? backoff * 2 : max_b);
             continue;
         }
         pthread_mutex_lock(&s_lock);
@@ -329,7 +332,9 @@ static void *net_thread(void *arg) {
         net_set_keepalive(s);
         int nodelay = 1;
         setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
-        struct timeval rcv = {0, 500000}, snd = {HOP_CTRL_SEND_TIMEOUT_MS / 1000, 0};
+        unsigned snd_ms = g_mac.cfg.net_send_timeout_ms >= 500
+            ? (unsigned)g_mac.cfg.net_send_timeout_ms : (unsigned)HOP_CTRL_SEND_TIMEOUT_MS;
+        struct timeval rcv = {0, 500000}, snd = {(time_t)(snd_ms / 1000u), (suseconds_t)((snd_ms % 1000u) * 1000u)};
         setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &rcv, sizeof(rcv));
         setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &snd, sizeof(snd));
         hop_decoder_reset(s_dec);
@@ -370,7 +375,8 @@ static void *net_thread(void *arg) {
         if (!s_manual_disconnect) {
             s_drop_requested = 0;
             for(int i=0;i<backoff*10&&!s_stop&&!s_manual_disconnect&&!s_drop_requested;++i)usleep(100000);
-            backoff = s_drop_requested ? 1 : (backoff < 10 ? backoff * 2 : 10);
+            int max_b = g_mac.cfg.net_reconnect_max_sec >= 1 ? g_mac.cfg.net_reconnect_max_sec : 10;
+            backoff = s_drop_requested ? 1 : (backoff < max_b ? backoff * 2 : max_b);
         }
     }
     if(s_listener>=0){close(s_listener);s_listener=-1;}

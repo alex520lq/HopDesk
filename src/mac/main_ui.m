@@ -252,14 +252,18 @@ static void save_config(const hop_config *config) {
     copy = *config;
     s_save_pending = 1;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        int ok = hop_config_save_atomic(&copy, g_mac.config_path);
+        int saved = 0;
+        if (split_ui_is_active()) {
+            saved = split_ui_save_config(&copy);
+        } else if (hop_config_save_atomic(&copy, g_mac.config_path)) {
+            saved = mac_apply_hot_config(&copy) ? 1 : 2;
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (ok) {
+            if (saved > 0) {
                 s_ui_config = copy;
-                (void)split_ui_set_input_mode(copy.input_mode);
-                if (split_ui_set_audio_mode(copy.audio_mode))
+                if (saved == 1)
                     hopdesk_ui_save_complete(1,
-                        "设置已保存。键鼠与声音能力已即时应用；连接方式、端口与认证参数重启后生效。");
+                        "设置已保存。支持热生效的参数已即时应用；连接方式与端口参数重启后生效。");
                 else
                     hopdesk_ui_save_complete(1,
                         "设置已保存，但后台未能应用声音能力。请确认后台运行；重启后会按已保存配置重试。");

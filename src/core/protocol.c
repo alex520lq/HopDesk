@@ -321,6 +321,37 @@ int hop_decoder_feed(hop_decoder *d, const uint8_t *buf, uint32_t n) {
 
 /* ---- 控制通道会话辅助 ---- */
 
+static uint32_t s_heartbeat_interval_ms = HOP_HEARTBEAT_INTERVAL_MS;
+static uint32_t s_heartbeat_timeout_ms  = HOP_HEARTBEAT_TIMEOUT_MS;
+static uint32_t s_handshake_timeout_ms  = HOP_HANDSHAKE_TIMEOUT_MS;
+static int      s_ctrl_queue_soft       = HOP_CTRL_QUEUE_SOFT;
+static int      s_ctrl_queue_hard       = HOP_CTRL_QUEUE_HARD;
+static size_t   s_ctrl_queue_bytes      = HOP_CTRL_QUEUE_BYTES;
+
+void hop_protocol_configure(uint32_t heartbeat_interval_ms,
+                            uint32_t heartbeat_timeout_ms,
+                            uint32_t handshake_timeout_ms,
+                            int ctrl_queue_soft,
+                            int ctrl_queue_hard,
+                            size_t ctrl_queue_bytes) {
+    if (heartbeat_interval_ms >= 500u && heartbeat_interval_ms <= 30000u)
+        s_heartbeat_interval_ms = heartbeat_interval_ms;
+    if (heartbeat_timeout_ms > s_heartbeat_interval_ms && heartbeat_timeout_ms <= 120000u)
+        s_heartbeat_timeout_ms = heartbeat_timeout_ms;
+    if (handshake_timeout_ms >= 1000u && handshake_timeout_ms <= 60000u)
+        s_handshake_timeout_ms = handshake_timeout_ms;
+    if (ctrl_queue_soft >= 64 && ctrl_queue_soft <= 16384)
+        s_ctrl_queue_soft = ctrl_queue_soft;
+    if (ctrl_queue_hard >= s_ctrl_queue_soft && ctrl_queue_hard <= 32768)
+        s_ctrl_queue_hard = ctrl_queue_hard;
+    if (ctrl_queue_bytes >= 1024u * 1024u && ctrl_queue_bytes <= 64u * 1024u * 1024u)
+        s_ctrl_queue_bytes = ctrl_queue_bytes;
+}
+
+uint32_t hop_protocol_heartbeat_interval_ms(void) { return s_heartbeat_interval_ms; }
+uint32_t hop_protocol_heartbeat_timeout_ms(void)  { return s_heartbeat_timeout_ms; }
+uint32_t hop_protocol_handshake_timeout_ms(void)  { return s_handshake_timeout_ms; }
+
 int hop_msg_droppable(uint8_t type) {
     switch (type) {
         case HOP_MSG_MOUSE_MOVE:   /* 相对位移晚到不如不到：队列已积压时光标本来就跟不上 */
@@ -336,11 +367,11 @@ int hop_msg_droppable(uint8_t type) {
 hop_queue_verdict hop_ctrl_queue_admit(uint8_t type, int count, size_t queued_bytes,
                                        uint32_t len) {
     int droppable = hop_msg_droppable(type);
-    if (queued_bytes > HOP_CTRL_QUEUE_BYTES ||
-        (size_t)len > HOP_CTRL_QUEUE_BYTES - queued_bytes)
+    if (queued_bytes > s_ctrl_queue_bytes ||
+        (size_t)len > s_ctrl_queue_bytes - queued_bytes)
         return droppable ? HOP_Q_DROP : HOP_Q_OVERFLOW;
-    if (droppable) return count >= HOP_CTRL_QUEUE_SOFT ? HOP_Q_DROP : HOP_Q_ADMIT;
-    if (count >= HOP_CTRL_QUEUE_HARD) return HOP_Q_OVERFLOW;
+    if (droppable) return count >= s_ctrl_queue_soft ? HOP_Q_DROP : HOP_Q_ADMIT;
+    if (count >= s_ctrl_queue_hard) return HOP_Q_OVERFLOW;
     return HOP_Q_ADMIT;
 }
 

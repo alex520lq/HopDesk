@@ -1,8 +1,27 @@
 #include "xfer_rx_core.h"
 
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+static char s_rx_configured_dir[HOP_RX_DIR_MAX];
+static uint64_t s_rx_disconnect_budget_ms = HOP_XFER_RX_DISCONNECT_BUDGET_MS;
+
+void hop_xfer_rx_configure(const char *rx_dir, uint64_t disconnect_budget_ms) {
+    if (rx_dir) snprintf(s_rx_configured_dir, sizeof(s_rx_configured_dir), "%s", rx_dir);
+    else s_rx_configured_dir[0] = '\0';
+    if (disconnect_budget_ms >= 5000ull && disconnect_budget_ms <= 600000ull)
+        s_rx_disconnect_budget_ms = disconnect_budget_ms;
+}
+
+const char *hop_xfer_rx_configured_dir(void) {
+    return s_rx_configured_dir;
+}
+
+uint64_t hop_xfer_rx_disconnect_budget_ms(void) {
+    return s_rx_disconnect_budget_ms;
+}
 
 /* ---- DONE Idempotency Receipt ---- */
 

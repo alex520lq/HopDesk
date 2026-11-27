@@ -38,8 +38,16 @@ uint32_t hop_xfer_rate_feedback_from_budget(hop_xfer_rate_limiter *rate,
                                              uint64_t ack_rtt_us) {
     hop_xfer_budget_snapshot snapshot;
     hop_xfer_budget_get_snapshot(&snapshot);
-    uint32_t pressure = hop_xfer_rate_queue_pressure_permille(
-        snapshot.rx_queue_bytes, snapshot.rx_queue_slots);
+    uint64_t max_bytes = snapshot.limits.max_rx_queue_bytes
+        ? snapshot.limits.max_rx_queue_bytes : HOP_XFER_DEFAULT_RX_QUEUE_BYTES;
+    uint32_t max_slots = snapshot.limits.max_rx_queue_slots
+        ? snapshot.limits.max_rx_queue_slots : HOP_XFER_DEFAULT_RX_QUEUE_SLOTS;
+    uint64_t bytes = snapshot.rx_queue_bytes >= max_bytes
+        ? 1000ull : snapshot.rx_queue_bytes * 1000ull / max_bytes;
+    uint64_t slots = snapshot.rx_queue_slots >= max_slots
+        ? 1000ull : (uint64_t)snapshot.rx_queue_slots * 1000ull / max_slots;
+    uint64_t p = bytes > slots ? bytes : slots;
+    uint32_t pressure = (uint32_t)(p > 1000ull ? 1000ull : p);
     hop_xfer_rate_feedback(rate, ack_rtt_us, pressure);
     return pressure;
 }

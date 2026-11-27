@@ -8,6 +8,7 @@
 #include "split_ui.h"
 #include "xfer.h"
 #include "update.h"
+#include "../core/config_schema.h"
 #include "../platform/audio_link.h"
 #include <sddl.h>
 #include <stdio.h>
@@ -17,14 +18,16 @@
 #ifndef PIPE_REJECT_REMOTE_CLIENTS
 #define PIPE_REJECT_REMOTE_CLIENTS 0x00000008
 #endif
-#define WIN_SPLIT_VERSION 1u
+#define WIN_SPLIT_VERSION 2u
 #define WIN_SPLIT_IO_MS 1500u
 #define WIN_SPLIT_ACTION_MS 5000u
 #define WIN_SPLIT_ADDR_TTL_MS 10000u
 #define WIN_SPLIT_MODEL_BYTES ((DWORD)offsetof(hopdesk_ui_model, logs))
+#define WIN_CTRL_PIPE_NAME L"\\\\.\\pipe\\HopDesk.Control.v1"
 enum { IPC_SNAPSHOT = 1, IPC_SAVE, IPC_CANCEL, IPC_RETRY,
        IPC_RECONNECT, IPC_DISCONNECT, IPC_DISPLAY, IPC_UPDATE,
-       IPC_INPUT_MODE, IPC_THEME };
+       IPC_INPUT_MODE, IPC_THEME, IPC_CLI_STATUS, IPC_CLI_CONFIG_GET,
+       IPC_CLI_RELOAD };
 typedef struct {
     uint32_t version, op;
     uint64_t task;
@@ -37,7 +40,10 @@ typedef struct {
     int32_t result, page;
 } ipc_reply;
 static HWND s_owner;
-static HANDLE s_pipe = INVALID_HANDLE_VALUE, s_stop, s_done, s_worker;
+static HANDLE s_pipe = INVALID_HANDLE_VALUE, s_ctrl_pipe = INVALID_HANDLE_VALUE;
+static HANDLE s_stop, s_done, s_worker, s_ctrl_worker;
+static CRITICAL_SECTION s_ipc_lock;
+static int s_ipc_lock_init;
 static HANDLE s_child, s_job;
 static volatile LONG s_child_pid, s_pending;
 static int s_pending_page = -1;
@@ -116,18 +122,18 @@ static int io_exact(HANDLE pipe, void *buffer, DWORD size, int writing,
     CloseHandle(ov.hEvent);
     return ok;
 }
-static int accept_client(void) {
+static int accept_pipe(HANDLE pipe) {
     OVERLAPPED ov = {0};
     DWORD n = 0;
     int ok = 0;
     ov.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (!ov.hEvent) return 0;
-    if (ConnectNamedPipe(s_pipe, &ov)) ok = 1;
+    if (ConnectNamedPipe(pipe, &ov)) ok = 1;
     else {
         DWORD error = GetLastError();
         if (error == ERROR_PIPE_CONNECTED) ok = 1;
         else if (error == ERROR_IO_PENDING)
-            ok = io_finish(s_pipe, &ov, s_stop, INFINITE, &n);
+            ok = io_finish(pipe, &ov, s_stop, INFINITE, &n);
     }
     CloseHandle(ov.hEvent);
     return ok;
@@ -239,32 +245,17 @@ static void agent_snapshot(hopdesk_ui_model *model,
 }
 
 
-/* Identical executable ABI, bounded strings and ranges checked at boundary. */
-static int valid_text(const char *p, size_t size) {
-    const char *end = (const char *)memchr(p, 0, size);
-    if (!end) return 0;
-    for (; p < end; ++p) if (*p == '\r' || *p == '\n') return 0;
-    return 1;
+/* Identical executable ABI; unified Core schema validation at boundary. */
+static int valid_config(const hop_config *c, int strict) {
+    return hop_config_validate(c, strict, NULL, 0);
 }
-static int valid_config(const hop_config *c) {
-    return valid_text(c->token, sizeof(c->token)) && c->token[0] &&
-        valid_text(c->peer_host, sizeof(c->peer_host)) &&
-        valid_text(c->device_name, sizeof(c->device_name)) && c->device_name[0] &&
-        valid_text(c->mac_input_cmd, sizeof(c->mac_input_cmd)) &&
-        valid_text(c->mac_sleep_cmd, sizeof(c->mac_sleep_cmd)) &&
-        (c->role == HOP_ROLE_SERVER || (c->role == HOP_ROLE_CLIENT && c->peer_host[0])) &&
-        !(c->input_mode & ~HOP_INPUT_MODES) &&
-        !(c->audio_mode & ~HOP_AUDIO_MODES) &&
-        c->ui_theme >= HOP_THEME_SYSTEM && c->ui_theme <= HOP_THEME_DARK &&
-        c->port && c->data_port && c->port != c->data_port &&
-        c->server_edge >= 0 && c->server_edge <= 3 && c->client_edge >= 0 && c->client_edge <= 3 &&
-        c->screen_w > 0 && c->screen_h > 0 &&
-        c->switch_delay_ms >= 0 && c->switch_delay_ms <= 5000 &&
-        c->switch_cooldown_ms >= 0 && c->switch_cooldown_ms <= 10000 &&
-        c->edge_margin_px >= 0 && c->edge_margin_px <= 1000 &&
-        c->disp_wake_sec >= 1 && c->disp_wake_sec <= 3600 &&
-        c->xfer_chunk_kb >= 64 && c->xfer_chunk_kb <= 4096 &&
-        c->xfer_rate_limit_mib >= 16 && c->xfer_rate_limit_mib <= 4096;
+static void ensure_agent_config_loaded(void) {
+    if (!s_agent_config_loaded) {
+        s_agent_config = g_app.cfg;
+        (void)hop_config_load(&s_agent_config, g_app.config_path);
+        s_agent_config_loaded = 1;
+    }
+    s_agent_config.input_mode = g_app.cfg.input_mode;
 }
 void win_split_agent_dispatch(void) {
     if (InterlockedCompareExchange(&s_pending, 2, 1) != 1) return;
@@ -283,23 +274,72 @@ void win_split_agent_dispatch(void) {
             s_pending_page = -1;
         }
         break;
-    case IPC_SAVE:
-        if (valid_config(&s_request.config) &&
-            hop_config_save_atomic(&s_request.config, g_app.config_path)) {
-            unsigned prev_input = g_app.cfg.input_mode;
-            unsigned next_input = s_request.config.input_mode & HOP_INPUT_MODES;
-            unsigned takeover = next_input & ~prev_input;
-            s_agent_config = s_request.config;
-            s_agent_config_loaded = 1;
-            g_app.cfg.audio_mode = s_request.config.audio_mode;
-            g_app.cfg.ui_theme = s_request.config.ui_theme;
-            if (next_input != prev_input)
-                win_apply_input_mode(next_input, takeover, 0);
-            else
-                win_send_capabilities(0);
-            s_reply.result = hop_audio_set_mode(&g_app.cfg, g_app.cfg.audio_mode) ? 1 : 2;
+    case IPC_CLI_STATUS:
+        if (s_payload) {
+            hop_cli_status st;
+            memset(&st, 0, sizeof(st));
+            st.running = 1;
+            st.agent_pid = (int)GetCurrentProcessId();
+            st.connected = g_app.state != HOP_LINK_DOWN;
+            st.sharing = g_app.state == HOP_LINK_SHARING;
+            st.data_connected = xfer_connected();
+            st.manually_disconnected = g_app.net && net_server_is_disconnected(g_app.net);
+            st.input_mode = g_app.cfg.input_mode;
+            st.peer_input_mode = g_app.peer_input_mode;
+            st.peer_audio_mode = g_app.peer_audio_mode;
+            st.peer_capabilities_known = g_app.peer_capabilities_known;
+            st.role = g_app.cfg.role;
+            {
+                hop_audio_status audio = hop_audio_get_status();
+                st.audio_requested = audio.requested;
+                st.audio_active = audio.active;
+                st.audio_unavailable = audio.unavailable;
+            }
+            {
+                int total = 0;
+                uint64_t rev = 0;
+                (void)hop_xfer_task_list_revisioned(NULL, 0, &total, &rev);
+                st.active_tasks = total;
+            }
+            if (st.connected && g_app.peer_name[0])
+                snprintf(st.peer_label, sizeof(st.peer_label), "%s", g_app.peer_name);
+            else if (g_app.cfg.role == HOP_ROLE_CLIENT && g_app.cfg.peer_host[0])
+                snprintf(st.peer_label, sizeof(st.peer_label), "%s", g_app.cfg.peer_host);
+            memcpy(s_payload, &st, sizeof(st));
+            s_reply.bytes = (uint32_t)sizeof(st);
+            s_reply.result = 1;
         }
         break;
+    case IPC_CLI_CONFIG_GET:
+        if (s_payload) {
+            ensure_agent_config_loaded();
+            memcpy(s_payload, &s_agent_config, sizeof(s_agent_config));
+            s_reply.bytes = (uint32_t)sizeof(s_agent_config);
+            s_reply.result = 1;
+        }
+        break;
+    case IPC_SAVE:
+        if (valid_config(&s_request.config, s_request.action != 0) &&
+            hop_config_save_atomic(&s_request.config, g_app.config_path)) {
+            s_agent_config = s_request.config;
+            s_agent_config_loaded = 1;
+            s_reply.result = win_apply_hot_config(&s_request.config) ? 1 : 2;
+        }
+        break;
+    case IPC_CLI_RELOAD: {
+        hop_config reloaded;
+        hop_config_defaults(&reloaded);
+        snprintf(reloaded.device_name, sizeof(reloaded.device_name), "%s", "Alex");
+        reloaded.screen_w = g_app.cfg.screen_w;
+        reloaded.screen_h = g_app.cfg.screen_h;
+        if (hop_config_load(&reloaded, g_app.config_path)) {
+            s_agent_config = reloaded;
+            s_agent_config_loaded = 1;
+            (void)win_apply_hot_config(&reloaded);
+            s_reply.result = 1;
+        }
+        break;
+    }
     case IPC_INPUT_MODE:
         if (s_request.action >= 0 && !((unsigned)s_request.action & ~HOP_INPUT_MODES)) {
             unsigned prev_input = g_app.cfg.input_mode;
@@ -359,6 +399,29 @@ void win_split_agent_dispatch(void) {
     InterlockedExchange(&s_pending, 0);
     SetEvent(s_done);
 }
+static void serve_pipe_request(HANDLE pipe, const ipc_request *req, DWORD payload_cap) {
+    unsigned char ack = 0;
+    EnterCriticalSection(&s_ipc_lock);
+    s_request = *req;
+    s_payload = payload_cap ? malloc(payload_cap) : NULL;
+    memset(&s_reply, 0, sizeof(s_reply));
+    s_reply.version = WIN_SPLIT_VERSION;
+    s_reply.op = s_request.op;
+    s_reply.page = -1;
+    ResetEvent(s_done);
+    InterlockedExchange(&s_pending, 1);
+    if (PostMessageW(s_owner, WM_APP_SPLIT_REQUEST, 0, 0)) {
+        HANDLE events[2] = {s_stop, s_done};
+        if (WaitForMultipleObjects(2, events, FALSE, INFINITE) == WAIT_OBJECT_0 + 1 &&
+            io_exact(pipe, &s_reply, sizeof(s_reply), 1, s_stop, WIN_SPLIT_IO_MS) &&
+            (!s_reply.bytes || io_exact(pipe, s_payload, s_reply.bytes, 1, s_stop, WIN_SPLIT_IO_MS)))
+            (void)io_exact(pipe, &ack, 1, 0, s_stop, WIN_SPLIT_IO_MS);
+    }
+    InterlockedExchange(&s_pending, 0);
+    free(s_payload);
+    s_payload = NULL;
+    LeaveCriticalSection(&s_ipc_lock);
+}
 static DWORD WINAPI agent_worker(LPVOID unused) {
     (void)unused;
     /* Pre-populate local IPv4 addresses off the agent message/hook thread. */
@@ -366,9 +429,9 @@ static DWORD WINAPI agent_worker(LPVOID unused) {
     s_cached_addresses_tick = GetTickCount64();
     while (WaitForSingleObject(s_stop, 0) != WAIT_OBJECT_0) {
         ULONG client = 0;
-        unsigned char ack = 0;
+        ipc_request req;
         int did_snapshot = 0;
-        if (!accept_client()) {
+        if (!accept_pipe(s_pipe)) {
             if (WaitForSingleObject(s_stop, 0) == WAIT_OBJECT_0) break;
             DisconnectNamedPipe(s_pipe);
             Sleep(20);
@@ -377,30 +440,11 @@ static DWORD WINAPI agent_worker(LPVOID unused) {
         if (!GetNamedPipeClientProcessId(s_pipe, &client) || !client ||
             client != (ULONG)InterlockedCompareExchange(&s_child_pid, 0, 0))
             goto disconnect;
-        if (!io_exact(s_pipe, &s_request, sizeof(s_request), 0, s_stop, WIN_SPLIT_IO_MS) ||
-            s_request.version != WIN_SPLIT_VERSION ||
-            s_request.op < IPC_SNAPSHOT || s_request.op > IPC_THEME) goto disconnect;
-        did_snapshot = s_request.op == IPC_SNAPSHOT;
-        s_payload = did_snapshot ? malloc(WIN_SPLIT_MODEL_BYTES) : NULL;
-        memset(&s_reply, 0, sizeof(s_reply));
-        s_reply.version = WIN_SPLIT_VERSION;
-        s_reply.op = s_request.op;
-        s_reply.page = -1;
-        ResetEvent(s_done);
-        InterlockedExchange(&s_pending, 1);
-        if (PostMessageW(s_owner, WM_APP_SPLIT_REQUEST, 0, 0)) {
-            HANDLE events[2] = {s_stop, s_done};
-            /* Main owns the operation until done. Stop is signalled only
-             * after the main loop has returned. */
-            if (WaitForMultipleObjects(2, events, FALSE, INFINITE) == WAIT_OBJECT_0 + 1 &&
-                io_exact(s_pipe, &s_reply, sizeof(s_reply), 1, s_stop, WIN_SPLIT_IO_MS) &&
-                (!s_reply.bytes || io_exact(s_pipe, s_payload, s_reply.bytes, 1, s_stop, WIN_SPLIT_IO_MS)))
-                /* DisconnectNamedPipe discards unread bytes; wait for receipt. */
-                (void)io_exact(s_pipe, &ack, 1, 0, s_stop, WIN_SPLIT_IO_MS);
-        }
-        InterlockedExchange(&s_pending, 0);
-        free(s_payload);
-        s_payload = NULL;
+        if (!io_exact(s_pipe, &req, sizeof(req), 0, s_stop, WIN_SPLIT_IO_MS) ||
+            req.version != WIN_SPLIT_VERSION ||
+            req.op < IPC_SNAPSHOT || req.op > IPC_THEME) goto disconnect;
+        did_snapshot = req.op == IPC_SNAPSHOT;
+        serve_pipe_request(s_pipe, &req, did_snapshot ? WIN_SPLIT_MODEL_BYTES : 0);
     disconnect:
         DisconnectNamedPipe(s_pipe);
         if (did_snapshot && WaitForSingleObject(s_stop, 0) != WAIT_OBJECT_0 &&
@@ -408,6 +452,35 @@ static DWORD WINAPI agent_worker(LPVOID unused) {
             local_addresses(s_cached_addresses, sizeof(s_cached_addresses));
             s_cached_addresses_tick = GetTickCount64();
         }
+    }
+    return 0;
+}
+static DWORD WINAPI ctrl_worker(LPVOID unused) {
+    (void)unused;
+    while (WaitForSingleObject(s_stop, 0) != WAIT_OBJECT_0) {
+        ipc_request req;
+        DWORD payload_cap = 0;
+        if (!accept_pipe(s_ctrl_pipe)) {
+            if (WaitForSingleObject(s_stop, 0) == WAIT_OBJECT_0) break;
+            DisconnectNamedPipe(s_ctrl_pipe);
+            Sleep(20);
+            continue;
+        }
+        if (!io_exact(s_ctrl_pipe, &req, sizeof(req), 0, s_stop, WIN_SPLIT_IO_MS) ||
+            req.version != WIN_SPLIT_VERSION) goto disconnect;
+        switch (req.op) {
+        case IPC_CLI_STATUS:     payload_cap = (DWORD)sizeof(hop_cli_status); break;
+        case IPC_CLI_CONFIG_GET: payload_cap = (DWORD)sizeof(hop_config); break;
+        case IPC_SAVE:
+        case IPC_CLI_RELOAD:
+        case IPC_RECONNECT:
+        case IPC_DISCONNECT:
+        case IPC_DISPLAY:        payload_cap = 0; break;
+        default: goto disconnect;
+        }
+        serve_pipe_request(s_ctrl_pipe, &req, payload_cap);
+    disconnect:
+        DisconnectNamedPipe(s_ctrl_pipe);
     }
     return 0;
 }
@@ -421,11 +494,21 @@ int win_split_agent_start(HWND owner) {
     s_pipe = CreateNamedPipeW(name, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
         PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
         1, 4096, 4096, 0, &sa);
+    s_ctrl_pipe = CreateNamedPipeW(WIN_CTRL_PIPE_NAME,
+        PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+        1, 4096, 4096, 0, &sa);
     LocalFree(sa.lpSecurityDescriptor);
-    if (s_pipe == INVALID_HANDLE_VALUE) return 0;
+    if (s_pipe == INVALID_HANDLE_VALUE) { win_split_agent_stop(); return 0; }
+    InitializeCriticalSection(&s_ipc_lock);
+    s_ipc_lock_init = 1;
     s_stop = CreateEventW(NULL, TRUE, FALSE, NULL);
     s_done = CreateEventW(NULL, TRUE, FALSE, NULL);
-    if (s_stop && s_done) s_worker = CreateThread(NULL, 0, agent_worker, NULL, 0, NULL);
+    if (s_stop && s_done) {
+        s_worker = CreateThread(NULL, 0, agent_worker, NULL, 0, NULL);
+        if (s_ctrl_pipe != INVALID_HANDLE_VALUE)
+            s_ctrl_worker = CreateThread(NULL, 0, ctrl_worker, NULL, 0, NULL);
+    }
     if (!s_worker) { win_split_agent_stop(); return 0; }
     return 1;
 }
@@ -497,9 +580,12 @@ void win_split_agent_stop(void) {
     /* Only on main thread after its message loop has ended. */
     if (s_stop) SetEvent(s_stop);
     if (s_worker) { WaitForSingleObject(s_worker, INFINITE); CloseHandle(s_worker); s_worker = NULL; }
+    if (s_ctrl_worker) { WaitForSingleObject(s_ctrl_worker, INFINITE); CloseHandle(s_ctrl_worker); s_ctrl_worker = NULL; }
     if (s_pipe != INVALID_HANDLE_VALUE) { CloseHandle(s_pipe); s_pipe = INVALID_HANDLE_VALUE; }
+    if (s_ctrl_pipe != INVALID_HANDLE_VALUE) { CloseHandle(s_ctrl_pipe); s_ctrl_pipe = INVALID_HANDLE_VALUE; }
     if (s_stop) { CloseHandle(s_stop); s_stop = NULL; }
     if (s_done) { CloseHandle(s_done); s_done = NULL; }
+    if (s_ipc_lock_init) { DeleteCriticalSection(&s_ipc_lock); s_ipc_lock_init = 0; }
     if (s_child) {
         EnumWindows(child_window, 1);
         if (WaitForSingleObject(s_child, 3000) != WAIT_OBJECT_0 && s_job) {
@@ -576,7 +662,7 @@ int win_split_snapshot(hopdesk_ui_model *model, hop_xfer_task_id task, uint32_t 
     return ok;
 }
 int win_split_save(const hop_config *config) {
-    ipc_request r = {0}; if (!config) return 0; r.op = IPC_SAVE; r.config = *config;
+    ipc_request r = {0}; if (!config) return 0; r.op = IPC_SAVE; r.action = 1; r.config = *config;
     return client_call(&r, NULL, 0, NULL);
 }
 int win_split_cancel(hop_xfer_task_id task) {
@@ -607,4 +693,78 @@ int win_split_set_theme(int ui_theme) {
 int win_split_set_input_mode(unsigned input_mode) {
     ipc_request r = {0}; r.op = IPC_INPUT_MODE; r.action = (int32_t)(input_mode & HOP_INPUT_MODES);
     return client_call(&r, NULL, 0, NULL);
+}
+
+/* ---- Local CLI -> Agent control pipe client ---- */
+static int ctrl_call(ipc_request *req, void *payload, DWORD capacity, int *reached) {
+    HANDLE pipe;
+    ipc_reply reply;
+    unsigned char ack = 1;
+    int result = 0;
+    DWORD timeout = WIN_SPLIT_ACTION_MS;
+    if (reached) *reached = 0;
+    pipe = CreateFileW(WIN_CTRL_PIPE_NAME, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING,
+                       FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, NULL);
+    if (pipe == INVALID_HANDLE_VALUE && GetLastError() == ERROR_PIPE_BUSY &&
+        WaitNamedPipeW(WIN_CTRL_PIPE_NAME, timeout))
+        pipe = CreateFileW(WIN_CTRL_PIPE_NAME, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING,
+                           FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, NULL);
+    if (pipe == INVALID_HANDLE_VALUE) return 0;
+    if (reached) *reached = 1;
+    req->version = WIN_SPLIT_VERSION;
+    if (io_exact(pipe, req, sizeof(*req), 1, NULL, timeout) &&
+        io_exact(pipe, &reply, sizeof(reply), 0, NULL, timeout) &&
+        reply.version == WIN_SPLIT_VERSION && reply.op == req->op &&
+        reply.bytes <= capacity && (!reply.bytes || payload) &&
+        (!reply.result || reply.bytes == capacity) &&
+        (!reply.bytes || io_exact(pipe, payload, reply.bytes, 0, NULL, timeout))) {
+        result = reply.result;
+        (void)io_exact(pipe, &ack, 1, 1, NULL, timeout);
+    }
+    CloseHandle(pipe);
+    return result;
+}
+int win_cli_agent_get_status(void *ctx, hop_cli_status *out) {
+    (void)ctx;
+    if (!out) return 0;
+    ipc_request r = {0};
+    r.op = IPC_CLI_STATUS;
+    return ctrl_call(&r, out, (DWORD)sizeof(*out), NULL) > 0 ? 1 : 0;
+}
+int win_cli_agent_get_config(void *ctx, hop_config *out) {
+    (void)ctx;
+    if (!out) return 0;
+    ipc_request r = {0};
+    r.op = IPC_CLI_CONFIG_GET;
+    return ctrl_call(&r, out, (DWORD)sizeof(*out), NULL) > 0 ? 1 : 0;
+}
+int win_cli_agent_save_config(void *ctx, const hop_config *cfg) {
+    (void)ctx;
+    if (!cfg) return -1;
+    ipc_request r = {0};
+    int reached = 0;
+    r.op = IPC_SAVE;
+    r.action = 0; /* CLI allows incremental save; schema ranges/cross-fields still enforced */
+    r.config = *cfg;
+    int rc = ctrl_call(&r, NULL, 0, &reached);
+    if (!reached) return 0;
+    return rc > 0 ? 1 : -1;
+}
+int win_cli_agent_action(void *ctx, hop_cli_action action) {
+    (void)ctx;
+    ipc_request r = {0};
+    int reached = 0;
+    switch (action) {
+    case HOP_CLI_ACTION_RECONNECT:     r.op = IPC_RECONNECT; break;
+    case HOP_CLI_ACTION_DISCONNECT:    r.op = IPC_DISCONNECT; break;
+    case HOP_CLI_ACTION_DISPLAY_MAC:   r.op = IPC_DISPLAY; r.action = HOPDESK_UI_DISPLAY_TO_MAC; break;
+    case HOP_CLI_ACTION_DISPLAY_WIN:   r.op = IPC_DISPLAY; r.action = HOPDESK_UI_DISPLAY_TO_WINDOWS; break;
+    case HOP_CLI_ACTION_DISPLAY_WAKE:  r.op = IPC_DISPLAY; r.action = HOPDESK_UI_DISPLAY_WAKE; break;
+    case HOP_CLI_ACTION_DISPLAY_SLEEP: r.op = IPC_DISPLAY; r.action = HOPDESK_UI_DISPLAY_SLEEP; break;
+    case HOP_CLI_ACTION_RELOAD:        r.op = IPC_CLI_RELOAD; break;
+    default: return -1;
+    }
+    int rc = ctrl_call(&r, NULL, 0, &reached);
+    if (!reached) return 0;
+    return rc > 0 ? 1 : -1;
 }

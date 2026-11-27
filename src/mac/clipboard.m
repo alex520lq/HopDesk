@@ -357,10 +357,12 @@ static BOOL send_text(NSString *s) {
     const char *u = [s UTF8String];
     uint32_t n;
     uint8_t *p;
+    uint32_t max_text = (g_mac.cfg.clip_text_max_kb >= 4 && g_mac.cfg.clip_text_max_kb <= 64)
+        ? (uint32_t)g_mac.cfg.clip_text_max_kb * 1024u : (uint32_t)HOP_TEXT_MAX;
 
-    if (!u) return NO;
+    if (!g_mac.cfg.clip_text || !u) return NO;
     n = (uint32_t)strlen(u);
-    if (n == 0 || n > HOP_TEXT_MAX) return NO;
+    if (n == 0 || n > max_text) return NO;
 
     p = (uint8_t *)malloc(4 + n);
     if (!p) return NO;
@@ -393,7 +395,7 @@ static void poll_pasteboard(void) {
             [pb readObjectsForClasses:@[ [NSURL class] ]
                               options:@{ NSPasteboardURLReadingFileURLsOnlyKey : @YES }];
         if ([urls count] > 0) {
-            (void)send_paths(urls);
+            if (g_mac.cfg.clip_file) (void)send_paths(urls);
             return;
         }
 
@@ -401,6 +403,7 @@ static void poll_pasteboard(void) {
         NSPasteboardType imageType =
             [pb availableTypeFromArray:@[ NSPasteboardTypePNG, NSPasteboardTypeTIFF ]];
         if (imageType != nil) {
+            if (!g_mac.cfg.clip_image) return;
             /* Do not materialize another large NSData snapshot while the
              * previous image is still being decoded or converted. */
             if (!image_work_can_start()) {
@@ -421,10 +424,12 @@ static void poll_pasteboard(void) {
         }
 
         NSString *s = [pb stringForType:NSPasteboardTypeString];
-        if (s) {
+        if (s && g_mac.cfg.clip_text) {
             const char *utf8 = [s UTF8String];
             uint32_t n = utf8 ? (uint32_t)strlen(utf8) : 0;
-            if (n > 0 && n <= HOP_TEXT_MAX) {
+            uint32_t max_text = (g_mac.cfg.clip_text_max_kb >= 4 && g_mac.cfg.clip_text_max_kb <= 64)
+                ? (uint32_t)g_mac.cfg.clip_text_max_kb * 1024u : (uint32_t)HOP_TEXT_MAX;
+            if (n > 0 && n <= max_text) {
                 clip_consume_offers();
                 (void)send_text(s);
                 return;
@@ -462,9 +467,11 @@ void clipboard_init(void) {
     s_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
                                      dispatch_get_main_queue());
     if (!s_timer) return;
+    uint64_t poll_ms = (g_mac.cfg.clip_poll_ms >= 50 && g_mac.cfg.clip_poll_ms <= 2000)
+        ? (uint64_t)g_mac.cfg.clip_poll_ms : 250ull;
     dispatch_source_set_timer(s_timer,
                               dispatch_time(DISPATCH_TIME_NOW, 0),
-                              250ull * NSEC_PER_MSEC,
+                              poll_ms * NSEC_PER_MSEC,
                               50ull * NSEC_PER_MSEC);
     dispatch_source_set_event_handler(s_timer, ^{
         poll_pasteboard();
@@ -563,7 +570,7 @@ static void apply_objects_retry(NSArray *objects, NSString *kind,
 void clipboard_apply(const char *utf8) {
     NSString *s;
 
-    if (!utf8 || !*utf8) return;
+    if (!g_mac.cfg.clip_text || !utf8 || !*utf8) return;
     clip_consume_offers();
     s = [NSString stringWithUTF8String:utf8];
     if (!s) return;

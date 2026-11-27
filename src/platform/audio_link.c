@@ -153,7 +153,20 @@ static int configure_connection(audio_socket s) {
     return 1;
 }
 
-static audio_socket open_listener(void) {
+static uint16_t cfg_audio_port(const hop_config *cfg) {
+    return (cfg && cfg->audio_port) ? cfg->audio_port : (uint16_t)HOP_AUDIO_PORT;
+}
+static unsigned cfg_audio_keepalive_ms(const hop_config *cfg) {
+    return (cfg && cfg->audio_keepalive_ms >= 200) ? (unsigned)cfg->audio_keepalive_ms : (unsigned)KEEPALIVE_MS;
+}
+static unsigned cfg_audio_peer_timeout_ms(const hop_config *cfg) {
+    return (cfg && cfg->audio_peer_timeout_ms >= 500) ? (unsigned)cfg->audio_peer_timeout_ms : (unsigned)PEER_TIMEOUT_MS;
+}
+static unsigned cfg_audio_send_limit_ms(const hop_config *cfg) {
+    return (cfg && cfg->audio_send_limit_ms >= 20) ? (unsigned)cfg->audio_send_limit_ms : (unsigned)SEND_LIMIT_MS;
+}
+
+static audio_socket open_listener(uint16_t port) {
     audio_socket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == BAD_SOCKET) return s;
     int on = 1;
@@ -165,7 +178,7 @@ static audio_socket open_listener(void) {
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(HOP_AUDIO_PORT);
+    addr.sin_port = htons(port);
     if (nonblocking(s) &&
         setsockopt(s, SOL_SOCKET, option, (const char *)&on, sizeof(on)) == 0 &&
         bind(s, (struct sockaddr *)&addr, sizeof(addr)) == 0 && listen(s, 2) == 0) return s;
@@ -173,7 +186,7 @@ static audio_socket open_listener(void) {
     return BAD_SOCKET;
 }
 
-static audio_socket open_client(const audio_connection *c, const char *host) {
+static audio_socket open_client(const audio_connection *c, const char *host, uint16_t port) {
     struct addrinfo hints = {0}, *list = NULL;
     hints.ai_family = AF_INET; /* Matches the control listener. */
     hints.ai_socktype = SOCK_STREAM;
@@ -181,7 +194,7 @@ static audio_socket open_client(const audio_connection *c, const char *host) {
     audio_socket s = BAD_SOCKET;
     for (const struct addrinfo *it = list; it && current(c); it = it->ai_next) {
         struct sockaddr_in addr = *(const struct sockaddr_in *)it->ai_addr;
-        addr.sin_port = htons(HOP_AUDIO_PORT);
+        addr.sin_port = htons(port);
         s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (s == BAD_SOCKET) continue;
         if (configure_connection(s)) {
@@ -216,7 +229,8 @@ typedef struct {
 /* One partial frame per direction. Socket buffers and the native playback
  * queue have fixed bounds; a stalled send abandons the connection. */
 static int transmit(const audio_connection *c, hop_native_audio *audio, unsigned directions,
-                    audio_packet *p, uint64_t *sent, uint64_t now) {
+                    audio_packet *p, uint64_t *sent, uint64_t now,
+                    unsigned keepalive_ms, unsigned send_limit_ms) {
     uint8_t *wire = (uint8_t *)p->wire;
     int16_t *pcm = p->wire + HOP_AUDIO_HEADER_SIZE / 2;
     for (unsigned i = 0; i < 4; ++i) {
@@ -227,13 +241,13 @@ static int transmit(const audio_connection *c, hop_native_audio *audio, unsigned
                 mark_unavailable(c, HOP_AUDIO_SEND);
                 return 0;
             }
-            if (!frames && now - *sent < KEEPALIVE_MS) return 1;
+            if (!frames && now - *sent < keepalive_ms) return 1;
             hop_audio_header(wire, frames ? rate : 0, (unsigned)frames);
             p->size = HOP_AUDIO_HEADER_SIZE + (unsigned)frames * HOP_AUDIO_FRAME_BYTES;
             p->offset = 0;
             p->queued = now;
         }
-        if (now - p->queued >= SEND_LIMIT_MS || !current(c)) return 0;
+        if (now - p->queued >= send_limit_ms || !current(c)) return 0;
         int n = transfer(c->socket, wire + p->offset, p->size - p->offset, 1);
         if (n < 0) return 0;
         p->offset += (unsigned)n;
@@ -302,10 +316,13 @@ static void stream(const audio_connection *c, const hop_config *cfg) {
     unlock_state();
     audio_packet outgoing = {0}, incoming = {0};
     uint64_t sent = hop_monotonic_ms(), received = sent;
+    unsigned keepalive_ms = cfg_audio_keepalive_ms(cfg);
+    unsigned peer_timeout_ms = cfg_audio_peer_timeout_ms(cfg);
+    unsigned send_limit_ms = cfg_audio_send_limit_ms(cfg);
     while (current(c)) {
         uint64_t now = hop_monotonic_ms();
-        if (now - received > PEER_TIMEOUT_MS ||
-            !transmit(c, audio, directions, &outgoing, &sent, now) ||
+        if (now - received > peer_timeout_ms ||
+            !transmit(c, audio, directions, &outgoing, &sent, now, keepalive_ms, send_limit_ms) ||
             !receive(c, audio, directions, &incoming, &received, now)) break;
         if (wait_socket(c->socket, 0, POLL_MS) < 0) break;
     }
@@ -318,6 +335,7 @@ static void stream(const audio_connection *c, const hop_config *cfg) {
 static void run_worker(const hop_config *cfg) {
     audio_socket listener = BAD_SOCKET;
     int reported_bind = 0;
+    uint16_t port = cfg_audio_port(cfg);
     for (;;) {
         lock_state();
         audio_connection c = {.socket = BAD_SOCKET, .revision = s_revision, .requested = s_status.requested};
@@ -338,10 +356,10 @@ static void run_worker(const hop_config *cfg) {
             continue;
         }
         if (cfg->role == HOP_ROLE_SERVER) {
-            if (listener == BAD_SOCKET) listener = open_listener();
+            if (listener == BAD_SOCKET) listener = open_listener(port);
             if (listener == BAD_SOCKET) {
                 mark_unavailable(&c, c.requested);
-                if (!reported_bind) hop_log(HOP_LOG_WARN, "audio: cannot listen on TCP %d", HOP_AUDIO_PORT);
+                if (!reported_bind) hop_log(HOP_LOG_WARN, "audio: cannot listen on TCP %u", (unsigned)port);
                 reported_bind = 1;
                 pause_ms(RETRY_MS);
                 continue;
@@ -356,7 +374,7 @@ static void run_worker(const hop_config *cfg) {
             if (c.socket == BAD_SOCKET) continue;
             if (configure_connection(c.socket)) stream(&c, cfg);
         } else {
-            c.socket = open_client(&c, cfg->peer_host);
+            c.socket = open_client(&c, cfg->peer_host, port);
             if (c.socket != BAD_SOCKET) stream(&c, cfg);
         }
         if (c.socket != BAD_SOCKET) close_socket(c.socket);
@@ -377,8 +395,9 @@ static void *audio_worker(void *unused) {
 
 int hop_audio_set_mode(const hop_config *cfg, unsigned mode) {
     if ((mode & ~HOP_AUDIO_MODES) || (mode && !cfg)) return 0;
-    if (mode && (cfg->port == HOP_AUDIO_PORT || cfg->data_port == HOP_AUDIO_PORT)) {
-        hop_log(HOP_LOG_WARN, "audio: TCP %d is reserved for audio", HOP_AUDIO_PORT);
+    uint16_t audio_port = cfg_audio_port(cfg);
+    if (mode && (cfg->port == audio_port || cfg->data_port == audio_port)) {
+        hop_log(HOP_LOG_WARN, "audio: TCP %u is reserved for audio", (unsigned)audio_port);
         return 0;
     }
     lock_state();

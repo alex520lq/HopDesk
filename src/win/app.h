@@ -47,6 +47,7 @@ extern win_app g_app;
 void local_addresses(char *out,size_t cap);
 void win_send_capabilities(unsigned takeover_mask);
 void win_apply_input_mode(unsigned mode, unsigned takeover_mask, int persist);
+int  win_apply_hot_config(const hop_config *next);
 
 /* mouse_capture.c */
 void capture_init(win_app *app);

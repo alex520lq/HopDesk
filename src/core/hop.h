@@ -229,6 +229,15 @@ typedef enum {
     HOP_THEME_DARK   = 2
 } hop_ui_theme;
 
+typedef enum {
+    HOP_MOD_TARGET_COMMAND = 0,
+    HOP_MOD_TARGET_CONTROL = 1,
+    HOP_MOD_TARGET_OPTION  = 2,
+    HOP_MOD_TARGET_SHIFT   = 3
+} hop_mod_target;
+
+#define HOP_RX_DIR_MAX 256
+
 /* Local input provider capabilities; decoupled from TCP listen/connect mode. */
 #define HOP_INPUT_MOUSE     1u
 #define HOP_INPUT_KEYBOARD  2u
@@ -246,6 +255,7 @@ typedef struct {
     unsigned audio_mode; /* local SEND/PLAY capabilities; hot-applied independently of role */
     int      ui_theme;   /* hop_ui_theme: 0=system, 1=light, 2=dark */
     uint16_t port;
+    uint16_t audio_port;           /* 音频通道端口（默认 24819） */
     char     token[HOP_TOKEN_MAX];
     char     peer_host[64];        /* 客户端用：服务端地址 */
     char     device_name[HOP_NAME_MAX];
@@ -254,39 +264,91 @@ typedef struct {
     int      screen_w;             /* 本机主屏宽（握手交换） */
     int      screen_h;
 
-    /* ---- 边缘保护（对齐 Deskflow 的 switchDelay 语义） ---- */
+    /* ---- 边缘保护与输入（对齐 Deskflow 的 switchDelay 语义） ---- */
     int      switch_delay_ms;      /* 贴边持续推多久才移交；0 = 立即移交 */
     int      switch_cooldown_ms;   /* 移交/收回后多久内不再触发，掐断乒乓 */
     int      edge_margin_px;       /* 内侧死区：进入内移 + 退出越界阈值 */
+    int      mouse_scale_pct;      /* 鼠标移动倍率（%），25-400，默认 100 */
+    int      wheel_scale_pct;      /* 滚轮速度倍率（%），25-400，默认 100 */
+    int      wheel_invert;         /* 滚轮方向反转（0/1） */
+    int      mod_ctrl;             /* 物理 Ctrl 映射目标（hop_mod_target） */
+    int      mod_alt;              /* 物理 Alt 映射目标（hop_mod_target） */
+    int      mod_win;              /* 物理 Win/Super 映射目标（hop_mod_target） */
 
     /* ---- 阶段 4：显示切换 ---- */
     uint16_t disp_win_input;       /* DDC/CI 0x60 值：Windows 侧的输入源 */
     uint16_t disp_mac_input;       /* DDC/CI 0x60 值：Mac 侧的输入源 */
     int      disp_wake_sec;        /* DISP_WAKE 保持多久（秒） */
+    int      disp_wake_delay_ms;   /* 唤醒后延迟多久切源（ms） */
+    int      disp_monitor_index;   /* Windows DDC 目标显示器索引（0=主屏） */
     char     mac_input_cmd[96];    /* Mac 端切源命令前缀，DDC 值追加在后 */
     char     mac_sleep_cmd[64];    /* Mac 端显示睡眠命令 */
 
-    /* ---- 文件传输 ----
+    /* ---- 文件传输与预算 ----
      * 只留一个连接。实测千兆线速 125 MB/s，单流 TCP 就能打满（BDP 只有几十 KB），
      * 多开连接在 1 Gbps 及以下收益为零；等链路升到 2.5G/10G 再加池化。 */
     uint16_t data_port;            /* 数据通道端口 */
     int      xfer_chunk_kb;        /* 分块大小（KB），64-4096 */
     int      xfer_rate_limit_mib;  /* 数据通道速率上限（MiB/s），16-4096 */
+    int      xfer_file_retry_max;          /* 单文件最多尝试次数 */
+    int      xfer_job_retry_max;           /* 作业连接级最多重试次数 */
+    int      xfer_ack_timeout_ms;          /* 单文件 ACK 超时（ms） */
+    int      xfer_reconnect_budget_ms;     /* 发送端断线重连预算（ms） */
+    int      xfer_rx_disconnect_budget_ms; /* 接收端断线宽限预算（ms） */
+    int      xfer_max_jobs;                /* 全局最大并发/排队作业数 */
+    int      xfer_max_entries;             /* 全局最大排队条目数 */
+    int      xfer_max_pending_gib;         /* 全局最大排队字节预算（GiB） */
+    int      xfer_max_image_mb;            /* 图片内存总预算（MiB） */
+    int      xfer_max_image_temp_mb;       /* 图片转换临时预算（MiB） */
+    int      xfer_rx_queue_slots;          /* 接收写盘队列槽位数 */
+    int      xfer_rx_queue_mb;             /* 接收写盘队列字节预算（MiB） */
+    int      xfer_scan_max_entries;        /* 单次目录扫描条目上限 */
+    char     xfer_rx_dir[HOP_RX_DIR_MAX];  /* 自定义接收暂存根目录（空=系统临时目录） */
+
+    /* ---- 网络、心跳、队列与音频超时 ---- */
+    int      net_handshake_timeout_ms;
+    int      net_heartbeat_interval_ms;
+    int      net_heartbeat_timeout_ms;
+    int      net_connect_timeout_ms;
+    int      net_send_timeout_ms;
+    int      net_reconnect_max_sec;
+    int      net_ctrl_queue_soft;
+    int      net_ctrl_queue_hard;
+    int      net_ctrl_queue_mb;
+    int      audio_keepalive_ms;
+    int      audio_peer_timeout_ms;
+    int      audio_send_limit_ms;
+
+    /* ---- 剪贴板策略 ---- */
+    int      clip_text;            /* 允许文本剪贴板同步（0/1） */
+    int      clip_image;           /* 允许图片剪贴板同步（0/1） */
+    int      clip_file;            /* 允许文件剪贴板同步（0/1） */
+    int      clip_text_max_kb;     /* 文本剪贴板上限（KB），4-64 */
+    int      clip_poll_ms;         /* macOS 剪贴板轮询间隔（ms） */
+
+    /* ---- 日志、IO 看门狗与维护 ---- */
+    int      log_level;            /* hop_log_level: 0=info,1=warn,2=error,3=off */
+    int      log_rotate_mb;        /* 日志轮转上限（MB） */
+    int      io_deadline_ms;       /* IO 看门狗超时（ms） */
+    int      update_check_enabled; /* 允许自动/常规更新检查（0/1） */
 } hop_config;
 
 void hop_config_defaults(hop_config *c);
 int  hop_config_load(hop_config *c, const char *path);  /* 不存在返回 0 */
 int  hop_config_save_atomic(const hop_config *c, const char *path); /* 同目录临时文件 + 原子替换 */
+void hop_runtime_apply_config(const hop_config *c);
 
 /* ---- Windows VK -> macOS 虚拟键码（平台无关的表，阶段 2） ---- */
 #define HOP_KEY_NONE 0xFFFFu
+void     hop_keymap_configure(int mod_ctrl, int mod_alt, int mod_win);
 uint16_t hop_mac_to_vk(uint16_t kc); /* inverse canonical wire key mapping */
 uint16_t hop_vk_to_mac(int vk);                 /* 不支持返回 HOP_KEY_NONE */
 int      hop_mac_key_is_mod(uint16_t mac_key);  /* 返回 HOP_MOD_* 位，非修饰键返回 0 */
 
 /* ---- 日志 ---- */
-typedef enum { HOP_LOG_INFO, HOP_LOG_WARN, HOP_LOG_ERROR } hop_log_level;
+typedef enum { HOP_LOG_INFO = 0, HOP_LOG_WARN = 1, HOP_LOG_ERROR = 2, HOP_LOG_OFF = 3 } hop_log_level;
 void hop_log_set(int enable);
+void hop_log_configure(hop_log_level min_level, long rotate_bytes);
 /* NULL = 输出到 stderr。路径为 UTF-8。文件超过 HOP_LOG_ROTATE_BYTES 时
  * 轮转为 <path>.1（只留一份旧日志），常驻进程的日志不会无限增长。线程安全。 */
 #define HOP_LOG_ROTATE_BYTES (5L * 1024L * 1024L)
@@ -398,14 +460,24 @@ int hop_hello_ack_decode(const uint8_t *p, uint32_t len, int *ok,
                          uint32_t *width, uint32_t *height, hop_session_id *session);
 
 /* 心跳判定。now/last 用同一个单调时钟（毫秒），回绕安全。 */
+void     hop_protocol_configure(uint32_t heartbeat_interval_ms,
+                                uint32_t heartbeat_timeout_ms,
+                                uint32_t handshake_timeout_ms,
+                                int ctrl_queue_soft,
+                                int ctrl_queue_hard,
+                                size_t ctrl_queue_bytes);
+uint32_t hop_protocol_heartbeat_interval_ms(void);
+uint32_t hop_protocol_heartbeat_timeout_ms(void);
+uint32_t hop_protocol_handshake_timeout_ms(void);
+
 static inline int hop_heartbeat_due(uint64_t now, uint64_t last_sent) {
-    return now - last_sent >= (uint64_t)HOP_HEARTBEAT_INTERVAL_MS;
+    return now - last_sent >= (uint64_t)hop_protocol_heartbeat_interval_ms();
 }
 static inline int hop_peer_silent(uint64_t now, uint64_t last_rx) {
-    return now - last_rx > (uint64_t)HOP_HEARTBEAT_TIMEOUT_MS;
+    return now - last_rx > (uint64_t)hop_protocol_heartbeat_timeout_ms();
 }
 static inline int hop_handshake_expired(uint64_t now, uint64_t started) {
-    return now - started > (uint64_t)HOP_HANDSHAKE_TIMEOUT_MS;
+    return now - started > (uint64_t)hop_protocol_handshake_timeout_ms();
 }
 
 /* 单调时钟（毫秒）。clock.c，平台代码用；不受系统改时间影响。 */

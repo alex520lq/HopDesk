@@ -457,9 +457,13 @@ int run_job(SOCKET c, uint8_t *tx, xfer_job *j) {
     ops.tx_buffer = tx;
     ops.chunk_size = s_x.chunk;
     ops.chunk_header_size = CHUNK_HDR;
-    ops.ack_timeout_ns = (uint64_t)HOP_XFER_ACK_TIMEOUT_MS * 1000000ull;
+    uint64_t ack_ms = s_x.cfg.xfer_ack_timeout_ms >= 1000
+        ? (uint64_t)s_x.cfg.xfer_ack_timeout_ms : (uint64_t)HOP_XFER_ACK_TIMEOUT_MS;
+    int file_retries = s_x.cfg.xfer_file_retry_max >= 1
+        ? s_x.cfg.xfer_file_retry_max : HOP_XFER_FILE_RETRY_MAX;
+    ops.ack_timeout_ns = ack_ms * 1000000ull;
     ops.ack_poll_interval_ms = SENDER_ACK_POLL_INTERVAL_MS;
-    ops.max_attempts = HOP_XFER_FILE_RETRY_MAX;
+    ops.max_attempts = file_retries;
     ops.directory_flag = HOP_FILE_FLAG_DIR;
     ops.file_ok_status = HOP_FILE_OK;
     ops.file_io_error_status = HOP_FILE_IO_ERROR;
@@ -725,8 +729,8 @@ static hop_xfer_sender_job_result sender_worker_send_done(void *user) {
     ops.entry_count=job->n;
     ops.ok_count=job->ok;
     ops.done_ack_slot=HOP_DONE_ACK_SLOT;
-    ops.ack_timeout_ms=HOP_XFER_ACK_TIMEOUT_MS;
-    ops.reconnect_budget_ms=HOP_XFER_RECONNECT_BUDGET_MS;
+    ops.ack_timeout_ms=s_x.cfg.xfer_ack_timeout_ms>=1000?(uint32_t)s_x.cfg.xfer_ack_timeout_ms:HOP_XFER_ACK_TIMEOUT_MS;
+    ops.reconnect_budget_ms=s_x.cfg.xfer_reconnect_budget_ms>=5000?(uint32_t)s_x.cfg.xfer_reconnect_budget_ms:HOP_XFER_RECONNECT_BUDGET_MS;
     ops.ack_poll_interval_ms=SENDER_ACK_POLL_INTERVAL_MS;
     ops.current_connection=sender_commit_current_connection;
     ops.send_done=sender_commit_send_done;
@@ -801,8 +805,8 @@ hop_xfer_sender_worker_action sender_worker_finish_job(
     state.completion_path=completion_path;state.peer_cancelled=peer_cancelled;
     hop_xfer_sender_worker_ops ops;
     memset(&ops,0,sizeof(ops));
-    ops.user=&call;ops.max_attempts=HOP_XFER_JOB_RETRY_MAX;
-    ops.reconnect_budget_ms=HOP_XFER_RECONNECT_BUDGET_MS;
+    ops.user=&call;ops.max_attempts=s_x.cfg.xfer_job_retry_max>=1?(uint32_t)s_x.cfg.xfer_job_retry_max:HOP_XFER_JOB_RETRY_MAX;
+    ops.reconnect_budget_ms=s_x.cfg.xfer_reconnect_budget_ms>=5000?(uint32_t)s_x.cfg.xfer_reconnect_budget_ms:HOP_XFER_RECONNECT_BUDGET_MS;
     ops.now_ms=sender_worker_now_ms;ops.retry_delay_ms=sender_worker_retry_delay_ms;
     ops.is_cancelled=sender_worker_is_cancelled;ops.is_stopping=sender_worker_is_stopping;ops.begin_completion=sender_worker_begin_completion;
     ops.set_queued=sender_worker_set_queued;ops.store_retry_state=sender_worker_store_retry_state;

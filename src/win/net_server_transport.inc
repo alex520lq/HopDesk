@@ -18,7 +18,8 @@ static DWORD WINAPI reader_thread(LPVOID arg) {
             if (e == WSAETIMEDOUT || e == WSAEWOULDBLOCK || e == WSAEINTR) continue;
             break;
         }
-        int guard = hop_watchdog_begin("control receive frame", HOP_IO_DEADLINE_MS);
+        unsigned io_ms = s->cfg.io_deadline_ms >= 2000 ? (unsigned)s->cfg.io_deadline_ms : HOP_IO_DEADLINE_MS;
+        int guard = hop_watchdog_begin("control receive frame", io_ms);
         int decoded = hop_decoder_feed(c->decoder, (uint8_t *)buf, (uint32_t)n);
         hop_watchdog_end(guard);
         if (!decoded) break;
@@ -153,7 +154,9 @@ static DWORD WINAPI server_thread(LPVOID arg) {
             if (!c->thread && !slot) slot = c;
         }
         if (!slot) { closesocket(sock); continue; }
-        DWORD rcv = 500, snd = HOP_CTRL_SEND_TIMEOUT_MS;
+        DWORD rcv = 500;
+        DWORD snd = s->cfg.net_send_timeout_ms >= 500
+            ? (DWORD)s->cfg.net_send_timeout_ms : (DWORD)HOP_CTRL_SEND_TIMEOUT_MS;
         BOOL nodelay = TRUE;
         setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char *)&nodelay, sizeof(nodelay));
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&rcv, sizeof(rcv));
@@ -225,14 +228,16 @@ static DWORD WINAPI client_thread(LPVOID arg){
         }
         if(sock==INVALID_SOCKET){
             if(s->cfg.peer_host[0])hop_log(HOP_LOG_WARN,"net: TCP control connection failed: host=%s port=%u; check address, network and firewall",s->cfg.peer_host,(unsigned)s->cfg.port);
+            unsigned max_delay = s->cfg.net_reconnect_max_sec >= 1 ? (unsigned)s->cfg.net_reconnect_max_sec * 1000u : 8000u;
             HANDLE events[2]={s->stop,s->wake};
             if(WaitForMultipleObjects(2,events,FALSE,delay)==WAIT_OBJECT_0+1)delay=500;
-            else delay=delay<8000?delay*2:8000;
+            else delay=delay<max_delay?delay*2:max_delay;
             continue;
         }
         hop_log(HOP_LOG_INFO,"net: control TCP connected; awaiting handshake");
         connection *c=&s->peers[0];memset(c,0,sizeof(*c));c->server=s;c->sock=sock;c->started=hop_monotonic_ms();
-        DWORD rcv=500,snd=HOP_CTRL_SEND_TIMEOUT_MS;
+        DWORD rcv=500;
+        DWORD snd=s->cfg.net_send_timeout_ms>=500?(DWORD)s->cfg.net_send_timeout_ms:(DWORD)HOP_CTRL_SEND_TIMEOUT_MS;
         BOOL nodelay=TRUE;
         setsockopt(sock,IPPROTO_TCP,TCP_NODELAY,(char*)&nodelay,sizeof(nodelay));
         setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,(char*)&rcv,sizeof(rcv));

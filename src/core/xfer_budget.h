@@ -70,6 +70,7 @@ int hop_xfer_budget_transfer_image_temp(hop_xfer_reservation_handle *from,
  * failed return leaves the handle live so its owner can retry disposal. */
 int hop_xfer_budget_release(hop_xfer_reservation_handle*);
 void hop_xfer_budget_get_snapshot(hop_xfer_budget_snapshot*);
+int hop_xfer_budget_apply_limits(const hop_xfer_budget_limits*);
 int hop_xfer_budget_set_limits_for_test(const hop_xfer_budget_limits*);
 
 #ifdef __cplusplus

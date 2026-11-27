@@ -342,6 +342,29 @@ void hop_xfer_budget_get_snapshot(hop_xfer_budget_snapshot *out) {
     UNLOCK();
 }
 
+int hop_xfer_budget_apply_limits(const hop_xfer_budget_limits *l) {
+    if (!l || !l->max_jobs || !l->max_entries ||
+        !l->max_pending_bytes || !l->max_image_bytes ||
+        !l->max_single_image_bytes || l->max_single_image_bytes > l->max_image_bytes ||
+        !l->max_rx_queue_slots || !l->max_rx_queue_bytes ||
+        !l->max_image_temp_bytes) return 0;
+    LOCK();
+    s_limits.max_jobs = l->max_jobs;
+    s_limits.max_entries = l->max_entries;
+    s_limits.max_pending_bytes = l->max_pending_bytes;
+    s_limits.max_image_bytes = l->max_image_bytes;
+    s_limits.max_single_image_bytes = l->max_single_image_bytes;
+    s_limits.max_image_temp_bytes = l->max_image_temp_bytes;
+    /* Only update RX queue bounds when idle so in-flight writer queue
+     * reservations never disagree with active ring geometry. */
+    if (!s_used.rx_queue_slots && !s_used.rx_queue_bytes && !s_used.rx_pool_bytes) {
+        s_limits.max_rx_queue_slots = l->max_rx_queue_slots;
+        s_limits.max_rx_queue_bytes = l->max_rx_queue_bytes;
+    }
+    UNLOCK();
+    return 1;
+}
+
 int hop_xfer_budget_set_limits_for_test(const hop_xfer_budget_limits *l) {
     if (!l || !l->max_jobs || !l->max_entries ||
         !l->max_pending_bytes || !l->max_image_bytes ||

@@ -376,6 +376,10 @@ done:
 
 void update_check_async(HWND owner) {
     HANDLE thread;
+    if (!g_app.cfg.update_check_enabled) {
+        hop_log(HOP_LOG_INFO, "update: check skipped because update_check_enabled=0");
+        return;
+    }
     if (InterlockedCompareExchange(&s_update_busy, 1, 0) != 0) return;
     thread = CreateThread(NULL, 0, update_worker, owner, 0, NULL);
     if (!thread) {

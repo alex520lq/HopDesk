@@ -350,6 +350,10 @@ typedef struct xfer_rx_context {
     hop_xfer_rx_services services;
 } xfer_rx_context;
 
+void hop_xfer_rx_configure(const char *rx_dir, uint64_t disconnect_budget_ms);
+const char *hop_xfer_rx_configured_dir(void);
+uint64_t hop_xfer_rx_disconnect_budget_ms(void);
+
 #ifdef __cplusplus
 }
 #endif

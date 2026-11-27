@@ -92,8 +92,9 @@ void win_inject_message(uint8_t type,const uint8_t *p,uint32_t len){
     case HOP_MSG_MOUSE_MOVE:if(!(g_app.cfg.input_mode & HOP_INPUT_MOUSE) && len>=4){
         if(!sharing)return;
         double w=GetSystemMetrics(SM_CXSCREEN),h=GetSystemMetrics(SM_CYSCREEN);
-        px+=(int16_t)hop_get_be16(p)*(g_app.peer_w>0?w/g_app.peer_w:1);
-        py+=(int16_t)hop_get_be16(p+2)*(g_app.peer_h>0?h/g_app.peer_h:1);
+        double mscale = g_app.cfg.mouse_scale_pct >= 25 ? (double)g_app.cfg.mouse_scale_pct / 100.0 : 1.0;
+        px+=(int16_t)hop_get_be16(p)*(g_app.peer_w>0?w/g_app.peer_w:1)*mscale;
+        py+=(int16_t)hop_get_be16(p+2)*(g_app.peer_h>0?h/g_app.peer_h:1)*mscale;
         int edge=g_app.cfg.client_edge;double beyond=edge==0?-px:edge==1?px-w+1:edge==2?-py:py-h+1;
         over=beyond>0?over+beyond:0;
         double margin=edge_margin(w,h);
@@ -109,7 +110,10 @@ void win_inject_message(uint8_t type,const uint8_t *p,uint32_t len){
         if(!button(b,down)&&!down&&b<3)button_release_pending[b]=1;
     }break;
     case HOP_MSG_MOUSE_WHEEL:if(!(g_app.cfg.input_mode & HOP_INPUT_MOUSE) && len>=4 && sharing){
-        int dx=(int16_t)hop_get_be16(p),dy=(int16_t)hop_get_be16(p+2);
+        double wscale = g_app.cfg.wheel_scale_pct >= 25 ? (double)g_app.cfg.wheel_scale_pct / 100.0 : 1.0;
+        double dir = g_app.cfg.wheel_invert ? -1.0 : 1.0;
+        int dx=(int)llround((double)(int16_t)hop_get_be16(p) * wscale * dir);
+        int dy=(int)llround((double)(int16_t)hop_get_be16(p+2) * wscale * dir);
         if(dx)mouse(MOUSEEVENTF_HWHEEL,0,0,(DWORD)dx);
         if(dy)mouse(MOUSEEVENTF_WHEEL,0,0,(DWORD)dy);
     }break;

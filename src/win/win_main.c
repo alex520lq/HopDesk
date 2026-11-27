@@ -7,6 +7,7 @@
 #include "update.h"
 #include "main_ui.h"
 #include "split_ui.h"
+#include "../core/cli.h"
 #include "../core/update_state.h"
 #include "../platform/audio_link.h"
 #include "../ui/hopdesk_ui.h"
@@ -80,6 +81,43 @@ void win_apply_input_mode(unsigned mode, unsigned takeover_mask, int persist) {
     }
     win_send_capabilities(takeover_mask & HOP_INPUT_MODES);
     ui_refresh(&g_app);
+}
+
+int win_apply_hot_config(const hop_config *next) {
+    if (!next) return 0;
+    unsigned prev_input = g_app.cfg.input_mode;
+    unsigned next_input = next->input_mode & HOP_INPUT_MODES;
+    unsigned takeover = next_input & ~prev_input;
+
+    /* Preserve transport-binding fields that require restart to rebind safely;
+     * copy all hot-applicable parameters into live g_app.cfg. */
+    hop_role live_role = g_app.cfg.role;
+    uint16_t live_port = g_app.cfg.port;
+    uint16_t live_data_port = g_app.cfg.data_port;
+    uint16_t live_audio_port = g_app.cfg.audio_port;
+    int live_w = g_app.cfg.screen_w;
+    int live_h = g_app.cfg.screen_h;
+    int live_rx_slots = g_app.cfg.xfer_rx_queue_slots;
+    int live_rx_mb = g_app.cfg.xfer_rx_queue_mb;
+
+    g_app.cfg = *next;
+    g_app.cfg.role = live_role;
+    g_app.cfg.port = live_port;
+    g_app.cfg.data_port = live_data_port;
+    g_app.cfg.audio_port = live_audio_port;
+    g_app.cfg.screen_w = live_w;
+    g_app.cfg.screen_h = live_h;
+    g_app.cfg.xfer_rx_queue_slots = live_rx_slots;
+    g_app.cfg.xfer_rx_queue_mb = live_rx_mb;
+    g_app.cfg.input_mode = prev_input;
+
+    hop_runtime_apply_config(&g_app.cfg);
+    if (next_input != prev_input)
+        win_apply_input_mode(next_input, takeover, 0);
+    else
+        win_send_capabilities(0);
+    ui_refresh(&g_app);
+    return hop_audio_set_mode(&g_app.cfg, g_app.cfg.audio_mode);
 }
 
 static void on_link(int up) {
@@ -201,7 +239,9 @@ static void disp_switch_to_mac(void) {
     hop_put_be32(p, (uint32_t)g_app.cfg.disp_wake_sec);
     net_server_send(g_app.net, HOP_MSG_DISP_WAKE, p, 4);
     capture_set_sharing(0);          /* 画面即将走掉，键鼠先收回本机 */
-    SetTimer(g_app.hwnd, IDT_DISP, DISP_WAKE_DELAY_MS, NULL);
+    UINT wake_delay = g_app.cfg.disp_wake_delay_ms >= 0
+        ? (UINT)g_app.cfg.disp_wake_delay_ms : (UINT)DISP_WAKE_DELAY_MS;
+    SetTimer(g_app.hwnd, IDT_DISP, wake_delay, NULL);
 }
 
 /* 切回 Windows 显示：让 Mac 把输入源切回来；Mac 不可达就本机 DDC 硬切 */
@@ -333,8 +373,105 @@ static int cmdline_has_flag(const wchar_t *cmd, const wchar_t *flag) {
     return 0;
 }
 
+static void win_cli_write_handle(DWORD std_id, const char *data, size_t len) {
+    HANDLE h = GetStdHandle(std_id);
+    if (!h || h == INVALID_HANDLE_VALUE) return;
+    while (len > 0) {
+        DWORD chunk = len > 65536u ? 65536u : (DWORD)len;
+        DWORD written = 0;
+        if (!WriteFile(h, data, chunk, &written, NULL) || !written) break;
+        data += written;
+        len -= written;
+    }
+}
+static void win_cli_write_out(void *ctx, const char *data, size_t len) {
+    (void)ctx;
+    win_cli_write_handle(STD_OUTPUT_HANDLE, data, len);
+}
+static void win_cli_write_err(void *ctx, const char *data, size_t len) {
+    (void)ctx;
+    win_cli_write_handle(STD_ERROR_HANDLE, data, len);
+}
+
+static int run_win_cli_if_requested(HINSTANCE inst, int *exit_code) {
+    int argc = 0;
+    LPWSTR *wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!wargv || argc < 2) {
+        if (wargv) LocalFree(wargv);
+        return 0;
+    }
+    char **argv = (char **)calloc((size_t)argc, sizeof(char *));
+    if (!argv) { LocalFree(wargv); return 0; }
+    for (int i = 0; i < argc; ++i) {
+        int need = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, NULL, 0, NULL, NULL);
+        if (need <= 0) { argv[i] = _strdup(""); continue; }
+        argv[i] = (char *)malloc((size_t)need);
+        if (argv[i]) WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, argv[i], need, NULL, NULL);
+    }
+    LocalFree(wargv);
+
+    int is_cli = hop_cli_is_invocation(argc, (const char *const *)argv);
+    if (is_cli) {
+        HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+        HANDLE hErr = GetStdHandle(STD_ERROR_HANDLE);
+        int attached = 0;
+        if ((!hOut || hOut == INVALID_HANDLE_VALUE || GetFileType(hOut) == FILE_TYPE_UNKNOWN) &&
+            (!hErr || hErr == INVALID_HANDLE_VALUE || GetFileType(hErr) == FILE_TYPE_UNKNOWN)) {
+            attached = AttachConsole(ATTACH_PARENT_PROCESS) != 0;
+        }
+        g_app.inst = inst;
+        wchar_t conf_w[MAX_PATH], log_w[MAX_PATH];
+        char conf_u[MAX_PATH * 3] = {0}, log_u[MAX_PATH * 3] = {0};
+        beside(conf_w, MAX_PATH, L"hopdesk.conf");
+        beside(log_w, MAX_PATH, L"hopdesk.log");
+        WideCharToMultiByte(CP_UTF8, 0, conf_w, -1, conf_u, sizeof(conf_u), NULL, NULL);
+        WideCharToMultiByte(CP_UTF8, 0, log_w, -1, log_u, sizeof(log_u), NULL, NULL);
+
+        hop_cli_ops ops;
+        memset(&ops, 0, sizeof(ops));
+        ops.default_config_path = conf_u;
+        ops.default_log_path = log_u;
+        ops.default_device_name = "Alex";
+        ops.write_out = win_cli_write_out;
+        ops.write_err = win_cli_write_err;
+        ops.agent_get_status = win_cli_agent_get_status;
+        ops.agent_get_config = win_cli_agent_get_config;
+        ops.agent_save_config = win_cli_agent_save_config;
+        ops.agent_action = win_cli_agent_action;
+
+        *exit_code = hop_cli_run(argc, (const char *const *)argv, &ops);
+        if (attached) FreeConsole();
+    }
+    for (int i = 0; i < argc; ++i) free(argv[i]);
+    free(argv);
+    return is_cli;
+}
+
+static void extract_win_config_override(char *out, size_t cap) {
+    if (!out || !cap) return;
+    out[0] = '\0';
+    int argc = 0;
+    LPWSTR *wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!wargv) return;
+    for (int i = 1; i < argc; ++i) {
+        const wchar_t *val = NULL;
+        if (wcscmp(wargv[i], L"--config") == 0 && i + 1 < argc) val = wargv[i + 1];
+        else if (wcsncmp(wargv[i], L"--config=", 9) == 0 && wargv[i][9]) val = wargv[i] + 9;
+        if (val) {
+            WideCharToMultiByte(CP_UTF8, 0, val, -1, out, (int)cap, NULL, NULL);
+            break;
+        }
+    }
+    LocalFree(wargv);
+}
+
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     (void)prev; (void)show;
+
+    {
+        int cli_exit = 0;
+        if (run_win_cli_if_requested(inst, &cli_exit)) return cli_exit;
+    }
 
     set_dpi_aware();
     /* UI returns before agent singleton, tray, hooks, network, transfer,
@@ -401,12 +538,16 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     g_app.cfg.screen_w = GetSystemMetrics(SM_CXSCREEN);
     g_app.cfg.screen_h = GetSystemMetrics(SM_CYSCREEN);
 
-    wchar_t conf_path[MAX_PATH];
-    beside(conf_path, MAX_PATH, L"hopdesk.conf");
     char conf_utf8[MAX_PATH * 3];
-    WideCharToMultiByte(CP_UTF8, 0, conf_path, -1, conf_utf8, sizeof(conf_utf8), NULL, NULL);
+    extract_win_config_override(conf_utf8, sizeof(conf_utf8));
+    if (!conf_utf8[0]) {
+        wchar_t conf_path[MAX_PATH];
+        beside(conf_path, MAX_PATH, L"hopdesk.conf");
+        WideCharToMultiByte(CP_UTF8, 0, conf_path, -1, conf_utf8, sizeof(conf_utf8), NULL, NULL);
+    }
     snprintf(g_app.config_path, sizeof(g_app.config_path), "%s", conf_utf8);
     hop_config_load(&g_app.cfg, conf_utf8);
+    hop_runtime_apply_config(&g_app.cfg);
 
     wchar_t log_path[MAX_PATH];
     beside(log_path, MAX_PATH, L"hopdesk.log");

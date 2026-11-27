@@ -6,6 +6,7 @@
 #include "split_agent.h"
 #include "split_ui.h"
 #include "xfer.h"
+#include "../core/cli.h"
 #include "../core/config_migrate.h"
 #include "../platform/audio_link.h"
 #include <mach-o/dyld.h>
@@ -52,7 +53,69 @@ static int acquire_single_instance(void) {
     return 1;
 }
 
+int mac_apply_hot_config(const hop_config *next) {
+    if (!next) return 0;
+    unsigned prev_input = net_get_input_mode();
+    unsigned next_input = next->input_mode & HOP_INPUT_MODES;
+    unsigned takeover = next_input & ~prev_input;
+
+    hop_role live_role = g_mac.cfg.role;
+    uint16_t live_port = g_mac.cfg.port;
+    uint16_t live_data_port = g_mac.cfg.data_port;
+    uint16_t live_audio_port = g_mac.cfg.audio_port;
+    int live_rx_slots = g_mac.cfg.xfer_rx_queue_slots;
+    int live_rx_mb = g_mac.cfg.xfer_rx_queue_mb;
+    int live_poll_ms = g_mac.cfg.clip_poll_ms;
+
+    g_mac.cfg = *next;
+    g_mac.cfg.role = live_role;
+    g_mac.cfg.port = live_port;
+    g_mac.cfg.data_port = live_data_port;
+    g_mac.cfg.audio_port = live_audio_port;
+    g_mac.cfg.xfer_rx_queue_slots = live_rx_slots;
+    g_mac.cfg.xfer_rx_queue_mb = live_rx_mb;
+    g_mac.cfg.clip_poll_ms = live_poll_ms;
+
+    hop_runtime_apply_config(&g_mac.cfg);
+    if (next_input != prev_input)
+        net_apply_input_mode(next_input, takeover, 0);
+    else
+        net_send_capabilities(0);
+    hop_config runtime = g_mac.cfg;
+    return hop_audio_set_mode(&runtime, runtime.audio_mode);
+}
+
 int main(int argc, char **argv) {
+    /* Resolve canonical Application Support paths first so headless CLI works
+     * without acquiring the single-instance lock or initializing Cocoa. */
+    const char *home = getenv("HOME");
+    char library[PATH_MAX], app_support[PATH_MAX], support[PATH_MAX];
+    char config[PATH_MAX], log[PATH_MAX], legacy[PATH_MAX] = {0};
+    if (!home || !home[0]) home = "/tmp";
+    snprintf(library, sizeof(library), "%s/Library", home);
+    snprintf(app_support, sizeof(app_support), "%s/Application Support", library);
+    snprintf(support, sizeof(support), "%s/HopDesk", app_support);
+    (void)mkdir(library, 0700);
+    (void)mkdir(app_support, 0700);
+    (void)mkdir(support, 0700);
+    snprintf(config, sizeof(config), "%s/hopdesk.conf", support);
+    snprintf(log, sizeof(log), "%s/hopdesk.log", support);
+
+    if (hop_cli_is_invocation(argc, (const char *const *)argv)) {
+        hop_cli_ops ops;
+        memset(&ops, 0, sizeof(ops));
+        ops.default_config_path = config;
+        ops.default_log_path = log;
+        ops.default_device_name = "Mac";
+        ops.agent_get_status = mac_cli_agent_get_status;
+        ops.agent_get_config = mac_cli_agent_get_config;
+        ops.agent_save_config = mac_cli_agent_save_config;
+        ops.agent_action = mac_cli_agent_action;
+        return hop_cli_run(argc, (const char *const *)argv, &ops);
+    }
+
+    const char *config_override = hop_cli_extract_config_flag(argc, (const char *const *)argv);
+
     /* Manual first launch starts the agent and opens the main UI once; closing
      * the UI leaves the agent in the menu bar. --agent (LaunchAgent) and
      * updater relaunches stay silent in the background. */
@@ -80,21 +143,8 @@ int main(int argc, char **argv) {
     snprintf(g_mac.cfg.device_name, HOP_NAME_MAX, "%s", "Mac");
     g_mac.cfg.peer_host[0]=0;
 
-    /* Finder launches apps with an arbitrary working directory.
-     * Keep the canonical config in Application Support, but migrate legacy
-     * configs from beside the executable or the old relative working path. */
-    const char *home = getenv("HOME");
-    char library[PATH_MAX], app_support[PATH_MAX], support[PATH_MAX];
-    char config[PATH_MAX], log[PATH_MAX], legacy[PATH_MAX] = {0};
-    if (!home || !home[0]) home = "/tmp";
-    snprintf(library, sizeof(library), "%s/Library", home);
-    snprintf(app_support, sizeof(app_support), "%s/Application Support", library);
-    snprintf(support, sizeof(support), "%s/HopDesk", app_support);
-    (void)mkdir(library, 0700);
-    (void)mkdir(app_support, 0700);
-    (void)mkdir(support, 0700);
-    snprintf(config, sizeof(config), "%s/hopdesk.conf", support);
-    snprintf(log, sizeof(log), "%s/hopdesk.log", support);
+    if (config_override && config_override[0])
+        snprintf(config, sizeof(config), "%s", config_override);
     snprintf(g_mac.config_path, sizeof(g_mac.config_path), "%s", config);
     snprintf(g_mac.log_path, sizeof(g_mac.log_path), "%s", log);
 
@@ -103,7 +153,7 @@ int main(int argc, char **argv) {
     hop_log_open(log);
     const char *loaded_from=config;
     int config_loaded = hop_config_load(&g_mac.cfg, config);
-    if (!config_loaded) {
+    if (!config_loaded && !(config_override && config_override[0])) {
         uint32_t exe_len = (uint32_t)sizeof(legacy);
         if (_NSGetExecutablePath(legacy, &exe_len) == 0) {
             char *slash = strrchr(legacy, '/');
@@ -127,6 +177,7 @@ int main(int argc, char **argv) {
                         legacy,config,strerror(errno));
         }
     }
+    hop_runtime_apply_config(&g_mac.cfg);
     hop_log(HOP_LOG_INFO, "HopDesk %s starting", HOP_VERSION);
     hop_log(HOP_LOG_INFO, "config: %s (%s), host=%s port=%u data_port=%u token_len=%u",
             loaded_from, config_loaded ? "loaded" : "defaults",

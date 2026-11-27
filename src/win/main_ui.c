@@ -364,7 +364,6 @@ void main_ui_show_page(int page) {
     (void)cui_app_run(&desc, draw_frame, NULL);
     s_running = 0;
     s_ui_initialized = 0;
-    hopdesk_ui_shutdown();
     /* The CUI loop pumps the thread queue. If the hidden shell window posted
      * WM_QUIT while the main window was open, it consumed that message; hand it
      * back to the outer application loop after the CUI window has been destroyed. */

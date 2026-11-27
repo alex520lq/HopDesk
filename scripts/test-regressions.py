@@ -152,166 +152,86 @@ int main(void) {
 }
 ''',['src/core/xfer_rx_batch_state.c'])
 
-    # Cards are painted by the page, never sibling HWNDs obscuring its controls.
-    ui=(ROOT/'src/win/main_ui.c').read_text(encoding='utf-8')
-    group_fn=extract(ui,'group')
-    page_fn=extract(ui,'page_proc')
-    page_create_fn=extract(ui,'page_create')
-    assert 'HopDeskCard' not in ui and 'CreateWindow' not in group_fn
-    assert 'WS_CLIPCHILDREN' in page_create_fn and 'paint_cards(h,dc,GetScrollPos(h,SB_VERT))' in page_fn
-    ui_preamble=r'''
-#include <assert.h>
-#include <stddef.h>
-#include <wchar.h>
-#include <stdio.h>
-typedef int HWND;typedef int HDC;typedef int HPEN;typedef int HBRUSH;typedef int HGDIOBJ;
-typedef struct {int left,top,right,bottom;} RECT;
-typedef struct {HWND page;const wchar_t *title;int x,y,w,h;} ui_card;
-static ui_card s_cards[32];static int s_card_count;static int s_font=3,scale=1;
-static int dip(int n){return n*scale;}
-#define PS_SOLID 0
-#define NULL_BRUSH 0
-#define TRANSPARENT 1
-#define DT_SINGLELINE 1
-#define DT_LEFT 0
-#define DT_VCENTER 4
-#define RGB(r,g,b) 0
-static int boxes,titles,fills,last_top,last_left,last_right,last_bottom,text_top;
-static HPEN CreatePen(int style,int width,int color){(void)style;(void)width;(void)color;return 1;}
-static HBRUSH CreateSolidBrush(int color){(void)color;fills++;return 2;}
-static HGDIOBJ SelectObject(HDC dc,HGDIOBJ o){(void)dc;return o;}
-static int SetBkMode(HDC dc,int mode){(void)dc;return mode;}
-static int SetTextColor(HDC dc,int color){(void)dc;return color;}
-static int RoundRect(HDC dc,int l,int t,int r,int b,int x,int y){(void)dc;(void)x;(void)y;boxes++;last_left=l;last_top=t;last_right=r;last_bottom=b;return 1;}
-static int DrawTextW(HDC dc,const wchar_t *s,int n,RECT *r,int flags){(void)dc;(void)n;(void)flags;assert(s && *s);titles++;text_top=r->top;return 1;}
-static int DeleteObject(HGDIOBJ o){(void)o;return 1;}
-'''
-    ui_main=r'''
-int main(void){
-    group(1,L"first",20,18,800,145);group(2,L"other page",10,20,30,40);
-    paint_cards(1,0,30);assert(boxes==1 && titles==1 && fills==1);
-    assert(last_left==20 && last_top==-12 && last_right==819 && last_bottom==132 && text_top==0);
-    boxes=titles=fills=0;scale=2;paint_cards(2,0,10);assert(boxes==1 && titles==1 && fills==1);
-    assert(last_left==20 && last_top==30 && last_right==79 && last_bottom==109 && text_top==54);
-    puts("PASS: Windows page card painting and scroll offsets (API doubles)");return 0;
-}
-'''
-    run('win_ui_cards',ui_preamble+group_fn+'\n'+extract(ui,'paint_cards')+ui_main)
-
-    # The two native front ends expose the same operational dashboard,
-    # consistent settings groups, and one task-history surface.
+    # The native hosts share one CUI page tree and model. Platform-specific
+    # files provide only lifecycle, OS integration, and service adapters.
+    ui=(ROOT/'src/ui/hopdesk_ui.c').read_text(encoding='utf-8')
+    ui_header=(ROOT/'src/ui/hopdesk_ui.h').read_text(encoding='utf-8')
     mac_ui=(ROOT/'src/mac/main_ui.m').read_text(encoding='utf-8')
-    mac_split_ui=(ROOT/'src/mac/split_ui.m').read_text(encoding='utf-8')
     win_ui=(ROOT/'src/win/main_ui.c').read_text(encoding='utf-8')
-    # Both native clients expose exactly four top-level destinations in the
-    # same order. Logs and updates remain reachable inside the Settings page.
-    page_enum='enum { UI_PAGE_OVERVIEW, UI_PAGE_DEVICE, UI_PAGE_TRANSFER, UI_PAGE_SETTINGS, UI_PAGE_COUNT };'
-    assert page_enum in mac_ui and page_enum in win_ui
-    assert 'static NSString *const kPageNames[UI_PAGE_COUNT] = {@"概览",@"设备",@"传输",@"设置"};' in mac_ui
-    assert 'L"概览", L"设备", L"传输", L"设置"' in win_ui
-    assert 'static NSView *s_pages[UI_PAGE_COUNT];' in mac_ui
-    assert 'static NSScrollView *s_hosts[UI_PAGE_COUNT];' in mac_ui
-    assert 'static NSButton *s_nav[UI_PAGE_COUNT];' in mac_ui
-    assert 'static HWND s_pages[UI_PAGE_COUNT];' in win_ui
-    assert 's_pages[4]' not in mac_ui and 's_pages[5]' not in mac_ui
-    assert 's_pages[4]' not in win_ui and 's_pages[5]' not in win_ui
-    assert 'p=s_pages[UI_PAGE_TRANSFER];' in mac_ui and 'p=s_pages[UI_PAGE_SETTINGS];' in mac_ui
-    assert 'p=s_pages[UI_PAGE_TRANSFER];' in win_ui and 'p=s_pages[UI_PAGE_SETTINGS]; create_settings_page(p);' in win_ui
-    assert 'build_settings_page(settingsForm)' in mac_ui
-    settings_page = mac_ui[mac_ui.index('p=s_pages[UI_PAGE_SETTINGS];'):]
-    page_height = int(re.search(r'setFrameSize:NSMakeSize\(880,(\d+)\)', settings_page).group(1))
-    form_y, form_height = map(int, re.search(r'settingsForm=.*?NSMakeRect\(0,(\d+),880,(\d+)\)', settings_page).groups())
-    assert page_height >= form_y + form_height, 'Settings form must fit inside its scrollable page'
-    assert 'ui_label(card,@"运行日志"' in mac_ui and 'ui_label(card,@"软件更新"' in mac_ui
-    assert 'group(p,L"运行日志",20,620,800,590)' in win_ui
-    assert 'group(p,L"软件更新",20,1240,800,300)' in win_ui
-    assert 'if(page==UI_PAGE_TRANSFER)refresh_transfer_page();' in mac_ui
-    assert 'if(page==UI_PAGE_SETTINGS)refresh_logs();' in mac_ui
-    assert 'if(s_page==UI_PAGE_TRANSFER)refresh_transfer_page();' in mac_ui
-    assert 'if (page == UI_PAGE_TRANSFER) refresh_transfers();' in win_ui
-    assert 'if (page == UI_PAGE_SETTINGS) refresh_logs();' in win_ui
-    assert 's_page==UI_PAGE_TRANSFER' in win_ui and 'show_page(UI_PAGE_TRANSFER)' in win_ui
-    assert 'h==s_pages[UI_PAGE_SETTINGS]?1580' in win_ui
-    ui_contract=(ROOT/'docs/MAIN_UI.md').read_text(encoding='utf-8')
-    assert '四个一级入口及顺序：概览、设备、传输、设置。' in ui_contract
-    assert '四个入口，顺序与两端实现一致：**概览、设备、传输、设置**。' in ui_contract
-    assert '#### 运行日志' in ui_contract and '#### 软件更新' in ui_contract
-    assert all(x in mac_ui for x in ['s_overviewControl','s_overviewData','s_overviewSharing'])
-    assert all(x in win_ui for x in ['s_overview_control','s_overview_data','s_overview_sharing'])
-    for source,active,history,cancel in [
-        (mac_ui,'s_taskTables','s_taskHistory','cancelTask:'),
-        (win_ui,'s_task_lists','s_task_history','cancel_selected_task')
-    ]:
-        assert active in source and history in source and cancel in source
-        assert 'bytes_done' in source and 'files_done' in source
-        assert '传输历史' in source and '活动任务' in source
-    assert 's_xferHistory' not in mac_ui and 's_xfer_history' not in win_ui
-    assert all(x in mac_ui for x in ['CFG_ROLE','CFG_HOST','CFG_TOKEN','保存设置'])
-    assert all(x in win_ui for x in ['CFG_ROLE','CFG_HOST','CFG_TOKEN','UI_ID_SAVE'])
-    assert all(x in mac_ui for x in ['s_settingsDirty','NSControlTextDidChangeNotification',
-        'settings_validation_error','set_settings_editors_enabled','s_saveSettingsButton.enabled=s_settingsDirty&&!s_saveBusy'])
-    assert all(x in win_ui for x in ['s_settings_dirty','HIWORD(wp)==EN_CHANGE',
-        'settings_validation_error','set_settings_editors_enabled','s_cfg_save_button,s_settings_dirty&&!s_save_busy'])
-    assert 'update_settings_role_fields' in mac_ui and 'update_settings_role_fields' in win_ui
-    assert all(x in mac_ui for x in ['HOP_AUDIO_SEND','HOP_AUDIO_PLAY','s_audioSend','s_audioPlay','split_ui_set_audio_mode'])
-    assert all(x in win_ui for x in ['HOP_AUDIO_SEND','HOP_AUDIO_PLAY','s_audio_send','s_audio_play','hop_audio_set_mode'])
-    audio_config=(ROOT/'src/core/config.c').read_text(encoding='utf-8')
-    audio_header=(ROOT/'src/core/hop.h').read_text(encoding='utf-8')
-    split_ipc=(ROOT/'src/mac/split_ipc.h').read_text(encoding='utf-8')
-    split_agent=(ROOT/'src/mac/split_agent.m').read_text(encoding='utf-8')
-    win_main=(ROOT/'src/win/win_main.c').read_text(encoding='utf-8')
-    mac_main=(ROOT/'src/mac/main.c').read_text(encoding='utf-8')
-    win_tray=(ROOT/'src/win/ui.c').read_text(encoding='utf-8')
     mac_tray=(ROOT/'src/mac/statusbar.m').read_text(encoding='utf-8')
-    assert 'audio_mode=%u' in audio_config and 'audio_mode' in audio_header
-    assert 'c->audio_mode = HOP_AUDIO_PLAY' in audio_config and 'c->audio_mode = HOP_AUDIO_SEND' in audio_config
-    assert 'SPLIT_IPC_AUDIO_MODE_SET' in split_ipc and 'SPLIT_IPC_VERSION 3u' in split_ipc
-    assert 'SPLIT_IPC_AUDIO_MODE_SET' in split_agent and 'audio_requested' in split_agent
-    assert 'hop_audio_set_mode(&g_app.cfg,g_app.cfg.audio_mode)' in win_main
-    assert 'hop_audio_set_mode(&g_mac.cfg,g_mac.cfg.audio_mode)' in mac_main
-    assert 'port==HOP_AUDIO_PORT' in mac_ui and 'dataPort==HOP_AUDIO_PORT' in mac_ui
-    assert 'port==HOP_AUDIO_PORT' in win_ui and 'data_port==HOP_AUDIO_PORT' in win_ui
-    assert 'if (!out->requested && g_mac.cfg.audio_mode)' in mac_split_ui
-    assert 'IDM_AUDIO_SEND' not in win_tray and 'IDM_AUDIO_PLAY' not in win_tray
-    assert 'toggleAudio:' not in mac_tray
-    for source in [mac_ui,win_ui]:
-        save=extract(source,'save_settings')
-        assert 'settings_validation_error' in save
-        assert '正在保存设置' in save
-        assert '设置已保存' in source and '有未保存的更改' in source
-    assert 'NSAlert' not in extract(mac_ui,'save_settings')
-    assert 'MessageBoxW' not in extract(win_ui,'save_settings')
-    # Selecting a live task must drive the matching detail snapshot and file batch.
-    assert all(x in mac_ui for x in ['tableViewSelectionDidChange',
-        'find_task_snapshot(selectedId)', 'split_ui_get_files(fileDirection, fileBatch',
-        'selected_visible_file_index', 'NSAlertSecondButtonReturn',
-        's_cancelTaskButtons[d].enabled=canCancel'])
-    assert 'hop_xfer_task_get_snapshot(id, out)' in extract(mac_split_ui,'split_ui_get_task')
-    assert re.search(r'xfer_get_files_page\s*\(\s*direction\s*,\s*batch\s*,\s*offset\s*,\s*out\s*,\s*capacity\s*,\s*total\s*,\s*revision\s*\)', extract(mac_split_ui,'split_ui_get_files'))
-    assert all(x in win_ui for x in ['UI_ID_SEND_TASKS', 'UI_ID_RECEIVE_TASKS',
-        'hop_xfer_task_get_snapshot(selected_id,&selected_snapshot)',
-        'xfer_get_files(file_direction,file_batch', 'selected_visible_file_index',
-        'MB_DEFBUTTON2', 's_cancel_task_buttons[d]'])
-    assert '任务正在准备或排队，开始后显示文件明细' in mac_ui and '此任务的实时文件明细暂不可用' in win_ui
-    assert '暂无活动的发送任务' in mac_ui and '暂无活动的发送任务' in win_ui
-    assert re.search(r's_fileBatchActive\s*=\s*hasSelected\s*\?\s*\(hasTaskStatus\s*&&\s*st\.active\)\s*:\s*st\.active', mac_ui)
-    assert 's_file_batch_active=has_selected?(has_task_status&&st.active):st.active' in win_ui
-    assert re.search(r'currentBatch\s*=\s*t->transfer_id\s*&&\s*current\.batch\s*==\s*t->transfer_id', mac_ui)
-    assert 'current_batch=t->transfer_id && current.batch==t->transfer_id' in win_ui
-    assert '等待开始' in mac_ui and '等待开始' in win_ui
-    assert 'UI_FILE_PAGE_SIZE = 128' in mac_ui
-    assert 's_fileSnapshotFrozen' in mac_ui and 's_fileRevisionSeen' in mac_ui
-    assert 'calloc(HOP_XFER_FILE_LIMIT' not in win_ui
-    assert 'resize_file_snapshot(requested_file_count)' in win_ui
-    assert 'calloc(UI_TASK_CAP' not in win_ui
-    assert 'resize_task_snapshot(total)' in win_ui
-    assert 'hop_xfer_task_list_revisioned(NULL,0,&total,&revision)' in win_ui
-    assert 'file_details_available = !has_selected || has_task_status' in win_ui
-    assert 'files_total > HOP_XFER_FILE_LIMIT' in win_ui
+    win_tray=(ROOT/'src/win/ui.c').read_text(encoding='utf-8')
+    migration=(ROOT/'docs/CUI_UI_MIGRATION.md').read_text(encoding='utf-8')
+
+    assert 'HOPDESK_UI_OVERVIEW = 0' in ui_header
+    assert 'HOPDESK_UI_DEVICE' in ui_header and 'HOPDESK_UI_TRANSFER' in ui_header
+    assert 'HOPDESK_UI_SETTINGS' in ui_header and 'HOPDESK_UI_PAGE_COUNT' in ui_header
+    assert '"概览", "设备", "传输", "设置"' in ui
+    for page in ['"概览"', '"设备"', '"传输"', '"设置"']:
+        assert page in ui
+    assert 'cui_nav_item_ex' in ui and 'draw_overview(ui)' in ui
+    assert 'draw_device(ui)' in ui and 'draw_transfer(ui)' in ui and 'draw_settings(ui)' in ui
+
+    # UI data stays bounded: live task/history summaries are capped and file
+    # details are read in pages rather than materializing the 8192-entry ledger.
+    assert '#define HOPDESK_UI_TASK_CAP 32' in ui_header
+    assert '#define HOPDESK_UI_HISTORY_CAP 24' in ui_header
+    assert '#define HOPDESK_UI_FILE_PAGE 24' in ui_header
+    assert 'hop_xfer_task_snapshot tasks[HOPDESK_UI_TASK_CAP]' in ui_header
+    assert 'hop_xfer_task_history_record history[HOPDESK_UI_HISTORY_CAP]' in ui_header
+    assert 'hop_xfer_file_status files[HOPDESK_UI_FILE_PAGE]' in ui_header
+    assert 'task_snapshot_valid' in ui_header and 'history_snapshot_valid' in ui_header
+    assert 'file_revision' in ui_header and 'file_offset' in ui_header
+    assert 'task_revision != state.task_revision' in mac_ui
+    assert 'history_revision != state.history_revision' in mac_ui
+    assert 'task_revision != model->task_revision' in win_ui
+    assert 'history_revision != model->history_revision' in win_ui
+    assert 'split_ui_get_files(selected->direction, selected->transfer_id' in mac_ui
+    assert 'HOPDESK_UI_FILE_PAGE' in mac_ui and 'file_revision' in mac_ui
+    assert 'xfer_get_files_page(selected->direction, selected->transfer_id' in win_ui
+    assert 'HOPDESK_UI_FILE_PAGE' in win_ui and 'file_revision' in win_ui
+    assert 'int xfer_get_files_page(' in (ROOT/'src/win/xfer.c').read_text(encoding='utf-8')
     assert 'hop_xfer_tracking_files_page' in (ROOT/'src/core/xfer_tracking.c').read_text(encoding='utf-8')
     assert 'hop_xfer_task_list_revisioned' in (ROOT/'src/core/xfer_task.c').read_text(encoding='utf-8')
-    assert '!(s_fileBatch & HOP_XFER_PASTE_BATCH_FLAG)' in mac_ui
-    assert '!(s_file_batch & HOP_XFER_PASTE_BATCH_FLAG)' in win_ui
+    assert 'cui_request_wakeup(ui, 0.5f)' in ui
+
+    # Shared task controls remain connected to the native transfer services.
+    assert 's_ops->cancel_task(chosen->id)' in ui
+    assert 's_ops->retry_file(s_model.file_batch, s_selected_file)' in ui
+    assert '"取消选中任务"' in ui and '"重试选中文件"' in ui
+    assert '"上一页"' in ui and '"下一页"' in ui and '"历史记录"' in ui
+
+    # The same settings UI exposes independent send/play audio capabilities.
+    assert 'HOP_AUDIO_SEND' in ui and 'HOP_AUDIO_PLAY' in ui
+    assert '"发送本机系统声音"' in ui and '"播放对端系统声音"' in ui
+    assert 'split_ui_set_audio_mode' in mac_ui
+    assert 'hop_audio_set_mode' in win_ui
+    assert 'mac_request_accessibility_permission' in mac_ui
+    assert 'win_ui_display_action' in win_ui
+    assert 'win_ui_display_action' in (ROOT/'src/win/win_main.c').read_text(encoding='utf-8')
+
+    # Native tray/status integrations remain platform-specific, while both
+    # hosts create and tear down the same CUI application.
+    assert 'cui_app_run(&desc, draw_frame, NULL)' in mac_ui
+    assert 'cui_app_run(&desc, draw_frame, NULL)' in win_ui
+    assert 'hopdesk_ui_init(ui)' in mac_ui and 'hopdesk_ui_init(ui)' in win_ui
+    assert 'hopdesk_ui_shutdown()' in mac_ui and 'hopdesk_ui_shutdown()' in win_ui
+    assert 'CUI_RENDERER_GPU' in mac_ui and 'CUI_RENDERER_GPU' in win_ui
+    assert 'statusbar_show_transfers(void) { main_ui_show_page(2); }' in mac_tray
+    assert 'main_ui_show_page(2);' in win_tray
+    assert 'NSStatusItem' in mac_tray and 'Shell_NotifyIconW' in win_tray
+
+    # Font mappings are owned by each host and released after the CUI app dies.
+    assert 'cui_font (*load_cjk_font)(cui_ctx *ui)' in ui_header
+    assert 'void (*release_cjk_font)(void)' in ui_header
+    assert 's_ops->load_cjk_font(ui)' in ui
+    assert 's_ops->release_cjk_font()' in ui
+    assert 'cui_font_load_memory(ui' in mac_ui and 'cui_font_load_memory(ui' in win_ui
+
+    assert 'third_party/cui' in (ROOT/'.gitmodules').read_text(encoding='utf-8')
+    assert 'f9597a30d3bba4f7ef3e0f918e31c28bdcd4d2a3' in migration
+    assert 'Close' in migration or 'Closing the window' in migration
+    assert 'at most 32 live task summaries' in migration
+    assert '24 rows at a time' in migration
 
     # Mac edge entry must keep tracking drag events before sharing starts.
     capture=(ROOT/'src/mac/capture.c').read_text(encoding='utf-8')

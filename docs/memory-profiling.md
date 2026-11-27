@@ -74,3 +74,9 @@ For a before/after comparison of the recent memory optimization series, use base
 Build the current main version separately. Run one version at a time, fully quit both HopDesk processes and unload the LaunchAgent between runs, verify which executable owns --agent, and use identical transfer data.
 
 Neither script changes HopDesk settings or terminates the process. Keep the CSV files and vmmap summaries and share them with the code review so the next optimization is based on measured memory rather than structure-size estimates.
+
+### macOS Metal drawable A/B comparison (experimental)
+
+The default build caps CAMetalLayer.maximumDrawableCount at 2, retaining native Retina resolution, the same UI size and the upstream three vertex/index upload slots. The latter are separate from full-window drawable surfaces. The build generates an adjusted source in build/ and does not modify the pinned CUI submodule. The override fails closed if the upstream initialization changes.
+
+Build the control with `HOPDESK_METAL_DRAWABLE_COUNT=3 sh scripts/build-mac.sh` and the experiment with `HOPDESK_METAL_DRAWABLE_COUNT=2 sh scripts/build-mac.sh`. Copy each package before the next build overwrites it. Compare identical window sizes, display scaling, page, time since opening, Activity Monitor Memory and vmmap summaries for the UI PID. At 1180 × 820 points and 2× backing scale, one BGRA8 surface has approximately 14.8 MiB of pixels; this is a theoretical capacity difference, not a measured reduction. Test repeated resizes, scroll, text input, transfer updates, and 20 open/close cycles. Revert to three drawables if double buffering introduces stalls or rendering defects. Keep the agent PID and its memory baseline separate.

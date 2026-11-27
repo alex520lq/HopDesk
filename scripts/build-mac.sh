@@ -47,7 +47,22 @@ fi
 CUI_CORE=$(find "$CUI_ROOT/src" -maxdepth 1 -type f -name 'cui_*.c' ! -name 'cui_bidi.c' ! -name 'cui_shape.c' -print | sort)
 CUI_RENDER_C="$CUI_ROOT/src/render/cui_render_sw.c $CUI_ROOT/src/render/cui_render_gl.c"
 CUI_PLATFORM_C="$CUI_ROOT/src/platform/cui_app.c $CUI_ROOT/src/platform/cui_dialogs.c"
-CUI_RENDER_M="$CUI_ROOT/src/render/cui_render_metal.m"
+# HopDesk is an event-driven utility, not a continuously rendering game.
+# Cap drawable residency at two without changing Retina scale or CUI checkout.
+# Set HOPDESK_METAL_DRAWABLE_COUNT=3 for an otherwise identical A/B build.
+METAL_DRAWABLE_COUNT="${HOPDESK_METAL_DRAWABLE_COUNT:-2}"
+case "$METAL_DRAWABLE_COUNT" in
+    2|3) ;;
+    *) echo "HOPDESK_METAL_DRAWABLE_COUNT must be 2 or 3." >&2; exit 1 ;;
+esac
+METAL_UPSTREAM="$CUI_ROOT/src/render/cui_render_metal.m"
+if [ "$(grep -Fc 'layer.maximumDrawableCount = 3;' "$METAL_UPSTREAM")" -ne 1 ]; then
+    echo "CUI Metal drawable initialization changed; review the HopDesk override." >&2
+    exit 1
+fi
+CUI_RENDER_M="$BUILD/hopdesk_cui_render_metal.m"
+sed "s/layer.maximumDrawableCount = 3;/layer.maximumDrawableCount = $METAL_DRAWABLE_COUNT;/" "$METAL_UPSTREAM" > "$CUI_RENDER_M"
+echo "HopDesk Metal maximum drawable count: $METAL_DRAWABLE_COUNT"
 CUI_PLATFORM_M="$CUI_ROOT/src/platform/cui_app_cocoa.m"
 UI_C="$ROOT/src/ui/hopdesk_ui.c"
 if [ -z "$CORE$MAC_C$MAC_M" ]; then echo "No HopDesk source files found." >&2; exit 1; fi

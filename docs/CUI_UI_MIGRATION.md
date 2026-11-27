@@ -68,3 +68,7 @@ pagination/cancel/retry and long-running background services.
 ### Experimental macOS memory isolation
 
 Normal first launch starts the tray/IPC agent; clicking the tray launches a separate UI process. Closing the window destroys the CUI app and returns from the UI process after any pending settings save. The agent continues network, input, audio, transfer and tray progress handling. No CUI window is permitted in the agent. Automatic application replacement is not yet supported in split mode; stop the agent safely and install the test build manually. The OS AutoFill helper, actual physical footprint and repeated open/close behavior require real-device validation; no measured memory reduction is claimed here.
+
+### Metal memory experiment
+
+The macOS build defaults to two CAMetalLayer drawables, with an explicit three-drawable control build. Retina resolution and UI layout are unchanged. The upstream CUI submodule remains pinned and clean. The expected pixel-capacity difference is one drawable; actual physical footprint and interactive latency must be measured before promotion. Windows still uses one process: the UI directly reads local engine state and dispatches actions locally. A Windows split requires bounded, authenticated local IPC, agent-owned config/transfer/network operations and a separately exiting UI; it is not implemented by this change.

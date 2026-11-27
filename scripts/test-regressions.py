@@ -192,7 +192,9 @@ int main(void) {
     assert 'int xfer_get_files_page(' in (ROOT/'src/win/xfer.c').read_text(encoding='utf-8')
     assert 'hop_xfer_tracking_files_page' in (ROOT/'src/core/xfer_tracking.c').read_text(encoding='utf-8')
     assert 'hop_xfer_task_list_revisioned' in (ROOT/'src/core/xfer_task.c').read_text(encoding='utf-8')
-    assert 'cui_request_wakeup(ui, 0.5f)' in ui
+    assert 'cui_request_wakeup(ui, next_refresh_interval())' in ui
+    assert 'return 0.5f;' in ui and 'return 2.0f;' in ui
+    assert 's_force_refresh' not in ui
 
     # Shared task controls remain connected to the native transfer services.
     assert 's_ops->cancel_task(s_cancel_confirm_task)' in ui

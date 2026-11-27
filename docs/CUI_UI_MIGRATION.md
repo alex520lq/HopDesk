@@ -28,7 +28,8 @@ The UI model is revision-driven:
 - at most 32 live task summaries and 24 history rows are copied into the UI model;
 - file details are fetched 24 rows at a time through the existing tracking page API;
 - task and history snapshots are refreshed only when their revisions change;
-- the CUI frame uses a bounded 500 ms refresh wake-up while the window is open.
+- active transfers/tasks poll at 500 ms; an idle window polls at 2 s for connection changes;
+- platform events and user input request immediate redraws.
 
 ## CUI dependency and rendering
 

@@ -9,7 +9,6 @@ static const hopdesk_ui_ops *s_ops;
 static hopdesk_ui_model s_model;
 static cui_ctx *s_ctx;
 static int s_page = HOPDESK_UI_OVERVIEW;
-static int s_force_refresh = 1;
 static hop_xfer_task_id s_selected_task;
 static int s_selected_file = -1;
 static hop_xfer_task_id s_cancel_confirm_task;
@@ -350,7 +349,6 @@ static void draw_transfer(cui_ctx *ui) {
                         s_cancel_confirm_task = 0;
                         s_file_offset = 0;
                         s_selected_file = -1;
-                        s_force_refresh = 1;
                     }
                     cui_table_cell_text(ui, task->name[0] ? task->name : "文件任务");
                     cui_table_cell_text(ui, task->direction == HOP_XFER_DIR_SEND ? "发送" : "接收");
@@ -390,7 +388,6 @@ static void draw_transfer(cui_ctx *ui) {
                                 else
                                     ui_toast("无法取消", "任务可能已经结束或正在提交结果。", CUI_TONE_WARNING);
                                 s_cancel_confirm_task = 0;
-                                s_force_refresh = 1;
                             }
                         }
                     }
@@ -432,13 +429,11 @@ static void draw_transfer(cui_ctx *ui) {
                         s_file_offset = s_file_offset >= HOPDESK_UI_FILE_PAGE ?
                             s_file_offset - HOPDESK_UI_FILE_PAGE : 0;
                         s_selected_file = -1;
-                        s_force_refresh = 1;
                     }
                     if (cui_button(ui, "下一页", .disabled =
                         s_file_offset + HOPDESK_UI_FILE_PAGE >= (uint32_t)s_model.file_total)) {
                         s_file_offset += HOPDESK_UI_FILE_PAGE;
                         s_selected_file = -1;
-                        s_force_refresh = 1;
                     }
                     cui_muted(ui, "第 ");
                     cui_textf(ui, "%u", (unsigned)(s_file_offset / HOPDESK_UI_FILE_PAGE + 1));
@@ -452,7 +447,6 @@ static void draw_transfer(cui_ctx *ui) {
                             ui_toast("已提交重试", "失败文件已重新加入发送队列。", CUI_TONE_INFO);
                         else
                             ui_toast("无法重试", "仅支持已结束的普通发送任务中的失败文件。", CUI_TONE_WARNING);
-                        s_force_refresh = 1;
                     }
                 }
             } else {
@@ -753,7 +747,6 @@ void hopdesk_ui_set_ops(const hopdesk_ui_ops *ops) {
 
 void hopdesk_ui_init(cui_ctx *ui) {
     s_ctx = ui;
-    s_force_refresh = 1;
     s_selected_file = -1;
     if (!s_settings.dirty && !s_settings.saving) s_settings.loaded = 0;
     if (s_ops && s_ops->load_cjk_font) {
@@ -767,12 +760,28 @@ void hopdesk_ui_init(cui_ctx *ui) {
     }
 }
 
+static float next_refresh_interval(void) {
+    if (s_model.transfer.send.active || s_model.transfer.receive.active)
+        return 0.5f;
+    for (int i = 0; i < s_model.task_count; ++i) {
+        switch (s_model.tasks[i].state) {
+            case HOP_XFER_TASK_CREATED:
+            case HOP_XFER_TASK_SCANNING:
+            case HOP_XFER_TASK_QUEUED:
+            case HOP_XFER_TASK_ACTIVE:
+                return 0.5f;
+            default:
+                break;
+        }
+    }
+    return 2.0f;
+}
+
 void hopdesk_ui_frame(cui_ctx *ui) {
     int found = 0;
     if (!ui) return;
     if (s_ops && s_ops->snapshot)
         s_ops->snapshot(&s_model, s_selected_task, s_file_offset);
-    s_force_refresh = 0;
     for (int i = 0; i < s_model.task_count; ++i)
         if (s_model.tasks[i].id == s_selected_task) { found = 1; break; }
     if (s_selected_task && !found) s_selected_task = 0;
@@ -821,7 +830,7 @@ void hopdesk_ui_frame(cui_ctx *ui) {
             }
         }
     }
-    cui_request_wakeup(ui, 0.5f);
+    cui_request_wakeup(ui, next_refresh_interval());
 }
 
 void hopdesk_ui_shutdown(void) {
@@ -834,18 +843,15 @@ void hopdesk_ui_shutdown(void) {
     s_selected_file = -1;
     s_cancel_confirm_task = 0;
     s_file_offset = 0;
-    s_force_refresh = 1;
 }
 
 void hopdesk_ui_refresh(void) {
-    s_force_refresh = 1;
     if (s_ctx) cui_request_redraw(s_ctx);
 }
 
 void hopdesk_ui_show_page(int page) {
     if (page < 0 || page >= HOPDESK_UI_PAGE_COUNT) page = HOPDESK_UI_OVERVIEW;
     s_page = page;
-    s_force_refresh = 1;
     if (s_ctx) cui_request_redraw(s_ctx);
 }
 

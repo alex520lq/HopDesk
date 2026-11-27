@@ -1,5 +1,4 @@
 #include "../src/core/xfer_sender_worker.h"
-#include "../src/core/xfer_sender_context_adapter.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -16,8 +15,6 @@ struct fixture {
     int invalid_view;
 };
 void hop_log(hop_log_level l,const char *f,...){(void)l;(void)f;}
-int hop_session_id_valid(const hop_session_id *s){if(!s)return 0;for(size_t i=0;i<HOP_SESSION_BYTES;i++)if(s->bytes[i])return 1;return 0;}
-int hop_session_id_equal(const hop_session_id *a,const hop_session_id *b){return a&&b&&!memcmp(a->bytes,b->bytes,HOP_SESSION_BYTES);}
 static void *qn(void *u,const void *n){(void)u;return ((const job *)n)->next;}
 static void qs(void *u,void *n,void *x){(void)u;((job *)n)->next=(job *)x;}
 static int qc(void *u,const void *n){(void)u;return ((const job *)n)->cancelled;}

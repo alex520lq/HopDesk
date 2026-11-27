@@ -1,8 +1,6 @@
 #include <winsock2.h>
 #include <windows.h>
 #include "xfer_sender_internal.h"
-#include "../core/xfer_sender_worker.h"
-#include "../core/xfer_sender_scheduler.h"
 #include <string.h>
 
 static int sender_scheduler_begin_pass(void *user,int *peer_ready,uint64_t *now,uint32_t *cancel_batch){

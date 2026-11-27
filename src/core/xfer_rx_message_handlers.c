@@ -618,7 +618,7 @@ static void rx_ack_deliver_file(void *context, uint32_t batch, uint32_t id, uint
         rx->services.deliver_ack(rx->services.context, batch, id, status);
 }
 
-static void rx_ack_deliver_done(void *context, uint32_t batch, uint32_t status) {
+static void rx_ack_deliver_done(void *context, uint32_t batch, uint8_t status) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (rx && rx->services.deliver_ack)
         rx->services.deliver_ack(rx->services.context, batch, HOP_DONE_ACK_SLOT, (int)status);

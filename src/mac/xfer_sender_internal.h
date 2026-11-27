@@ -10,13 +10,8 @@
 #include "../core/xfer_rate.h"
 #include "../core/xfer_tracking.h"
 #include "../core/xfer_sender_context.h"
-#include "../core/xfer_sender_ack_wait.h"
-#include "../core/xfer_sender_chunk.h"
 #include "../core/xfer_sender_engine_adapter.h"
-#include "../core/xfer_sender_queue.h"
-#include "../core/xfer_sender_active_job.h"
 #include "../core/xfer_sender_worker.h"
-#include "../core/xfer_sender_job_lifecycle.h"
 #define CHUNK_HDR (25u + HOP_DATA_PREFIX)
 typedef hop_xfer_sender_job_owner xfer_job_owner;
 #define XFER_JOB_OWNER_SUBMITTER HOP_XFER_SENDER_JOB_OWNER_SUBMITTER

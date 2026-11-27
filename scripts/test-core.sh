@@ -104,70 +104,77 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-fram
   "$ROOT/tests/xfer_sender_context_tests.c"
 "$BUILD/hopdesk-sender-context-tests"
 
-clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+SENDER_CTX_DEPS="$ROOT/src/core/xfer_sender_context.c $ROOT/src/core/xfer_rate.c $ROOT/src/core/xfer_budget.c $ROOT/src/core/protocol.c $ROOT/src/core/session.c $ROOT/src/core/clock.c $ROOT/src/core/watchdog.c $ROOT/src/core/crc32.c"
+SENDER_WORKER_DEPS="$ROOT/src/core/xfer_sender_worker.c $SENDER_CTX_DEPS $ROOT/src/core/xfer_task.c $ROOT/src/core/log.c"
+
+# shellcheck disable=SC2086
+clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-sender-ack-wait-tests" \
-  "$ROOT/tests/xfer_sender_ack_wait_tests.c" "$ROOT/src/core/xfer_sender_ack_wait.c" \
-  "$ROOT/src/core/xfer_sender_context_adapter.c"
+  "$ROOT/tests/xfer_sender_ack_wait_tests.c" "$ROOT/src/core/xfer_sender_engine_adapter.c" \
+  "$ROOT/src/core/xfer_sender_engine.c" "$ROOT/src/core/xfer_tracking.c" \
+  "$ROOT/src/core/xfer_ack_window.c" "$ROOT/src/core/xfer_validate.c" $SENDER_CTX_DEPS
 "$BUILD/hopdesk-sender-ack-wait-tests"
 
+# shellcheck disable=SC2086
 clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-sender-chunk-tests" \
-  "$ROOT/tests/xfer_sender_chunk_tests.c" "$ROOT/src/core/xfer_sender_chunk.c" \
-  "$ROOT/src/core/xfer_sender_context_adapter.c" "$ROOT/src/core/xfer_rate.c" \
-  "$ROOT/src/core/xfer_budget.c" "$ROOT/src/core/protocol.c" "$ROOT/src/core/session.c" \
-  "$ROOT/src/core/clock.c" "$ROOT/src/core/watchdog.c" "$ROOT/src/core/crc32.c"
+  "$ROOT/tests/xfer_sender_chunk_tests.c" $SENDER_CTX_DEPS
 "$BUILD/hopdesk-sender-chunk-tests"
 
-clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+# shellcheck disable=SC2086
+clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-sender-queue-tests" \
-  "$ROOT/tests/xfer_sender_queue_tests.c" "$ROOT/src/core/xfer_sender_queue.c"
+  "$ROOT/tests/xfer_sender_queue_tests.c" $SENDER_WORKER_DEPS
 "$BUILD/hopdesk-sender-queue-tests"
 
-clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+# shellcheck disable=SC2086
+clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-sender-scheduler-tests" \
-  "$ROOT/tests/xfer_sender_scheduler_tests.c" "$ROOT/src/core/xfer_sender_scheduler.c" \
-  "$ROOT/src/core/xfer_sender_queue.c"
+  "$ROOT/tests/xfer_sender_scheduler_tests.c" $SENDER_WORKER_DEPS
 "$BUILD/hopdesk-sender-scheduler-tests"
 
-clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+# shellcheck disable=SC2086
+clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-sender-active-job-tests" \
-  "$ROOT/tests/xfer_sender_active_job_tests.c" "$ROOT/src/core/xfer_sender_active_job.c"
+  "$ROOT/tests/xfer_sender_active_job_tests.c" $SENDER_WORKER_DEPS
 "$BUILD/hopdesk-sender-active-job-tests"
 
-clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+# shellcheck disable=SC2086
+clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-sender-context-adapter-tests" \
-  "$ROOT/tests/xfer_sender_context_adapter_tests.c" "$ROOT/src/core/xfer_sender_context_adapter.c"
+  "$ROOT/tests/xfer_sender_context_adapter_tests.c" $SENDER_CTX_DEPS
 "$BUILD/hopdesk-sender-context-adapter-tests"
 
-clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+# shellcheck disable=SC2086
+clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-sender-retry-tests" \
-  "$ROOT/tests/xfer_sender_retry_tests.c" "$ROOT/src/core/xfer_sender_retry.c"
+  "$ROOT/tests/xfer_sender_retry_tests.c" $SENDER_WORKER_DEPS
 "$BUILD/hopdesk-sender-retry-tests"
 
-clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+# shellcheck disable=SC2086
+clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-sender-lifecycle-tests" \
-  "$ROOT/tests/xfer_sender_lifecycle_tests.c" "$ROOT/src/core/xfer_sender_lifecycle.c"
+  "$ROOT/tests/xfer_sender_lifecycle_tests.c" $SENDER_WORKER_DEPS
 "$BUILD/hopdesk-sender-lifecycle-tests"
 
-clang -std=c11 -Wall -Wextra -Werror -I "$ROOT/src/core" \
+# shellcheck disable=SC2086
+clang -std=c11 -Wall -Wextra -Werror -pthread -I "$ROOT/src/core" \
   -o "$BUILD/hopdesk-sender-job-lifecycle-tests" \
   "$ROOT/tests/xfer_sender_job_lifecycle_tests.c" \
-  "$ROOT/src/core/xfer_sender_job_lifecycle.c" \
-  "$ROOT/src/core/xfer_sender_context_adapter.c"
+  "$ROOT/src/core/xfer_sender_worker.c" "$ROOT/src/core/log.c" $SENDER_CTX_DEPS
 "$BUILD/hopdesk-sender-job-lifecycle-tests"
 
+# shellcheck disable=SC2086
 clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-sender-worker-flow-tests" \
-  "$ROOT/tests/xfer_sender_worker_flow_tests.c" "$ROOT/src/core/xfer_sender_worker_flow.c" \
-  "$ROOT/src/core/xfer_sender_retry.c" "$ROOT/src/core/xfer_sender_lifecycle.c" \
-  "$ROOT/src/core/xfer_task.c" "$ROOT/src/core/xfer_budget.c"
+  "$ROOT/tests/xfer_sender_worker_flow_tests.c" $SENDER_WORKER_DEPS
 "$BUILD/hopdesk-sender-worker-flow-tests"
 
-clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+# shellcheck disable=SC2086
+clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-sender-worker-tests" \
   "$ROOT/tests/xfer_sender_worker_tests.c" "$ROOT/src/core/xfer_sender_worker.c" \
-  "$ROOT/src/core/xfer_sender_context_adapter.c" "$ROOT/src/core/xfer_sender_scheduler.c" \
-  "$ROOT/src/core/xfer_sender_queue.c"
+  "$ROOT/src/core/xfer_task.c" $SENDER_CTX_DEPS
 "$BUILD/hopdesk-sender-worker-tests"
 
 clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
@@ -179,14 +186,12 @@ clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-
   "$ROOT/src/core/protocol.c" "$ROOT/src/core/crc32.c"
 "$BUILD/hopdesk-sender-engine-tests"
 
+# shellcheck disable=SC2086
 clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-sender-engine-adapter-tests" \
   "$ROOT/tests/xfer_sender_engine_adapter_tests.c" "$ROOT/src/core/xfer_sender_engine_adapter.c" \
-  "$ROOT/src/core/xfer_sender_ack_wait.c" "$ROOT/src/core/xfer_sender_context_adapter.c" \
   "$ROOT/src/core/xfer_sender_engine.c" "$ROOT/src/core/xfer_tracking.c" \
-  "$ROOT/src/core/xfer_ack_window.c" "$ROOT/src/core/xfer_validate.c" \
-  "$ROOT/src/core/protocol.c" "$ROOT/src/core/crc32.c" \
-  "$ROOT/src/core/clock.c" "$ROOT/src/core/session.c"
+  "$ROOT/src/core/xfer_ack_window.c" "$ROOT/src/core/xfer_validate.c" $SENDER_CTX_DEPS
 "$BUILD/hopdesk-sender-engine-adapter-tests"
 
 clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \

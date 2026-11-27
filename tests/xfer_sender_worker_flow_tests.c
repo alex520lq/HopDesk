@@ -1,5 +1,4 @@
-#include "../src/core/xfer_sender_worker_flow.h"
-#include "../src/core/xfer_sender_lifecycle.h"
+#include "../src/core/xfer_sender_worker.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -49,7 +48,6 @@ static void test_shutdown_wins_requeue_race(void){fake_worker f=make_worker();f.
  * finish the real manager-owned Task once and return its entire reservation. */
 #include "../src/core/xfer_budget.h"
 #include "../src/core/xfer_task.h"
-uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
 typedef struct {hop_xfer_task task;int stopping,stop_on_requeue,finish_calls,finish_ok,status_calls,dispose_calls;hop_xfer_task_state finished_state;} task_shutdown_fixture;
 static uint64_t task_now(void*u){(void)u;return 1000;}
 static unsigned task_delay(void*u,uint32_t a){(void)u;(void)a;return 100;}

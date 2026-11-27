@@ -5,8 +5,7 @@
 #include "xfer_budget.h"
 #include "xfer_task.h"
 #include "xfer_rx_core.h"
-#include "xfer_sender_queue.h"
-#include "xfer_sender_active_job.h"
+#include "xfer_sender_worker.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>

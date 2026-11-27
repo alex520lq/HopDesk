@@ -28,12 +28,10 @@
 
 ### Sender
 
+- `xfer_sender_context.c/.h`：显式依赖注入契约、Context 转发辅助以及 Chunk 限速分帧发送。
 - `xfer_sender_engine.c/.h`：文件/图片发送策略、CRC/分块顺序、ACK checkpoint 和 DONE/DONE_ACK 提交/重试策略。
-- `xfer_sender_chunk.c/.h`、`xfer_sender_ack_wait.c/.h`、`xfer_sender_retry.c/.h`：Chunk 处理、ACK 等待和重试决策。
-- `xfer_sender_queue.c/.h`、`xfer_sender_scheduler.c/.h`、`xfer_sender_active_job.c/.h`：FIFO、等待/摘取 Job、取消与 active marker 规则。
-- `xfer_sender_job_lifecycle.c/.h`、`xfer_sender_lifecycle.c/.h`：Job/Task/Reservation 终态和释放顺序。
-- `xfer_sender_worker.c/.h`、`xfer_sender_worker_flow.c/.h`：共享 Worker 执行流程与结果决策。
-- `xfer_sender_context.h`、`xfer_sender_context_adapter.c/.h`、`xfer_sender_engine_adapter.c/.h`：显式依赖注入与 Engine/Context 边界。平台 Adapter 提供文件句柄、socket 写帧、锁/等待原语、时钟和回调。
+- `xfer_sender_engine_adapter.c/.h`：将 `xfer_sender_context`、ACK 等待（`hop_xfer_sender_ack_wait`）与文件/图片/DONE 提交策略桥接到 `xfer_sender_engine`。
+- `xfer_sender_worker.c/.h`：共享 Sender 队列（FIFO）、调度器、Active Job / peer ABORT、重试/终态决策、Job/Task/Reservation 释放生命周期与 Worker 主循环。
 
 ### Receiver / Writer
 

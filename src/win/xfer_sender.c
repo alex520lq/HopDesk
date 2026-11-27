@@ -1,13 +1,6 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include "xfer_sender_internal.h"
-#include "../core/xfer_sender_context_adapter.h"
-#include "../core/xfer_sender_engine.h"
-#include "../core/xfer_sender_scheduler.h"
-#include "../core/xfer_sender_retry.h"
-#include "../core/xfer_sender_lifecycle.h"
-#include "../core/xfer_sender_worker_flow.h"
-#include "../core/xfer_sender_worker.h"
 #include "../core/xfer_ack_window.h"
 #include "../core/xfer_buffer_pool.h"
 #include "../core/xfer_budget.h"

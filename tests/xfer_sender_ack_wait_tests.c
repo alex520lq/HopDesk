@@ -1,5 +1,4 @@
-#include "../src/core/xfer_sender_ack_wait.h"
-#include "../src/core/xfer_sender_engine.h"
+#include "../src/core/xfer_sender_engine_adapter.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -13,6 +12,10 @@ typedef struct {
 } fixture;
 
 static uint64_t now(void *u){return ((fixture *)u)->now_ns;}
+int hop_xfer_ack_coordinator_register(hop_xfer_ack_coordinator *c,uint32_t b,uint32_t id){(void)c;(void)b;(void)id;return 1;}
+int hop_xfer_ack_coordinator_mark_sent(hop_xfer_ack_coordinator *c,uint32_t b,uint32_t id,uint64_t sent){(void)c;(void)b;(void)id;(void)sent;return 1;}
+int hop_xfer_ack_coordinator_set_deadline(hop_xfer_ack_coordinator *c,uint32_t b,uint32_t id,uint64_t d){(void)c;(void)b;(void)id;(void)d;return 1;}
+void hop_xfer_ack_coordinator_unregister_batch(hop_xfer_ack_coordinator *c,uint32_t b){(void)c;(void)b;}
 int hop_xfer_ack_coordinator_wait_take(hop_xfer_ack_coordinator *coordinator,
     uint32_t b,uint32_t id,uint32_t ms,int *status,uint64_t *rtt,int *expired){
     fixture *f=(fixture *)coordinator;f->waits++;f->last_wait_ms=ms;f->batch=b;f->id=id;

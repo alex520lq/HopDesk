@@ -33,7 +33,7 @@
 4. Writer Queue 以 slot + bytes 双重上限做准入；共享 Buffer Pool 管理有界缓冲，平台 Worker/IO 负责实际落盘。
 5. 终结路径按序 drain/关闭 Writer、清理 staging、建立 tombstone/receipt、完成 Task 并发布终态；迟到 ABORT/DONE 不得重复释放。
 
-PR #17 已删除 Receiver Protocol Adapter、Sender ACK Adapter 和 Receiver ABORT Executor 回调转发层；Receiver 生产分发从 `Frame Gate → Adapter → Dispatch → Handler` 收敛为 `Frame Gate → Dispatch → Handler`。PR #18 增加 Receiver ABORT 终结副作用顺序的生产路径回归。随后又将双端重复的 `xfer_rx_protocol_handlers.c` 与 `xfer_sender_commit_adapter.c` 迁入 Core，并将微型的 `xfer_sender_connection_adapter.c`、`xfer_sender_ack_platform_adapter.c` 收敛回各自平台的 `xfer_sender.c`。
+PR #17 已删除 Receiver Protocol Adapter、Sender ACK Adapter 和 Receiver ABORT Executor 回调转发层；Receiver 生产分发从 `Frame Gate → Adapter → Dispatch → Handler` 收敛为 `Frame Gate → Dispatch → Handler`。PR #18 增加 Receiver ABORT 终结副作用顺序的生产路径回归。随后又将双端重复的 `xfer_rx_protocol_handlers.c` 与 `xfer_sender_commit_adapter.c` 迁入 Core，并将微型的 `xfer_sender_connection_adapter.c`、`xfer_sender_ack_platform_adapter.c` 收敛回各自平台的 `xfer_sender.c`；同时将 Core Receiver 的 11 个微状态模块合并为 `xfer_rx_core.c/.h`，并将 Core Sender 的 10 个微模块合并为 `xfer_sender_context`、`xfer_sender_worker`、`xfer_sender_engine_adapter`、`xfer_sender_engine` 四个高内聚模块。
 
 ## 4. 已知保留项（不是遗漏的“待抽象层”）
 

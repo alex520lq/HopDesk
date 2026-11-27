@@ -126,8 +126,17 @@ switch ($Compiler) {
     'msvc' {
         $cl = (Get-Command cl.exe -ErrorAction SilentlyContinue).Source
         if (-not $cl) { throw '未找到 cl.exe；请在 x64 Native Tools for VS 终端运行。' }
-        $libArgs = $libs | ForEach-Object { $_ + '.lib' }
-        & cl /nologo /O2 /MT /W3 /utf-8 /DCUI_D3D12 /D_CRT_SECURE_NO_WARNINGS /FI$versionHeader /I $inc /I $iconInc /I $cuiInc /Fe:$out /Fo"$build\\" $src $res @libArgs /link /SUBSYSTEM:WINDOWS
+        $libArgs = ($libs + 'delayimp') | ForEach-Object { $_ + '.lib' }
+        $delayLoads = @(
+            '/DELAYLOAD:d3d12.dll',
+            '/DELAYLOAD:dxgi.dll',
+            '/DELAYLOAD:d3dcompiler_47.dll',
+            '/DELAYLOAD:opengl32.dll',
+            '/DELAYLOAD:winhttp.dll',
+            '/DELAYLOAD:bcrypt.dll',
+            '/DELAYLOAD:comctl32.dll'
+        )
+        & cl /nologo /O2 /MT /W3 /utf-8 /DCUI_D3D12 /D_CRT_SECURE_NO_WARNINGS /FI$versionHeader /I $inc /I $iconInc /I $cuiInc /Fe:$out /Fo"$build\\" $src $res @libArgs /link /SUBSYSTEM:WINDOWS @delayLoads
         if ($LASTEXITCODE -ne 0) { throw "cl 编译失败（退出码 $LASTEXITCODE）" }
     }
 }

@@ -38,8 +38,10 @@ CUI is pinned as a Git submodule at the v1.5.0 release commit
 
 - macOS builds include the Cocoa app backend and Metal renderer, with OpenGL and
   software fallbacks.
-- Windows builds include the Win32 app backend and Direct3D 12 renderer, with
-  OpenGL and software fallbacks.
+- Windows builds include the Win32 app backend and CUI's multi-threaded
+  incremental software renderer by default for fast on-demand child-process
+  startup and low private memory, with delay-loaded Direct3D 12 and OpenGL
+  backends selectable via `CUI_RENDERER=d3d12` / `gpu` / `opengl`.
 - CUI's bundled UI fonts are used with one system CJK fallback font where
   available. The CJK font is memory-mapped read-only rather than copied into the
   process heap, and the mapping is released when the CUI window/context closes.

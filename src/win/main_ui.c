@@ -20,6 +20,16 @@ static ULONGLONG s_last_snapshot;
 static hop_xfer_task_id s_last_task;
 static uint32_t s_last_offset;
 static unsigned s_failed_snapshots;
+static int s_was_foreground;
+
+static cui_renderer_kind select_renderer(void) {
+    const char *env = getenv("CUI_RENDERER");
+    if (env && (strcmp(env, "gpu") == 0 || strcmp(env, "d3d12") == 0))
+        return CUI_RENDERER_GPU;
+    if (env && strcmp(env, "opengl") == 0)
+        return CUI_RENDERER_OPENGL;
+    return CUI_RENDERER_SOFTWARE;
+}
 
 static DWORD WINAPI save_config_worker(LPVOID unused) {
     (void)unused;
@@ -46,11 +56,15 @@ static void save_config(const hop_config *config) {
 static void snapshot_model(hopdesk_ui_model *model, hop_xfer_task_id selected_task,
                            uint32_t file_offset) {
     ULONGLONG now = GetTickCount64();
+    HWND hwnd = (HWND)cui_app_native_window(NULL);
+    int is_fg = hwnd && GetForegroundWindow() == hwnd;
+    int gained_fg = is_fg && !s_was_foreground;
     int page = -1;
+    s_was_foreground = is_fg;
     collect_save();
     if (!win_split_client_alive()) { main_ui_shutdown(); return; }
     if (s_save_thread) return;
-    if (s_last_snapshot && now - s_last_snapshot < 250 &&
+    if (!gained_fg && s_last_snapshot && now - s_last_snapshot < 250 &&
         s_last_task == selected_task && s_last_offset == file_offset) return;
     s_last_snapshot = now; s_last_task = selected_task; s_last_offset = file_offset;
     if (win_split_snapshot(model, selected_task, file_offset, &page)) {
@@ -231,6 +245,7 @@ void main_ui_show_page(int page) {
     hop_config_defaults(&s_ui_config);
     s_last_snapshot = 0;
     s_failed_snapshots = 0;
+    s_was_foreground = 0;
     hopdesk_ui_set_ops(&k_ui_ops);
     hopdesk_ui_show_page(page);
     memset(&desc, 0, sizeof(desc));
@@ -239,7 +254,7 @@ void main_ui_show_page(int page) {
     desc.height = 820;
     desc.min_width = 960;
     desc.min_height = 640;
-    desc.renderer = CUI_RENDERER_GPU;
+    desc.renderer = select_renderer();
     desc.follow_system_theme = true;
     desc.accent = CUI_ACCENT_BLUE;
     s_running = 1;

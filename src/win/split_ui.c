@@ -20,6 +20,7 @@
 #define WIN_SPLIT_VERSION 1u
 #define WIN_SPLIT_IO_MS 1500u
 #define WIN_SPLIT_ACTION_MS 5000u
+#define WIN_SPLIT_ADDR_TTL_MS 10000u
 #define WIN_SPLIT_MODEL_BYTES ((DWORD)offsetof(hopdesk_ui_model, logs))
 enum { IPC_SNAPSHOT = 1, IPC_SAVE, IPC_CANCEL, IPC_RETRY,
        IPC_RECONNECT, IPC_DISPLAY, IPC_UPDATE };
@@ -45,8 +46,11 @@ static void *s_payload; /* worker-owned; main fills only during dispatch */
 static hopdesk_ui_model *s_agent_model; /* allocated only while UI is open */
 static hop_config s_agent_config;
 static int s_agent_config_loaded;
+static char s_cached_addresses[512];
+static ULONGLONG s_cached_addresses_tick;
 static DWORD s_parent_pid;
 static HANDLE s_parent;
+static void *s_client_payload;
 
 static int pipe_name(wchar_t *out, size_t cap, DWORD pid) {
     int n = swprintf(out, cap, L"\\\\.\\pipe\\HopDesk.UI.v1.%lu", (unsigned long)pid);
@@ -151,7 +155,8 @@ static void agent_snapshot(hopdesk_ui_model *model,
         s_agent_config_loaded = 1;
     }
     model->config = s_agent_config;
-    local_addresses(model->local_addresses, sizeof(model->local_addresses));
+    snprintf(model->local_addresses, sizeof(model->local_addresses), "%s",
+        s_cached_addresses[0] ? s_cached_addresses : "No active LAN IPv4 address");
 
     model->connected = g_app.state != HOP_LINK_DOWN;
     model->sharing = g_app.state == HOP_LINK_SHARING;
@@ -300,9 +305,13 @@ void win_split_agent_dispatch(void) {
 }
 static DWORD WINAPI agent_worker(LPVOID unused) {
     (void)unused;
+    /* Pre-populate local IPv4 addresses off the agent message/hook thread. */
+    local_addresses(s_cached_addresses, sizeof(s_cached_addresses));
+    s_cached_addresses_tick = GetTickCount64();
     while (WaitForSingleObject(s_stop, 0) != WAIT_OBJECT_0) {
         ULONG client = 0;
         unsigned char ack = 0;
+        int did_snapshot = 0;
         if (!accept_client()) {
             if (WaitForSingleObject(s_stop, 0) == WAIT_OBJECT_0) break;
             DisconnectNamedPipe(s_pipe);
@@ -315,7 +324,8 @@ static DWORD WINAPI agent_worker(LPVOID unused) {
         if (!io_exact(s_pipe, &s_request, sizeof(s_request), 0, s_stop, WIN_SPLIT_IO_MS) ||
             s_request.version != WIN_SPLIT_VERSION ||
             s_request.op < IPC_SNAPSHOT || s_request.op > IPC_UPDATE) goto disconnect;
-        s_payload = s_request.op == IPC_SNAPSHOT ? malloc(WIN_SPLIT_MODEL_BYTES) : NULL;
+        did_snapshot = s_request.op == IPC_SNAPSHOT;
+        s_payload = did_snapshot ? malloc(WIN_SPLIT_MODEL_BYTES) : NULL;
         memset(&s_reply, 0, sizeof(s_reply));
         s_reply.version = WIN_SPLIT_VERSION;
         s_reply.op = s_request.op;
@@ -337,6 +347,11 @@ static DWORD WINAPI agent_worker(LPVOID unused) {
         s_payload = NULL;
     disconnect:
         DisconnectNamedPipe(s_pipe);
+        if (did_snapshot && WaitForSingleObject(s_stop, 0) != WAIT_OBJECT_0 &&
+            GetTickCount64() - s_cached_addresses_tick >= WIN_SPLIT_ADDR_TTL_MS) {
+            local_addresses(s_cached_addresses, sizeof(s_cached_addresses));
+            s_cached_addresses_tick = GetTickCount64();
+        }
     }
     return 0;
 }
@@ -375,11 +390,12 @@ static BOOL CALLBACK child_window(HWND hwnd, LPARAM closing) {
     else if (IsWindowVisible(hwnd)) {
         if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
         SetForegroundWindow(hwnd);
+        PostMessageW(hwnd, WM_NULL, 0, 0);
     }
     return TRUE;
 }
 void win_split_agent_open(int page) {
-    wchar_t exe[32768], command[32768];
+    wchar_t exe[4096], command[4200];
     STARTUPINFOW si = {0};
     PROCESS_INFORMATION pi = {0};
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limit = {0};
@@ -387,7 +403,9 @@ void win_split_agent_open(int page) {
     if (!s_worker || page < 0 || page >= HOPDESK_UI_PAGE_COUNT) return;
     win_split_agent_reap();
     if (s_child) {
+        DWORD pid = (DWORD)InterlockedCompareExchange(&s_child_pid, 0, 0);
         s_pending_page = page;
+        if (pid) AllowSetForegroundWindow(pid);
         EnumWindows(child_window, 0);
         return;
     }
@@ -437,6 +455,8 @@ void win_split_agent_stop(void) {
     if (s_job) { CloseHandle(s_job); s_job = NULL; }
     InterlockedExchange(&s_child_pid, 0);
     free(s_agent_model); s_agent_model = NULL;
+    s_cached_addresses[0] = '\0';
+    s_cached_addresses_tick = 0;
     s_pending_page = -1;
 }
 int win_split_client_init(DWORD pid) {
@@ -450,6 +470,8 @@ void win_split_client_close(void) {
     if (s_parent) CloseHandle(s_parent);
     s_parent = NULL;
     s_parent_pid = 0;
+    free(s_client_payload);
+    s_client_payload = NULL;
 }
 int win_split_client_active(void) { return s_parent != NULL; }
 int win_split_client_alive(void) {
@@ -488,13 +510,13 @@ static int client_call(ipc_request *req, void *payload, DWORD capacity, int *pag
 }
 int win_split_snapshot(hopdesk_ui_model *model, hop_xfer_task_id task, uint32_t offset, int *page) {
     ipc_request r = {0};
-    void *data = malloc(WIN_SPLIT_MODEL_BYTES);
     int ok;
-    if (!data || !model) { free(data); return 0; }
+    if (!model) return 0;
+    if (!s_client_payload) s_client_payload = malloc(WIN_SPLIT_MODEL_BYTES);
+    if (!s_client_payload) return 0;
     r.op = IPC_SNAPSHOT; r.task = task; r.offset = offset;
-    ok = client_call(&r, data, WIN_SPLIT_MODEL_BYTES, page);
-    if (ok) memcpy(model, data, WIN_SPLIT_MODEL_BYTES);
-    free(data);
+    ok = client_call(&r, s_client_payload, WIN_SPLIT_MODEL_BYTES, page);
+    if (ok) memcpy(model, s_client_payload, WIN_SPLIT_MODEL_BYTES);
     return ok;
 }
 int win_split_save(const hop_config *config) {

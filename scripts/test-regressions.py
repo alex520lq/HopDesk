@@ -224,7 +224,8 @@ int main(void) {
     assert 'model->task_snapshot_valid = 0' in mac_ui
     assert 'hopdesk_ui_init(ui)' in mac_ui and 'hopdesk_ui_init(ui)' in win_ui
     assert 'hopdesk_ui_shutdown()' in mac_ui and 'hopdesk_ui_shutdown()' in win_ui
-    assert 'CUI_RENDERER_GPU' in mac_ui and 'CUI_RENDERER_GPU' in win_ui
+    assert 'CUI_RENDERER_GPU' in mac_ui and 'CUI_RENDERER_SOFTWARE' in win_ui
+    assert 'CUI_RENDERER_GPU' in win_ui and 'select_renderer()' in win_ui
     assert 'if (split_agent_is_active()) open_main_window();' in mac_tray
     assert 'else main_ui_show_page(2);' in mac_tray
     mac_main=(ROOT/'src/mac/main.c').read_text(encoding='utf-8')

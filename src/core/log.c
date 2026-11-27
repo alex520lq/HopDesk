@@ -27,10 +27,23 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 #endif
 
 static int g_enabled = 1;
+static hop_log_level g_min_level = HOP_LOG_INFO;
+static long g_rotate_bytes = HOP_LOG_ROTATE_BYTES;
 static FILE *g_file = NULL;
 static char g_path[1024];
 
 void hop_log_set(int enable) { LOG_LOCK(); g_enabled = enable; LOG_UNLOCK(); }
+
+void hop_log_configure(hop_log_level min_level, long rotate_bytes) {
+    LOG_LOCK();
+    if (min_level < HOP_LOG_INFO) min_level = HOP_LOG_INFO;
+    if (min_level > HOP_LOG_OFF) min_level = HOP_LOG_OFF;
+    g_min_level = min_level;
+    g_enabled = (min_level != HOP_LOG_OFF);
+    if (rotate_bytes >= 1024L * 1024L && rotate_bytes <= 100L * 1024L * 1024L)
+        g_rotate_bytes = rotate_bytes;
+    LOG_UNLOCK();
+}
 
 #if defined(_WIN32)
 /* Windows 的 fopen/rename 按 ANSI 代码页解释路径：exe 放在中文目录下就打不开。 */
@@ -74,7 +87,7 @@ static void rotate_if_needed_locked(void) {
     long pos;
     if (!g_file || !g_path[0]) return;
     pos = ftell(g_file);
-    if (pos < 0 || pos < HOP_LOG_ROTATE_BYTES) return;
+    if (pos < 0 || pos < g_rotate_bytes) return;
     fclose(g_file);
     g_file = NULL;
     rotate_files(g_path);
@@ -103,7 +116,7 @@ void hop_log(hop_log_level lvl, const char *fmt, ...) {
 #endif
 
     LOG_LOCK();
-    if (!g_enabled) { LOG_UNLOCK(); return; }
+    if (!g_enabled || lvl < g_min_level) { LOG_UNLOCK(); return; }
     FILE *out = g_file ? g_file : stderr;
     fprintf(out, "%s %s ", ts, tag(lvl));
     va_list ap;

@@ -12,6 +12,7 @@
 #include "split_ipc.h"
 #include "split_ui.h"
 #include "../platform/audio_link.h"
+#include "../ui/hopdesk_ui.h"
 
 static BOOL s_splitUI;
 static BOOL s_agentAvailable;
@@ -119,6 +120,127 @@ static int exchange_list(split_ipc_operation operation, split_ipc_query *query,
     if (total) *total = rows.total;
     if (revision) *revision = rows.revision;
     return rows.count;
+}
+
+static int exchange_payload(split_ipc_operation operation, const void *payload, size_t payload_size,
+                            void *result, size_t result_size, int *reached) {
+    const uint64_t deadline = hop_monotonic_ms() + 1500;
+    if (reached) *reached = 0;
+    int fd = connect_agent(deadline);
+    if (fd < 0) return 0;
+    if (reached) *reached = 1;
+    split_ipc_header header = {htonl(SPLIT_IPC_VERSION), htonl((uint32_t)operation),
+                               htonl((uint32_t)payload_size), htonl(1)};
+    split_ipc_reply reply;
+    int ok = copy_socket(fd, &header, sizeof(header), 1, deadline) &&
+             (!payload_size || copy_socket(fd, (void *)payload, payload_size, 1, deadline)) &&
+             copy_socket(fd, &reply, sizeof(reply), 0, deadline) &&
+             ntohl(reply.version) == SPLIT_IPC_VERSION && ntohl(reply.request_id) == 1 &&
+             ntohl(reply.operation) == (uint32_t)operation &&
+             ntohl(reply.payload_size) == result_size &&
+             (!result_size || copy_socket(fd, result, result_size, 0, deadline));
+    close(fd);
+    return ok;
+}
+
+int split_ui_save_config(const hop_config *config) {
+    if (!config) return 0;
+    split_ipc_result res = {0};
+    if (!exchange_payload(SPLIT_IPC_CONFIG_SAVE, config, sizeof(*config), &res, sizeof(res), NULL))
+        return 0;
+    if (res.result > 0) g_mac.cfg = *config;
+    return res.result;
+}
+
+int mac_cli_agent_get_status(void *ctx, hop_cli_status *out) {
+    (void)ctx;
+    if (!out) return 0;
+    split_ipc_status st = {0};
+    hop_config cfg = {0};
+    if (!exchange(SPLIT_IPC_STATUS, NULL, &st, sizeof(st)) || st.pid <= 0) return 0;
+    (void)exchange(SPLIT_IPC_CONFIG_GET, NULL, &cfg, sizeof(cfg));
+    memset(out, 0, sizeof(*out));
+    out->running = 1;
+    out->agent_pid = st.pid;
+    out->connected = st.control != 0;
+    out->sharing = st.sharing != 0;
+    out->data_connected = st.data != 0;
+    out->manually_disconnected = st.disconnected != 0;
+    out->input_mode = (unsigned)st.local_input & HOP_INPUT_MODES;
+    out->peer_input_mode = (unsigned)st.peer_input & HOP_INPUT_MODES;
+    out->audio_requested = (unsigned)st.audio_requested & HOP_AUDIO_MODES;
+    out->audio_active = (unsigned)st.audio_active & HOP_AUDIO_MODES;
+    out->audio_unavailable = (unsigned)st.audio_unavailable & HOP_AUDIO_MODES;
+    out->peer_audio_mode = (unsigned)st.peer_audio & HOP_AUDIO_MODES;
+    out->peer_capabilities_known = st.peer_caps_known != 0;
+    out->role = cfg.role;
+    {
+        split_ipc_query q = {.capacity = 0};
+        int total = 0;
+        uint64_t rev = 0;
+        s_agentAvailable = YES;
+        if (exchange_list(SPLIT_IPC_TASKS_GET, &q, NULL, sizeof(hop_xfer_task_snapshot), &total, &rev) >= 0)
+            out->active_tasks = total;
+    }
+    if (st.control && st.peer_name[0])
+        snprintf(out->peer_label, sizeof(out->peer_label), "%s", st.peer_name);
+    else if (cfg.role == HOP_ROLE_CLIENT && cfg.peer_host[0])
+        snprintf(out->peer_label, sizeof(out->peer_label), "%s", cfg.peer_host);
+    return 1;
+}
+
+int mac_cli_agent_get_config(void *ctx, hop_config *out) {
+    (void)ctx;
+    if (!out) return 0;
+    return exchange(SPLIT_IPC_CONFIG_GET, NULL, out, sizeof(*out)) ? 1 : 0;
+}
+
+int mac_cli_agent_save_config(void *ctx, const hop_config *cfg) {
+    (void)ctx;
+    if (!cfg) return -1;
+    split_ipc_result res = {0};
+    int reached = 0;
+    int ok = exchange_payload(SPLIT_IPC_CONFIG_SAVE, cfg, sizeof(*cfg), &res, sizeof(res), &reached);
+    if (!reached) return 0;
+    return (ok && res.result > 0) ? 1 : -1;
+}
+
+int mac_cli_agent_action(void *ctx, hop_cli_action act) {
+    (void)ctx;
+    split_ipc_result res = {0};
+    split_ipc_query q = {0};
+    int reached = 0, ok = 0;
+    switch (act) {
+        case HOP_CLI_ACTION_RECONNECT:
+            ok = exchange_payload(SPLIT_IPC_RECONNECT, NULL, 0, &res, sizeof(res), &reached);
+            break;
+        case HOP_CLI_ACTION_DISCONNECT:
+            ok = exchange_payload(SPLIT_IPC_DISCONNECT, NULL, 0, &res, sizeof(res), &reached);
+            break;
+        case HOP_CLI_ACTION_RELOAD:
+            ok = exchange_payload(SPLIT_IPC_CONFIG_RELOAD, NULL, 0, &res, sizeof(res), &reached);
+            break;
+        case HOP_CLI_ACTION_DISPLAY_MAC:
+            q.index = HOPDESK_UI_DISPLAY_TO_MAC;
+            ok = exchange_payload(SPLIT_IPC_DISPLAY_ACTION, &q, sizeof(q), &res, sizeof(res), &reached);
+            break;
+        case HOP_CLI_ACTION_DISPLAY_WIN:
+            q.index = HOPDESK_UI_DISPLAY_TO_WINDOWS;
+            ok = exchange_payload(SPLIT_IPC_DISPLAY_ACTION, &q, sizeof(q), &res, sizeof(res), &reached);
+            break;
+        case HOP_CLI_ACTION_DISPLAY_WAKE:
+            q.index = HOPDESK_UI_DISPLAY_WAKE;
+            ok = exchange_payload(SPLIT_IPC_DISPLAY_ACTION, &q, sizeof(q), &res, sizeof(res), &reached);
+            break;
+        case HOP_CLI_ACTION_DISPLAY_SLEEP:
+            q.index = HOPDESK_UI_DISPLAY_SLEEP;
+            ok = exchange_payload(SPLIT_IPC_DISPLAY_ACTION, &q, sizeof(q), &res, sizeof(res), &reached);
+            break;
+        default:
+            return -1;
+    }
+    if (!reached) return 0;
+    return (ok && res.result > 0) ? 1 : -1;
 }
 
 int split_ui_agent_available(void) {

@@ -33,6 +33,7 @@ HopDesk 采用 **单主干 + 单活动修复分支** 的迭代方式，避免多
 | 显示器控制 | Windows DDC/CI 输入源控制；macOS 唤醒、切换输入源和显示睡眠 |
 | 连接管理 | TCP 连接、心跳与客户端重连 |
 | 原生界面 | Windows Win32 主窗口；macOS Cocoa 主窗口；两端统一四页导航和交互 |
+| 无头 CLI 与配置化 | 同二进制内置 `hopdesk config` / `status` / `action` CLI（支持 `--json`），通过本机同用户 IPC 热应用配置，详见 [CLI 与配置指南](docs/CLI_AND_CONFIG.md) |
 
 ### 当前边界
 

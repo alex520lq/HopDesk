@@ -52,18 +52,42 @@ static int dx_load(void) {
     return p_getnum && p_getphys && p_destroy && p_setvcp;
 }
 
-/* 取主显示器的物理监视器句柄表；调用方负责 p_destroy + free */
+/* 取目标显示器的物理监视器句柄表；disp_monitor_index=0 为主屏，1..N 为枚举序号。调用方负责 p_destroy + free */
+struct disp_pick_ctx {
+    int target;
+    int current;
+    HMONITOR picked;
+};
+
+static BOOL CALLBACK disp_pick_proc(HMONITOR mon, HDC hdc, LPRECT rc, LPARAM lp) {
+    (void)hdc; (void)rc;
+    struct disp_pick_ctx *ctx = (struct disp_pick_ctx *)lp;
+    ++ctx->current;
+    if (ctx->current == ctx->target) {
+        ctx->picked = mon;
+        return FALSE;
+    }
+    return TRUE;
+}
+
 static DWORD open_primary(PHYS_MON **out) {
     POINT pt;
-    HMONITOR mon;
+    HMONITOR mon = NULL;
     DWORD n = 0;
     PHYS_MON *pm;
 
     *out = NULL;
     if (!dx_load()) return 0;
 
-    pt.x = 0; pt.y = 0;
-    mon = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
+    if (g_app.cfg.disp_monitor_index > 0) {
+        struct disp_pick_ctx ctx = { g_app.cfg.disp_monitor_index, 0, NULL };
+        EnumDisplayMonitors(NULL, NULL, disp_pick_proc, (LPARAM)&ctx);
+        mon = ctx.picked;
+    }
+    if (!mon) {
+        pt.x = 0; pt.y = 0;
+        mon = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
+    }
     if (!mon || !p_getnum(mon, &n) || n == 0) return 0;
 
     pm = (PHYS_MON *)calloc(n, sizeof(*pm));

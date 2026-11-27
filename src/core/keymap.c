@@ -66,6 +66,31 @@ static const uint8_t kKeypad[10] = {
     MK_KP8, MK_KP9
 };
 
+static int s_mod_ctrl = HOP_MOD_TARGET_COMMAND;
+static int s_mod_alt  = HOP_MOD_TARGET_OPTION;
+static int s_mod_win  = HOP_MOD_TARGET_CONTROL;
+
+static int clamp_mod_target(int target, int fallback) {
+    return (target >= HOP_MOD_TARGET_COMMAND && target <= HOP_MOD_TARGET_SHIFT)
+        ? target : fallback;
+}
+
+void hop_keymap_configure(int mod_ctrl, int mod_alt, int mod_win) {
+    s_mod_ctrl = clamp_mod_target(mod_ctrl, HOP_MOD_TARGET_COMMAND);
+    s_mod_alt  = clamp_mod_target(mod_alt, HOP_MOD_TARGET_OPTION);
+    s_mod_win  = clamp_mod_target(mod_win, HOP_MOD_TARGET_CONTROL);
+}
+
+static uint16_t mod_target_to_mac(int target, int right) {
+    switch (target) {
+        case HOP_MOD_TARGET_COMMAND: return right ? MK_RIGHTCMD : MK_CMD;
+        case HOP_MOD_TARGET_CONTROL: return right ? MK_RCONTROL : MK_CONTROL;
+        case HOP_MOD_TARGET_OPTION:  return right ? MK_ROPTION  : MK_OPTION;
+        case HOP_MOD_TARGET_SHIFT:   return right ? MK_RSHIFT   : MK_SHIFT;
+        default:                     return right ? MK_RIGHTCMD : MK_CMD;
+    }
+}
+
 uint16_t hop_vk_to_mac(int vk) {
     if (vk >= 'A' && vk <= 'Z')   return kLetter[vk - 'A'];
     if (vk >= '0' && vk <= '9')   return kDigit[vk - '0'];
@@ -90,19 +115,19 @@ uint16_t hop_vk_to_mac(int vk) {
         case 0x2D: return MK_HELP;        /* VK_INSERT -> Help */
         case 0x2E: return MK_FWDDEL;      /* VK_DELETE -> Forward Delete */
 
-        /* 修饰键：Ctrl -> Command，Alt -> Option，Win -> Control */
-        case 0xA0: return MK_SHIFT;       /* VK_LSHIFT   */
-        case 0xA1: return MK_RSHIFT;      /* VK_RSHIFT   */
-        case 0xA2: return MK_CMD;         /* VK_LCONTROL -> Command */
-        case 0xA3: return MK_RIGHTCMD;    /* VK_RCONTROL -> Command */
-        case 0xA4: return MK_OPTION;      /* VK_LMENU    */
-        case 0xA5: return MK_ROPTION;     /* VK_RMENU    */
-        case 0x5B: return MK_CONTROL;     /* VK_LWIN     -> Control */
-        case 0x5C: return MK_RCONTROL;    /* VK_RWIN     -> Control */
-        case 0x10: return MK_SHIFT;       /* VK_SHIFT   （通用） */
-        case 0x11: return MK_CMD;         /* VK_CONTROL （通用） */
-        case 0x12: return MK_OPTION;      /* VK_MENU    （通用） */
-        case 0x14: return MK_CAPS;        /* VK_CAPITAL */
+        /* 修饰键：默认 Ctrl -> Command，Alt -> Option，Win -> Control，可通过配置调整 */
+        case 0xA0: return MK_SHIFT;                              /* VK_LSHIFT   */
+        case 0xA1: return MK_RSHIFT;                             /* VK_RSHIFT   */
+        case 0xA2: return mod_target_to_mac(s_mod_ctrl, 0);      /* VK_LCONTROL */
+        case 0xA3: return mod_target_to_mac(s_mod_ctrl, 1);      /* VK_RCONTROL */
+        case 0xA4: return mod_target_to_mac(s_mod_alt, 0);       /* VK_LMENU    */
+        case 0xA5: return mod_target_to_mac(s_mod_alt, 1);       /* VK_RMENU    */
+        case 0x5B: return mod_target_to_mac(s_mod_win, 0);       /* VK_LWIN     */
+        case 0x5C: return mod_target_to_mac(s_mod_win, 1);       /* VK_RWIN     */
+        case 0x10: return MK_SHIFT;                              /* VK_SHIFT   （通用） */
+        case 0x11: return mod_target_to_mac(s_mod_ctrl, 0);      /* VK_CONTROL （通用） */
+        case 0x12: return mod_target_to_mac(s_mod_alt, 0);       /* VK_MENU    （通用） */
+        case 0x14: return MK_CAPS;                               /* VK_CAPITAL */
 
         /* 标点（US 布局） */
         case 0xBA: return MK_SEMICOLON;   /* VK_OEM_1      ;: */

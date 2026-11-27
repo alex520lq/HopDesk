@@ -2,6 +2,7 @@
 #define HOPDESK_WIN_SPLIT_UI_H
 #include "app.h"
 #include "../ui/hopdesk_ui.h"
+#include "../core/cli.h"
 
 /* Same executable, separate roles. Only the agent owns the engine. */
 int win_split_agent_start(HWND owner);
@@ -24,4 +25,10 @@ int win_split_display(int action);
 int win_split_update(void);
 int win_split_set_theme(int ui_theme);
 int win_split_set_input_mode(unsigned input_mode);
+
+/* Headless local CLI -> running agent IPC (same-user ACL control pipe). */
+int win_cli_agent_get_status(void *ctx, hop_cli_status *out);
+int win_cli_agent_get_config(void *ctx, hop_config *out);
+int win_cli_agent_save_config(void *ctx, const hop_config *cfg);
+int win_cli_agent_action(void *ctx, hop_cli_action action);
 #endif

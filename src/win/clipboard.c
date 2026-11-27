@@ -598,9 +598,15 @@ void clip_on_update(void) {
         clip_retire_offers();
     }
 
-    if (IsClipboardFormatAvailable(CF_DIB) || IsClipboardFormatAvailable(CF_HDROP)) {
+    if (IsClipboardFormatAvailable(CF_HDROP)) {
+        if (!g_app.cfg.clip_file) return;
         queue_image(); return;
     }
+    if (IsClipboardFormatAvailable(CF_DIB)) {
+        if (!g_app.cfg.clip_image) return;
+        queue_image(); return;
+    }
+    if (!g_app.cfg.clip_text) return;
     if (!open_retry(g_app.hwnd)) {
         hop_log(HOP_LOG_WARN, "clip: clipboard busy, scheduling retry");
         schedule_clip_retry();
@@ -608,24 +614,33 @@ void clip_on_update(void) {
     }
 
     /* Clipboard can change between availability check and OpenClipboard. */
-    if (IsClipboardFormatAvailable(CF_HDROP) || IsClipboardFormatAvailable(CF_DIB)) {
-        CloseClipboard(); queue_image(); return;
+    if (IsClipboardFormatAvailable(CF_HDROP)) {
+        CloseClipboard();
+        if (g_app.cfg.clip_file) queue_image();
+        return;
+    }
+    if (IsClipboardFormatAvailable(CF_DIB)) {
+        CloseClipboard();
+        if (g_app.cfg.clip_image) queue_image();
+        return;
     }
 
     h = GetClipboardData(CF_UNICODETEXT);
     if (h) {
         const wchar_t *w = (const wchar_t *)GlobalLock(h);
         if (w) {
+            int max_text = (g_app.cfg.clip_text_max_kb >= 4 && g_app.cfg.clip_text_max_kb <= 64)
+                ? g_app.cfg.clip_text_max_kb * 1024 : HOP_TEXT_MAX;
             int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
-            if (n > 1 && n <= HOP_TEXT_MAX) {
+            if (n > 1 && n <= max_text) {
                 char *u = (char *)malloc((size_t)n);
                 if (u) {
                     if (WideCharToMultiByte(CP_UTF8, 0, w, -1, u, n, NULL, NULL) > 0)
                         if (!send_text(u, (uint32_t)(n - 1))) schedule_clip_retry(); /* 不含结尾 NUL */
                     free(u);
                 }
-            } else if (n > HOP_TEXT_MAX) {
-                hop_log(HOP_LOG_WARN, "clip: text %d bytes > limit, skipped", n);
+            } else if (n > max_text) {
+                hop_log(HOP_LOG_WARN, "clip: text %d bytes > limit (%d), skipped", n, max_text);
             }
             GlobalUnlock(h);
         }
@@ -646,6 +661,7 @@ void clip_apply_remote(const uint8_t *p, uint32_t len) {
     int wn;
     HGLOBAL h;
 
+    if (!g_app.cfg.clip_text) return;
     if (len < 5) return;
     if (!hop_clip_should_apply_remote(hop_get_be32(p), (g_app.cfg.role==HOP_ROLE_SERVER?HOP_DEV_SERVER:HOP_DEV_CLIENT))) return; /* 自己发的，回环 */
     clip_consume_offers();

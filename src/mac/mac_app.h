@@ -16,6 +16,7 @@ typedef struct {
 
 extern mac_app g_mac;
 void local_addresses(char *out,size_t cap);
+int  mac_apply_hot_config(const hop_config *next);
 
 /* net_client.c */
 void net_loop_run(void);                 /* 连接 + 重连 + 接收（后台线程） */

@@ -9,6 +9,9 @@ clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-
   "$ROOT/src/core/protocol.c" \
   "$ROOT/src/core/crc32.c" \
   "$ROOT/src/core/config.c" \
+  "$ROOT/src/core/cli.c" \
+  "$ROOT/src/core/runtime_config.c" \
+  "$ROOT/src/core/log.c" \
   "$ROOT/src/core/keymap.c" \
   "$ROOT/src/core/xfer_validate.c" \
   "$ROOT/src/core/update_manifest.c" \

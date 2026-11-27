@@ -1,4 +1,5 @@
 #include "hopdesk_ui.h"
+#include "../core/config_schema.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -16,14 +17,15 @@ static uint32_t s_file_offset;
 
 typedef struct {
     hop_config cfg;
-    double port, data_port, switch_delay, cooldown, margin, wake_sec;
-    double chunk_kb, rate_limit;
+    double port, data_port, audio_port, switch_delay, cooldown, margin, wake_sec;
+    double chunk_kb, rate_limit, mouse_scale, wheel_scale;
     char disp_win[16], disp_mac[16];
-    int role, server_edge, client_edge, ui_theme;
+    int role, server_edge, client_edge, ui_theme, log_level;
     int tab;
     bool mac_cmd_open;
     bool provide_mouse, provide_keyboard;
     bool audio_send, audio_play;
+    bool wheel_invert, clip_text, clip_image, clip_file;
     int loaded, dirty, saving;
     char note[256];
 } hopdesk_ui_settings;
@@ -48,6 +50,9 @@ static const char *const k_edges[] = {
 };
 static const char *const k_themes[] = {
     "跟随系统", "浅色", "深色"
+};
+static const char *const k_log_levels[] = {
+    "Info（详细）", "Warn（警告）", "Error（仅错误）", "Off（关闭）"
 };
 static const char *const k_theme_icons[] = {
     CUI_ICON_MONITOR, CUI_ICON_SUN, CUI_ICON_MOON
@@ -676,9 +681,16 @@ static void settings_load(void) {
     s_settings.cfg = s_model.config;
     s_settings.port = s_model.config.port;
     s_settings.data_port = s_model.config.data_port;
+    s_settings.audio_port = s_model.config.audio_port ? s_model.config.audio_port : 24819;
     s_settings.switch_delay = s_model.config.switch_delay_ms;
     s_settings.cooldown = s_model.config.switch_cooldown_ms;
     s_settings.margin = s_model.config.edge_margin_px;
+    s_settings.mouse_scale = s_model.config.mouse_scale_pct ? s_model.config.mouse_scale_pct : 100;
+    s_settings.wheel_scale = s_model.config.wheel_scale_pct ? s_model.config.wheel_scale_pct : 100;
+    s_settings.wheel_invert = s_model.config.wheel_invert != 0;
+    s_settings.clip_text = s_model.config.clip_text != 0;
+    s_settings.clip_image = s_model.config.clip_image != 0;
+    s_settings.clip_file = s_model.config.clip_file != 0;
     s_settings.wake_sec = s_model.config.disp_wake_sec;
     s_settings.chunk_kb = s_model.config.xfer_chunk_kb;
     s_settings.rate_limit = s_model.config.xfer_rate_limit_mib;
@@ -690,6 +702,9 @@ static void settings_load(void) {
     s_settings.ui_theme = (s_model.config.ui_theme >= HOP_THEME_SYSTEM &&
                            s_model.config.ui_theme <= HOP_THEME_DARK)
         ? s_model.config.ui_theme : HOP_THEME_SYSTEM;
+    s_settings.log_level = (s_model.config.log_level >= HOP_LOG_INFO &&
+                            s_model.config.log_level <= HOP_LOG_OFF)
+        ? s_model.config.log_level : HOP_LOG_INFO;
     s_settings.provide_mouse = (s_model.config.input_mode & HOP_INPUT_MOUSE) != 0;
     s_settings.provide_keyboard = (s_model.config.input_mode & HOP_INPUT_KEYBOARD) != 0;
     s_settings.audio_send = (s_model.config.audio_mode & HOP_AUDIO_SEND) != 0;
@@ -714,33 +729,13 @@ static void settings_reset(void) {
 
 static int settings_build_config(hop_config *out) {
     uint16_t win_input, mac_input;
+    char err[256] = {0};
     if (!out) return 0;
     *out = s_settings.cfg;
-    if (!out->device_name[0]) {
-        snprintf(s_settings.note, sizeof(s_settings.note), "%s", "设备名称不能为空。");
-        return 0;
-    }
-    if (!out->token[0]) {
-        snprintf(s_settings.note, sizeof(s_settings.note), "%s", "共享 Token 不能为空。");
-        return 0;
-    }
-    if (s_settings.role == HOP_ROLE_CLIENT && !out->peer_host[0]) {
-        snprintf(s_settings.note, sizeof(s_settings.note), "%s", "选择主动连接对端时必须填写对端地址。");
-        return 0;
-    }
     if (s_settings.port < 1 || s_settings.port > 65535 ||
         s_settings.data_port < 1 || s_settings.data_port > 65535 ||
-        (unsigned)s_settings.port == (unsigned)s_settings.data_port) {
-        snprintf(s_settings.note, sizeof(s_settings.note), "%s", "控制端口和数据端口必须在 1–65535 之间，且不能相同。");
-        return 0;
-    }
-    if (s_settings.switch_delay < 0 || s_settings.switch_delay > 5000 ||
-        s_settings.cooldown < 0 || s_settings.cooldown > 10000 ||
-        s_settings.margin < 0 || s_settings.margin > 1000 ||
-        s_settings.wake_sec < 1 || s_settings.wake_sec > 3600 ||
-        s_settings.chunk_kb < 64 || s_settings.chunk_kb > 4096 ||
-        s_settings.rate_limit < 16 || s_settings.rate_limit > 4096) {
-        snprintf(s_settings.note, sizeof(s_settings.note), "%s", "边缘参数、唤醒时长或传输参数超出允许范围。");
+        s_settings.audio_port < 1 || s_settings.audio_port > 65535) {
+        snprintf(s_settings.note, sizeof(s_settings.note), "%s", "控制、数据和音频端口必须在 1–65535 之间。");
         return 0;
     }
     if (!parse_u16(s_settings.disp_win, &win_input) ||
@@ -752,11 +747,18 @@ static int settings_build_config(hop_config *out) {
     out->role = (hop_role)s_settings.role;
     out->port = (uint16_t)s_settings.port;
     out->data_port = (uint16_t)s_settings.data_port;
+    out->audio_port = (uint16_t)s_settings.audio_port;
     out->server_edge = s_settings.server_edge;
     out->client_edge = s_settings.client_edge;
     out->switch_delay_ms = (int)s_settings.switch_delay;
     out->switch_cooldown_ms = (int)s_settings.cooldown;
     out->edge_margin_px = (int)s_settings.margin;
+    out->mouse_scale_pct = (int)s_settings.mouse_scale;
+    out->wheel_scale_pct = (int)s_settings.wheel_scale;
+    out->wheel_invert = s_settings.wheel_invert ? 1 : 0;
+    out->clip_text = s_settings.clip_text ? 1 : 0;
+    out->clip_image = s_settings.clip_image ? 1 : 0;
+    out->clip_file = s_settings.clip_file ? 1 : 0;
     out->disp_win_input = win_input;
     out->disp_mac_input = mac_input;
     out->disp_wake_sec = (int)s_settings.wake_sec;
@@ -769,6 +771,14 @@ static int settings_build_config(hop_config *out) {
     out->ui_theme = (s_settings.ui_theme >= HOP_THEME_SYSTEM &&
                      s_settings.ui_theme <= HOP_THEME_DARK)
         ? s_settings.ui_theme : HOP_THEME_SYSTEM;
+    out->log_level = (s_settings.log_level >= HOP_LOG_INFO &&
+                      s_settings.log_level <= HOP_LOG_OFF)
+        ? s_settings.log_level : HOP_LOG_INFO;
+
+    if (!hop_config_validate(out, 1, err, sizeof(err))) {
+        snprintf(s_settings.note, sizeof(s_settings.note), "%s", err[0] ? err : "配置校验失败。");
+        return 0;
+    }
     return 1;
 }
 
@@ -849,6 +859,9 @@ static void draw_settings_connection_and_appearance(cui_ctx *ui) {
                     settings_mark_dirty();
                 if (cui_number_ex(ui, "setting-data-port", &s_settings.data_port, 1, 65535,
                     &(cui_number_opts){.label = "数据端口", .step = 1, .decimals = 0, .width = CUI_GROW(1)}))
+                    settings_mark_dirty();
+                if (cui_number_ex(ui, "setting-audio-port", &s_settings.audio_port, 1, 65535,
+                    &(cui_number_opts){.label = "音频端口", .step = 1, .decimals = 0, .width = CUI_GROW(1)}))
                     settings_mark_dirty();
             }
             if (cui_input(ui, "setting-token", s_settings.cfg.token,
@@ -988,6 +1001,17 @@ static void draw_settings_input_and_display(cui_ctx *ui) {
                     &(cui_number_opts){.label = "边缘内缩", .step = 1, .decimals = 0, .suffix = "px", .width = CUI_GROW(1)}))
                     settings_mark_dirty();
             }
+            cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_START) {
+                if (cui_number_ex(ui, "setting-mouse-scale", &s_settings.mouse_scale, 25, 400,
+                    &(cui_number_opts){.label = "鼠标速度倍率", .step = 5, .decimals = 0, .suffix = "%", .width = CUI_GROW(1)}))
+                    settings_mark_dirty();
+                if (cui_number_ex(ui, "setting-wheel-scale", &s_settings.wheel_scale, 25, 400,
+                    &(cui_number_opts){.label = "滚轮速度倍率", .step = 5, .decimals = 0, .suffix = "%", .width = CUI_GROW(1)}))
+                    settings_mark_dirty();
+            }
+            if (cui_switch(ui, "反转滚轮方向", &s_settings.wheel_invert,
+                .description = "对注入到对端的滚动事件反转方向（适配自然滚动习惯）"))
+                settings_mark_dirty();
         }
 
         cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 12) {
@@ -1021,16 +1045,28 @@ static void draw_settings_input_and_display(cui_ctx *ui) {
 }
 
 static void draw_settings_transfer(cui_ctx *ui) {
-    cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 12) {
-        cui_heading(ui, "文件传输调优", 3);
-        cui_secondary(ui, "默认 256 KB 分块可在千兆局域网下兼顾吞吐与键鼠低尾延迟。");
-        cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_START) {
-            if (cui_number_ex(ui, "setting-chunk-kb", &s_settings.chunk_kb, 64, 4096,
-                &(cui_number_opts){.label = "传输分块大小", .step = 64, .decimals = 0, .suffix = "KB", .width = CUI_GROW(1)}))
-                settings_mark_dirty();
-            if (cui_number_ex(ui, "setting-rate-limit", &s_settings.rate_limit, 16, 4096,
-                &(cui_number_opts){.label = "速率上限", .step = 16, .decimals = 0, .suffix = "MiB/s", .width = CUI_GROW(1)}))
-                settings_mark_dirty();
+    cui_column(ui, .width = CUI_FILL, .gap = 14) {
+        cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 12) {
+            cui_heading(ui, "文件传输调优", 3);
+            cui_secondary(ui, "默认 256 KB 分块可在千兆局域网下兼顾吞吐与键鼠低尾延迟。更多高级预算与超时参数可通过 hopdesk config CLI 编辑。");
+            cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_START) {
+                if (cui_number_ex(ui, "setting-chunk-kb", &s_settings.chunk_kb, 64, 4096,
+                    &(cui_number_opts){.label = "传输分块大小", .step = 64, .decimals = 0, .suffix = "KB", .width = CUI_GROW(1)}))
+                    settings_mark_dirty();
+                if (cui_number_ex(ui, "setting-rate-limit", &s_settings.rate_limit, 16, 4096,
+                    &(cui_number_opts){.label = "速率上限", .step = 16, .decimals = 0, .suffix = "MiB/s", .width = CUI_GROW(1)}))
+                    settings_mark_dirty();
+            }
+        }
+        cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 10) {
+            cui_heading(ui, "剪贴板同步策略", 3);
+            cui_secondary(ui, "按类型独立开关双向剪贴板同步，保存后即时生效。");
+            if (cui_switch(ui, "同步文本剪贴板", &s_settings.clip_text,
+                .description = "通过控制通道同步纯文本")) settings_mark_dirty();
+            if (cui_switch(ui, "同步图片剪贴板", &s_settings.clip_image,
+                .description = "通过数据通道同步截图与位图")) settings_mark_dirty();
+            if (cui_switch(ui, "同步文件剪贴板", &s_settings.clip_file,
+                .description = "按需发送文件 Offer 并在粘贴时传输")) settings_mark_dirty();
         }
     }
 }
@@ -1038,7 +1074,10 @@ static void draw_settings_transfer(cui_ctx *ui) {
 static void draw_settings_maintenance(cui_ctx *ui) {
     cui_column(ui, .width = CUI_FILL, .gap = 14) {
         cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 10) {
-            cui_heading(ui, "更新与权限", 3);
+            cui_heading(ui, "更新、日志等级与权限", 3);
+            if (cui_select_ex(ui, "setting-log-level", k_log_levels, 4, &s_settings.log_level,
+                &(cui_select_opts){.label = "日志记录等级", .width = CUI_FILL}))
+                settings_mark_dirty();
             cui_row(ui, .width = CUI_FILL, .gap = 8, .wrap = true) {
                 if (cui_button_ex(ui, "检查更新", &(cui_button_opts){
                         .variant = CUI_BUTTON_SECONDARY,

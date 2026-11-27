@@ -15,7 +15,9 @@
 #include "mac_app.h"
 #include "split_agent.h"
 #include "split_ipc.h"
+#include "../core/config_schema.h"
 #include "../platform/audio_link.h"
+#include "../ui/hopdesk_ui.h"
 
 static int s_listener = -1;
 static struct sockaddr_un s_address;
@@ -170,12 +172,45 @@ static void serve(int fd) {
     if (!io_full(fd, &header, sizeof(header), false, deadline) ||
         ntohl(header.version) != SPLIT_IPC_VERSION) return;
     uint32_t operation = ntohl(header.operation);
-    if (operation < SPLIT_IPC_STATUS || operation > SPLIT_IPC_INPUT_MODE_SET) return;
+    if (operation < SPLIT_IPC_STATUS || operation > SPLIT_IPC_DISPLAY_ACTION) return;
+
+    if (operation == SPLIT_IPC_CONFIG_SAVE) {
+        hop_config incoming;
+        split_ipc_result result = {0};
+        if (ntohl(header.payload_size) != sizeof(incoming) ||
+            !io_full(fd, &incoming, sizeof(incoming), false, deadline)) {
+            (void)reply(fd, &header, false, NULL, 0, NULL, 0, deadline);
+            return;
+        }
+        if (hop_config_validate(&incoming, 0, NULL, 0) &&
+            hop_config_save_atomic(&incoming, g_mac.config_path)) {
+            result.result = mac_apply_hot_config(&incoming) ? 1 : 2;
+        }
+        (void)reply(fd, &header, true, &result, sizeof(result), NULL, 0, deadline);
+        return;
+    }
+    if (operation == SPLIT_IPC_CONFIG_RELOAD) {
+        split_ipc_result result = {0};
+        if (ntohl(header.payload_size) != 0) {
+            (void)reply(fd, &header, false, NULL, 0, NULL, 0, deadline);
+            return;
+        }
+        hop_config reloaded;
+        hop_config_defaults(&reloaded);
+        snprintf(reloaded.device_name, sizeof(reloaded.device_name), "%s", "Mac");
+        if (hop_config_load(&reloaded, g_mac.config_path)) {
+            (void)mac_apply_hot_config(&reloaded);
+            result.result = 1;
+        }
+        (void)reply(fd, &header, true, &result, sizeof(result), NULL, 0, deadline);
+        return;
+    }
 
     split_ipc_query query = {0};
     bool has_query = (operation >= SPLIT_IPC_TASKS_GET && operation <= SPLIT_IPC_FILES_GET) ||
                      operation == SPLIT_IPC_RETRY_FILE || operation == SPLIT_IPC_CANCEL_TASK ||
-                     operation == SPLIT_IPC_AUDIO_MODE_SET || operation == SPLIT_IPC_INPUT_MODE_SET;
+                     operation == SPLIT_IPC_AUDIO_MODE_SET || operation == SPLIT_IPC_INPUT_MODE_SET ||
+                     operation == SPLIT_IPC_DISPLAY_ACTION;
     if (ntohl(header.payload_size) != (has_query ? sizeof(query) : 0)) {
         (void)reply(fd, &header, false, NULL, 0, NULL, 0, deadline);
         return;
@@ -244,6 +279,18 @@ static void serve(int fd) {
             unsigned takeover = next & ~prev;
             net_apply_input_mode(next, takeover, 1);
             result.result = 1;
+        }
+        (void)reply(fd, &header, true, &result, sizeof(result), NULL, 0, deadline);
+        return;
+    }
+    case SPLIT_IPC_DISPLAY_ACTION: {
+        split_ipc_result result = {0};
+        switch (query.index) {
+            case HOPDESK_UI_DISPLAY_TO_MAC:     disp_set_input(g_mac.cfg.disp_mac_input); result.result = 1; break;
+            case HOPDESK_UI_DISPLAY_TO_WINDOWS: disp_set_input(g_mac.cfg.disp_win_input); result.result = 1; break;
+            case HOPDESK_UI_DISPLAY_WAKE:       disp_wake(g_mac.cfg.disp_wake_sec); result.result = 1; break;
+            case HOPDESK_UI_DISPLAY_SLEEP:      disp_sleep(); result.result = 1; break;
+            default: break;
         }
         (void)reply(fd, &header, true, &result, sizeof(result), NULL, 0, deadline);
         return;

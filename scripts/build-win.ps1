@@ -1,4 +1,4 @@
-# =====================================================================
+﻿# =====================================================================
 #  HopDesk - Windows 构建脚本
 #
 #  用法：  pwsh scripts/build-win.ps1 [-Compiler clang|gcc|msvc]
@@ -74,7 +74,7 @@ try {
     } else {
         $windres = (Get-Command windres.exe -ErrorAction SilentlyContinue).Source
         if (-not $windres) { throw 'windres.exe not found; install mingw-w64 binutils' }
-        & $windres -i $resource -o $res
+        & $windres -i $resource -O coff -o $res
         if ($LASTEXITCODE -ne 0) { throw 'windres failed to compile the icon resource' }
     }
 } finally { Pop-Location }

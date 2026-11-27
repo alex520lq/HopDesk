@@ -242,9 +242,11 @@ void inject_move(int dx, int dy) {
     if (!s_input.sharing) inject_enter((int)(s_h / 2));  /* 未收到 ENTER 的兜底 */
     if (!s_inited) inject_init();
 
-    /* 把 Windows 物理像素增量换算成本端坐标 */
-    sx = scale_x();
-    sy = scale_y();
+    /* 把 Windows 物理像素增量换算成本端坐标并应用鼠标倍率 */
+    double mscale = g_mac.cfg.mouse_scale_pct >= 25
+        ? (double)g_mac.cfg.mouse_scale_pct / 100.0 : 1.0;
+    sx = scale_x() * mscale;
+    sy = scale_y() * mscale;
     nx = s_input.mouse_x + dx * sx;
     ny = s_input.mouse_y + dy * sy;
     m  = margin();
@@ -303,9 +305,14 @@ void inject_button(int button, int down, int click_count) {
 void inject_wheel(int dx, int dy) {
     CGEventRef e;
     if (!s_input.sharing) inject_enter((int)(s_h / 2));
+    double wscale = g_mac.cfg.wheel_scale_pct >= 25
+        ? (double)g_mac.cfg.wheel_scale_pct / 100.0 : 1.0;
+    double dir = g_mac.cfg.wheel_invert ? -1.0 : 1.0;
+    int32_t sdx = (int32_t)((double)dx * wscale * dir);
+    int32_t sdy = (int32_t)((double)dy * wscale * dir);
     /* Windows WHEEL_DELTA=120 ≈ 3 行；按像素单位换算 */
     e = CGEventCreateScrollWheelEvent2(NULL, kCGScrollEventUnitPixel, 2,
-                                       (int32_t)dy, (int32_t)dx, 0);
+                                       sdy, sdx, 0);
     post_mouse(e);
     mac_cursor_restore();
 }

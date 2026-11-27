@@ -31,7 +31,9 @@ static int copy_rename(const char*a,const char*b){if(fault_rename){errno=EACCES;
 #endif
 static hop_xfer_tracking send_state, receive_state;
 static void put(const char*p,const char*s){FILE*f=fopen(p,"wb");assert(f);assert(fwrite(s,1,strlen(s),f)==strlen(s));assert(fclose(f)==0);}
+#ifndef _WIN32
 static void check_file(const char*p,const char*s){char b[256]={0};FILE*f=fopen(p,"rb");assert(f);assert(fread(b,1,sizeof(b)-1,f)==strlen(s));assert(fclose(f)==0);assert(strcmp(b,s)==0);}
+#endif
 int main(void){
     assert(hop_xfer_job_total(1,0)==1);
     assert(hop_xfer_job_total(0,3)==3);

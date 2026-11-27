@@ -148,6 +148,10 @@ int split_ui_data_connected(void) {
     return s_splitUI ? s_agentAvailable && s_status.data : xfer_connected();
 }
 
+int split_ui_is_disconnected(void) {
+    return s_splitUI ? s_agentAvailable && s_status.disconnected : net_is_disconnected();
+}
+
 int split_ui_get_transfer_state(split_ipc_transfer_state *out) {
     if (!out) return 0;
     memset(out, 0, sizeof(*out));
@@ -267,6 +271,43 @@ static void show_message(NSString *title, NSString *detail) {
     [alert runModal];
 }
 
+int split_ui_set_input_mode(unsigned mode) {
+    if (mode & ~HOP_INPUT_MODES) return 0;
+    if (!s_splitUI) {
+        unsigned prev = net_get_input_mode();
+        unsigned takeover = mode & ~prev;
+        net_apply_input_mode(mode, takeover, 1);
+        return 1;
+    }
+    g_mac.cfg.input_mode = mode;
+    split_ipc_query query = {.index = (int32_t)mode};
+    return action(SPLIT_IPC_INPUT_MODE_SET, &query);
+}
+
+void split_ui_get_capabilities(unsigned *local_input, unsigned *peer_input,
+                               unsigned *peer_audio, int *peer_known,
+                               char *peer_name, size_t peer_name_cap) {
+    if (!s_splitUI) {
+        if (local_input) *local_input = net_get_input_mode();
+        net_get_peer_capabilities(peer_input, peer_audio, peer_known, peer_name, peer_name_cap);
+        return;
+    }
+    if (s_agentAvailable) {
+        if (local_input) *local_input = (unsigned)s_status.local_input & HOP_INPUT_MODES;
+        if (peer_input) *peer_input = (unsigned)s_status.peer_input & HOP_INPUT_MODES;
+        if (peer_audio) *peer_audio = (unsigned)s_status.peer_audio & HOP_AUDIO_MODES;
+        if (peer_known) *peer_known = s_status.peer_caps_known != 0;
+        if (peer_name && peer_name_cap)
+            snprintf(peer_name, peer_name_cap, "%s", s_status.peer_name);
+    } else {
+        if (local_input) *local_input = g_mac.cfg.input_mode & HOP_INPUT_MODES;
+        if (peer_input) *peer_input = 0;
+        if (peer_audio) *peer_audio = 0;
+        if (peer_known) *peer_known = 0;
+        if (peer_name && peer_name_cap) peer_name[0] = '\0';
+    }
+}
+
 void split_ui_reconnect(void) {
     if (!s_splitUI) {
         net_request_reconnect();
@@ -274,6 +315,15 @@ void split_ui_reconnect(void) {
     }
     if (!action(SPLIT_IPC_RECONNECT, NULL))
         show_message(@"后台未响应", @"请确认 HopDesk 后台正在运行，再尝试重新连接。");
+}
+
+void split_ui_disconnect(void) {
+    if (!s_splitUI) {
+        net_set_disconnected(1);
+        return;
+    }
+    if (!action(SPLIT_IPC_DISCONNECT, NULL))
+        show_message(@"后台未响应", @"请确认 HopDesk 后台正在运行，再尝试断开连接。");
 }
 
 static BOOL launchctl(NSArray<NSString *> *arguments) {
@@ -286,6 +336,11 @@ static BOOL launchctl(NSArray<NSString *> *arguments) {
 }
 
 typedef struct {
+    int32_t pid, control, data, sharing, post_permission, listen_permission;
+    int32_t accessibility, busy;
+    int32_t audio_requested, audio_active, audio_unavailable;
+} legacy_split_ipc_status;
+typedef struct {
     uint64_t id;
     int32_t capacity, direction, state, newest, index;
     uint32_t batch;
@@ -294,32 +349,36 @@ typedef struct { int32_t count, total; } legacy_split_ipc_list;
 
 static int legacy_open_exchange(split_ipc_operation operation, const void *query,
                                 size_t query_size, uint64_t deadline, size_t *payload_size) {
-    int fd = connect_agent(deadline);
-    if (fd < 0) return -1;
-    split_ipc_header header = {htonl(2u), htonl((uint32_t)operation),
-        htonl((uint32_t)query_size), htonl(1)};
-    split_ipc_reply reply;
-    if (copy_socket(fd, &header, sizeof(header), 1, deadline) &&
-        (!query_size || copy_socket(fd, (void *)query, query_size, 1, deadline)) &&
-        copy_socket(fd, &reply, sizeof(reply), 0, deadline) &&
-        ntohl(reply.version) == 2u && ntohl(reply.request_id) == 1u &&
-        ntohl(reply.operation) == (uint32_t)operation &&
-        ntohl(reply.payload_size) <= SPLIT_IPC_MAX_PAYLOAD) {
-        *payload_size = ntohl(reply.payload_size);
-        return fd;
+    static const uint32_t versions[2] = {3u, 2u};
+    for (size_t i = 0; i < 2; ++i) {
+        uint32_t version = versions[i];
+        int fd = connect_agent(deadline);
+        if (fd < 0) return -1;
+        split_ipc_header header = {htonl(version), htonl((uint32_t)operation),
+            htonl((uint32_t)query_size), htonl(1)};
+        split_ipc_reply reply;
+        if (copy_socket(fd, &header, sizeof(header), 1, deadline) &&
+            (!query_size || copy_socket(fd, (void *)query, query_size, 1, deadline)) &&
+            copy_socket(fd, &reply, sizeof(reply), 0, deadline) &&
+            ntohl(reply.version) == version && ntohl(reply.request_id) == 1u &&
+            ntohl(reply.operation) == (uint32_t)operation &&
+            ntohl(reply.payload_size) <= SPLIT_IPC_MAX_PAYLOAD) {
+            *payload_size = ntohl(reply.payload_size);
+            return fd;
+        }
+        close(fd);
     }
-    close(fd);
     return -1;
 }
 
 /* A newly updated UI can find an older launch-agent still running. Probe its
- * v2 task list before restarting it; never kill an agent that still owns jobs. */
+ * task list before restarting it; never kill an agent that still owns jobs. */
 static int legacy_agent_available(void) {
     uint64_t deadline = hop_monotonic_ms() + 300;
     size_t size = 0;
     int fd = legacy_open_exchange(SPLIT_IPC_STATUS, NULL, 0, deadline, &size);
     if (fd < 0) return 0;
-    split_ipc_status status = {0};
+    legacy_split_ipc_status status = {0};
     int ok = size == sizeof(status) && copy_socket(fd, &status, sizeof(status), 0, deadline);
     close(fd);
     return ok && status.pid > 0;
@@ -399,7 +458,9 @@ static BOOL start_agent_job(void) {
 @implementation HopDeskSplitDelegate
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app {
     (void)app;
-    return YES;
+    /* cui_app_run owns the window loop. Return to split_ui_run for cleanup
+     * instead of letting AppKit terminate before an in-flight save settles. */
+    return NO;
 }
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)app hasVisibleWindows:(BOOL)visible {
     (void)app;
@@ -508,11 +569,10 @@ int split_ui_run(int start_agent) {
         __attribute__((objc_precise_lifetime)) HopDeskSplitDelegate *delegate = [HopDeskSplitDelegate new];
         app.delegate = delegate;
         configure_menu(delegate);
+        /* CUI runs its own event loop until the window closes. A second
+         * AppKit loop here would retain the entire UI process indefinitely. */
         statusbar_show_main();
-        int connected = 0, sharing = 0;
-        split_ui_refresh_connection(&connected, &sharing);
-        mac_check_input_permissions();
-        [app run];
+        app.delegate = nil;
         close(lock);
     }
     return 0;

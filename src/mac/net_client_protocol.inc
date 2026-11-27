@@ -12,7 +12,15 @@ static void dispatch_message(void *user, uint8_t type, const uint8_t *p, uint32_
         if(!hop_session_generate(&s_control_session)){
             hop_log(HOP_LOG_ERROR,"net: unable to create control session");s_rejected=1;return;
         }
+        if (s_manual_disconnect) { s_rejected = 1; return; }
         hop_session_publish(&s_control_session);s_authed=1;s_last_rx=hop_monotonic_ms();
+        pthread_mutex_lock(&s_lock);
+        if (hello.name && hello.name_len) {
+            size_t copy = hello.name_len < sizeof(s_peer_name) - 1 ? hello.name_len : sizeof(s_peer_name) - 1;
+            memcpy(s_peer_name, hello.name, copy);
+            s_peer_name[copy] = '\0';
+        } else s_peer_name[0] = '\0';
+        pthread_mutex_unlock(&s_lock);
         uint32_t pw=hello.width,ph=hello.height;
         dispatch_async(dispatch_get_main_queue(),^{mac_capture_peer_geometry(pw,ph);});
         uint8_t ack[2+HOP_NAME_MAX+9+HOP_SESSION_BYTES];size_t nl=strlen(g_mac.cfg.device_name);
@@ -31,17 +39,26 @@ static void dispatch_message(void *user, uint8_t type, const uint8_t *p, uint32_
             s_rejected = 1;
             return;
         }
+        if (s_manual_disconnect) { s_rejected = 1; return; }
+        pthread_mutex_lock(&s_lock);
+        if (len >= 2 && p[1] > 0 && 2u + p[1] <= len) {
+            size_t copy = p[1] < sizeof(s_peer_name) - 1 ? p[1] : sizeof(s_peer_name) - 1;
+            memcpy(s_peer_name, p + 2, copy);
+            s_peer_name[copy] = '\0';
+        } else s_peer_name[0] = '\0';
+        pthread_mutex_unlock(&s_lock);
         inject_set_peer_geometry(w, h);
+        {
+            uint32_t pw = w, ph = h;
+            dispatch_async(dispatch_get_main_queue(),^{mac_capture_peer_geometry(pw,ph);});
+        }
         s_control_session = session; hop_session_publish(&session);
         s_authed = 1; s_last_rx = hop_monotonic_ms();
         set_connected(1);
         return;
     }
     s_last_rx = hop_monotonic_ms();
-    if(g_mac.cfg.role==HOP_ROLE_SERVER && type==HOP_MSG_EDGE_LEAVE){
-        dispatch_async(dispatch_get_main_queue(),^{mac_capture_return();});return;
-    }
-    if(g_mac.cfg.role==HOP_ROLE_SERVER && type>=HOP_MSG_MOUSE_MOVE && type<=HOP_MSG_KEY_MODS)return;
+    unsigned local_input = atomic_load(&s_local_input_mode) & HOP_INPUT_MODES;
     switch (type) {
         case HOP_MSG_HELLO:
         case HOP_MSG_HELLO_ACK:
@@ -50,33 +67,51 @@ static void dispatch_message(void *user, uint8_t type, const uint8_t *p, uint32_
         case HOP_MSG_PING:
             net_send(HOP_MSG_PONG, NULL, 0);
             break;
+        case HOP_MSG_CAPABILITIES: {
+            hop_capabilities_msg msg;
+            if (hop_capabilities_decode(p, len, &msg)) {
+                atomic_store(&s_peer_input_mode, msg.input_mode);
+                atomic_store(&s_peer_audio_mode, msg.audio_mode);
+                atomic_store(&s_peer_caps_known, 1);
+                unsigned next = hop_input_reconcile(local_input, msg.input_mode,
+                                                    msg.takeover_mask, g_mac.cfg.role);
+                if (next != local_input) {
+                    hop_log(HOP_LOG_INFO, "input: peer capability sync adjusted local input_mode %u -> %u",
+                            local_input, next);
+                    net_apply_input_mode(next, 0, 1);
+                }
+            }
+            break;
+        }
         case HOP_MSG_EDGE_LEAVE:
-            if (g_mac.cfg.role == HOP_ROLE_CLIENT && len == 0) {
+            if (len >= 1 && (local_input & HOP_INPUT_MOUSE)) {
+                dispatch_async(dispatch_get_main_queue(),^{mac_capture_return();});
+            } else if (len == 0 && !(local_input & HOP_INPUT_MOUSE)) {
                 inject_reset();
                 statusbar_update(1, 0);
             }
             break;
         case HOP_MSG_MOUSE_ENTER:
-            if (len >= 2) inject_enter((int)hop_get_be16(p));
+            if (!(local_input & HOP_INPUT_MOUSE) && len >= 2) inject_enter((int)hop_get_be16(p));
             break;
         case HOP_MSG_MOUSE_MOVE:
-            if (len >= 4)
+            if (!(local_input & HOP_INPUT_MOUSE) && len >= 4)
                 inject_move((int16_t)hop_get_be16(p),
                            (int16_t)hop_get_be16(p + 2));
             break;
         case HOP_MSG_MOUSE_BUTTON:
-            if (len >= 2) inject_button(p[0], p[1], len >= 3 ? p[2] : 1);
+            if (!(local_input & HOP_INPUT_MOUSE) && len >= 2) inject_button(p[0], p[1], len >= 3 ? p[2] : 1);
             break;
         case HOP_MSG_MOUSE_WHEEL:
-            if (len >= 4)
+            if (!(local_input & HOP_INPUT_MOUSE) && len >= 4)
                 inject_wheel((int16_t)hop_get_be16(p),
                             (int16_t)hop_get_be16(p + 2));
             break;
         case HOP_MSG_KEY_DOWN:
-            if (len >= 2) inject_key(hop_get_be16(p), 1);
+            if (!(local_input & HOP_INPUT_KEYBOARD) && len >= 2) inject_key(hop_get_be16(p), 1);
             break;
         case HOP_MSG_KEY_UP:
-            if (len >= 2) inject_key(hop_get_be16(p), 0);
+            if (!(local_input & HOP_INPUT_KEYBOARD) && len >= 2) inject_key(hop_get_be16(p), 0);
             break;
         case HOP_MSG_CLIP_FILE_OFFER:
             clipboard_on_remote_file_offer(p, len);

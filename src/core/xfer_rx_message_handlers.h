@@ -2,6 +2,7 @@
 #define HOP_XFER_RX_MESSAGE_HANDLERS_H
 #include <stdint.h>
 #include "hop.h"
+#include "xfer_rx_core.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -18,6 +19,7 @@ void hop_xfer_rx_dispatch_file_ack_message(void *context, const uint8_t *payload
 void hop_xfer_rx_handle_abort(void *context, const uint8_t *payload, uint32_t length);
 void hop_xfer_rx_handle_done(void *context, const uint8_t *payload, uint32_t length);
 void hop_xfer_rx_dispatch_done_ack_message(void *context, const uint8_t *payload, uint32_t length);
+extern const hop_xfer_rx_dispatch_handlers hop_xfer_rx_default_dispatch_handlers;
 #ifdef __cplusplus
 }
 #endif

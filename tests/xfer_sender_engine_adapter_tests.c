@@ -9,13 +9,22 @@ typedef struct {
     uint64_t now_ns;
     int ack_registers,ack_marks,ack_deadlines,ack_unregisters,ack_batch_unregisters;
     int messages,chunks,yields,opens,reads,closes;
+    int ack_status;
+    int stopping_flag;
+    int done_calls;
+    uint8_t done_payload[20];
+    uint8_t session[HOP_SESSION_BYTES];
     uint8_t message_types[8];
 } fixture;
 typedef struct {const char *name,*path;uint64_t size,mtime;uint32_t flags;} entry;
 
 static uint64_t now(void *u){return ((fixture *)u)->now_ns;}
-static int wait_ns(void *u,uint64_t ns){((fixture *)u)->now_ns+=ns;return 1;}
-static int stopping(void *u){(void)u;return 0;}
+static int wait_ns(void *u,uint64_t ns){
+    fixture *f=(fixture *)u;
+    f->now_ns+=ns;
+    return !f->stopping_flag;
+}
+static int stopping(void *u){return ((fixture *)u)->stopping_flag;}
 static int cancelled(void *u,uint32_t b,uint64_t id){(void)u;(void)b;(void)id;return 0;}
 static int batch_cancelled(void *u,uint32_t b){(void)u;(void)b;return 0;}
 static int peer_aborted(void *u,uint32_t b){(void)u;(void)b;return 0;}
@@ -24,7 +33,9 @@ int hop_xfer_ack_coordinator_register(hop_xfer_ack_coordinator *c,uint32_t b,uin
 int hop_xfer_ack_coordinator_mark_sent(hop_xfer_ack_coordinator *c,uint32_t b,uint32_t id,uint64_t sent){fixture *f=(fixture *)c;(void)b;(void)id;(void)sent;f->ack_marks++;return 1;}
 int hop_xfer_ack_coordinator_set_deadline(hop_xfer_ack_coordinator *c,uint32_t b,uint32_t id,uint64_t deadline){fixture *f=(fixture *)c;(void)b;(void)id;assert(deadline>0);f->ack_deadlines++;return 1;}
 int hop_xfer_ack_coordinator_wait_take(hop_xfer_ack_coordinator *c,uint32_t b,uint32_t id,uint32_t ms,int *status,uint64_t *rtt,int *expired){
-    (void)c;(void)b;(void)id;(void)ms;*status=HOP_FILE_ACK_OK;*rtt=0;*expired=0;return 1;
+    fixture *f=(fixture *)c;(void)b;(void)id;(void)ms;
+    *status=f->ack_status ? f->ack_status : HOP_FILE_ACK_OK;
+    *rtt=0;*expired=0;return 1;
 }
 void hop_xfer_ack_coordinator_unregister(hop_xfer_ack_coordinator *c,uint32_t b,uint32_t id){fixture *f=(fixture *)c;(void)b;(void)id;f->ack_unregisters++;}
 void hop_xfer_ack_coordinator_unregister_batch(hop_xfer_ack_coordinator *c,uint32_t b){fixture *f=(fixture *)c;(void)b;f->ack_batch_unregisters++;}
@@ -90,8 +101,42 @@ static void test_image_adapter(void){
     assert(next==1&&ok==1&&f.messages==2&&f.chunks==2);
     assert(f.message_types[0]==HOP_MSG_IMAGE_BEGIN&&f.message_types[1]==HOP_MSG_FILE_END);
 }
+static int commit_connection(void *u,intptr_t *sock,uint64_t *epoch,uint8_t *session,size_t cap){
+    fixture *f=(fixture *)u;
+    assert(cap>=HOP_SESSION_BYTES);
+    *sock=7;*epoch=9;memcpy(session,f->session,HOP_SESSION_BYTES);
+    return 1;
+}
+static int commit_send_done(void *u,intptr_t sock,uint64_t epoch,const uint8_t *payload,uint32_t len,uint32_t batch){
+    fixture *f=(fixture *)u;
+    assert(sock==7&&epoch==9&&len==20&&batch==22);
+    memcpy(f->done_payload,payload,len);
+    f->done_calls++;
+    return 1;
+}
+static void test_commit_adapter(void){
+    fixture f={0};hop_xfer_sender_context c;init_context(&f,&c);
+    hop_session_id sid;memset(&sid,0,sizeof(sid));sid.bytes[0]=0x5a;
+    hop_session_publish(&sid);
+    memcpy(f.session,sid.bytes,HOP_SESSION_BYTES);
+    f.ack_status=HOP_DONE_ACK_COMPLETE;
+    hop_xfer_sender_commit_adapter_ops ops;memset(&ops,0,sizeof(ops));
+    ops.user=&f;ops.context=&c;ops.session=sid.bytes;ops.batch=22;ops.task_id=2200;
+    ops.entry_count=3;ops.ok_count=3;ops.done_ack_slot=0;
+    ops.ack_timeout_ms=1000;ops.reconnect_budget_ms=5000;ops.ack_poll_interval_ms=50;
+    ops.current_connection=commit_connection;ops.send_done=commit_send_done;
+    assert(hop_xfer_sender_engine_adapter_run_commit(&ops)==HOP_XFER_SENDER_JOB_DONE);
+    assert(f.done_calls==1);
+    assert(hop_get_be32(f.done_payload)==22&&hop_get_be32(f.done_payload+4)==3&&
+           hop_get_be32(f.done_payload+8)==3&&hop_get_be64(f.done_payload+12)==0);
+    f.ack_status=HOP_DONE_ACK_FAILED;
+    assert(hop_xfer_sender_engine_adapter_run_commit(&ops)==HOP_XFER_SENDER_JOB_COMMIT_REJECTED);
+    f.stopping_flag=1;
+    assert(hop_xfer_sender_engine_adapter_run_commit(&ops)==HOP_XFER_SENDER_JOB_COMMIT_UNKNOWN);
+    hop_session_clear(&sid);
+}
 int main(void){
-    test_files_adapter();test_image_adapter();
-    puts("PASS: shared Sender engine adapter wires file and image policies");
+    test_files_adapter();test_image_adapter();test_commit_adapter();
+    puts("PASS: shared Sender engine adapter wires file, image and commit policies");
     return 0;
 }

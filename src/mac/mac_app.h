@@ -23,6 +23,13 @@ void net_loop_shutdown(void);             /* stop and join control workers */
 int  net_send(uint8_t type, const void *p, uint32_t len);
 void net_request_stop(void);
 void net_request_reconnect(void); /* close current socket; background loop reconnects */
+void net_set_disconnected(int disconnected); /* pause/resume control & data link */
+int  net_is_disconnected(void);
+void net_send_capabilities(unsigned takeover_mask);
+void net_apply_input_mode(unsigned mode, unsigned takeover_mask, int persist);
+unsigned net_get_input_mode(void);
+void net_get_peer_capabilities(unsigned *peer_input, unsigned *peer_audio, int *known,
+                               char *peer_name, size_t peer_name_cap);
 /* 打开 TCP keepalive：空闲连接变黑洞时让内核在一分多钟内判定死亡，
  * 否则阻塞的 read 永远不返回，通道就此僵死。控制/数据通道都要调。 */
 void net_set_keepalive(int s);
@@ -30,6 +37,7 @@ int net_connect_timeout(const char *host, uint16_t port, unsigned timeout_ms);
 
 /* inject.c */
 void mac_capture_init(void);
+void mac_capture_set_input_mode(unsigned mode);
 void mac_capture_connected(int connected); /* main queue */
 void mac_capture_return(void); /* main queue */
 void mac_capture_peer_geometry(uint32_t w,uint32_t h);
@@ -68,6 +76,7 @@ void disp_set_input(uint16_t vcp);
 
 /* statusbar.m */
 void statusbar_init(void);
+void statusbar_open_main(void);
 void statusbar_update(int connected, int sharing);
 void mac_cursor_restore(void); /* clear macOS hide-until-mouse-moves after remote input */
 void statusbar_show_transfers(void);

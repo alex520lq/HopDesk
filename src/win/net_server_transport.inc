@@ -2,8 +2,10 @@ static DWORD WINAPI reader_thread(LPVOID arg) {
     connection *c = (connection *)arg;
     net_server *s = c->server;
     char buf[8192];
-    c->decoder = hop_decoder_new(c, on_message);
-    while (c->decoder && !c->rejected && WaitForSingleObject(s->stop, 0) != WAIT_OBJECT_0) {
+    c->decoder = hop_decoder_new_with_limit(c, on_message, HOP_CTRL_MAX_PAYLOAD);
+    while (c->decoder && !c->rejected &&
+           WaitForSingleObject(s->stop, 0) != WAIT_OBJECT_0 &&
+           !InterlockedCompareExchange((LONG *)&s->disconnected, 0, 0)) {
         uint64_t now = hop_monotonic_ms();
         if (!c->authed && hop_handshake_expired(now, c->started)) {
             hop_log(HOP_LOG_WARN,"net: control handshake timed out");break;
@@ -68,10 +70,19 @@ static DWORD WINAPI sender_thread(LPVOID arg) {
         LeaveCriticalSection(&s->lock);
         if (it) {
             int guard = hop_watchdog_begin("control frame send", 10000);
-            uint8_t hdr[HOP_HEADER_SIZE];
-            hop_encode_header(hdr, it->type, it->len);
-            int ok = sock != INVALID_SOCKET && send_all(sock, hdr, sizeof(hdr)) &&
-                     send_all(sock, it->data, it->len);
+            int ok = 0;
+            if (sock != INVALID_SOCKET) {
+                if (it->len <= 1024u) {
+                    uint8_t frame[HOP_HEADER_SIZE + 1024u];
+                    uint32_t total = hop_encode_frame(it->type, it->data, it->len, frame);
+                    ok = send_all(sock, frame, total);
+                } else {
+                    uint8_t hdr[HOP_HEADER_SIZE];
+                    hop_encode_header(hdr, it->type, it->len);
+                    ok = send_all(sock, hdr, sizeof(hdr)) &&
+                         send_all(sock, it->data, it->len);
+                }
+            }
             hop_watchdog_end(guard);
             free(it);
             if (!ok) {
@@ -104,10 +115,24 @@ static SOCKET open_listener(net_server *s) {
 static DWORD WINAPI server_thread(LPVOID arg) {
     net_server *s = (net_server *)arg;
     while (WaitForSingleObject(s->stop, 0) != WAIT_OBJECT_0) {
+        if (InterlockedCompareExchange((LONG *)&s->disconnected, 0, 0)) {
+            if (s->listen_s != INVALID_SOCKET) {
+                closesocket(s->listen_s);
+                s->listen_s = INVALID_SOCKET;
+            }
+            InterlockedExchange((LONG *)&s->listening, 0);
+            HANDLE events[2] = {s->stop, s->wake};
+            WaitForMultipleObjects(2, events, FALSE, INFINITE);
+            continue;
+        }
         if (s->listen_s == INVALID_SOCKET) {
             s->listen_s = open_listener(s);
             InterlockedExchange((LONG *)&s->listening, s->listen_s != INVALID_SOCKET);
-            if (s->listen_s == INVALID_SOCKET) { WaitForSingleObject(s->stop, 2000); continue; }
+            if (s->listen_s == INVALID_SOCKET) {
+                HANDLE events[2] = {s->stop, s->wake};
+                WaitForMultipleObjects(2, events, FALSE, 2000);
+                continue;
+            }
         }
         fd_set rd; FD_ZERO(&rd); FD_SET(s->listen_s, &rd);
         struct timeval tv = {0, 250000};
@@ -129,6 +154,8 @@ static DWORD WINAPI server_thread(LPVOID arg) {
         }
         if (!slot) { closesocket(sock); continue; }
         DWORD rcv = 500, snd = HOP_CTRL_SEND_TIMEOUT_MS;
+        BOOL nodelay = TRUE;
+        setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char *)&nodelay, sizeof(nodelay));
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&rcv, sizeof(rcv));
         setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&snd, sizeof(snd));
         net_set_keepalive(sock);
@@ -159,8 +186,7 @@ SOCKET net_connect_timeout_win(const char *host,uint16_t port,HANDLE stop) {
     struct addrinfo hints,*res=NULL;memset(&hints,0,sizeof(hints));
     hints.ai_family=AF_UNSPEC;hints.ai_socktype=SOCK_STREAM;
     char service[16];snprintf(service,sizeof(service),"%u",(unsigned)port);
-    int guard=hop_watchdog_begin("DNS resolution",5000);
-    int rc=getaddrinfo(host,service,&hints,&res);hop_watchdog_end(guard);
+    int rc=getaddrinfo(host,service,&hints,&res);
     if(rc)return INVALID_SOCKET;
     SOCKET sock=INVALID_SOCKET;
     uint64_t deadline=hop_monotonic_ms()+HOP_CONNECT_TIMEOUT_MS;
@@ -185,14 +211,30 @@ next:  closesocket(sock);sock=INVALID_SOCKET;
 static DWORD WINAPI client_thread(LPVOID arg){
     net_server *s=(net_server*)arg;unsigned delay=500;
     while(WaitForSingleObject(s->stop,0)!=WAIT_OBJECT_0){
+        if(InterlockedCompareExchange((LONG *)&s->disconnected,0,0)){
+            delay=500;
+            HANDLE events[2]={s->stop,s->wake};
+            WaitForMultipleObjects(2,events,FALSE,INFINITE);
+            continue;
+        }
         SOCKET sock=net_connect_timeout_win(s->cfg.peer_host,s->cfg.port,s->stop);
+        if(InterlockedCompareExchange((LONG *)&s->disconnected,0,0)){
+            if(sock!=INVALID_SOCKET)closesocket(sock);
+            delay=500;
+            continue;
+        }
         if(sock==INVALID_SOCKET){
             if(s->cfg.peer_host[0])hop_log(HOP_LOG_WARN,"net: TCP control connection failed: host=%s port=%u; check address, network and firewall",s->cfg.peer_host,(unsigned)s->cfg.port);
-            WaitForSingleObject(s->stop,delay);delay=delay<8000?delay*2:8000;continue;
+            HANDLE events[2]={s->stop,s->wake};
+            if(WaitForMultipleObjects(2,events,FALSE,delay)==WAIT_OBJECT_0+1)delay=500;
+            else delay=delay<8000?delay*2:8000;
+            continue;
         }
         hop_log(HOP_LOG_INFO,"net: control TCP connected; awaiting handshake");
         connection *c=&s->peers[0];memset(c,0,sizeof(*c));c->server=s;c->sock=sock;c->started=hop_monotonic_ms();
         DWORD rcv=500,snd=HOP_CTRL_SEND_TIMEOUT_MS;
+        BOOL nodelay=TRUE;
+        setsockopt(sock,IPPROTO_TCP,TCP_NODELAY,(char*)&nodelay,sizeof(nodelay));
         setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,(char*)&rcv,sizeof(rcv));
         setsockopt(sock,SOL_SOCKET,SO_SNDTIMEO,(char*)&snd,sizeof(snd));
         net_set_keepalive(sock);
@@ -205,7 +247,10 @@ static DWORD WINAPI client_thread(LPVOID arg){
         if(send_all(sock,hdr,sizeof(hdr)) && send_all(sock,hello,n))reader_thread(c);
         else {closesocket(sock);c->sock=INVALID_SOCKET;}
         delay=c->authed?500:(delay<8000?delay*2:8000);
-        WaitForSingleObject(s->stop,delay);
+        if(!InterlockedCompareExchange((LONG *)&s->disconnected,0,0)){
+            HANDLE events[2]={s->stop,s->wake};
+            if(WaitForMultipleObjects(2,events,FALSE,delay)==WAIT_OBJECT_0+1)delay=500;
+        }
     }
     return 0;
 }
@@ -219,7 +264,8 @@ net_server *net_server_start(HWND hwnd, const hop_config *cfg) {
     InitializeCriticalSection(&s->lock); InitializeCriticalSection(&s->send_lock);
     s->stop = CreateEventW(NULL, TRUE, FALSE, NULL);
     s->q_evt = CreateEventW(NULL, FALSE, FALSE, NULL);
-    if (s->stop && s->q_evt) s->sender = CreateThread(NULL, 0, sender_thread, s, 0, NULL);
+    s->wake = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (s->stop && s->q_evt && s->wake) s->sender = CreateThread(NULL, 0, sender_thread, s, 0, NULL);
     if (s->sender) s->thread = CreateThread(NULL, 0, cfg->role==HOP_ROLE_SERVER?server_thread:client_thread, s, 0, NULL);
     if (!s->thread) { net_server_stop(s); return NULL; }
     return s;
@@ -227,11 +273,13 @@ net_server *net_server_start(HWND hwnd, const hop_config *cfg) {
 void net_server_stop(net_server *s) {
     if (!s) return;
     if (s->stop) SetEvent(s->stop);
+    if (s->wake) SetEvent(s->wake);
     if (s->thread) { WaitForSingleObject(s->thread, INFINITE); CloseHandle(s->thread); }
     if (s->sender) { WaitForSingleObject(s->sender, INFINITE); CloseHandle(s->sender); }
     queue_clear(s);
     if (s->stop) CloseHandle(s->stop);
     if (s->q_evt) CloseHandle(s->q_evt);
+    if (s->wake) CloseHandle(s->wake);
     DeleteCriticalSection(&s->send_lock); DeleteCriticalSection(&s->lock);
     free(s); WSACleanup();
 }
@@ -248,11 +296,32 @@ unsigned long net_server_epoch(net_server *s) {
 int net_server_listening(net_server *s) {
     return s && InterlockedCompareExchange((LONG *)&s->listening, 0, 0);
 }
+int net_server_is_disconnected(net_server *s) {
+    return s && InterlockedCompareExchange((LONG *)&s->disconnected, 0, 0) != 0;
+}
+void net_server_set_disconnected(net_server *s, int disconnected) {
+    if (!s) return;
+    int pause = disconnected ? 1 : 0;
+    LONG prev = InterlockedExchange((LONG *)&s->disconnected, pause);
+    if (pause) {
+        EnterCriticalSection(&s->lock);
+        if (s->client != INVALID_SOCKET) shutdown(s->client, SD_BOTH);
+        for (int i = 0; i < MAX_CONNECTIONS; ++i)
+            if (s->peers[i].sock != INVALID_SOCKET) shutdown(s->peers[i].sock, SD_BOTH);
+        queue_clear(s);
+        LeaveCriticalSection(&s->lock);
+        if (!prev) hop_log(HOP_LOG_INFO, "net: manually disconnected");
+    } else if (prev) {
+        hop_log(HOP_LOG_INFO, "net: connection resumed");
+    }
+    if (s->wake) SetEvent(s->wake);
+}
 void net_server_drop(net_server *s) {
     if (!s) return;
     EnterCriticalSection(&s->lock);
     if (s->client != INVALID_SOCKET) shutdown(s->client, SD_BOTH);
     LeaveCriticalSection(&s->lock);
+    if (s->wake) SetEvent(s->wake);
 }
 int net_server_send(net_server *s, uint8_t type, const void *payload, uint32_t len) {
     if (!s || len > HOP_MAX_PAYLOAD || (len && !payload)) return 0;

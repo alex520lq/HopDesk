@@ -1,4 +1,4 @@
-#include "../src/core/xfer_sender_scheduler.h"
+#include "../src/core/xfer_sender_worker.h"
 
 #include <assert.h>
 #include <stdio.h>

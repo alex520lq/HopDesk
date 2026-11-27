@@ -22,6 +22,7 @@ typedef enum {
 typedef struct {
     hop_xfer_task_id id;
     int initialized;
+    uint32_t transfer_id; /* immutable once initialized; safe for lock-free telemetry */
 } hop_xfer_task;
 
 /* Task classification is independent of the budget reservation. Internal image
@@ -33,6 +34,7 @@ typedef enum {
 #define HOP_TASK_SESSION_BYTES 16u
 /* Maximum number of simultaneously live manager records. */
 #define HOP_TASK_MANAGER_MAX_LIVE 4096u
+#define HOP_TASK_INDEX_BUCKETS 256u
 /* Recent terminal user-facing tasks; bounded and process-local for now. */
 #define HOP_TASK_HISTORY_CAPACITY 256u
 

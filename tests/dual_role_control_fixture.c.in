@@ -7,8 +7,20 @@
 #include <stdio.h>
 void hop_log(hop_log_level level,const char *fmt,...){(void)level;(void)fmt;}
 static struct {hop_config cfg;double screen_w,screen_h;} g_mac;
-static int s_authed,s_rejected,connected,injected,returned,clip_applied,inject_resets,status_sharing;
+static int s_authed,s_rejected,s_manual_disconnect,connected,injected,returned,clip_applied,inject_resets,status_sharing;
 static int clip_offer_received,clip_offer_clear_received,clip_paste_request_received,clip_paste_failed_received;
+static unsigned s_local_input_mode,s_peer_input_mode,s_peer_audio_mode;
+static int s_peer_caps_known,s_lock;
+static char s_peer_name[HOP_NAME_MAX];
+#define atomic_load(p) (*(p))
+#define atomic_store(p, v) (*(p) = (v))
+static void pthread_mutex_lock(int *m){(void)m;}
+static void pthread_mutex_unlock(int *m){(void)m;}
+static void net_apply_input_mode(unsigned mode,unsigned takeover,int persist){
+    (void)takeover;(void)persist;
+    s_local_input_mode=mode & HOP_INPUT_MODES;
+    g_mac.cfg.input_mode=s_local_input_mode;
+}
 static uint64_t s_last_rx;
 static hop_session_id s_control_session;
 static uint8_t sent_type,sent[256];static uint32_t sent_len;
@@ -36,8 +48,10 @@ static void disp_sleep(void){}
 static void reset(void){
     hop_session_id old;if(hop_session_current(&old))hop_session_clear(&old);
     memset(&g_mac,0,sizeof(g_mac));g_mac.cfg.role=HOP_ROLE_SERVER;
+    g_mac.cfg.input_mode=HOP_INPUT_MODES;s_local_input_mode=HOP_INPUT_MODES;
+    s_peer_input_mode=s_peer_audio_mode=0;s_peer_caps_known=0;s_peer_name[0]='\0';
     strcpy(g_mac.cfg.token,"secret");strcpy(g_mac.cfg.device_name,"Mac-server");
-    g_mac.screen_w=1440;g_mac.screen_h=900;s_authed=s_rejected=connected=injected=returned=clip_applied=inject_resets=status_sharing=clip_offer_received=clip_offer_clear_received=clip_paste_request_received=clip_paste_failed_received=0;
+    g_mac.screen_w=1440;g_mac.screen_h=900;s_authed=s_rejected=s_manual_disconnect=connected=injected=returned=clip_applied=inject_resets=status_sharing=clip_offer_received=clip_offer_clear_received=clip_paste_request_received=clip_paste_failed_received=0;
     sent_type=0;sent_len=0;
 }
 int main(void){
@@ -55,10 +69,18 @@ int main(void){
     uint8_t payload[9]={0};dispatch_message(NULL,HOP_MSG_MOUSE_ENTER,payload,2);
     dispatch_message(NULL,HOP_MSG_KEY_DOWN,payload,2);assert(!injected);
     dispatch_message(NULL,HOP_MSG_EDGE_LEAVE,payload,1);assert(returned==1);
+    /* Peer claims mouse: local automatically yields mouse while keeping keyboard. */
+    uint8_t caps[HOP_CAPABILITIES_BYTES];
+    assert(hop_capabilities_encode(caps,HOP_INPUT_MOUSE,HOP_INPUT_MOUSE,HOP_AUDIO_SEND)==HOP_CAPABILITIES_BYTES);
+    dispatch_message(NULL,HOP_MSG_CAPABILITIES,caps,sizeof(caps));
+    assert(s_peer_caps_known && s_peer_input_mode==HOP_INPUT_MOUSE && s_peer_audio_mode==HOP_AUDIO_SEND);
+    assert(s_local_input_mode==HOP_INPUT_KEYBOARD);
+    dispatch_message(NULL,HOP_MSG_MOUSE_ENTER,payload,2);assert(injected==1);
+    dispatch_message(NULL,HOP_MSG_KEY_DOWN,payload,2);assert(injected==1);
     hop_put_be32(payload,HOP_DEV_CLIENT);memcpy(payload+4,"hello",5);
     dispatch_message(NULL,HOP_MSG_CLIP_TEXT,payload,9);assert(clip_applied==1);
     hop_put_be32(payload,HOP_DEV_SERVER);dispatch_message(NULL,HOP_MSG_CLIP_TEXT,payload,9);assert(clip_applied==1);
-    reset();g_mac.cfg.role=HOP_ROLE_CLIENT;s_authed=1;status_sharing=1;
+    reset();g_mac.cfg.role=HOP_ROLE_CLIENT;g_mac.cfg.input_mode=0;s_local_input_mode=0;s_authed=1;status_sharing=1;
     dispatch_message(NULL,HOP_MSG_CLIP_FILE_OFFER,NULL,0);
     dispatch_message(NULL,HOP_MSG_CLIP_FILE_OFFER_CLEAR,NULL,0);
     dispatch_message(NULL,HOP_MSG_CLIP_PASTE_REQUEST,NULL,0);

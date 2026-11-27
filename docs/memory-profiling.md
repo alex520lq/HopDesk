@@ -15,7 +15,7 @@ Use a 300-second capture for each scenario. Start the capture, then exercise onl
 
 ## macOS
 
-HopDesk may run as two processes: the UI process and a background process launched with the --agent argument. The transfer engine, network loop, and transfer tracking memory run in the agent; the UI process owns the visible page and its presentation state. Profiling only the UI would miss most transfer-engine memory.
+On macOS the experimental CUI build runs as two processes by default when the main window is open: the UI process and a background process launched with the --agent argument. The transfer engine, network loop, and transfer tracking memory run in the agent; the UI process owns the visible page and its presentation state. Profiling only the UI would miss most transfer-engine memory.
 
 Find both processes:
 
@@ -31,7 +31,9 @@ For a full picture, run one sampler for the UI PID and another for the --agent P
 
 Repeat with distinct output names for each scenario, such as hopdesk-ui-many-files.csv and hopdesk-agent-many-files.csv. Each process capture also creates a .vmmap.txt summary when the process is still running.
 
-If the split agent is not active and only one HopDesk process exists, profile that process. For transfer-engine memory, the important process is the one that owns xfer_init and the network loop.
+A normal first launch without arguments starts the agent (as does explicit --agent); the tray starts the independent --ui process on demand. With the window closed only the agent should remain. The UI must exit after its CUI loop returns and any requested settings save settles. A normal no-argument agent has no --agent suffix; verify its PID by keeping the tray open while closing the UI. macOS AutoFill is an OS helper, not the HopDesk IPC agent; record it separately and verify whether it disappears after UI exit. Do not sum RSS as unique physical memory.
+
+For the lifecycle regression: record the agent PID and Activity Monitor Memory before the first UI open, open/close 20 times, and after each close verify the UI PID exits while the agent PID remains unchanged. Repeat while connected and during a file transfer; verify tray progress and completion notification, and close immediately after pressing Save to check persistence. Record the helper PID and whether it exits within 30–60 seconds. Compare agent memory against its own pre-open baseline, not the UI peak. Split mode currently requires manual application updates: stop the agent safely from the menu, then install the new build.
 
 When switching between baseline and current builds, quit HopDesk and unload the LaunchAgent before starting the other app bundle. Otherwise launchd may keep the previous agent executable loaded:
 
@@ -41,7 +43,7 @@ After launching the next build, run pgrep -fl HopDesk again and verify that the 
 
 ## Windows
 
-Windows runs the UI and transfer engine in one HopDesk process. Find it with:
+The experimental CUI Windows build runs the tray/engine agent and an on-demand UI child. Find both processes with:
 
     Get-Process -Name HopDesk | Select-Object Id, ProcessName, WorkingSet64, PrivateMemorySize64, VirtualMemorySize64
 
@@ -72,3 +74,13 @@ For a before/after comparison of the recent memory optimization series, use base
 Build the current main version separately. Run one version at a time, fully quit both HopDesk processes and unload the LaunchAgent between runs, verify which executable owns --agent, and use identical transfer data.
 
 Neither script changes HopDesk settings or terminates the process. Keep the CSV files and vmmap summaries and share them with the code review so the next optimization is based on measured memory rather than structure-size estimates.
+
+### macOS Metal drawable A/B comparison (experimental)
+
+The default build caps CAMetalLayer.maximumDrawableCount at 2, retaining native Retina resolution, the same UI size and the upstream three vertex/index upload slots. The latter are separate from full-window drawable surfaces. The build generates an adjusted source in build/ and does not modify the pinned CUI submodule. The override fails closed if the upstream initialization changes.
+
+Build the control with `HOPDESK_METAL_DRAWABLE_COUNT=3 sh scripts/build-mac.sh` and the experiment with `HOPDESK_METAL_DRAWABLE_COUNT=2 sh scripts/build-mac.sh`. Copy each package before the next build overwrites it. Compare identical window sizes, display scaling, page, time since opening, Activity Monitor Memory and vmmap summaries for the UI PID. At 1180 × 820 points and 2× backing scale, one BGRA8 surface has approximately 14.8 MiB of pixels; this is a theoretical capacity difference, not a measured reduction. Test repeated resizes, scroll, text input, transfer updates, and 20 open/close cycles. Revert to three drawables if double buffering introduces stalls or rendering defects. Keep the agent PID and its memory baseline separate.
+
+### Windows process isolation verification
+
+Use Task Manager Details or `Get-CimInstance Win32_Process -Filter "Name='HopDesk.exe'" | Select ProcessId,ParentProcessId,CommandLine` to distinguish the agent from its `--ui` child. Record WorkingSet64 and PrivateMemorySize64 separately. Start with only the agent, open the UI from the tray, then close the UI and verify that its PID exits while the agent PID and connection remain stable. Repeat 20 times, including an active transfer; exercise cancel, retry, page changes, reconnect, display, settings save followed immediately by close, audio hot-apply, logs and copy. Verify the agent exits its UI child on tray exit and update. Compare idle agent memory to its initial baseline. No Windows memory reduction is claimed until measured.

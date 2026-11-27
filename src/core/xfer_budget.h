@@ -4,7 +4,7 @@
 
 #define HOP_XFER_DEFAULT_MAX_JOBS 16u
 #define HOP_XFER_DEFAULT_MAX_ENTRIES 32768u
-#define HOP_XFER_DEFAULT_MAX_PENDING_BYTES (8ull * 1024ull * 1024ull * 1024ull)
+#define HOP_XFER_DEFAULT_MAX_PENDING_BYTES (64ull * 1024ull * 1024ull * 1024ull)
 #define HOP_XFER_DEFAULT_RX_QUEUE_SLOTS 8u
 #define HOP_XFER_DEFAULT_RX_QUEUE_BYTES (8ull * 1024ull * 1024ull)
 /* Keep at most one reusable receive chunk after a writer-queue drain. */

@@ -78,13 +78,18 @@ static void enter(int along){
     sharing=1;over=0;SetCursorPos((int)px,(int)py);g_app.state=HOP_LINK_SHARING;ui_refresh(&g_app);
 }
 void win_inject_message(uint8_t type,const uint8_t *p,uint32_t len){
-    if(g_app.cfg.role!=HOP_ROLE_CLIENT)return;
     switch(type){
     case HOP_MSG_EDGE_LEAVE:
-        if(len==0){win_inject_reset();g_app.state=HOP_LINK_LOCAL;ui_refresh(&g_app);}
+        if(len==0 && !(g_app.cfg.input_mode & HOP_INPUT_MOUSE)){
+            win_inject_reset();
+            g_app.state=HOP_LINK_LOCAL;
+            ui_refresh(&g_app);
+        }
         break;
-    case HOP_MSG_MOUSE_ENTER:if(len>=2)enter(hop_get_be16(p));break;
-    case HOP_MSG_MOUSE_MOVE:if(len>=4){
+    case HOP_MSG_MOUSE_ENTER:
+        if(!(g_app.cfg.input_mode & HOP_INPUT_MOUSE) && len>=2)enter(hop_get_be16(p));
+        break;
+    case HOP_MSG_MOUSE_MOVE:if(!(g_app.cfg.input_mode & HOP_INPUT_MOUSE) && len>=4){
         if(!sharing)return;
         double w=GetSystemMetrics(SM_CXSCREEN),h=GetSystemMetrics(SM_CYSCREEN);
         px+=(int16_t)hop_get_be16(p)*(g_app.peer_w>0?w/g_app.peer_w:1);
@@ -99,16 +104,16 @@ void win_inject_message(uint8_t type,const uint8_t *p,uint32_t len){
         if(py>h-1)py=h-1;
         SetCursorPos((int)px,(int)py);
     }break;
-    case HOP_MSG_MOUSE_BUTTON:if(len>=2&&sharing){
+    case HOP_MSG_MOUSE_BUTTON:if(!(g_app.cfg.input_mode & HOP_INPUT_MOUSE) && len>=2 && sharing){
         int b=p[0],down=!!p[1];
         if(!button(b,down)&&!down&&b<3)button_release_pending[b]=1;
     }break;
-    case HOP_MSG_MOUSE_WHEEL:if(len>=4&&sharing){
+    case HOP_MSG_MOUSE_WHEEL:if(!(g_app.cfg.input_mode & HOP_INPUT_MOUSE) && len>=4 && sharing){
         int dx=(int16_t)hop_get_be16(p),dy=(int16_t)hop_get_be16(p+2);
         if(dx)mouse(MOUSEEVENTF_HWHEEL,0,0,(DWORD)dx);
         if(dy)mouse(MOUSEEVENTF_WHEEL,0,0,(DWORD)dy);
     }break;
-    case HOP_MSG_KEY_DOWN:case HOP_MSG_KEY_UP:if(len>=2){
+    case HOP_MSG_KEY_DOWN:case HOP_MSG_KEY_UP:if(!(g_app.cfg.input_mode & HOP_INPUT_KEYBOARD) && len>=2){
         WORD vk=hop_mac_to_vk(hop_get_be16(p));int down=type==HOP_MSG_KEY_DOWN;
         if(vk!=HOP_KEY_NONE && vk<256) {
             if(!down && paste_suppressed[vk]) { paste_suppressed[vk]=0; break; }
@@ -131,7 +136,7 @@ void win_inject_message(uint8_t type,const uint8_t *p,uint32_t len){
                 }
                 break;
             }
-            if(sharing||(!down&&held[vk])){
+            if(sharing||!(g_app.peer_input_mode & HOP_INPUT_MOUSE)||(!down&&held[vk])){
                 if(key(vk,down)){held[vk]=(BYTE)down;key_release_pending[vk]=0;}
                 else if(!down)key_release_pending[vk]=1;
             }

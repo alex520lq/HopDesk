@@ -54,9 +54,12 @@ static int mod_index(int bit) {
     }
 }
 
+#define HOP_INJECT_EVENT_TAG INT64_C(0x484F504445534B)
+
 static void post(CGEventRef e) {
     if (!e) return;
     CGEventSetFlags(e, s_flags);
+    CGEventSetIntegerValueField(e, kCGEventSourceUserData, HOP_INJECT_EVENT_TAG);
     CGEventPost(kCGHIDEventTap, e);
     CFRelease(e);
 }
@@ -69,6 +72,7 @@ static void post(CGEventRef e) {
 static void post_mouse(CGEventRef e) {
     if (!e) return;
     CGEventSetFlags(e, s_flags & ~kCGEventFlagMaskControl);
+    CGEventSetIntegerValueField(e, kCGEventSourceUserData, HOP_INJECT_EVENT_TAG);
     CGEventPost(kCGHIDEventTap, e);
     CFRelease(e);
 }

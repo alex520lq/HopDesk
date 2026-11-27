@@ -87,6 +87,7 @@ void elist_free(elist *list) {
     list->n = list->cap = 0;
     list->failed = 0;
     list->budget_rejected = 0;
+    list->skipped_links = 0;
     list->error = HOP_XFER_SCAN_OK;
 }
 
@@ -100,7 +101,8 @@ static BOOL guarded_find_next(HANDLE handle, WIN32_FIND_DATAW *data,
     return ok;
 }
 
-static void walk_into(elist *list, const wchar_t *full, const char *relative, const hop_xfer_scan_services *services) {
+static void walk_into(elist *list, const wchar_t *full, const char *relative,
+                      const hop_xfer_scan_services *services, int depth) {
     if (!list || list->failed) return;
     if (services->is_cancelled(services->context)) { scan_fail(list, HOP_XFER_SCAN_CANCELLED); return; }
 
@@ -113,6 +115,10 @@ static void walk_into(elist *list, const wchar_t *full, const char *relative, co
         return;
     }
     if (attributes.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+        if (depth > 0) {
+            ++list->skipped_links;
+            return;
+        }
         scan_fail(list, HOP_XFER_SCAN_LINK_REJECTED);
         return;
     }
@@ -203,7 +209,7 @@ static void walk_into(elist *list, const wchar_t *full, const char *relative, co
             free(child_name);
         }
         if (!child_rel) scan_fail(list, HOP_XFER_SCAN_OUT_OF_MEMORY);
-        else walk_into(list, child, child_rel, services);
+        else walk_into(list, child, child_rel, services, depth + 1);
         free(child_rel);
         free(child);
         if (list->failed) break;
@@ -226,7 +232,7 @@ void hop_xfer_scan_paths(elist *list, const hop_xfer_scan_path *paths, int count
         const wchar_t *base = base_name(paths[i]);
         char *relative = w2u(base);
         if (!relative) { scan_fail(list, HOP_XFER_SCAN_OUT_OF_MEMORY); break; }
-        walk_into(list, paths[i], relative, services);
+        walk_into(list, paths[i], relative, services, 0);
         free(relative);
         if (list->failed) break;
     }

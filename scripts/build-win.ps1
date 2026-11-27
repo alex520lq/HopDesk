@@ -22,8 +22,30 @@ New-Item -ItemType Directory -Force -Path $build | Out-Null
 $core = Get-ChildItem -LiteralPath (Join-Path $root 'src/core') -Recurse -File -Filter *.c | Sort-Object FullName
 $win = Get-ChildItem -LiteralPath (Join-Path $root 'src/win') -Recurse -File -Filter *.c | Sort-Object FullName
 $platform = Get-ChildItem -LiteralPath (Join-Path $root 'src/platform') -Recurse -File -Filter *.c | Sort-Object FullName
-$src = @($core.FullName) + @($platform.FullName) + @($win.FullName)
+$cuiRoot = Join-Path $root 'third_party/cui'
+if (-not (Test-Path -LiteralPath (Join-Path $cuiRoot 'CMakeLists.txt'))) {
+    throw 'CUI submodule is missing. Run: git submodule update --init --recursive'
+}
+$cuiCore = Get-ChildItem -LiteralPath (Join-Path $cuiRoot 'src') -File -Filter 'cui_*.c' |
+    Where-Object { $_.Name -notin @('cui_bidi.c', 'cui_shape.c') } | Sort-Object FullName
+$cuiRender = @(
+    (Join-Path $cuiRoot 'src/render/cui_render_sw.c'),
+    (Join-Path $cuiRoot 'src/render/cui_render_gl.c')
+)
+$cuiPlatform = @(
+    (Join-Path $cuiRoot 'src/platform/cui_app.c'),
+    (Join-Path $cuiRoot 'src/platform/cui_dialogs.c'),
+    (Join-Path $cuiRoot 'src/platform/cui_app_win32.c')
+)
+$cuiD3d12 = @()
+if ($Compiler -ne 'gcc') {
+    $cuiD3d12 = @((Join-Path $cuiRoot 'src/render/cui_render_d3d12.c'))
+}
+$uiSource = Join-Path $root 'src/ui/hopdesk_ui.c'
+$src = @($core.FullName) + @($platform.FullName) + @($win.FullName) +
+       @($uiSource) + @($cuiCore.FullName) + $cuiRender + $cuiPlatform + $cuiD3d12
 $inc = Join-Path $root 'src/core'
+$cuiInc = Join-Path $cuiRoot 'include'
 $iconInc = Join-Path $root 'assets/appicon'
 $out = Join-Path $build 'hopdesk.exe'
 $version = $env:HOPDESK_VERSION
@@ -32,7 +54,8 @@ if ($version -notmatch '^[0-9]+[.][0-9]+[.][0-9]+$') { throw "Invalid HOPDESK_VE
 $versionHeader = Join-Path $build 'hop_version.h'
 $headerContent = '#define HOP_VERSION "' + $version + '"'
 Set-Content -LiteralPath $versionHeader -Value $headerContent -Encoding ascii
-$libs = 'ws2_32', 'dxva2', 'gdi32', 'shell32', 'user32', 'comctl32', 'winhttp', 'bcrypt', 'iphlpapi', 'ole32', 'uuid', 'mmdevapi'
+$libs = 'ws2_32', 'dxva2', 'gdi32', 'shell32', 'user32', 'comctl32', 'winhttp', 'bcrypt', 'iphlpapi', 'ole32', 'uuid', 'mmdevapi', 'opengl32', 'imm32', 'dwmapi', 'comdlg32', 'advapi32'
+if ($Compiler -ne 'gcc') { $libs += 'd3d12', 'dxgi', 'd3dcompiler', 'dxguid' }
 $iconPng = Join-Path $root 'assets/appicon/hopdesk.png'
 $iconIco = Join-Path $root 'assets/appicon/hopdesk.ico'
 $resource = Join-Path $root 'assets/appicon/hopdesk.rc'
@@ -85,7 +108,7 @@ switch ($Compiler) {
         if (-not $clang) { throw '未找到 clang；安装 llvm-mingw（winget install MartinStorsjo.LLVM-MinGW.UCRT）或改用 -Compiler gcc。' }
 
         $libArgs = $libs | ForEach-Object { '-l' + $_ }
-        & $clang --target=x86_64-w64-mingw32 -O2 -Wall -Wextra @clangFlags -include $versionHeader -I $inc -I $iconInc -o $out $src $res @libArgs
+        & $clang --target=x86_64-w64-mingw32 -O2 -Wall -Wextra -DCUI_D3D12 @clangFlags -include $versionHeader -I $inc -I $iconInc -I $cuiInc -o $out $src $res @libArgs
         if ($LASTEXITCODE -ne 0) { throw "clang 编译失败（退出码 $LASTEXITCODE）" }
     }
     'gcc' {
@@ -97,14 +120,23 @@ switch ($Compiler) {
         if (-not $gcc) { throw '未找到 gcc；可运行 w64devkit，或用 -Compiler clang。' }
 
         $libArgs = $libs | ForEach-Object { '-l' + $_ }
-        & $gcc -O2 -Wall -Wextra -municode -mwindows -include $versionHeader -I $inc -I $iconInc -o $out $src $res @libArgs
+        & $gcc -O2 -Wall -Wextra -municode -mwindows -include $versionHeader -I $inc -I $iconInc -I $cuiInc -o $out $src $res @libArgs
         if ($LASTEXITCODE -ne 0) { throw "gcc 编译失败（退出码 $LASTEXITCODE）" }
     }
     'msvc' {
         $cl = (Get-Command cl.exe -ErrorAction SilentlyContinue).Source
         if (-not $cl) { throw '未找到 cl.exe；请在 x64 Native Tools for VS 终端运行。' }
-        $libArgs = $libs | ForEach-Object { $_ + '.lib' }
-        & cl /nologo /O2 /MT /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /FI$versionHeader /I $inc /I $iconInc /Fe:$out /Fo"$build\\" $src $res @libArgs /link /SUBSYSTEM:WINDOWS
+        $libArgs = ($libs + 'delayimp') | ForEach-Object { $_ + '.lib' }
+        $delayLoads = @(
+            '/DELAYLOAD:d3d12.dll',
+            '/DELAYLOAD:dxgi.dll',
+            '/DELAYLOAD:d3dcompiler_47.dll',
+            '/DELAYLOAD:opengl32.dll',
+            '/DELAYLOAD:winhttp.dll',
+            '/DELAYLOAD:bcrypt.dll',
+            '/DELAYLOAD:comctl32.dll'
+        )
+        & cl /nologo /O2 /MT /W3 /utf-8 /DCUI_D3D12 /D_CRT_SECURE_NO_WARNINGS /FI$versionHeader /I $inc /I $iconInc /I $cuiInc /Fe:$out /Fo"$build\\" $src $res @libArgs /link /SUBSYSTEM:WINDOWS @delayLoads
         if ($LASTEXITCODE -ne 0) { throw "cl 编译失败（退出码 $LASTEXITCODE）" }
     }
 }

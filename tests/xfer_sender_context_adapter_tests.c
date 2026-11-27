@@ -1,4 +1,4 @@
-#include "../src/core/xfer_sender_context_adapter.h"
+#include "../src/core/xfer_sender_context.h"
 #include "../src/core/xfer_tracking.h"
 
 #include <assert.h>

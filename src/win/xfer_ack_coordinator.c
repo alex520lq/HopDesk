@@ -76,6 +76,7 @@ int hop_xfer_ack_coordinator_wait_take(hop_xfer_ack_coordinator *c, uint32_t b, 
                                        uint32_t timeout_ms, int *status, uint64_t *rtt, int *expired) {
     if (!c) return 0;
     if (hop_xfer_ack_coordinator_take(c, b, id, status, rtt, expired)) return 1;
+    if (!timeout_ms) return 0;
     if (WaitForSingleObject(c->event, timeout_ms) != WAIT_OBJECT_0) return 0;
     return hop_xfer_ack_coordinator_take(c, b, id, status, rtt, expired);
 }

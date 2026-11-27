@@ -5,7 +5,7 @@
 #include "app.h"
 #include "resource.h"
 #include "xfer.h"
-#include "main_ui.h"
+#include "split_ui.h"
 
 #include <commctrl.h>
 #include <stdio.h>
@@ -149,14 +149,17 @@ static void tray_refresh(win_app *app) {
         wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 正在准备传输");
     } else if (!app->net) {
         wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 网络服务未启动");
-    } else if (!net_server_listening(app->net) || !xfer_listening()) {
+    } else if (net_server_is_disconnected(app->net)) {
+        wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 已手动断开");
+    } else if (app->cfg.role == HOP_ROLE_SERVER &&
+               (!net_server_listening(app->net) || !xfer_listening())) {
         wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 端口不可用，正在重试");
     } else if (state == 2) {
-        wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 键鼠正在 Mac");
+        wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 键鼠已切换到对端");
     } else if (state == 1) {
         wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 已连接");
     } else {
-        wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 等待 Mac 连接");
+        wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 等待对端连接");
     }
 
     int changed = state != s_last_tray_state ||
@@ -223,15 +226,14 @@ void ui_show_menu(win_app *app) {
 
 void ui_show_main(win_app *app) {
     (void)app;
-    main_ui_show_page(0);
+    win_split_agent_open(HOPDESK_UI_OVERVIEW);
 }
 void ui_show_transfers(win_app *app) {
     (void)app;
-    main_ui_show_page(3);
+    win_split_agent_open(HOPDESK_UI_TRANSFER);
 }
 void ui_refresh(win_app *app) {
     tray_refresh(app);
-    main_ui_refresh();
 }
 void ui_notify_paste_ready(void) {
     if (!g_app.tray_added) return;
@@ -263,7 +265,6 @@ void ui_transfer_poll(void) {
 }
 void ui_shutdown(win_app *app) {
     KillTimer(app->hwnd,IDT_XFER_NOTIFY);
-    main_ui_shutdown();
     if(app->tray_added){Shell_NotifyIconW(NIM_DELETE,&app->nid);app->tray_added=0;}
     if (app->tray_icon) { DestroyIcon(app->tray_icon); app->tray_icon=NULL; }
     if (app->icon_base) { DestroyIcon(app->icon_base); app->icon_base=NULL; }

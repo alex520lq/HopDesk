@@ -53,10 +53,17 @@ static int acquire_single_instance(void) {
 }
 
 int main(int argc, char **argv) {
-    const int agent = argc == 2 && strcmp(argv[1], "--agent") == 0;
+    /* Manual first launch starts the agent and opens the main UI once; closing
+     * the UI leaves the agent in the menu bar. --agent (LaunchAgent) and
+     * updater relaunches stay silent in the background. */
     const int start_agent = argc == 2 && strcmp(argv[1], "--split") == 0;
     const int open_ui = argc == 2 && strcmp(argv[1], "--ui") == 0;
-    const int ui = start_agent || open_ui || (argc == 1 && split_ui_agent_available());
+    int silent_agent = getenv("HOPDESK_UPDATE_READY") != NULL;
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--agent") == 0) silent_agent = 1;
+    }
+    const int finder_launch = argc == 1 || (argc == 2 && strncmp(argv[1], "-psn_", 5) == 0);
+    const int ui = start_agent || open_ui || (finder_launch && split_ui_agent_available());
     int startup_guard = 0;
 
     if (!ui) {
@@ -135,14 +142,10 @@ int main(int argc, char **argv) {
         while (!xfer_shutdown()) usleep(100000);
         return 1;
     }
-    if (agent) {
-        if (!split_agent_start()) {
-            hop_log(HOP_LOG_ERROR, "split agent: unable to start local service");
-            while (!xfer_shutdown()) usleep(100000);
-            return 1;
-        }
-    } else {
-        statusbar_init();
+    if (!split_agent_start()) {
+        hop_log(HOP_LOG_ERROR, "split agent: unable to start local service");
+        while (!xfer_shutdown()) usleep(100000);
+        return 1;
     }
     mac_check_input_permissions();
     clipboard_init();
@@ -150,8 +153,8 @@ int main(int argc, char **argv) {
     if(!hop_audio_set_mode(&g_mac.cfg,g_mac.cfg.audio_mode))
         hop_log(HOP_LOG_WARN,"audio: unable to start configured audio mode %u",g_mac.cfg.audio_mode);
     hop_watchdog_end(startup_guard);
-    if (agent) split_agent_run();
-    else app_run();
+    split_agent_set_open_on_launch(!silent_agent);
+    split_agent_run();
     hop_audio_shutdown();
     /* clipboard workers may still own image-temp Reservations; the control
      * reader may still call xfer_kick. Join both before tearing down xfer. */

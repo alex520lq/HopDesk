@@ -85,6 +85,30 @@ int hop_xfer_hello_valid(const uint8_t *p, uint32_t len, const char *token) {
     return hop_xfer_hello_bound(p, len, token, &id);
 }
 
+static uint8_t ascii_upper(uint8_t c) {
+    return (c >= 'a' && c <= 'z') ? (uint8_t)(c - ('a' - 'A')) : c;
+}
+
+static int segment_is_windows_reserved(const uint8_t *seg, size_t len) {
+    size_t stem = 0;
+    while (stem < len && seg[stem] != '.') ++stem;
+    if (stem == 3u) {
+        uint8_t a = ascii_upper(seg[0]), b = ascii_upper(seg[1]), c = ascii_upper(seg[2]);
+        return (a == 'C' && b == 'O' && c == 'N') ||
+               (a == 'P' && b == 'R' && c == 'N') ||
+               (a == 'A' && b == 'U' && c == 'X') ||
+               (a == 'N' && b == 'U' && c == 'L');
+    }
+    if (stem == 4u) {
+        uint8_t a = ascii_upper(seg[0]), b = ascii_upper(seg[1]),
+                c = ascii_upper(seg[2]), d = seg[3];
+        if (d < '1' || d > '9') return 0;
+        return (a == 'C' && b == 'O' && c == 'M') ||
+               (a == 'L' && b == 'P' && c == 'T');
+    }
+    return 0;
+}
+
 int hop_xfer_relpath_bytes_safe(const uint8_t *rel, size_t len) {
     if (!rel || len == 0 || len > HOP_PATH_LEN_MAX) return 0;
     if (rel[0] == '/' || rel[0] == '\\') return 0;
@@ -93,13 +117,18 @@ int hop_xfer_relpath_bytes_safe(const uint8_t *rel, size_t len) {
     while (i < len) {
         size_t start = i;
         while (i < len && rel[i] != '/') {
-            if (rel[i] == '\\' || rel[i] == ':' || rel[i] == 0 ||
-                rel[i] < 0x20u) return 0;
+            uint8_t ch = rel[i];
+            if (ch == '\\' || ch == ':' || ch == 0 || ch < 0x20u ||
+                ch == '<' || ch == '>' || ch == '"' || ch == '|' ||
+                ch == '?' || ch == '*') return 0;
             ++i;
         }
         size_t n = i - start;
         if (n == 0 || (n == 1 && rel[start] == '.') ||
             (n == 2 && rel[start] == '.' && rel[start + 1] == '.')) return 0;
+        /* Reject trailing spaces/dots and Windows device names on both peers. */
+        if (rel[start + n - 1] == ' ' || rel[start + n - 1] == '.') return 0;
+        if (segment_is_windows_reserved(rel + start, n)) return 0;
         if (i < len) {
             ++i;
             if (i == len) return 0;

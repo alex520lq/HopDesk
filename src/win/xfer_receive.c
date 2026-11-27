@@ -11,21 +11,8 @@
 #include "../core/xfer_tracking.h"
 #include "xfer_receive.h"
 #include "../core/hop.h"
-#include "../core/xfer_rx_receipt.h"
-#include "../core/xfer_rx_lifecycle.h"
-#include "../core/xfer_rx_batch_rules.h"
-#include "../core/xfer_rx_entry_reservations.h"
-#include "../core/xfer_rx_file_state.h"
-#include "../core/xfer_rx_dispatch.h"
-#include "../core/xfer_rx_platform_dispatch.h"
-#include "../core/xfer_rx_services.h"
-#include "../core/xfer_rx_context.h"
+#include "../core/xfer_rx_core.h"
 #include "../core/xfer_rx_message_handlers.h"
-#include "../core/xfer_rx_ack_handler.h"
-#include "../core/xfer_rx_frame_gate.h"
-#include "../core/xfer_rx_batch_state.h"
-#include "../core/xfer_rx_image_state.h"
-#include "../core/xfer_rx_image_buffer.h"
 #include "../core/xfer_rx_queue.h"
 #include "../core/update_state.h"
 #include "../core/xfer_budget.h"
@@ -83,10 +70,10 @@ static uint64_t wq_now_ns(void *context) {
 }
 static void wq_write_time(void *context, void *owner, uint64_t elapsed_ns) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
-    hop_xfer_task_snapshot snapshot;
-    if (rx && owner && hop_xfer_task_get_snapshot(((hop_xfer_task *)owner)->id, &snapshot) &&
+    const hop_xfer_task *task = (const hop_xfer_task *)owner;
+    if (rx && task && task->initialized && task->transfer_id &&
         rx->services.status_stage_time)
-        rx->services.status_stage_time(rx->services.context, snapshot.transfer_id,
+        rx->services.status_stage_time(rx->services.context, task->transfer_id,
                                        HOP_XFER_TIME_WRITE, elapsed_ns);
 }
 static void wq_open_error(void *context, const wchar_t *path, unsigned long error) {
@@ -351,9 +338,8 @@ static void rx_context_close_file(void *context) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx || !rx->writer) return;
     hop_writer_queue *writer = (hop_writer_queue *)rx->writer;
-    hop_writer_queue_drain(writer);
     (void)hop_writer_queue_enqueue_close(writer);
-    hop_writer_queue_drain(writer);
+    hop_writer_queue_flush(writer);
 }
 static int rx_context_file_error(void *context) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
@@ -408,7 +394,8 @@ static int rx_context_status_begin(void *context, uint32_t batch, uint32_t files
     return status_begin(batch, HOP_XFER_DIR_RECEIVE, files, bytes, name, phase);
 }
 static void rx_context_status_end(void *context, uint32_t batch, int phase, const char *detail) {
-    (void)context;
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (rx && rx->writer) hop_writer_queue_drain((hop_writer_queue *)rx->writer);
     status_end(HOP_XFER_DIR_RECEIVE, batch, phase, detail);
 }
 static void rx_context_status_add_file(void *context, uint32_t batch, uint32_t id,
@@ -575,7 +562,7 @@ hop_rx_frame_action xfer_receive_process_frame(const hop_session_id *session,
     if (gate.action == HOP_RX_FRAME_DISPATCH) {
         if (!authenticated) return HOP_RX_FRAME_REJECT_PEER;
         (void)hop_xfer_rx_dispatch_message(type, gate.body, gate.body_length,
-            &hop_xfer_rx_platform_dispatch_handlers, &s_rx);
+            &hop_xfer_rx_default_dispatch_handlers, &s_rx);
     }
     return gate.action;
 }

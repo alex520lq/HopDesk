@@ -159,6 +159,7 @@ static void test_config_defaults_and_loading(void) {
     hop_config_defaults(&c);
     CHECK(c.port == HOP_DEFAULT_PORT);
     CHECK(c.data_port == HOP_DATA_PORT);
+    CHECK(c.ui_theme == HOP_THEME_SYSTEM);
     CHECK(c.xfer_chunk_kb == HOP_CHUNK_KB_DEFAULT);
     CHECK(c.xfer_rate_limit_mib == 128);
 #if defined(_WIN32)
@@ -182,6 +183,7 @@ static void test_config_defaults_and_loading(void) {
           "xfer_chunk_kb=512\n"
           "xfer_rate_limit_mib=256\n"
           "disp_win_input=0x0F\n"
+          "ui_theme=dark\n"
           "switch_push_ms=175\n", f);
     fclose(f);
 
@@ -195,6 +197,12 @@ static void test_config_defaults_and_loading(void) {
     CHECK(c.xfer_rate_limit_mib == 256);
     CHECK(c.audio_mode == default_audio_mode);
     CHECK(c.disp_win_input == 0x0F);
+    CHECK(c.ui_theme == HOP_THEME_DARK);
+    c.ui_theme = HOP_THEME_LIGHT;
+    CHECK(hop_config_save_atomic(&c, path) == 1);
+    hop_config_defaults(&c);
+    CHECK(hop_config_load(&c, path) == 1);
+    CHECK(c.ui_theme == HOP_THEME_LIGHT);
     CHECK(c.switch_delay_ms == 175);
 
     /* UI persistence writes a complete config atomically and remains readable. */
@@ -242,7 +250,38 @@ static void test_dual_roles(void) {
     FILE *f=fopen(path,"w");CHECK(f!=NULL);
     if(f){fputs("role=invalid\nport=9999\n",f);fclose(f);
         loaded=c;CHECK(!hop_config_load(&loaded,path));CHECK(loaded.port==c.port);}
+    /* Independent input_mode persistence and legacy fallback when input_mode is absent. */
+    f=fopen(path,"w");CHECK(f!=NULL);
+    if(f){fputs("role=client\nhost=10.0.0.2\n",f);fclose(f);
+        hop_config_defaults(&loaded);CHECK(hop_config_load(&loaded,path));
+        CHECK(loaded.role==HOP_ROLE_CLIENT && loaded.input_mode==0);}
+    hop_config_defaults(&c);c.role=HOP_ROLE_CLIENT;c.input_mode=HOP_INPUT_MOUSE;
+    snprintf(c.peer_host,sizeof(c.peer_host),"10.0.0.2");
+    CHECK(hop_config_save_atomic(&c,path));
+    hop_config_defaults(&loaded);CHECK(hop_config_load(&loaded,path));
+    CHECK(loaded.role==HOP_ROLE_CLIENT && loaded.input_mode==HOP_INPUT_MOUSE);
+    c.input_mode=HOP_INPUT_MODES+1u;CHECK(!hop_config_save_atomic(&c,path));
     remove(path);
+
+    /* Peer capability wire codec and takeover reconciliation. */
+    {
+        uint8_t wire[HOP_CAPABILITIES_BYTES];
+        hop_capabilities_msg decoded;
+        CHECK(hop_capabilities_encode(wire, HOP_INPUT_MOUSE, HOP_INPUT_MOUSE, HOP_AUDIO_SEND) == HOP_CAPABILITIES_BYTES);
+        CHECK(hop_capabilities_decode(wire, sizeof(wire), &decoded));
+        CHECK(decoded.input_mode == HOP_INPUT_MOUSE && decoded.takeover_mask == HOP_INPUT_MOUSE &&
+              decoded.audio_mode == HOP_AUDIO_SEND);
+        CHECK(!hop_capabilities_encode(wire, HOP_INPUT_MODES + 1u, 0, 0));
+        CHECK(!hop_capabilities_decode(wire, sizeof(wire) - 1, &decoded));
+        /* Explicit peer takeover clears claimed bits even on the listening end. */
+        CHECK(hop_input_reconcile(HOP_INPUT_MODES, HOP_INPUT_MOUSE, HOP_INPUT_MOUSE, HOP_ROLE_SERVER) == HOP_INPUT_KEYBOARD);
+        CHECK(hop_input_reconcile(HOP_INPUT_MODES, HOP_INPUT_MODES, HOP_INPUT_MODES, HOP_ROLE_SERVER) == 0);
+        /* Initial overlap without takeover yields deterministically on the dialing side. */
+        CHECK(hop_input_reconcile(HOP_INPUT_MODES, HOP_INPUT_MODES, 0, HOP_ROLE_CLIENT) == 0);
+        CHECK(hop_input_reconcile(HOP_INPUT_MODES, HOP_INPUT_MODES, 0, HOP_ROLE_SERVER) == HOP_INPUT_MODES);
+        /* Non-overlapping capabilities stay intact on both sides. */
+        CHECK(hop_input_reconcile(HOP_INPUT_MOUSE, HOP_INPUT_KEYBOARD, 0, HOP_ROLE_CLIENT) == HOP_INPUT_MOUSE);
+    }
     CHECK(hop_mac_to_vk(0x00)=='A');
     CHECK(hop_mac_to_vk(0x37)==0xA2); /* Cmd -> Windows Ctrl */
     CHECK(hop_mac_to_vk(0x3B)==0x5B); /* Control -> Windows key */
@@ -313,6 +352,18 @@ static void test_xfer_relative_path_validation(void) {
     CHECK(!hop_xfer_relpath_safe("folder/./file"));
     CHECK(!hop_xfer_relpath_safe("file:stream"));
     CHECK(!hop_xfer_relpath_safe("bad\nname"));
+    CHECK(!hop_xfer_relpath_safe("bad?name"));
+    CHECK(!hop_xfer_relpath_safe("bad*name"));
+    CHECK(!hop_xfer_relpath_safe("bad<name>"));
+    CHECK(!hop_xfer_relpath_safe("trailing "));
+    CHECK(!hop_xfer_relpath_safe("trailing."));
+    CHECK(!hop_xfer_relpath_safe("folder/trailing /a.txt"));
+    CHECK(!hop_xfer_relpath_safe("CON"));
+    CHECK(!hop_xfer_relpath_safe("folder/nul.txt"));
+    CHECK(!hop_xfer_relpath_safe("com1"));
+    CHECK(!hop_xfer_relpath_safe("LPT9.log"));
+    CHECK(hop_xfer_relpath_safe("console.txt"));
+    CHECK(hop_xfer_relpath_safe("COM0.txt"));
 }
 
 static void test_xfer_image_bounds(void) {
@@ -985,6 +1036,24 @@ static void test_xfer_rate_limiter(void) {
     hop_xfer_rate_feedback(&rate,50000,0);
     CHECK(rate.current_rate_bytes_per_sec==128ull*1024ull*1024ull+
           (512ull*1024ull*1024ull)/100ull);
+
+    /* Healthy chunk streaming decays a stale high ACK RTT from an earlier file. */
+    hop_xfer_rate_init(&rate,1000,100,2000,100,0);
+    hop_xfer_rate_feedback(&rate,1000000,0);
+    CHECK(rate.ack_rtt_ewma_us==1000000&&rate.rate_decreases==1);
+    for(int i=0;i<32;i++)hop_xfer_rate_feedback(&rate,0,0);
+    CHECK(rate.ack_rtt_ewma_us<100000&&rate.rate_increases>0);
+
+    /* Per-channel decoder limit rejects control frames above HOP_CTRL_MAX_PAYLOAD. */
+    {
+        uint8_t hdr[HOP_HEADER_SIZE];
+        hop_encode_header(hdr, HOP_MSG_CLIP_TEXT, HOP_CTRL_MAX_PAYLOAD + 1u);
+        hop_decoder *ctrl = hop_decoder_new_with_limit(NULL, NULL, HOP_CTRL_MAX_PAYLOAD);
+        CHECK(ctrl != NULL);
+        CHECK(!hop_decoder_feed(ctrl, hdr, sizeof(hdr)));
+        CHECK(hop_decoder_failed(ctrl));
+        hop_decoder_free(ctrl);
+    }
 }
 
 static void test_xfer_task_image_buffer_transfer(void) {
@@ -1313,22 +1382,26 @@ static void test_xfer_task_identity_and_lifecycle(void) {
 }
 
 static void test_xfer_task_index_collision(void) {
-    hop_xfer_task first={0}, tmp={0}, last={0};
+    hop_xfer_task first={0}, moved={0}, tmp={0}, last={0};
     hop_xfer_task_snapshot snap;
     CHECK(hop_xfer_task_init(&first,0,0,1));
-    const uint64_t first_id=first.id;
-    /* The manager index has 8192 buckets. Keep the first record alive while
-     * cycling enough IDs to force a real collision, then remove both orders. */
-    for (unsigned i=0; i<8191; ++i) {
+    CHECK(first.transfer_id==1);
+    CHECK(hop_xfer_task_move(&moved,&first));
+    CHECK(moved.transfer_id==1 && first.transfer_id==0);
+    const uint64_t first_id=moved.id;
+    /* Keep the first record alive while cycling HOP_TASK_INDEX_BUCKETS IDs
+     * to force a real bucket collision, then remove both orders. */
+    for (unsigned i=0; i<HOP_TASK_INDEX_BUCKETS-1u; ++i) {
         CHECK(hop_xfer_task_init(&tmp,0,0,2));
         hop_xfer_task_dispose(&tmp);
     }
     CHECK(hop_xfer_task_init(&last,0,0,3));
     const uint64_t last_id=last.id;
-    CHECK(last_id-first_id==8192);
+    CHECK(last_id-first_id==HOP_TASK_INDEX_BUCKETS);
     CHECK(hop_xfer_task_get_snapshot(first_id,&snap) && snap.transfer_id==1);
     CHECK(hop_xfer_task_get_snapshot(last_id,&snap) && snap.transfer_id==3);
-    hop_xfer_task_dispose(&first);
+    hop_xfer_task_dispose(&moved);
+    CHECK(moved.transfer_id==0);
     CHECK(!hop_xfer_task_get_snapshot(first_id,&snap));
     CHECK(hop_xfer_task_get_snapshot(last_id,&snap) && snap.transfer_id==3);
     hop_xfer_task_dispose(&last);

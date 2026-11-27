@@ -1,11 +1,76 @@
 #include "xfer_sender_engine_adapter.h"
 
 #include "hop.h"
-#include "xfer_sender_ack_wait.h"
-#include "xfer_sender_context_adapter.h"
 #include "xfer_ack_coordinator.h"
 
 #include <string.h>
+
+int hop_xfer_sender_ack_wait(const hop_xfer_sender_context *context,
+                             intptr_t socket_handle, uint64_t epoch,
+                             uint32_t batch, uint64_t task_id, uint32_t id,
+                             uint64_t deadline_ns, uint32_t poll_interval_ms,
+                             uint64_t *rtt_us) {
+    if (!context || !context->ack_coordinator || !context->now_ns)
+        return HOP_XFER_SENDER_ACK_WAIT_LOCAL_IO;
+    if (rtt_us) *rtt_us = 0;
+
+    for (;;) {
+        uint64_t now = context->now_ns(context->user);
+        if (now >= deadline_ns) {
+            /* Consume an ACK that arrived before the deadline even if the
+             * sender only reached this wait after sending later entries. */
+            int status = 0, deadline_expired = 0;
+            uint64_t rtt_ns = 0;
+            if (hop_xfer_ack_coordinator_wait_take(context->ack_coordinator,
+                    batch, id, 0u, &status, &rtt_ns, &deadline_expired)) {
+                if (deadline_expired)
+                    return HOP_XFER_SENDER_ACK_WAIT_TIMEOUT;
+                if (rtt_us) *rtt_us = rtt_ns / 1000ull;
+                return status;
+            }
+            hop_xfer_ack_coordinator_unregister(context->ack_coordinator, batch, id);
+            return HOP_XFER_SENDER_ACK_WAIT_TIMEOUT;
+        }
+
+        uint32_t wait_ms = poll_interval_ms;
+        if (!wait_ms) {
+            uint64_t remaining = deadline_ns - now;
+            uint64_t rounded = remaining / 1000000ull +
+                               (remaining % 1000000ull != 0);
+            if (!rounded) rounded = 1;
+            if (rounded > (uint64_t)(UINT32_MAX - 1u))
+                rounded = (uint64_t)(UINT32_MAX - 1u);
+            wait_ms = (uint32_t)rounded;
+        }
+
+        int status = 0, deadline_expired = 0;
+        uint64_t rtt_ns = 0;
+        int hit = hop_xfer_ack_coordinator_wait_take(context->ack_coordinator,
+            batch, id, wait_ms, &status, &rtt_ns, &deadline_expired);
+        if (hit) {
+            if (deadline_expired)
+                return HOP_XFER_SENDER_ACK_WAIT_TIMEOUT;
+            if (rtt_us) *rtt_us = rtt_ns / 1000ull;
+            return status;
+        }
+
+        if (context->peer_aborted &&
+            context->peer_aborted(context->user, batch)) {
+            hop_xfer_ack_coordinator_unregister(context->ack_coordinator, batch, id);
+            return HOP_XFER_SENDER_ACK_WAIT_PEER_ABORT;
+        }
+        if (hop_xfer_sender_context_job_cancel_requested(context, batch, task_id)) {
+            hop_xfer_ack_coordinator_unregister(context->ack_coordinator, batch, id);
+            return HOP_XFER_SENDER_ACK_WAIT_CANCELLED;
+        }
+        if (!context->is_stopping || context->is_stopping(context->user) ||
+            socket_handle == (intptr_t)-1 || !context->session_current ||
+            !context->session_current(context->user, socket_handle, epoch)) {
+            hop_xfer_ack_coordinator_unregister(context->ack_coordinator, batch, id);
+            return HOP_XFER_SENDER_ACK_WAIT_SEND_DEAD;
+        }
+    }
+}
 
 static int adapter_cancel_requested(void *user, uint32_t batch) {
     const hop_xfer_sender_engine_adapter_ops *ops =
@@ -31,6 +96,12 @@ static const char *adapter_entry_path(void *user, const void *entry) {
     const hop_xfer_sender_engine_adapter_ops *ops =
         (const hop_xfer_sender_engine_adapter_ops *)user;
     return ops && ops->entry_path ? ops->entry_path(ops->user, entry) : NULL;
+}
+
+static uint64_t adapter_entry_size(void *user, const void *entry) {
+    const hop_xfer_sender_engine_adapter_ops *ops =
+        (const hop_xfer_sender_engine_adapter_ops *)user;
+    return ops && ops->entry_size ? ops->entry_size(ops->user, entry) : 0;
 }
 
 static int file_cancel_requested(void *user, uint32_t batch) {
@@ -337,6 +408,7 @@ int hop_xfer_sender_engine_adapter_run(
     engine_ops.peer_aborted = adapter_peer_aborted;
     engine_ops.entry_at = adapter_entry_at;
     engine_ops.entry_path = adapter_entry_path;
+    engine_ops.entry_size = adapter_entry_size;
     engine_ops.send_entry = adapter_send_entry;
     engine_ops.wait_ack = adapter_wait_ack;
     engine_ops.unregister_batch = adapter_unregister_batch;
@@ -348,4 +420,122 @@ int hop_xfer_sender_engine_adapter_run(
     engine_ops.log_message = adapter_log_message;
     return hop_xfer_sender_run_files(&engine_ops, ops->batch,
         ops->entry_count, ops->next_index, ops->ok_count, ops->max_attempts);
+}
+
+typedef struct {
+    const hop_xfer_sender_commit_adapter_ops *ops;
+    intptr_t socket_handle;
+    uint64_t epoch;
+} commit_adapter_state;
+
+static uint64_t commit_now_ms(void *user) {
+    (void)user;
+    return hop_monotonic_ms();
+}
+
+static uint64_t commit_now_ns(void *user) {
+    const commit_adapter_state *state = (const commit_adapter_state *)user;
+    const hop_xfer_sender_context *ctx =
+        state && state->ops ? state->ops->context : NULL;
+    return ctx && ctx->now_ns ? ctx->now_ns(ctx->user) : 0;
+}
+
+static int commit_is_stopping(void *user) {
+    const commit_adapter_state *state = (const commit_adapter_state *)user;
+    const hop_xfer_sender_context *ctx =
+        state && state->ops ? state->ops->context : NULL;
+    return !ctx || !ctx->is_stopping || ctx->is_stopping(ctx->user);
+}
+
+static int commit_session_matches(void *user, const uint8_t *session) {
+    (void)user;
+    hop_session_id id;
+    if (!session) return 0;
+    memcpy(id.bytes, session, sizeof(id.bytes));
+    return hop_session_matches(&id);
+}
+
+static int commit_current_connection(void *user, intptr_t *socket_handle,
+                                     uint64_t *epoch, uint8_t *session,
+                                     size_t session_capacity) {
+    commit_adapter_state *state = (commit_adapter_state *)user;
+    if (!state || !state->ops || !state->ops->current_connection) return 0;
+    if (!state->ops->current_connection(state->ops->user, socket_handle,
+                                        epoch, session, session_capacity))
+        return 0;
+    state->socket_handle = *socket_handle;
+    state->epoch = *epoch;
+    return 1;
+}
+
+static int commit_send_done(void *user, intptr_t socket_handle, uint64_t epoch,
+                            uint32_t batch, uint32_t ok_count,
+                            uint32_t total_count) {
+    const commit_adapter_state *state = (const commit_adapter_state *)user;
+    if (!state || !state->ops || !state->ops->send_done) return 0;
+    uint8_t payload[20];
+    hop_put_be32(payload, batch);
+    hop_put_be32(payload + 4, ok_count);
+    hop_put_be32(payload + 8, total_count);
+    hop_put_be64(payload + 12, 0);
+    return state->ops->send_done(state->ops->user, socket_handle, epoch,
+                                 payload, sizeof(payload), batch);
+}
+
+static hop_xfer_sender_commit_ack_result commit_wait_ack(
+    void *user, uint32_t batch, uint32_t slot, uint64_t deadline_ns) {
+    const commit_adapter_state *state = (const commit_adapter_state *)user;
+    if (!state || !state->ops || !state->ops->context)
+        return HOP_XFER_SENDER_COMMIT_ACK_OTHER;
+    int result = hop_xfer_sender_ack_wait(state->ops->context,
+        state->socket_handle, state->epoch, batch, state->ops->task_id, slot,
+        deadline_ns, state->ops->ack_poll_interval_ms, NULL);
+    if (result == HOP_DONE_ACK_COMPLETE) return HOP_XFER_SENDER_COMMIT_ACK_COMPLETE;
+    if (result == HOP_DONE_ACK_PARTIAL) return HOP_XFER_SENDER_COMMIT_ACK_PARTIAL;
+    if (result == HOP_DONE_ACK_FAILED) return HOP_XFER_SENDER_COMMIT_ACK_FAILED;
+    if (result == HOP_XFER_SENDER_ACK_WAIT_PEER_ABORT) return HOP_XFER_SENDER_COMMIT_ACK_PEER_ABORT;
+    if (result == HOP_XFER_SENDER_ACK_WAIT_TIMEOUT) return HOP_XFER_SENDER_COMMIT_ACK_TIMEOUT;
+    if (result == HOP_XFER_SENDER_ACK_WAIT_SEND_DEAD) return HOP_XFER_SENDER_COMMIT_ACK_SEND_DEAD;
+    return HOP_XFER_SENDER_COMMIT_ACK_OTHER;
+}
+
+static int commit_wait_ms(void *user, uint32_t duration_ms) {
+    const commit_adapter_state *state = (const commit_adapter_state *)user;
+    const hop_xfer_sender_context *ctx =
+        state && state->ops ? state->ops->context : NULL;
+    return ctx && ctx->wait_ns &&
+           ctx->wait_ns(ctx->user, (uint64_t)duration_ms * 1000000ull);
+}
+
+hop_xfer_sender_job_result hop_xfer_sender_engine_adapter_run_commit(
+    const hop_xfer_sender_commit_adapter_ops *ops) {
+    if (!ops || !ops->context || !ops->session || !ops->current_connection ||
+        !ops->send_done)
+        return HOP_XFER_SENDER_JOB_COMMIT_UNKNOWN;
+
+    commit_adapter_state state;
+    memset(&state, 0, sizeof(state));
+    state.ops = ops;
+
+    hop_xfer_sender_commit_ops commit_ops;
+    memset(&commit_ops, 0, sizeof(commit_ops));
+    commit_ops.user = &state;
+    commit_ops.now_ms = commit_now_ms;
+    commit_ops.now_ns = commit_now_ns;
+    commit_ops.is_stopping = commit_is_stopping;
+    commit_ops.session_matches = commit_session_matches;
+    commit_ops.current_connection = commit_current_connection;
+    commit_ops.send_done = commit_send_done;
+    commit_ops.ack_coordinator = ops->context->ack_coordinator;
+    commit_ops.wait_ack = commit_wait_ack;
+    commit_ops.wait_ms = commit_wait_ms;
+
+    hop_xfer_sender_commit_result result = hop_xfer_sender_run_commit(
+        &commit_ops, ops->session, ops->batch, ops->is_image,
+        ops->entry_count, ops->ok_count, ops->done_ack_slot,
+        ops->ack_timeout_ms, ops->reconnect_budget_ms, 100);
+    if (result == HOP_XFER_SENDER_COMMIT_DONE) return HOP_XFER_SENDER_JOB_DONE;
+    if (result == HOP_XFER_SENDER_COMMIT_REJECTED) return HOP_XFER_SENDER_JOB_COMMIT_REJECTED;
+    if (result == HOP_XFER_SENDER_COMMIT_PEER_ABORT) return HOP_XFER_SENDER_JOB_PEER_ABORT;
+    return HOP_XFER_SENDER_JOB_COMMIT_UNKNOWN;
 }

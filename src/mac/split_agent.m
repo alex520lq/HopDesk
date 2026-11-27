@@ -170,12 +170,12 @@ static void serve(int fd) {
     if (!io_full(fd, &header, sizeof(header), false, deadline) ||
         ntohl(header.version) != SPLIT_IPC_VERSION) return;
     uint32_t operation = ntohl(header.operation);
-    if (operation < SPLIT_IPC_STATUS || operation > SPLIT_IPC_AUDIO_MODE_SET) return;
+    if (operation < SPLIT_IPC_STATUS || operation > SPLIT_IPC_INPUT_MODE_SET) return;
 
     split_ipc_query query = {0};
     bool has_query = (operation >= SPLIT_IPC_TASKS_GET && operation <= SPLIT_IPC_FILES_GET) ||
                      operation == SPLIT_IPC_RETRY_FILE || operation == SPLIT_IPC_CANCEL_TASK ||
-                     operation == SPLIT_IPC_AUDIO_MODE_SET;
+                     operation == SPLIT_IPC_AUDIO_MODE_SET || operation == SPLIT_IPC_INPUT_MODE_SET;
     if (ntohl(header.payload_size) != (has_query ? sizeof(query) : 0)) {
         (void)reply(fd, &header, false, NULL, 0, NULL, 0, deadline);
         return;
@@ -185,6 +185,11 @@ static void serve(int fd) {
     case SPLIT_IPC_STATUS: {
         unsigned int connection = atomic_load(&s_connection);
         hop_audio_status audio = hop_audio_get_status();
+        unsigned peer_input = 0, peer_audio = 0;
+        int peer_known = 0;
+        char peer_name[HOP_NAME_MAX] = {0};
+        net_get_peer_capabilities(&peer_input, &peer_audio, &peer_known,
+                                  peer_name, sizeof(peer_name));
         split_ipc_status status = {
             .pid = getpid(),
             .control = (connection & 1u) != 0,
@@ -196,8 +201,14 @@ static void serve(int fd) {
             .busy = xfer_busy(),
             .audio_requested = (int32_t)audio.requested,
             .audio_active = (int32_t)audio.active,
-            .audio_unavailable = (int32_t)audio.unavailable
+            .audio_unavailable = (int32_t)audio.unavailable,
+            .disconnected = net_is_disconnected(),
+            .local_input = (int32_t)net_get_input_mode(),
+            .peer_input = (int32_t)peer_input,
+            .peer_audio = (int32_t)peer_audio,
+            .peer_caps_known = peer_known
         };
+        snprintf(status.peer_name, sizeof(status.peer_name), "%s", peer_name);
         (void)reply(fd, &header, true, &status, sizeof(status), NULL, 0, deadline);
         return;
     }
@@ -218,8 +229,21 @@ static void serve(int fd) {
             runtime.audio_mode = (unsigned)query.index;
             if (hop_audio_set_mode(&runtime, runtime.audio_mode)) {
                 g_mac.cfg.audio_mode = runtime.audio_mode;
+                net_send_capabilities(0);
                 result.result = 1;
             }
+        }
+        (void)reply(fd, &header, true, &result, sizeof(result), NULL, 0, deadline);
+        return;
+    }
+    case SPLIT_IPC_INPUT_MODE_SET: {
+        split_ipc_result result = {0};
+        if (query.index >= 0 && !((unsigned)query.index & ~HOP_INPUT_MODES)) {
+            unsigned prev = net_get_input_mode();
+            unsigned next = (unsigned)query.index;
+            unsigned takeover = next & ~prev;
+            net_apply_input_mode(next, takeover, 1);
+            result.result = 1;
         }
         (void)reply(fd, &header, true, &result, sizeof(result), NULL, 0, deadline);
         return;
@@ -236,12 +260,16 @@ static void serve(int fd) {
         return;
     }
     case SPLIT_IPC_RECONNECT:
+    case SPLIT_IPC_DISCONNECT:
     case SPLIT_IPC_RETRY_FILE:
     case SPLIT_IPC_CANCEL_TASK:
     case SPLIT_IPC_STOP: {
         split_ipc_result result = {0};
         if (operation == SPLIT_IPC_RECONNECT) {
             net_request_reconnect();
+            result.result = 1;
+        } else if (operation == SPLIT_IPC_DISCONNECT) {
+            net_set_disconnected(1);
             result.result = 1;
         } else if (operation == SPLIT_IPC_RETRY_FILE) {
             result.result = xfer_retry_file(query.batch, query.index);
@@ -312,8 +340,17 @@ int split_agent_start(void) {
     return 1;
 }
 
+static bool s_open_on_launch;
+
+void split_agent_set_open_on_launch(int open) {
+    s_open_on_launch = open != 0;
+}
+
 void split_agent_run(void) {
     statusbar_init();
+    if (s_open_on_launch && !atomic_load(&s_stopping)) {
+        dispatch_async(dispatch_get_main_queue(), ^{ statusbar_open_main(); });
+    }
     int guard = hop_watchdog_begin("macOS split-agent run loop", 30000);
     CFRunLoopTimerRef timer = CFRunLoopTimerCreateWithHandler(NULL, CFAbsoluteTimeGetCurrent() + 1,
         1, 0, 0, ^(CFRunLoopTimerRef heartbeat) {

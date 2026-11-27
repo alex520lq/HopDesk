@@ -12,6 +12,7 @@
 #define WM_APP_STATE   (WM_APP + 4)   /* 状态变化，刷新 UI */
 #define WM_APP_CLIP (WM_APP + 5) /* format + owned HGLOBAL; 0 = retry */
 #define WM_APP_CLIP_PASTE (WM_APP + 6) /* wParam: paste request ID; lParam: owned CF_HDROP */
+#define WM_APP_SPLIT_REQUEST (WM_APP + 7) /* agent-owned request, no message pointers */
 #define IDT_HOOK 5
 #define IDT_CLIP_RETRY 3              /* 剪贴板读写/发送延迟重试 */
 
@@ -33,13 +34,19 @@ typedef struct {
     hop_link_state state;
     HICON          icon_base;     /* immutable app icon resource */
     HICON          tray_icon;     /* current dynamically rendered status icon */
-    int            peer_w, peer_h; /* 客户端（Mac）屏幕尺寸，握手时取得 */
+    int            peer_w, peer_h; /* 对端屏幕尺寸，握手时取得 */
+    char           peer_name[HOP_NAME_MAX]; /* 对端设备名称 */
+    unsigned       peer_input_mode; /* 对端当前提供的键鼠能力 */
+    unsigned       peer_audio_mode; /* 对端当前配置的声音能力 */
+    int            peer_capabilities_known;
     char           config_path[1024]; /* UTF-8 canonical config path */
     char           log_path[1024];    /* UTF-8 active log path */
 } win_app;
 
 extern win_app g_app;
 void local_addresses(char *out,size_t cap);
+void win_send_capabilities(unsigned takeover_mask);
+void win_apply_input_mode(unsigned mode, unsigned takeover_mask, int persist);
 
 /* mouse_capture.c */
 void capture_init(win_app *app);
@@ -98,6 +105,7 @@ void main_ui_show_page(int page);
 void main_ui_refresh(void);
 void main_ui_shutdown(void);
 void ui_transfer_poll(void);
+void win_ui_display_action(int action);
 void ui_notify_paste_ready(void);
 
 #endif

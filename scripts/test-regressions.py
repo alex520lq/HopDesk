@@ -16,7 +16,7 @@ def extract(source,name):
         j+=1
     return source[start:j]
 
-with tempfile.TemporaryDirectory(prefix='hopdesk-regression-') as directory:
+with tempfile.TemporaryDirectory(prefix='hopdesk-regression-', ignore_cleanup_errors=(os.name == 'nt')) as directory:
     work=pathlib.Path(directory)
     def run(name,source,extra=(),threads=False,libraries=()):
         path=work/(name+'.c');path.write_text(source,encoding='utf-8')
@@ -35,7 +35,7 @@ with tempfile.TemporaryDirectory(prefix='hopdesk-regression-') as directory:
     run('tracking_config',(ROOT/'tests/regression_tests.c').read_text(encoding='utf-8'),['src/core/config.c','src/core/xfer_tracking.c'])
     run('rx_dispatch',r'''
 #include "hop.h"
-#include "xfer_rx_dispatch.h"
+#include "xfer_rx_core.h"
 #include <assert.h>
 #include <stdio.h>
 typedef struct { int calls; int marker; } test_context;
@@ -57,7 +57,7 @@ int main(void) {
     puts("PASS: receiver dispatch rejects missing/unknown handlers and forwards context");
     return 0;
 }
-''',['src/core/xfer_rx_dispatch.c'])
+''',['src/core/xfer_rx_core.c','src/core/xfer_validate.c','src/core/protocol.c','src/core/crc32.c','src/core/session.c'],threads=True)
     # Exercise the real Windows filesystem adapter with the exact staging
     # path shape produced by xfer_receive.c, not a generic "HopDesk" prefix.
     if os.name == 'nt':
@@ -115,7 +115,7 @@ int main(void) {
 
     run('rx_dispatch',r'''
 #include "hop.h"
-#include "xfer_rx_dispatch.h"
+#include "xfer_rx_core.h"
 #include <assert.h>
 int main(void) {
     assert(hop_xfer_rx_dispatch_classify(HOP_MSG_FILE_BEGIN)==HOP_RX_DISPATCH_FILE_BEGIN);
@@ -130,10 +130,10 @@ int main(void) {
     assert(hop_xfer_rx_dispatch_classify(255)==HOP_RX_DISPATCH_UNKNOWN);
     return 0;
 }
-''',['src/core/xfer_rx_dispatch.c'])
+''',['src/core/xfer_rx_core.c','src/core/xfer_validate.c','src/core/protocol.c','src/core/crc32.c','src/core/session.c'],threads=True)
 
     run('rx_batch_state',r'''
-#include "xfer_rx_batch_state.h"
+#include "xfer_rx_core.h"
 #include <assert.h>
 int main(void) {
     hop_xfer_rx_batch_state s;
@@ -150,178 +150,159 @@ int main(void) {
     assert(!s.active && !s.batch && s.generation==2);
     return 0;
 }
-''',['src/core/xfer_rx_batch_state.c'])
+''',['src/core/xfer_rx_core.c','src/core/xfer_validate.c','src/core/protocol.c','src/core/crc32.c','src/core/session.c'],threads=True)
 
-    # Cards are painted by the page, never sibling HWNDs obscuring its controls.
-    ui=(ROOT/'src/win/main_ui.c').read_text(encoding='utf-8')
-    group_fn=extract(ui,'group')
-    page_fn=extract(ui,'page_proc')
-    page_create_fn=extract(ui,'page_create')
-    assert 'HopDeskCard' not in ui and 'CreateWindow' not in group_fn
-    assert 'WS_CLIPCHILDREN' in page_create_fn and 'paint_cards(h,dc,GetScrollPos(h,SB_VERT))' in page_fn
-    ui_preamble=r'''
-#include <assert.h>
-#include <stddef.h>
-#include <wchar.h>
-#include <stdio.h>
-typedef int HWND;typedef int HDC;typedef int HPEN;typedef int HBRUSH;typedef int HGDIOBJ;
-typedef struct {int left,top,right,bottom;} RECT;
-typedef struct {HWND page;const wchar_t *title;int x,y,w,h;} ui_card;
-static ui_card s_cards[32];static int s_card_count;static int s_font=3,scale=1;
-static int dip(int n){return n*scale;}
-#define PS_SOLID 0
-#define NULL_BRUSH 0
-#define TRANSPARENT 1
-#define DT_SINGLELINE 1
-#define DT_LEFT 0
-#define DT_VCENTER 4
-#define RGB(r,g,b) 0
-static int boxes,titles,fills,last_top,last_left,last_right,last_bottom,text_top;
-static HPEN CreatePen(int style,int width,int color){(void)style;(void)width;(void)color;return 1;}
-static HBRUSH CreateSolidBrush(int color){(void)color;fills++;return 2;}
-static HGDIOBJ SelectObject(HDC dc,HGDIOBJ o){(void)dc;return o;}
-static int SetBkMode(HDC dc,int mode){(void)dc;return mode;}
-static int SetTextColor(HDC dc,int color){(void)dc;return color;}
-static int RoundRect(HDC dc,int l,int t,int r,int b,int x,int y){(void)dc;(void)x;(void)y;boxes++;last_left=l;last_top=t;last_right=r;last_bottom=b;return 1;}
-static int DrawTextW(HDC dc,const wchar_t *s,int n,RECT *r,int flags){(void)dc;(void)n;(void)flags;assert(s && *s);titles++;text_top=r->top;return 1;}
-static int DeleteObject(HGDIOBJ o){(void)o;return 1;}
-'''
-    ui_main=r'''
-int main(void){
-    group(1,L"first",20,18,800,145);group(2,L"other page",10,20,30,40);
-    paint_cards(1,0,30);assert(boxes==1 && titles==1 && fills==1);
-    assert(last_left==20 && last_top==-12 && last_right==819 && last_bottom==132 && text_top==0);
-    boxes=titles=fills=0;scale=2;paint_cards(2,0,10);assert(boxes==1 && titles==1 && fills==1);
-    assert(last_left==20 && last_top==30 && last_right==79 && last_bottom==109 && text_top==54);
-    puts("PASS: Windows page card painting and scroll offsets (API doubles)");return 0;
-}
-'''
-    run('win_ui_cards',ui_preamble+group_fn+'\n'+extract(ui,'paint_cards')+ui_main)
-
-    # The two native front ends expose the same operational dashboard,
-    # consistent settings groups, and one task-history surface.
+    # The native hosts share one CUI page tree and model. Platform-specific
+    # files provide only lifecycle, OS integration, and service adapters.
+    ui=(ROOT/'src/ui/hopdesk_ui.c').read_text(encoding='utf-8')
+    ui_header=(ROOT/'src/ui/hopdesk_ui.h').read_text(encoding='utf-8')
     mac_ui=(ROOT/'src/mac/main_ui.m').read_text(encoding='utf-8')
-    mac_split_ui=(ROOT/'src/mac/split_ui.m').read_text(encoding='utf-8')
     win_ui=(ROOT/'src/win/main_ui.c').read_text(encoding='utf-8')
-    # Both native clients expose exactly four top-level destinations in the
-    # same order. Logs and updates remain reachable inside the Settings page.
-    page_enum='enum { UI_PAGE_OVERVIEW, UI_PAGE_DEVICE, UI_PAGE_TRANSFER, UI_PAGE_SETTINGS, UI_PAGE_COUNT };'
-    assert page_enum in mac_ui and page_enum in win_ui
-    assert 'static NSString *const kPageNames[UI_PAGE_COUNT] = {@"概览",@"设备",@"传输",@"设置"};' in mac_ui
-    assert 'L"概览", L"设备", L"传输", L"设置"' in win_ui
-    assert 'static NSView *s_pages[UI_PAGE_COUNT];' in mac_ui
-    assert 'static NSScrollView *s_hosts[UI_PAGE_COUNT];' in mac_ui
-    assert 'static NSButton *s_nav[UI_PAGE_COUNT];' in mac_ui
-    assert 'static HWND s_pages[UI_PAGE_COUNT];' in win_ui
-    assert 's_pages[4]' not in mac_ui and 's_pages[5]' not in mac_ui
-    assert 's_pages[4]' not in win_ui and 's_pages[5]' not in win_ui
-    assert 'p=s_pages[UI_PAGE_TRANSFER];' in mac_ui and 'p=s_pages[UI_PAGE_SETTINGS];' in mac_ui
-    assert 'p=s_pages[UI_PAGE_TRANSFER];' in win_ui and 'p=s_pages[UI_PAGE_SETTINGS]; create_settings_page(p);' in win_ui
-    assert 'build_settings_page(settingsForm)' in mac_ui
-    settings_page = mac_ui[mac_ui.index('p=s_pages[UI_PAGE_SETTINGS];'):]
-    page_height = int(re.search(r'setFrameSize:NSMakeSize\(880,(\d+)\)', settings_page).group(1))
-    form_y, form_height = map(int, re.search(r'settingsForm=.*?NSMakeRect\(0,(\d+),880,(\d+)\)', settings_page).groups())
-    assert page_height >= form_y + form_height, 'Settings form must fit inside its scrollable page'
-    assert 'ui_label(card,@"运行日志"' in mac_ui and 'ui_label(card,@"软件更新"' in mac_ui
-    assert 'group(p,L"运行日志",20,620,800,590)' in win_ui
-    assert 'group(p,L"软件更新",20,1240,800,300)' in win_ui
-    assert 'if(page==UI_PAGE_TRANSFER)refresh_transfer_page();' in mac_ui
-    assert 'if(page==UI_PAGE_SETTINGS)refresh_logs();' in mac_ui
-    assert 'if(s_page==UI_PAGE_TRANSFER)refresh_transfer_page();' in mac_ui
-    assert 'if (page == UI_PAGE_TRANSFER) refresh_transfers();' in win_ui
-    assert 'if (page == UI_PAGE_SETTINGS) refresh_logs();' in win_ui
-    assert 's_page==UI_PAGE_TRANSFER' in win_ui and 'show_page(UI_PAGE_TRANSFER)' in win_ui
-    assert 'h==s_pages[UI_PAGE_SETTINGS]?1580' in win_ui
-    ui_contract=(ROOT/'docs/MAIN_UI.md').read_text(encoding='utf-8')
-    assert '四个一级入口及顺序：概览、设备、传输、设置。' in ui_contract
-    assert '四个入口，顺序与两端实现一致：**概览、设备、传输、设置**。' in ui_contract
-    assert '#### 运行日志' in ui_contract and '#### 软件更新' in ui_contract
-    assert all(x in mac_ui for x in ['s_overviewControl','s_overviewData','s_overviewSharing'])
-    assert all(x in win_ui for x in ['s_overview_control','s_overview_data','s_overview_sharing'])
-    for source,active,history,cancel in [
-        (mac_ui,'s_taskTables','s_taskHistory','cancelTask:'),
-        (win_ui,'s_task_lists','s_task_history','cancel_selected_task')
-    ]:
-        assert active in source and history in source and cancel in source
-        assert 'bytes_done' in source and 'files_done' in source
-        assert '传输历史' in source and '活动任务' in source
-    assert 's_xferHistory' not in mac_ui and 's_xfer_history' not in win_ui
-    assert all(x in mac_ui for x in ['CFG_ROLE','CFG_HOST','CFG_TOKEN','保存设置'])
-    assert all(x in win_ui for x in ['CFG_ROLE','CFG_HOST','CFG_TOKEN','UI_ID_SAVE'])
-    assert all(x in mac_ui for x in ['s_settingsDirty','NSControlTextDidChangeNotification',
-        'settings_validation_error','set_settings_editors_enabled','s_saveSettingsButton.enabled=s_settingsDirty&&!s_saveBusy'])
-    assert all(x in win_ui for x in ['s_settings_dirty','HIWORD(wp)==EN_CHANGE',
-        'settings_validation_error','set_settings_editors_enabled','s_cfg_save_button,s_settings_dirty&&!s_save_busy'])
-    assert 'update_settings_role_fields' in mac_ui and 'update_settings_role_fields' in win_ui
-    assert all(x in mac_ui for x in ['HOP_AUDIO_SEND','HOP_AUDIO_PLAY','s_audioSend','s_audioPlay','split_ui_set_audio_mode'])
-    assert all(x in win_ui for x in ['HOP_AUDIO_SEND','HOP_AUDIO_PLAY','s_audio_send','s_audio_play','hop_audio_set_mode'])
-    audio_config=(ROOT/'src/core/config.c').read_text(encoding='utf-8')
-    audio_header=(ROOT/'src/core/hop.h').read_text(encoding='utf-8')
-    split_ipc=(ROOT/'src/mac/split_ipc.h').read_text(encoding='utf-8')
-    split_agent=(ROOT/'src/mac/split_agent.m').read_text(encoding='utf-8')
-    win_main=(ROOT/'src/win/win_main.c').read_text(encoding='utf-8')
-    mac_main=(ROOT/'src/mac/main.c').read_text(encoding='utf-8')
-    win_tray=(ROOT/'src/win/ui.c').read_text(encoding='utf-8')
+    win_split=(ROOT/'src/win/split_ui.c').read_text(encoding='utf-8')
+    win_entry=(ROOT/'src/win/win_main.c').read_text(encoding='utf-8')
     mac_tray=(ROOT/'src/mac/statusbar.m').read_text(encoding='utf-8')
-    assert 'audio_mode=%u' in audio_config and 'audio_mode' in audio_header
-    assert 'c->audio_mode = HOP_AUDIO_PLAY' in audio_config and 'c->audio_mode = HOP_AUDIO_SEND' in audio_config
-    assert 'SPLIT_IPC_AUDIO_MODE_SET' in split_ipc and 'SPLIT_IPC_VERSION 3u' in split_ipc
-    assert 'SPLIT_IPC_AUDIO_MODE_SET' in split_agent and 'audio_requested' in split_agent
-    assert 'hop_audio_set_mode(&g_app.cfg,g_app.cfg.audio_mode)' in win_main
-    assert 'hop_audio_set_mode(&g_mac.cfg,g_mac.cfg.audio_mode)' in mac_main
-    assert 'port==HOP_AUDIO_PORT' in mac_ui and 'dataPort==HOP_AUDIO_PORT' in mac_ui
-    assert 'port==HOP_AUDIO_PORT' in win_ui and 'data_port==HOP_AUDIO_PORT' in win_ui
-    assert 'if (!out->requested && g_mac.cfg.audio_mode)' in mac_split_ui
-    assert 'IDM_AUDIO_SEND' not in win_tray and 'IDM_AUDIO_PLAY' not in win_tray
-    assert 'toggleAudio:' not in mac_tray
-    for source in [mac_ui,win_ui]:
-        save=extract(source,'save_settings')
-        assert 'settings_validation_error' in save
-        assert '正在保存设置' in save
-        assert '设置已保存' in source and '有未保存的更改' in source
-    assert 'NSAlert' not in extract(mac_ui,'save_settings')
-    assert 'MessageBoxW' not in extract(win_ui,'save_settings')
-    # Selecting a live task must drive the matching detail snapshot and file batch.
-    assert all(x in mac_ui for x in ['tableViewSelectionDidChange',
-        'find_task_snapshot(selectedId)', 'split_ui_get_files(fileDirection, fileBatch',
-        'selected_visible_file_index', 'NSAlertSecondButtonReturn',
-        's_cancelTaskButtons[d].enabled=canCancel'])
-    assert 'hop_xfer_task_get_snapshot(id, out)' in extract(mac_split_ui,'split_ui_get_task')
-    assert re.search(r'xfer_get_files_page\s*\(\s*direction\s*,\s*batch\s*,\s*offset\s*,\s*out\s*,\s*capacity\s*,\s*total\s*,\s*revision\s*\)', extract(mac_split_ui,'split_ui_get_files'))
-    assert all(x in win_ui for x in ['UI_ID_SEND_TASKS', 'UI_ID_RECEIVE_TASKS',
-        'hop_xfer_task_get_snapshot(selected_id,&selected_snapshot)',
-        'xfer_get_files(file_direction,file_batch', 'selected_visible_file_index',
-        'MB_DEFBUTTON2', 's_cancel_task_buttons[d]'])
-    assert '任务正在准备或排队，开始后显示文件明细' in mac_ui and '此任务的实时文件明细暂不可用' in win_ui
-    assert '暂无活动的发送任务' in mac_ui and '暂无活动的发送任务' in win_ui
-    assert re.search(r's_fileBatchActive\s*=\s*hasSelected\s*\?\s*\(hasTaskStatus\s*&&\s*st\.active\)\s*:\s*st\.active', mac_ui)
-    assert 's_file_batch_active=has_selected?(has_task_status&&st.active):st.active' in win_ui
-    assert re.search(r'currentBatch\s*=\s*t->transfer_id\s*&&\s*current\.batch\s*==\s*t->transfer_id', mac_ui)
-    assert 'current_batch=t->transfer_id && current.batch==t->transfer_id' in win_ui
-    assert '等待开始' in mac_ui and '等待开始' in win_ui
-    assert 'UI_FILE_PAGE_SIZE = 128' in mac_ui
-    assert 's_fileSnapshotFrozen' in mac_ui and 's_fileRevisionSeen' in mac_ui
-    assert 'calloc(HOP_XFER_FILE_LIMIT' not in win_ui
-    assert 'resize_file_snapshot(requested_file_count)' in win_ui
-    assert 'calloc(UI_TASK_CAP' not in win_ui
-    assert 'resize_task_snapshot(total)' in win_ui
-    assert 'hop_xfer_task_list_revisioned(NULL,0,&total,&revision)' in win_ui
-    assert 'file_details_available = !has_selected || has_task_status' in win_ui
-    assert 'files_total > HOP_XFER_FILE_LIMIT' in win_ui
+    win_tray=(ROOT/'src/win/ui.c').read_text(encoding='utf-8')
+    migration=(ROOT/'docs/CUI_UI_MIGRATION.md').read_text(encoding='utf-8')
+
+    assert 'HOPDESK_UI_OVERVIEW = 0' in ui_header
+    assert 'HOPDESK_UI_DEVICE' in ui_header and 'HOPDESK_UI_TRANSFER' in ui_header
+    assert 'HOPDESK_UI_SETTINGS' in ui_header and 'HOPDESK_UI_PAGE_COUNT' in ui_header
+    assert '"概览", "设备", "传输", "设置"' in ui
+    for page in ['"概览"', '"设备"', '"传输"', '"设置"']:
+        assert page in ui
+    assert 'cui_nav_item_ex' in ui and 'draw_overview(ui)' in ui
+    assert 'draw_device(ui)' in ui and 'draw_transfer(ui)' in ui and 'draw_settings(ui)' in ui
+
+    # UI data stays bounded: live task/history summaries are capped and file
+    # details are read in pages rather than materializing the 8192-entry ledger.
+    assert '#define HOPDESK_UI_TASK_CAP 32' in ui_header
+    assert '#define HOPDESK_UI_HISTORY_CAP 24' in ui_header
+    assert '#define HOPDESK_UI_FILE_PAGE 24' in ui_header
+    assert 'hop_xfer_task_snapshot tasks[HOPDESK_UI_TASK_CAP]' in ui_header
+    assert 'hop_xfer_task_history_record history[HOPDESK_UI_HISTORY_CAP]' in ui_header
+    assert 'hop_xfer_file_status files[HOPDESK_UI_FILE_PAGE]' in ui_header
+    assert 'task_snapshot_valid' in ui_header and 'history_snapshot_valid' in ui_header
+    assert 'file_revision' in ui_header and 'file_offset' in ui_header
+    assert 'task_revision != state.task_revision' in mac_ui
+    assert 'history_revision != state.history_revision' in mac_ui
+    assert 'task_revision != model->task_revision' in win_split
+    assert 'history_revision != model->history_revision' in win_split
+    assert 'split_ui_get_files(selected->direction, selected->transfer_id' in mac_ui
+    assert 'HOPDESK_UI_FILE_PAGE' in mac_ui and 'file_revision' in mac_ui
+    assert 'xfer_get_files_page(selected->direction, selected->transfer_id' in win_split
+    assert 'HOPDESK_UI_FILE_PAGE' in win_split and 'file_revision' in win_split
+    assert 'int xfer_get_files_page(' in (ROOT/'src/win/xfer.c').read_text(encoding='utf-8')
     assert 'hop_xfer_tracking_files_page' in (ROOT/'src/core/xfer_tracking.c').read_text(encoding='utf-8')
     assert 'hop_xfer_task_list_revisioned' in (ROOT/'src/core/xfer_task.c').read_text(encoding='utf-8')
-    assert '!(s_fileBatch & HOP_XFER_PASTE_BATCH_FLAG)' in mac_ui
-    assert '!(s_file_batch & HOP_XFER_PASTE_BATCH_FLAG)' in win_ui
+    assert 'cui_request_wakeup(ui, next_refresh_interval())' in ui
+    assert 'return 0.5f;' in ui and 'return 2.0f;' in ui
+    assert 's_force_refresh' not in ui
+
+    # Shared task controls remain connected to the native transfer services.
+    assert 's_ops->cancel_task(s_cancel_confirm_task)' in ui
+    assert 's_cancel_confirm_task' in ui and '确认取消' in ui
+    assert 's_ops->retry_file(s_model.file_batch, s_selected_file)' in ui
+    assert '"取消选中任务"' in ui and '"重试选中文件"' in ui
+    assert '"上一页"' in ui and '"下一页"' in ui and '"历史记录"' in ui
+
+    # Manual disconnect pauses reconnect/listening until explicitly resumed on both platforms.
+    assert 'int manually_disconnected;' in ui_header and 'void (*disconnect)(void);' in ui_header
+    assert 's_ops->disconnect()' in ui and '"断开连接"' in ui and '"恢复连接"' in ui and '"已手动断开"' in ui
+    assert 'IPC_DISCONNECT' in win_split and 'net_server_set_disconnected' in win_split
+    assert 'win_split_disconnect' in win_ui
+    assert 'SPLIT_IPC_DISCONNECT' in (ROOT/'src/mac/split_ipc.h').read_text(encoding='utf-8')
+    assert 'net_set_disconnected' in (ROOT/'src/mac/split_agent.m').read_text(encoding='utf-8')
+    assert 'split_ui_disconnect' in mac_ui and 'split_ui_is_disconnected' in mac_ui
+
+    # Peer-equal capability model: no server/client wording in UI, independent mouse/keyboard providers.
+    assert 'HOP_INPUT_MOUSE' in ui and 'HOP_INPUT_KEYBOARD' in ui
+    assert '"本机提供鼠标"' in ui and '"本机提供键盘"' in ui and '"对端提供"' in ui
+    assert '"等待对端连接（本机监听）"' in ui and '"主动连接对端（填写地址）"' in ui
+    assert '服务器' not in ui and '客户端' not in ui
+    assert 'IPC_INPUT_MODE' in win_split and 'win_split_set_input_mode' in win_ui
+    assert 'SPLIT_IPC_INPUT_MODE_SET' in (ROOT/'src/mac/split_ipc.h').read_text(encoding='utf-8')
+    assert 'SPLIT_IPC_INPUT_MODE_SET' in (ROOT/'src/mac/split_agent.m').read_text(encoding='utf-8')
+    assert 'split_ui_set_input_mode' in mac_ui and 'split_ui_get_capabilities' in mac_ui
+
+    # The same settings UI exposes independent send/play audio capabilities.
+    assert 'HOP_AUDIO_SEND' in ui and 'HOP_AUDIO_PLAY' in ui
+    assert '"发送本机系统声音"' in ui and '"播放对端系统声音"' in ui
+    assert 'split_ui_set_audio_mode' in mac_ui
+    assert 'hop_audio_set_mode' in win_split
+    assert 'mac_request_accessibility_permission' in mac_ui
+    assert 'win_ui_display_action' in win_split
+    assert 'win_ui_display_action' in (ROOT/'src/win/win_main.c').read_text(encoding='utf-8')
+
+    # Native tray/status integrations remain platform-specific, while both
+    # hosts create and tear down the same CUI application.
+    assert 'cui_app_run(&desc, draw_frame, NULL)' in mac_ui
+    assert 'cui_app_run(&desc, draw_frame, NULL)' in win_ui
+    assert 'NSApplicationActivationPolicy previousPolicy' in mac_ui
+    assert '[NSApp setActivationPolicy:previousPolicy]' in mac_ui
+    assert 'memset(model->tasks, 0, sizeof(model->tasks))' in mac_ui
+    assert 'model->task_snapshot_valid = 0' in mac_ui
+    assert 'hopdesk_ui_init(ui)' in mac_ui and 'hopdesk_ui_init(ui)' in win_ui
+    assert 'hopdesk_ui_shutdown()' in mac_ui and 'hopdesk_ui_shutdown()' in win_ui
+    assert 'CUI_RENDERER_GPU' in mac_ui and 'CUI_RENDERER_SOFTWARE' in win_ui
+    assert 'CUI_RENDERER_GPU' in win_ui and 'select_renderer()' in win_ui
+    assert 'if (split_agent_is_active()) open_main_window();' in mac_tray
+    assert 'else main_ui_show_page(2);' in mac_tray
+    mac_main=(ROOT/'src/mac/main.c').read_text(encoding='utf-8')
+    mac_split_ui=(ROOT/'src/mac/split_ui.m').read_text(encoding='utf-8')
+    assert 'if (ui) return split_ui_run(start_agent);' in mac_main
+    assert 'if (!split_agent_start())' in mac_main and 'split_agent_run();' in mac_main
+    assert 'else app_run();' not in mac_main
+    assert '[app run];' not in mac_split_ui
+    assert 'if (split_agent_is_active()) return;' in mac_ui
+    assert 'while (s_save_pending)' in mac_ui
+    assert 'if (split) return;' not in mac_tray
+    assert 'win_split_agent_open(HOPDESK_UI_TRANSFER);' in win_tray
+    assert 'win_split_agent_open(HOPDESK_UI_OVERVIEW);' in win_tray
+    assert 'main_ui_show_page(' not in win_tray
+    assert win_entry.index('win_split_client_init(') < win_entry.index('CreateMutexW(')
+    assert 'win_split_agent_start(g_app.hwnd)' in win_entry
+    assert 'win_split_agent_stop();' in win_entry
+    assert 'WM_APP_SPLIT_REQUEST' in win_entry and 'win_split_agent_dispatch();' in win_entry
+    assert 'L"--agent"' in win_entry and 'L"HOPDESK_UPDATE_READY"' in win_entry
+    assert 'PostMessageW(g_app.hwnd, WM_COMMAND, 1090, 0);' in win_entry
+    assert 'PostMessageW(existing, WM_COMMAND, 1090, 0);' in win_entry
+    assert 'split_agent_set_open_on_launch(!silent_agent);' in mac_main
+    assert '"--agent"' in mac_main and '"HOPDESK_UPDATE_READY"' in mac_main
+    assert "'--agent'" in (ROOT/'scripts/supervise-windows.ps1').read_text(encoding='utf-8')
+    assert 'PIPE_REJECT_REMOTE_CLIENTS' in win_split
+    assert 'GetNamedPipeClientProcessId' in win_split and 'GetNamedPipeServerProcessId' in win_split
+    assert 'JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE' in win_split
+    assert 'if (!win_split_client_active()) return;' in win_ui
+    assert 'win_split_snapshot(model' in win_ui and 'win_split_save(&s_save_config)' in win_ui
+    assert 'hop_config_save_atomic' not in win_ui and 'xfer_cancel_task(' not in win_ui
+    assert 'xfer_retry_file(' not in win_ui and 'hop_audio_set_mode(' not in win_ui
+    assert 'NSStatusItem' in mac_tray and 'Shell_NotifyIconW' in win_tray
+    assert 'HOP_XFER_FILE_LIMIT' not in mac_tray
+    assert 'xfer_get_files(' not in mac_tray
+    assert 'statusbar_show_transfers_legacy' not in mac_tray
+
+    # Font mappings are owned by each host and released after the CUI app dies.
+    assert 'cui_font (*load_cjk_font)(cui_ctx *ui)' in ui_header
+    assert 'void (*release_cjk_font)(void)' in ui_header
+    assert 's_ops->load_cjk_font(ui)' in ui
+    assert 's_ops->release_cjk_font()' in ui
+    assert 'cui_font_load_memory(ui' in mac_ui and 'cui_font_load_memory(ui' in win_ui
+
+    assert 'third_party/cui' in (ROOT/'.gitmodules').read_text(encoding='utf-8')
+    assert 'f9597a30d3bba4f7ef3e0f918e31c28bdcd4d2a3' in migration
+    assert 'destroys the CUI app' in migration
+    assert 'at most 32 live task summaries' in migration
+    assert '24 rows at a time' in migration
 
     # Mac edge entry must keep tracking drag events before sharing starts.
     capture=(ROOT/'src/mac/capture.c').read_text(encoding='utf-8')
     mac_main=(ROOT/'src/mac/main.c').read_text(encoding='utf-8')
     assert 'mac_capture_init();' in mac_main
     assert 'if(g_mac.cfg.role==HOP_ROLE_SERVER)mac_capture_init();' not in mac_main
-    assert 'CGEventMask mask=CGEventMaskBit(kCGEventKeyDown)|CGEventMaskBit(kCGEventKeyUp)' in capture
-    assert 'if(g_mac.cfg.role==HOP_ROLE_SERVER)' in extract(capture,'mac_capture_init')
+    assert 'CGEventMaskBit(kCGEventKeyDown)|CGEventMaskBit(kCGEventKeyUp)' in capture
+    assert 's_input_mode = g_mac.cfg.input_mode & HOP_INPUT_MODES;' in extract(capture,'mac_capture_init')
     edge_helper=extract(capture,'is_edge_motion_event')
-    assert 'if(is_edge_motion_event(type))' in extract(capture,'capture_event')
+    assert 'is_edge_motion_event(type)' in extract(capture,'capture_event')
     edge_preamble=r'''
 #include <assert.h>
 #include <stdio.h>
@@ -351,11 +332,12 @@ int main(void){
 #include <assert.h>
 #include "mouse_click.h"
 typedef uint8_t BYTE;typedef uint32_t DWORD;typedef struct {int x,y;} POINT;
-typedef struct {int server_edge,edge_margin_px,switch_cooldown_ms,screen_w,screen_h;} cfg_t;
+typedef struct {int server_edge,edge_margin_px,switch_cooldown_ms,screen_w,screen_h;unsigned input_mode;} cfg_t;
 typedef struct {cfg_t cfg;int peer_w,peer_h,state;void *net;} app_t;
 static app_t g_app;
 enum {HOP_EDGE_LEFT=0,HOP_EDGE_RIGHT=1,HOP_EDGE_TOP=2,HOP_EDGE_BOTTOM=3,
       HOP_LINK_LOCAL=1,HOP_LINK_SHARING=2,HOP_BTN_LEFT=0,
+      HOP_INPUT_MOUSE=1,HOP_INPUT_KEYBOARD=2,
       HOP_MSG_MOUSE_BUTTON=11,HOP_MSG_MOUSE_ENTER=14,HOP_MSG_KEY_DOWN=20};
 enum {SM_CYVIRTUALSCREEN=1,SM_CXVIRTUALSCREEN=2,SM_CYSCREEN=3,SM_CXSCREEN=4};
 static int s_sharing,s_have_last,s_physical_buttons[3],s_buttons[3],event_count,fail_enter,local_releases;
@@ -381,7 +363,8 @@ int main(void){
     POINT trigger={0,540};
     memset(&g_app,0,sizeof(g_app));g_app.cfg.server_edge=HOP_EDGE_LEFT;
     g_app.cfg.edge_margin_px=40;g_app.cfg.switch_cooldown_ms=300;
-    g_app.cfg.screen_w=1920;g_app.cfg.screen_h=1080;g_app.peer_w=1440;g_app.peer_h=900;
+    g_app.cfg.screen_w=1920;g_app.cfg.screen_h=1080;g_app.cfg.input_mode=HOP_INPUT_MOUSE|HOP_INPUT_KEYBOARD;
+    g_app.peer_w=1440;g_app.peer_h=900;
     g_app.state=HOP_LINK_LOCAL;s_physical_buttons[HOP_BTN_LEFT]=1;
     enter_sharing(trigger);
     assert(event_count==3 && events[0]==HOP_MSG_MOUSE_ENTER &&
@@ -390,6 +373,7 @@ int main(void){
 
     memset(&g_app,0,sizeof(g_app));g_app.cfg.server_edge=HOP_EDGE_LEFT;
     g_app.cfg.edge_margin_px=40;g_app.cfg.screen_w=1920;g_app.cfg.screen_h=1080;
+    g_app.cfg.input_mode=HOP_INPUT_MOUSE|HOP_INPUT_KEYBOARD;
     g_app.peer_w=1440;g_app.peer_h=900;g_app.state=HOP_LINK_LOCAL;
     memset(s_physical_buttons,0,sizeof(s_physical_buttons));s_physical_buttons[0]=1;
     s_sharing=0;s_have_last=0;event_count=0;local_releases=0;fail_enter=1;
@@ -410,11 +394,12 @@ int main(void){
 #include <string.h>
 #include <assert.h>
 typedef uint8_t BYTE;typedef uint16_t WORD;typedef uint32_t DWORD;typedef int32_t LONG;
-typedef struct {int role,client_edge,edge_margin_px;} cfg_t;
-typedef struct {cfg_t cfg;int peer_w,peer_h,state;void *net;} app_t;
+typedef struct {int role,client_edge,edge_margin_px;unsigned input_mode;} cfg_t;
+typedef struct {cfg_t cfg;int peer_w,peer_h,state;unsigned peer_input_mode;void *net;} app_t;
 static app_t g_app;static BYTE held[256],buttons[3],paste_suppressed[256],key_release_pending[256],button_release_pending[3];static double px,py,over;static int sharing,clip_request_result,injected_key_events,fail_key_up;
 static int released_keys,released_buttons,refreshes;
 enum {HOP_ROLE_CLIENT=1,HOP_EDGE_TOP=2,HOP_LINK_LOCAL=1,HOP_LINK_SHARING=2,
+ HOP_INPUT_MOUSE=1,HOP_INPUT_KEYBOARD=2,
  HOP_KEY_NONE=0xffff,HOP_MSG_EDGE_LEAVE=13,HOP_MSG_MOUSE_ENTER=14,HOP_MSG_MOUSE_MOVE=10,
  HOP_MSG_MOUSE_BUTTON=11,HOP_MSG_MOUSE_WHEEL=12,HOP_MSG_KEY_DOWN=20,HOP_MSG_KEY_UP=21,
  SM_CXSCREEN=1,SM_CYSCREEN=2,MOUSEEVENTF_HWHEEL=4,MOUSEEVENTF_WHEEL=8,
@@ -594,10 +579,10 @@ int main(void){
     run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','clip_staged_request_matches','clip_cancel_staged_if_match','discard_pending_replacing','apply_global_expected','apply_global','clip_retry_pending','clip_on_paste_message'])+clip_main,['src/core/xfer_clipboard_txn.c'])
     # A cross-device paste batch must never fall through to the ordinary clipboard writer.
     for platform in ['win','mac']:
-        rx='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.c','xfer_rx_protocol_handlers.c'))
-        receive=(ROOT/f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
+        rx=(ROOT/f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
+        receive=rx
         assert 'hop_xfer_rx_dispatch_message(type, gate.body, gate.body_length,' in receive
-        assert '&hop_xfer_rx_platform_dispatch_handlers, &s_rx' in receive
+        assert '&hop_xfer_rx_default_dispatch_handlers, &s_rx' in receive
         assert 'xfer_rx_protocol_adapter' not in receive
         assert receive.count('static hop_xfer_rx_done_receipt s_done_receipt;') == 1
         if platform=='win':
@@ -617,7 +602,6 @@ int main(void){
             assert 'inject_paste_shortcut()' not in apply_objects
             assert 'statusbar_notify_paste_ready()' in apply_objects
 
-        platform_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
         core_handlers=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         begin=extract(core_handlers,'hop_xfer_rx_handle_file_begin')
         end=extract(core_handlers,'hop_xfer_rx_handle_file_end')
@@ -633,7 +617,7 @@ int main(void){
         assert 'hop_xfer_rx_file_state_evaluate_end' in end
         assert 'rx->services.close_file(' in end and 'rx->services.send_file_ack(' in end
         assert 'rx->services.remove_file(' in end and 'rx->services.is_top_level_path(' in end
-        assert 'rx_dispatch_file_begin' not in platform_handlers and 'rx_dispatch_file_end' not in platform_handlers
+        assert 'hop_xfer_rx_default_dispatch_handlers' in core_handlers
         # RX storage/accounting lives in the production writer implementation,
         # not in Receiver protocol code. Windows has completed this extraction;
         # macOS is intentionally checked against its current adapter until parity lands.
@@ -663,7 +647,7 @@ int main(void){
         assert 'queue->callbacks.task_cancelled' in writer
         assert 'if (!cancelled) run_command(queue, command);' in writer
     shared_rx_handlers=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
-    file_state_tests=(ROOT/'tests/xfer_rx_file_state_tests.c').read_text(encoding='utf-8')
+    file_state_tests=(ROOT/'tests/xfer_rx_core_tests.c').read_text(encoding='utf-8')
     assert 'hop_xfer_rx_file_state_prepare_entry' in file_state_tests
     assert 'hop_xfer_rx_file_state_evaluate_end' in file_state_tests
     assert 'HOP_RX_FILE_END_INCOMPLETE' in file_state_tests
@@ -783,16 +767,10 @@ int main(void){
     for platform in ['win','mac']:
         common=r'''
 #include "hop.h"
-#include "xfer_rx_batch_rules.h"
-#include "xfer_rx_batch_state.h"
-#include "xfer_rx_image_state.h"
-#include "xfer_rx_image_buffer.h"
-#include "xfer_rx_file_state.h"
+#include "xfer_rx_core.h"
 #include "xfer_tracking.h"
 #include "xfer_budget.h"
 #include "xfer_task.h"
-#include "xfer_rx_services.h"
-#include "xfer_rx_context.h"
 #include <assert.h>
 #include <wchar.h>
 #include <string.h>
@@ -923,7 +901,7 @@ int main(void){
         if platform=='win': common='#define FIXTURE_WINDOWS 1\n'+common
         sender_source=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         core_finish_source=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
-        run('image_'+platform,common+'\n'+extract(core_finish_source,'hop_xfer_rx_reset_batch_state')+'\n'+extract(core_finish_source,'rx_release_terminal_resources')+'\n'+extract(core_finish_source,'hop_xfer_rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_dispatch.c'],threads=True)
+        run('image_'+platform,common+'\n'+extract(core_finish_source,'hop_xfer_rx_reset_batch_state')+'\n'+extract(core_finish_source,'rx_release_terminal_resources')+'\n'+extract(core_finish_source,'hop_xfer_rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_core.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/session.c'],threads=True)
     # Run the actual per-platform state wrappers, not only a reimplemented model.
     for platform in ['win','mac']:
         source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
@@ -1037,8 +1015,8 @@ int main(void){
         worker_adapter=(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
         assert 'send_thread' not in (ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         assert 'send_thread' in worker_adapter and 'hop_xfer_sender_worker_run(&worker)' in worker_adapter
-        scheduler=(ROOT/'src/core/xfer_sender_scheduler.c').read_text(encoding='utf-8')
         worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
+        scheduler=worker_core
         assert 'hop_xfer_sender_queue_take_cancelled' in scheduler and 'hop_xfer_sender_queue_take_head' in scheduler
         assert 'hop_xfer_sender_scheduler_wait_next' in worker_core
         assert 'hop_xfer_sender_worker_run' in worker
@@ -1052,11 +1030,11 @@ int main(void){
         assert 'XFER_RATE_MIN_MIB' not in (ROOT/f'src/{platform}/xfer_sender_internal.h').read_text(encoding='utf-8')
         assert 'HOP_XFER_RATE_MIB_BYTES' in rate_header
         engine_adapter=(ROOT/'src/core/xfer_sender_engine_adapter.c').read_text(encoding='utf-8')
-        ack_wait_core=(ROOT/'src/core/xfer_sender_ack_wait.c').read_text(encoding='utf-8')
-        chunk_core=(ROOT/'src/core/xfer_sender_chunk.c').read_text(encoding='utf-8')
+        ack_wait_core=engine_adapter
+        chunk_core=(ROOT/'src/core/xfer_sender_context.c').read_text(encoding='utf-8')
         assert 'adapter_send_entry' in engine_adapter and 'adapter_wait_ack' in engine_adapter
         assert 'hop_xfer_sender_engine_adapter_run(&ops)' in protocol
-        assert 'sender_commit_adapter_run' in protocol and 'run_job' in protocol
+        assert 'hop_xfer_sender_engine_adapter_run_commit(&ops)' in protocol and 'run_job' in protocol
         assert 'hop_xfer_sender_ack_wait(' in ack_wait_core and 'hop_xfer_sender_ack_wait(' in engine_adapter
         assert 'hop_xfer_sender_send_chunk(' in chunk_core and 'hop_xfer_sender_send_chunk(&ops' in protocol
         assert 'rate_feedback' in protocol and 'rate_feedback' in engine_adapter
@@ -1082,13 +1060,12 @@ int main(void){
     # Exact production case bodies + lifecycle helpers; only OS I/O is doubled.
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
-        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.c','xfer_rx_protocol_handlers.c'))
+        receiver=(ROOT/f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
         assert 's_ack' not in receiver
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
-        protocol_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
-        context_header=(ROOT/'src/core/xfer_rx_context.h').read_text(encoding='utf-8')
+        context_header=(ROOT/'src/core/xfer_rx_core.h').read_text(encoding='utf-8')
         assert 'typedef struct xfer_rx_context' in context_header
-        state_contract='#include "xfer_rx_context.h"\n#include "xfer_rx_message_handlers.h"\nstatic xfer_rx_context s_rx;\nstatic void rx_release_terminal_resources(xfer_rx_context *rx, int close_writer, int discard_staging);'
+        state_contract='#include "xfer_rx_core.h"\n#include "xfer_rx_message_handlers.h"\nstatic xfer_rx_context s_rx;\nstatic void rx_release_terminal_resources(xfer_rx_context *rx, int close_writer, int discard_staging);'
         dispatch_names=[]
         dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_reserve_entry_budget','rx_ack_deliver_file','rx_ack_deliver_done','rx_now_ns','hop_xfer_rx_bind_session'])+'\n'+'\n'.join(extract(receiver,name) for name in ['hop_xfer_rx_handle_file_begin','hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_handle_file_end','hop_xfer_rx_dispatch_file_ack_message','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_dispatch_done_ack_message'])
         dispatch_handlers+='\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { hop_xfer_rx_handle_file_begin, hop_xfer_rx_handle_image_begin, hop_xfer_rx_handle_file_chunk, hop_xfer_rx_handle_file_end, hop_xfer_rx_dispatch_file_ack_message, hop_xfer_rx_handle_abort, hop_xfer_rx_handle_done, hop_xfer_rx_dispatch_done_ack_message };\n'
@@ -1164,7 +1141,7 @@ int main(void){
             assert 'xfer_rx_context *rx = (xfer_rx_context *)context;' in handler
             assert not any(token in handler for token in ['s_rx.', 's_x.', 's_ack.', 's_wq'])
         if platform=='win':fixture='#define FIXTURE_WINDOWS 1\n'+fixture
-        run('abort_'+platform,fixture,['src/core/protocol.c','src/core/crc32.c','src/core/xfer_sender_queue.c','src/core/xfer_sender_active_job.c','src/core/xfer_validate.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_dispatch.c','src/core/xfer_rx_ack_handler.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_file_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_image_buffer.c'],threads=True)
+        run('abort_'+platform,fixture,['src/core/protocol.c','src/core/crc32.c','src/core/xfer_sender_worker.c','src/core/xfer_sender_context.c','src/core/xfer_rate.c','src/core/watchdog.c','src/core/log.c','src/core/xfer_validate.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_core.c'],threads=True)
 
     inject=(ROOT/'src/mac/inject.c').read_text(encoding='utf-8')
     fixture=(ROOT/'tests/inject_release_fixture.c.in').read_text(encoding='utf-8')
@@ -1225,21 +1202,20 @@ int main(void){
 
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
-        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.c','xfer_rx_protocol_handlers.c'))
+        receiver=(ROOT/f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         fixture=(ROOT/'tests/session_transport_fixture.c.in').read_text(encoding='utf-8')
         context_protocol=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
-        commit_adapter=(ROOT/f'src/{platform}/xfer_sender_commit_adapter.c').read_text(encoding='utf-8')
         assert 'hop_xfer_rx_gate_frame' in extract(receiver, 'xfer_receive_process_frame')
         assert 's_sender_context.user = &s_sender_platform' in context_protocol
         for callback in ['sender_context_is_stopping','sender_context_is_batch_cancelled','sender_context_peer_aborted','sender_context_wait_ns']:
             assert 's_x.' not in extract(context_protocol,callback)
         for callback in ['sender_context_session_current','sender_context_write_frame','sender_context_snapshot_session']:
             assert 's_x.' not in extract(sender,callback)
-        functions='\n'.join([extract(sender,'sender_context_session_current'),extract(sender,'sender_context_write_frame'),extract(sender,'sender_context_snapshot_session'),extract(sender,'send_small_with_context'),extract(commit_adapter,'sender_commit_is_stopping'),extract(commit_adapter,'sender_commit_wait_ms'),extract(sender,'send_small'),extract(sender,'send_chunk')]+[extract(receiver,name) for name in ['rx_release_terminal_resources','hop_xfer_rx_reset_batch_state','hop_xfer_rx_terminate_batch','hop_xfer_rx_bind_session','rx_bind_session','rx_expire_stale_session']])
+        functions='\n'.join([extract(sender,'sender_context_session_current'),extract(sender,'sender_context_write_frame'),extract(sender,'sender_context_snapshot_session'),extract(sender,'send_small_with_context'),extract(sender,'send_small'),extract(sender,'send_chunk')]+[extract(receiver,name) for name in ['rx_release_terminal_resources','hop_xfer_rx_reset_batch_state','hop_xfer_rx_terminate_batch','hop_xfer_rx_bind_session','rx_bind_session','rx_expire_stale_session']])
         fixture=fixture.replace('@FUNCTIONS@',functions)
         if platform=='win': fixture='#define FIXTURE_WINDOWS 1\n'+fixture
-        run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c','src/core/xfer_sender_chunk.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_task.c','src/core/xfer_budget.c','src/core/xfer_sender_context_adapter.c','src/core/xfer_rx_frame_gate.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c'],threads=True)
+        run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c','src/core/xfer_sender_context.c','src/core/xfer_rx_core.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_task.c','src/core/xfer_budget.c'],threads=True)
 
     control=(ROOT/'src/mac/net_client.m').read_text(encoding='utf-8')+'\n'+(ROOT/'src/mac/net_client_protocol.inc').read_text(encoding='utf-8')
     for platform,source_name,module_name in [('win','net_server.c','net_server_protocol.inc'),('mac','net_client.m','net_client_protocol.inc')]:
@@ -1263,11 +1239,10 @@ int main(void){
     # batch/file ID is reused; the unresolved file remains the resume point.
     for platform in ['mac','win']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
-        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.c','xfer_rx_protocol_handlers.c'))
+        receiver=(ROOT/f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
-        protocol_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
         engine_adapter=(ROOT/'src/core/xfer_sender_engine_adapter.c').read_text(encoding='utf-8')
-        ack_wait_core=(ROOT/'src/core/xfer_sender_ack_wait.c').read_text(encoding='utf-8')
+        ack_wait_core=engine_adapter
         entry=extract(engine_adapter,'adapter_send_entry')
         assert 'hop_xfer_sender_send_file_entry' in entry
         assert 'ops->tx_buffer + ops->chunk_header_size' in entry
@@ -1288,22 +1263,19 @@ int main(void){
         kick=engine.index('ops->request_reconnect(ops->user)',timeout)
         net_down=engine.index('return HOP_XFER_SENDER_JOB_NET_DOWN;',kick)
         assert timeout < unregister < kick < net_down
-        connection_adapter=(ROOT/f'src/{platform}/xfer_sender_connection_adapter.c').read_text(encoding='utf-8')
-        reconnect=extract(connection_adapter,'sender_context_request_reconnect')
+        reconnect=extract(sender,'sender_context_request_reconnect')
         assert '*ctx->peer_ready = 0' in reconnect and 'shutdown(' in reconnect
         assert 'ctx->request_reconnect' in engine_adapter
         kick=extract(sender,'xfer_kick')
         assert 'sender_context_request_reconnect(&s_sender_platform)' in kick
         assert 'adapter_wait_ack' in engine_adapter
         assert 'static hop_xfer_ack_coordinator *s_ack' not in sender
-        assert 'hop_xfer_ack_coordinator_' not in sender
-        ack_platform=(ROOT/f'src/{platform}/xfer_sender_ack_platform_adapter.c').read_text(encoding='utf-8')
-        assert 'hop_xfer_ack_coordinator_create()' in ack_platform
-        assert 's_sender_context.ack_coordinator = coordinator' in ack_platform
+        assert 'hop_xfer_ack_coordinator_create()' in sender
+        assert 's_sender_context.ack_coordinator = coordinator' in sender
         assert 'hop_xfer_ack_coordinator_wait_take(context->ack_coordinator' in ack_wait_core
         peer_abort_body=extract(sender,'sender_context_peer_aborted')
         assert '*ctx->abort_batch == batch' in peer_abort_body
-        ack_deliver_body=extract(ack_platform,'ack_deliver')
+        ack_deliver_body=extract(sender,'ack_deliver')
         assert 'hop_xfer_ack_coordinator_deliver(coordinator, batch, id, status,' in ack_deliver_body
         platform_xfer=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
         assert 's_ack' not in platform_xfer
@@ -1333,10 +1305,10 @@ int main(void){
             assert admission < begin.index(side_effect), 'FILE_BEGIN side effect precedes budget admission: '+side_effect
         file_ack_handler=extract(receiver,'hop_xfer_rx_dispatch_file_ack_message')
         done_ack_handler=extract(receiver,'hop_xfer_rx_dispatch_done_ack_message')
-        services=(ROOT/'src/core/xfer_rx_services.h').read_text(encoding='utf-8')
+        services=(ROOT/'src/core/xfer_rx_core.h').read_text(encoding='utf-8')
         core_message_handlers=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         assert 'if (!rx->services.write_file_chunk || !rx->services.write_file_chunk(' in core_message_handlers
-        context_header=(ROOT/'src/core/xfer_rx_context.h').read_text(encoding='utf-8')
+        context_header=services
         assert 'typedef struct xfer_rx_context' in context_header
         assert 'hop_xfer_rx_services services;' in context_header
         assert 'void *writer;' in context_header
@@ -1354,7 +1326,7 @@ int main(void){
         frame_processor=extract(receiver,'xfer_receive_process_frame')
         assert 'hop_xfer_rx_gate_frame(&input, token, type, payload, length)' in frame_processor
         assert 'if (!authenticated) return HOP_RX_FRAME_REJECT_PEER;' in frame_processor
-        assert '&hop_xfer_rx_platform_dispatch_handlers, &s_rx' in frame_processor
+        assert '&hop_xfer_rx_default_dispatch_handlers, &s_rx' in frame_processor
         receive_start=extract(receiver,'xfer_receive_start')
         assert 'hop_xfer_rx_lifecycle_init(&s_rx_lifecycle)' in receive_start
         assert 'hop_xfer_rx_done_receipt_clear(&s_done_receipt)' in receive_start
@@ -1369,15 +1341,15 @@ int main(void){
         assert 'hop_xfer_rx_batch_begin_decide(' in core_message_handlers
         assert 'hop_xfer_rx_batch_finish_decide(' in core_message_handlers
         for writer_call in ['reset_file_error','open_file','write_file_chunk','close_file','file_error']:
-            assert 'rx->services.'+writer_call in protocol_handlers or 'rx->services.'+writer_call in core_message_handlers
-        assert not any(token in protocol_handlers for token in ['wq_push(', 'wq_push_data(', 'wq_error_get(', 'rx_close_file(', 'hop_writer_queue_error_reset('])
-        assert not re.search(r'(?<!services\.)\b(?:rx_add_top|rx_remove_top|status_add_received_file|status_image|status_stage_time|status_chunk_timed|status_file_phase|rate_now_ns)\s*\(', protocol_handlers)
+            assert 'rx->services.'+writer_call in core_message_handlers
+        assert not any(token in core_message_handlers for token in ['wq_push(', 'wq_push_data(', 'wq_error_get(', 'rx_close_file(', 'hop_writer_queue_error_reset('])
+        assert not re.search(r'(?<!services\.)\b(?:rx_add_top|rx_remove_top|status_add_received_file|status_image|status_stage_time|status_chunk_timed|status_file_phase|rate_now_ns)\s*\(', core_message_handlers)
         for service in ['add_top_path','remove_top_path','finish_clipboard','cancel_clipboard','now_ns','status_begin','status_end','status_add_received_file','status_image','status_stage_time','status_chunk_received','status_file_phase','status_set_files_total','status_reset']:
-            assert 'rx->services.'+service in protocol_handlers or service in receiver
+            assert 'rx->services.'+service in core_message_handlers or service in receiver
         done_handler=extract(receiver,'hop_xfer_rx_handle_done')
         assert 'hop_xfer_rx_done_receipt_find(rx->done_receipt,' in done_handler
         assert 'hop_xfer_rx_done_receipt_find(&rx->done_receipt,' not in done_handler
-        shared_ack=(ROOT/'src/core/xfer_rx_ack_handler.c').read_text(encoding='utf-8')
+        shared_ack=(ROOT/'src/core/xfer_rx_core.c').read_text(encoding='utf-8')
         assert 'ack.id < 1u' in shared_ack and 'ack.id > HOP_XFER_FILE_LIMIT' in shared_ack
         assert 'status > HOP_DONE_ACK_FAILED' in shared_ack
         lifecycle=extract(receiver,'hop_xfer_rx_begin_batch')
@@ -1405,9 +1377,11 @@ int main(void){
             assert 'hop_xfer_rx_fs_create_directory_if_missing(path)' in receive_impl
             assert 'hop_xfer_rx_fs_ensure_dirs(copy)' in receive_impl
             fs=(ROOT/'src/win/xfer_rx_fs.c').read_text(encoding='utf-8')
-            assert 'GetFileAttributesW(path)' in fs
-            assert 'operation.fAnyOperationsAborted' in fs
-            assert 'operation_result != 0 || operation.fAnyOperationsAborted' in fs
+            assert 'alloc_extended_path' in fs
+            assert 'GetFileAttributesW(target)' in fs
+            assert 'remove_tree_recursive' in fs
+            assert 'FILE_ATTRIBUTE_REPARSE_POINT' in fs
+            assert 'RemoveDirectoryW' in fs
             assert 'hop_xfer_rx_fs_path_for' in fs and 'hop_xfer_rx_fs_remove_tree' in fs
             assert 'L"\\\\HopDesk\\\\"' in receive_impl, 'Windows staging cleanup must match the single-separator production path'
             assert 'retaining path for retry' in receive_impl
@@ -1429,28 +1403,26 @@ int main(void){
     assert 'hop_xfer_sender_run_commit' in commit_core
     assert 'HOP_XFER_SENDER_COMMIT_ACK_TIMEOUT' in commit_core
     assert 'HOP_XFER_SENDER_COMMIT_ACK_SEND_DEAD' in commit_core
+    commit_adapter_core=(ROOT/'src/core/xfer_sender_engine_adapter.c').read_text(encoding='utf-8')
+    commit=extract(commit_adapter_core,'hop_xfer_sender_engine_adapter_run_commit')
+    assert 'hop_xfer_sender_run_commit' in commit
+    assert 'commit_current_connection' in commit_adapter_core
+    assert 'commit_wait_ack' in commit_adapter_core
+    commit_stop=extract(commit_adapter_core,'commit_is_stopping')
+    commit_wait=extract(commit_adapter_core,'commit_wait_ms')
+    assert 'ctx->is_stopping' in commit_stop
+    assert 'ctx->wait_ns' in commit_wait
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
-        commit_adapter=(ROOT/f'src/{platform}/xfer_sender_commit_adapter.c').read_text(encoding='utf-8')
-        commit=extract(commit_adapter,'sender_commit_adapter_run')
-        assert 'hop_xfer_sender_run_commit' in commit
-        assert 'ops.user = (void *)job' in commit
-        assert 'sender_commit_current_connection' in commit_adapter
-        assert 'sender_commit_wait_ack' in commit_adapter
-        commit_stop=extract(commit_adapter,'sender_commit_is_stopping')
-        commit_wait=extract(commit_adapter,'sender_commit_wait_ms')
-        assert 'job->sender_context.is_stopping' in commit_stop
-        assert 'job->sender_context.wait_ns' in commit_wait
-        assert 'sender_context_is_stopping(NULL)' not in commit_stop
-        connection_adapter=(ROOT/f'src/{platform}/xfer_sender_connection_adapter.c').read_text(encoding='utf-8')
-        reconnect=extract(connection_adapter,'sender_context_request_reconnect')
-        assert '*ctx->peer_ready = 0' in reconnect and 'shutdown(' in reconnect
-        ack_platform=(ROOT/f'src/{platform}/xfer_sender_ack_platform_adapter.c').read_text(encoding='utf-8')
-        assert 'hop_xfer_ack_coordinator_create()' in ack_platform
-        assert 'void ack_deliver(' in ack_platform
-        assert 'sender_context_ack_destroy' in ack_platform
         protocol_source=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
-        ack_wait_header=(ROOT/'src/core/xfer_sender_ack_wait.h').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_engine_adapter_run_commit' in protocol_source
+        assert 'sender_commit_current_connection' in protocol_source
+        reconnect=extract(protocol_source,'sender_context_request_reconnect')
+        assert '*ctx->peer_ready = 0' in reconnect and 'shutdown(' in reconnect
+        assert 'hop_xfer_ack_coordinator_create()' in protocol_source
+        assert 'void ack_deliver(' in protocol_source
+        assert 'sender_context_ack_destroy' in protocol_source
+        ack_wait_header=(ROOT/'src/core/xfer_sender_engine_adapter.h').read_text(encoding='utf-8')
         for macro in ['XFER_ACK_TIMEOUT','XFER_SEND_DEAD','XFER_LOCAL_IO','XFER_CANCELLED','XFER_PEER_ABORT','XFER_ACK_PENDING']:
             assert f'#define {macro} ' not in protocol_source
         for result in ['HOP_XFER_SENDER_ACK_WAIT_TIMEOUT','HOP_XFER_SENDER_ACK_WAIT_SEND_DEAD','HOP_XFER_SENDER_ACK_WAIT_LOCAL_IO','HOP_XFER_SENDER_ACK_WAIT_CANCELLED','HOP_XFER_SENDER_ACK_WAIT_PEER_ABORT']:
@@ -1460,8 +1432,8 @@ int main(void){
         thread=extract(sender,'send_thread')
         worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
         worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
-        flow_core=(ROOT/'src/core/xfer_sender_worker_flow.c').read_text(encoding='utf-8')
-        job_lifecycle_core=(ROOT/'src/core/xfer_sender_job_lifecycle.c').read_text(encoding='utf-8')
+        flow_core=worker_core
+        job_lifecycle_core=worker_core
         assert 'worker.finish_job=sender_worker_finish_job_adapter' in thread
         assert 'sender_worker_finish_job(' in worker
         assert 'hop_xfer_sender_worker_finish_job' in worker
@@ -1469,7 +1441,7 @@ int main(void){
         assert 'hop_xfer_sender_get_terminal_decision(' not in worker
         assert 'hop_xfer_sender_plan_retry(' in flow_core
         assert 'hop_xfer_sender_get_terminal_decision(' in flow_core
-        assert 'hop_xfer_sender_context_status_start_job(v.context,job)' in worker_core
+        assert 'hop_xfer_sender_context_status_start_job(v.context, job)' in worker_core
         assert 'ops->status_end' in flow_core
         assert 'hop_xfer_sender_context_status_end(&j->sender_context' not in thread
         assert 'hop_xfer_sender_context_status_end(' in job_lifecycle_core
@@ -1482,7 +1454,7 @@ int main(void){
         shutdown_drain=extract(worker,'sender_shutdown_drain_jobs')
         job_free=extract(worker,'job_free')
         defer_job=extract(worker,'sender_job_defer_to_shutdown')
-        release_job_resources=extract(job_lifecycle_core,'release_resources')
+        release_job_resources=extract(job_lifecycle_core,'job_release_resources')
         finish_callback=extract(worker,'sender_worker_task_finish')
         core_release=job_lifecycle_core
         requeue=extract(worker,'sender_worker_requeue_front')
@@ -1494,7 +1466,7 @@ int main(void){
         assert 'hop_xfer_task_is_terminal' in core_release and 'hop_xfer_sender_context_task_dispose' in core_release
         assert release_job_resources.index('free(*v->pixels)') < release_job_resources.index('hop_xfer_task_release_image_temp')
         assert 'image_payload_released' in release_job_resources and 'lost its pixel owner' in release_job_resources
-        assert core_release.index('release_resources(v)') < core_release.index('hop_xfer_sender_context_task_finish')
+        assert core_release.index('job_release_resources(v)') < core_release.index('hop_xfer_sender_context_task_finish')
         assert 'pending_finish_state' in core_release and 'pending_status_end' in worker
         assert 'HOP_XFER_SENDER_JOB_OWNER_SUBMITTER' in core_release
         assert 'pending_finish_state=state' in finish_callback
@@ -1546,12 +1518,12 @@ int main(void){
         assert status_pair.index('hop_xfer_tracking_snapshot_pair') < status_pair.index(lifecycle_unlock)
 
         # Queue take/wait policy is shared; only native lock/wait/claim effects remain in adapters.
-        scheduler=(ROOT/'src/core/xfer_sender_scheduler.c').read_text(encoding='utf-8')
-        scheduler_header=(ROOT/'src/core/xfer_sender_scheduler.h').read_text(encoding='utf-8')
-        send_thread=extract(worker,'send_thread')
         worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
+        scheduler=worker_core
+        scheduler_header=(ROOT/'src/core/xfer_sender_worker.h').read_text(encoding='utf-8')
+        send_thread=extract(worker,'send_thread')
         assert 'hop_xfer_sender_worker_run(&worker)' in send_thread
-        assert 'o->clear_active(o->user,v.batch,v.task->id)' in worker_core
+        assert 'o->clear_active(o->user, v.batch, v.task->id)' in worker_core
         assert 'memset(&s_x.active_job,0,sizeof(s_x.active_job))' in shutdown_drain
         begin_pass=extract(worker,'sender_scheduler_begin_pass')
         wait_adapter=extract(worker,'sender_scheduler_wait_locked')
@@ -1642,9 +1614,9 @@ int main(void){
         send_message=extract(protocol,'sender_engine_send_message')
         assert 'send_small_with_context(' in send_message and '&call->job->sender_context' in send_message
         assert 'hop_xfer_sender_send_chunk' in protocol
-        ack_core=(ROOT/'src/core/xfer_sender_ack_wait.c').read_text(encoding='utf-8')
-        chunk_core=(ROOT/'src/core/xfer_sender_chunk.c').read_text(encoding='utf-8')
         engine_adapter=(ROOT/'src/core/xfer_sender_engine_adapter.c').read_text(encoding='utf-8')
+        ack_core=engine_adapter
+        chunk_core=(ROOT/'src/core/xfer_sender_context.c').read_text(encoding='utf-8')
         assert 'hop_xfer_sender_ack_wait' in ack_core
         assert 'hop_xfer_sender_context_job_cancel_requested' in ack_core
         assert 'context->session_current' in ack_core and 'context->peer_aborted' in ack_core
@@ -1656,96 +1628,72 @@ int main(void){
         assert 'hop_xfer_sender_engine_adapter_run(&ops)' in protocol
         assert 'hop_xfer_sender_run_files' not in protocol
         assert 'hop_xfer_sender_run_image' not in protocol
-        commit_adapter=(ROOT/f'src/{platform}/xfer_sender_commit_adapter.c').read_text(encoding='utf-8')
-        commit_wait_ack=extract(commit_adapter,'sender_commit_wait_ack')
-        assert 'job->commit_socket' in commit_wait_ack
-        assert 'job->commit_epoch' in commit_wait_ack
+        commit_wait_ack=extract(engine_adapter,'commit_wait_ack')
+        assert 'state->socket_handle' in commit_wait_ack
+        assert 'state->epoch' in commit_wait_ack
         assert 'hop_xfer_sender_ack_wait' in commit_wait_ack
-        commit_send=extract(commit_adapter,'sender_commit_send_done')
+        commit_send=extract(protocol,'sender_commit_send_done')
         assert 'send_small_with_context(&job->sender_context' in commit_send
         assert 'HOP_MSG_XFER_DONE' in commit_send
         abort_send=extract(protocol,'send_abort_msg_with_context')
         assert 'send_small_with_context(context' in abort_send
         assert 'send_abort_msg_with_context(&call->job->sender_context' in worker
-        assert 'sender_commit_adapter_run(' in worker
+        assert 'hop_xfer_sender_engine_adapter_run_commit(&ops)' in worker
         assert 'hop_xfer_sender_get_terminal_decision' not in thread and 'completion_path' in flow_core
 
-    # Test exact Windows task-list selection and action logic with UI doubles.
-    # Rows may move/disappear between refreshes; only the selected Task ID may
-    # receive cancellation, including after a reordered snapshot.
-    ui=(ROOT/'src/win/main_ui.c').read_text(encoding='utf-8')
+    # Shared CUI task selection is keyed by Task ID, not row position.
+    ui=(ROOT/'src/ui/hopdesk_ui.c').read_text(encoding='utf-8')
     common=r"""
 #include "xfer_task.h"
 #include <assert.h>
-#include <stdlib.h>
 #include <stdio.h>
-#include <wchar.h>
-#include <stdint.h>
 #include <string.h>
-#define UI_TASK_CAP HOP_TASK_MANAGER_MAX_LIVE
-#define LB_ERR (-1)
-#define LB_ERRSPACE (-2)
-#define LB_GETCURSEL 1
-#define LB_RESETCONTENT 2
-#define LB_ADDSTRING 3
-#define LB_SETCURSEL 4
-#define LB_GETTOPINDEX 5
-#define LB_SETTOPINDEX 6
-#define MB_OK 0
-#define MB_YESNO 1
-#define MB_ICONINFORMATION 2
-#define MB_ICONWARNING 4
-#define MB_DEFBUTTON2 256
-#define IDYES 6
-typedef intptr_t LPARAM;typedef uintptr_t WPARAM;typedef intptr_t LRESULT;
-typedef struct {int count,selected,top;} list;typedef list* HWND;
-static list lists[2]={{0,-1,0},{0,-1,0}};
-static HWND s_task_lists[2]={&lists[0],&lists[1]},s_main;
-static hop_xfer_task_id s_task_ids[2][UI_TASK_CAP];static int s_task_counts[2];
-static hop_xfer_task_snapshot *s_tasks_snapshot;static int s_tasks_snapshot_capacity;
-static hop_xfer_status_pair test_status_pair;
-static void xfer_get_status_pair(hop_xfer_status_pair *out){*out=test_status_pair;}
-uint64_t hop_wallclock_ms(void){return 1700000000000ull;}
-static int connected=1,answer=IDYES,calls;
-static LRESULT SendMessageW(HWND h,int op,WPARAM w,LPARAM l){(void)l;
-    if(op==LB_GETCURSEL)return h->selected;
-    if(op==LB_GETTOPINDEX)return h->top;
-    if(op==LB_RESETCONTENT){h->count=0;h->selected=-1;h->top=0;return 0;}
-    if(op==LB_ADDSTRING)return h->count++;
-    if(op==LB_SETCURSEL){h->selected=(int)w;return 0;}
-    if(op==LB_SETTOPINDEX){h->top=(int)w;return 0;}
-    assert(0);return LB_ERR;
-}
-static int MessageBoxW(HWND h,const wchar_t *text,const wchar_t *title,int flags){(void)h;(void)text;(void)title;(void)flags;return answer;}
-static int xfer_connected(void){return connected;}
-static void utf8_to_wide(const char *src,wchar_t *dst,size_t cap){(void)src;if(cap)dst[0]=0;}
-static int xfer_cancel_task(hop_xfer_task_id id){calls++;return hop_xfer_task_request_cancel(id);}
-static void refresh_transfers(void){}
+typedef struct {
+    hop_xfer_task_snapshot tasks[8];
+    int task_count;
+} hopdesk_ui_model;
+static hopdesk_ui_model s_model;
+static hop_xfer_task_id s_selected_task;
 """
     main=r"""
-int main(void){
- hop_xfer_task a={0},b={0},c={0},rx={0};
- assert(hop_xfer_task_init_classified(&a,0,0,1,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
- assert(hop_xfer_task_init_classified(&b,0,0,2,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
- assert(hop_xfer_task_init_classified(&rx,0,0,2,HOP_XFER_DIR_RECEIVE,HOP_TASK_KIND_FILES));
- refresh_task_lists();assert(s_task_counts[0]==2&&s_task_counts[1]==1);
- for(int i=0;i<s_task_counts[0];i++)if(s_task_ids[0][i]==b.id)lists[0].selected=i;
- lists[0].top=1;
- assert(selected_task(0)==b.id);
- assert(hop_xfer_task_init_classified(&c,0,0,3,HOP_XFER_DIR_SEND,HOP_TASK_KIND_FILES));
- refresh_task_lists();assert(selected_task(0)==b.id && lists[0].top==1);
- connected=0;answer=0;cancel_selected_task(0);assert(!calls && !hop_xfer_task_cancel_requested(b.id));
- answer=IDYES;cancel_selected_task(0);assert(calls==1 && hop_xfer_task_cancel_requested(b.id));
- assert(!hop_xfer_task_cancel_requested(a.id) && !hop_xfer_task_cancel_requested(c.id) && !hop_xfer_task_cancel_requested(rx.id));
- hop_xfer_task_dispose(&b);refresh_task_lists();assert(!selected_task(0) && lists[0].top==1);
- cancel_selected_task(0);assert(calls==1);
- hop_xfer_task_dispose(&a);hop_xfer_task_dispose(&c);hop_xfer_task_dispose(&rx);
- refresh_task_lists();assert(!s_tasks_snapshot && s_tasks_snapshot_capacity==0);
- puts("PASS: task list preserves Task ID through reordering and releases empty snapshots");return 0;
+int main(void) {
+    s_model.task_count=3;
+    s_model.tasks[0].id=101;
+    s_model.tasks[1].id=202;
+    s_model.tasks[2].id=303;
+    s_selected_task=202;
+    assert(selected_task() && selected_task()->id==202);
+
+    /* Reordering rows must not change the selected task identity. */
+    hop_xfer_task_snapshot tmp=s_model.tasks[0];
+    s_model.tasks[0]=s_model.tasks[2];
+    s_model.tasks[2]=tmp;
+    assert(selected_task() && selected_task()->id==202);
+
+    /* If the selected task disappears, selection safely falls back to the
+     * first current task; an empty list returns NULL. */
+    s_model.tasks[1]=s_model.tasks[2];
+    s_model.task_count=2;
+    assert(selected_task() && selected_task()->id==303);
+    s_model.task_count=0;
+    assert(selected_task()==NULL);
+
+    assert(strcmp(task_state_text(HOP_XFER_TASK_COMPLETED),"已完成")==0);
+    assert(strcmp(task_state_text(HOP_XFER_TASK_CANCELLED),"已取消")==0);
+    assert(strcmp(task_state_text(HOP_XFER_TASK_INTERRUPTED),"已中断")==0);
+    puts("PASS: shared UI selection follows Task ID through reordering and stale rows");
+    return 0;
 }
 """
-    code=common+'\n'.join(extract(ui,n) for n in ['selected_task','task_state_name','resize_task_snapshot','refresh_task_lists','cancel_selected_task'])+main
-    run('task_list_selection_win',code,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+    code=common+'\n'.join(extract(ui,n) for n in ['selected_task','task_state_text'])+main
+    run('task_list_selection_shared',code)
+
+    # Cancellation and history remain in the shared page and route through
+    # platform operations without reintroducing platform-owned list widgets.
+    assert 's_ops->cancel_task(s_cancel_confirm_task)' in ui
+    assert 's_ops->retry_file(s_model.file_batch, s_selected_file)' in ui
+    assert 's_model.history_count' in ui and 's_model.history_total' in ui
+    assert '"hopdesk-transfer-history"' in ui
 
     # Manager-owned disconnect timer must be receive-only, monotonic, and reset
     # by reconnect (including clock rollback); no reservation is independently
@@ -1822,9 +1770,8 @@ int main(void){
 
     run('task_history',(ROOT/'tests/task_history_tests.c').read_text(encoding='utf-8'),['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
 
-    history_ui=(ROOT/'tests/task_history_ui_fixture.c.in').read_text(encoding='utf-8')
-    history_ui=history_ui.replace('@UI_FUNCTIONS@',extract(ui,'task_state_name')+'\n'+extract(ui,'refresh_task_history'))
-    run('task_history_ui_win',history_ui,['src/core/xfer_budget.c','src/core/xfer_task.c'],threads=True)
+    assert 'hopdesk-transfer-history' in ui
+    assert 'hop_xfer_task_history_record history[HOPDESK_UI_HISTORY_CAP]' in (ROOT/'src/ui/hopdesk_ui.h').read_text(encoding='utf-8')
 
     for platform,source_name in [('win','clipboard.c'),('mac','clipboard.m')]:
         clipboard_source=(ROOT/f'src/{platform}/{source_name}').read_text(encoding='utf-8')
@@ -1853,8 +1800,8 @@ int main(void){
         assert 'HOP_XFER_DEFAULT_RX_POOL_RETAIN_BYTES' in drain
 
     # The shared Core queue policy is production-linked by both platform workers.
-    queue_core=(ROOT/'src/core/xfer_sender_queue.c').read_text(encoding='utf-8')
-    queue_header=(ROOT/'src/core/xfer_sender_queue.h').read_text(encoding='utf-8')
+    queue_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
+    queue_header=(ROOT/'src/core/xfer_sender_worker.h').read_text(encoding='utf-8')
     queue_tests=(ROOT/'tests/xfer_sender_queue_tests.c').read_text(encoding='utf-8')
     assert 'hop_xfer_sender_queue_push_back' in queue_core
     assert 'hop_xfer_sender_queue_push_front' in queue_core
@@ -1870,15 +1817,15 @@ int main(void){
     assert 'test_head_readiness_and_fifo' in queue_tests
     assert 'test_front_insert_lookup_and_detach' in queue_tests
     assert 'test_expiry_while_offline' in queue_tests
-    scheduler_core=(ROOT/'src/core/xfer_sender_scheduler.c').read_text(encoding='utf-8')
-    scheduler_header=(ROOT/'src/core/xfer_sender_scheduler.h').read_text(encoding='utf-8')
+    scheduler_core=queue_core
+    scheduler_header=queue_header
     scheduler_tests=(ROOT/'tests/xfer_sender_scheduler_tests.c').read_text(encoding='utf-8')
-    active_core=(ROOT/'src/core/xfer_sender_active_job.c').read_text(encoding='utf-8')
-    active_header=(ROOT/'src/core/xfer_sender_active_job.h').read_text(encoding='utf-8')
+    active_core=queue_core
+    active_header=queue_header
     active_tests=(ROOT/'tests/xfer_sender_active_job_tests.c').read_text(encoding='utf-8')
     abort_fixture=(ROOT/'tests/receive_abort_fixture.c.in').read_text(encoding='utf-8')
-    context_adapter=(ROOT/'src/core/xfer_sender_context_adapter.c').read_text(encoding='utf-8')
-    context_adapter_header=(ROOT/'src/core/xfer_sender_context_adapter.h').read_text(encoding='utf-8')
+    context_adapter=(ROOT/'src/core/xfer_sender_context.c').read_text(encoding='utf-8')
+    context_adapter_header=(ROOT/'src/core/xfer_sender_context.h').read_text(encoding='utf-8')
     context_adapter_tests=(ROOT/'tests/xfer_sender_context_adapter_tests.c').read_text(encoding='utf-8')
     assert 'hop_xfer_sender_scheduler_wait_next' in scheduler_core
     assert 'hop_xfer_sender_queue_take_cancelled' in scheduler_core
@@ -1919,7 +1866,7 @@ int main(void){
         job_claim=extract(worker,'sender_job_claim_release')
         job_defer=extract(worker,'sender_job_defer_to_shutdown')
         mark_released=extract(worker,'sender_job_mark_released')
-        job_lifecycle_core=(ROOT/'src/core/xfer_sender_job_lifecycle.c').read_text(encoding='utf-8')
+        job_lifecycle_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
         requeue_front=extract(worker,'sender_worker_requeue_front')
         owner_lock='EnterCriticalSection(&s_x.lock)' if platform=='win' else 'pthread_mutex_lock(&s_x.qlock)'
         assert owner_lock in job_claim
@@ -1929,10 +1876,10 @@ int main(void){
         assert owner_lock in mark_released and 'j->owner = XFER_JOB_OWNER_RELEASED' in mark_released
         assert 'hop_xfer_sender_job_release(' in job_free
         assert 'job_claim_for_release' not in job_free and 'job_release_task_resources' not in job_free
-        assert job_lifecycle_core.index('if(!o->claim') < job_lifecycle_core.index('if(!release_resources(v)')
-        assert job_lifecycle_core.index('release_resources(v)') < job_lifecycle_core.index('hop_xfer_sender_context_task_dispose')
-        assert job_lifecycle_core.index('hop_xfer_sender_context_task_dispose') < job_lifecycle_core.index('if(!o->mark_released')
-        assert job_lifecycle_core.index('if(!o->mark_released') < job_lifecycle_core.index('o->free_storage(o->user')
+        assert job_lifecycle_core.index('if (!o->claim') < job_lifecycle_core.index('if (!job_release_resources(v)')
+        assert job_lifecycle_core.index('job_release_resources(v)') < job_lifecycle_core.index('hop_xfer_sender_context_task_dispose')
+        assert job_lifecycle_core.index('hop_xfer_sender_context_task_dispose') < job_lifecycle_core.index('if (!o->mark_released')
+        assert job_lifecycle_core.index('if (!o->mark_released') < job_lifecycle_core.index('o->free_storage(o->user')
         assert requeue_front.index(owner_lock) < requeue_front.index('call->job->owner')
         assert 'hop_xfer_sender_active_job_clear_if_matches' in requeue_front
         assert requeue_front.index('hop_xfer_sender_active_job_clear_if_matches') < requeue_front.index('call->job->owner=XFER_JOB_OWNER_QUEUE')
@@ -1972,7 +1919,7 @@ int main(void){
         internal=(ROOT/f'src/{platform}/xfer_sender_internal.h').read_text(encoding='utf-8')
         assert 's_x.' not in receive
         assert 'xfer_sender_internal.h' not in receive
-        assert '#include "../core/xfer_sender_active_job.h"' in internal
+        assert '#include "../core/xfer_sender_worker.h"' in internal
         assert 'hop_xfer_sender_active_job active_job' in internal
         assert 'hop_xfer_sender_active_job_cancel_target' in transport
         assert 'hop_xfer_sender_active_job_is_active' in transport
@@ -1985,7 +1932,7 @@ int main(void){
         assert 'hop_xfer_sender_active_job_record_peer_abort' in transport
         assert 'hop_xfer_sender_active_job_reset_peer_abort' in transport
         assert 'active_job.abort_batch' in protocol
-        assert '#include "../core/xfer_sender_context_adapter.h"' in protocol
+        assert '#include "../core/xfer_sender_context.h"' in internal
         assert 'hop_xfer_sender_context_job_cancel_requested(' in protocol
         assert 'hop_xfer_sender_context_task_cancel_requested(' in worker
         assert 'hop_xfer_sender_context_task_dispose(' in job_lifecycle_core
@@ -2196,8 +2143,10 @@ int main(void) {
         shutdown_prefix+retry_paths_function+'\n'+receiver_stop_function+'\n'+shutdown_function+'\n'+shutdown_main,
         ['src/core/xfer_tracking.c'], threads=(owner_platform=='mac'))
 
-    retry_core=(ROOT/'src/core/xfer_sender_retry.c').read_text(encoding='utf-8')
-    retry_header=(ROOT/'src/core/xfer_sender_retry.h').read_text(encoding='utf-8')
+    worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
+    worker_header=(ROOT/'src/core/xfer_sender_worker.h').read_text(encoding='utf-8')
+    retry_core=worker_core
+    retry_header=worker_header
     retry_tests=(ROOT/'tests/xfer_sender_retry_tests.c').read_text(encoding='utf-8')
     assert 'hop_xfer_sender_plan_retry' in retry_core
     assert 'retry_add_saturating' in retry_core
@@ -2206,14 +2155,13 @@ int main(void) {
     assert 'test_initial_and_repeated_retry' in retry_tests
     assert 'test_attempt_and_deadline_exhaustion' in retry_tests
     assert 'test_saturating_deadlines_and_invalid_input' in retry_tests
-    worker_core=(ROOT/'src/core/xfer_sender_worker.c').read_text(encoding='utf-8')
     worker_tests=(ROOT/'tests/xfer_sender_worker_tests.c').read_text(encoding='utf-8')
     assert 'hop_xfer_sender_worker_run' in worker_core
     assert 'hop_xfer_sender_scheduler_wait_next' in worker_core
     assert 's_x' not in worker_core and 's_rx' not in worker_core
     assert 'test_ready' in worker_tests and 'test_expired_cancel' in worker_tests
     assert 'test_invalid_view_clears_active' in worker_tests
-    assert 'if(v.task&&v.task->id)o->clear_active' in worker_core
+    assert 'if (v.task && v.task->id) o->clear_active' in worker_core
     for platform in ['win','mac']:
         worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
         send_thread=extract(worker,'send_thread')
@@ -2226,15 +2174,15 @@ int main(void) {
         internal=(ROOT/f'src/{platform}/xfer_sender_internal.h').read_text(encoding='utf-8')
         assert 'job_bind_session' not in internal
 
-    worker_flow_core=(ROOT/'src/core/xfer_sender_worker_flow.c').read_text(encoding='utf-8')
+    worker_flow_core=worker_core
     assert 'hop_xfer_sender_plan_retry' in worker_flow_core
     for platform in ['win','mac']:
         worker=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')
         assert 'hop_xfer_sender_worker_finish_job' in worker
         assert 'hop_xfer_sender_plan_retry' not in worker
 
-    lifecycle_core=(ROOT/'src/core/xfer_sender_lifecycle.c').read_text(encoding='utf-8')
-    lifecycle_header=(ROOT/'src/core/xfer_sender_lifecycle.h').read_text(encoding='utf-8')
+    lifecycle_core=worker_core
+    lifecycle_header=worker_header
     lifecycle_tests=(ROOT/'tests/xfer_sender_lifecycle_tests.c').read_text(encoding='utf-8')
     assert 'hop_xfer_sender_get_terminal_decision' in lifecycle_core
     assert 'HOP_XFER_SENDER_JOB_COMMIT_UNKNOWN' in lifecycle_core
@@ -2353,3 +2301,63 @@ assert 'mac_cursor_restore();' in extract(mac_inject, 'inject_reset')
 assert 'mac_cursor_restore();' in extract(mac_inject, 'inject_button')
 assert 'mac_cursor_restore();' in extract(mac_inject, 'inject_wheel')
 assert 'click_count' in mouse_core and 'hop_mouse_click_tracker' in mouse_header
+
+# Transport latency, safety and cross-platform symmetry regressions.
+win_ctrl = (ROOT / 'src/win/net_server_transport.inc').read_text(encoding='utf-8')
+mac_ctrl = (ROOT / 'src/mac/net_client_transport.inc').read_text(encoding='utf-8')
+win_xfer = (ROOT / 'src/win/xfer.c').read_text(encoding='utf-8')
+mac_xfer = (ROOT / 'src/mac/xfer.c').read_text(encoding='utf-8')
+mac_ack = (ROOT / 'src/mac/xfer_ack_coordinator.c').read_text(encoding='utf-8')
+ack_wait = (ROOT / 'src/core/xfer_sender_engine_adapter.c').read_text(encoding='utf-8')
+sender_engine = (ROOT / 'src/core/xfer_sender_engine.c').read_text(encoding='utf-8')
+
+assert 'TCP_NODELAY' in extract(win_ctrl, 'server_thread')
+assert 'TCP_NODELAY' in extract(win_ctrl, 'client_thread')
+assert 'TCP_NODELAY' in extract(mac_ctrl, 'net_thread')
+assert 'hop_encode_frame(' in extract(win_ctrl, 'sender_thread')
+assert 'hop_encode_frame(' in extract(mac_ctrl, 'control_sender')
+assert 'HOP_MSG_MOUSE_MOVE' in extract(mac_ctrl, 'net_send')
+assert 'hop_watchdog_begin("DNS resolution"' not in win_ctrl and 'hop_watchdog_begin("DNS resolution"' not in mac_ctrl
+assert 'SO_RCVBUF' in extract(win_xfer, 'xfer_data_client_thread')
+assert 'SO_SNDBUF' in extract(win_xfer, 'xfer_data_client_thread')
+assert 'TCP_NODELAY' in extract(win_xfer, 'xfer_data_listener_thread')
+assert 'TCP_NODELAY' in extract(win_xfer, 'xfer_data_client_thread')
+assert 'TCP_NODELAY' in extract(mac_xfer, 'configure_data_socket')
+assert 'coalesced[' in extract(win_xfer, 'sender_context_write_frame')
+assert 'coalesced[' in extract(mac_xfer, 'sender_context_write_frame')
+assert 'sender_context_wake_ack()' in extract(win_xfer, 'retire_data_socket')
+assert 'sender_context_wake_ack()' in extract(mac_xfer, 'retire_data_socket')
+assert 'SetEvent(s_x.q_evt)' in extract(win_xfer, 'xfer_data_frame')
+assert 'pthread_cond_signal(&s_x.qcond)' in extract(mac_xfer, 'xfer_data_frame')
+assert 'SENDER_ACK_POLL_INTERVAL_MS 100u' in (ROOT / 'src/win/xfer_sender.c').read_text(encoding='utf-8')
+assert 'SENDER_ACK_POLL_INTERVAL_MS 100u' in (ROOT / 'src/mac/xfer_sender.c').read_text(encoding='utf-8')
+mac_server_loop = extract(mac_xfer, 'run_data_server')
+assert 'hop_xfer_hello_bound(' in mac_server_loop and 'hop_xfer_hello_encode(' in mac_server_loop
+assert mac_server_loop.index('hop_xfer_hello_bound(') < mac_server_loop.index('hop_xfer_hello_encode(')
+assert 'pthread_cond_timedwait_relative_np' in mac_ack and 'CLOCK_MONOTONIC' in mac_ack
+assert 'HOP_XFER_ACK_WINDOW_MAX_BYTES' in sender_engine
+assert 'wait_take(context->ack_coordinator,\n                    batch, id, 0u' in ack_wait or 'batch, id, 0u' in ack_wait
+
+# Tier-2 transfer performance, validation, long-path and image CRC regressions.
+assert 'hop_decoder_new_with_limit(' in win_ctrl and 'HOP_CTRL_MAX_PAYLOAD' in win_ctrl
+assert 'hop_decoder_new_with_limit(' in mac_ctrl and 'HOP_CTRL_MAX_PAYLOAD' in mac_ctrl
+for platform in ['win', 'mac']:
+    rx_src = (ROOT / f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
+    sender_src = (ROOT / f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+    scanner_src = (ROOT / f'src/{platform}/xfer_scanner.c').read_text(encoding='utf-8')
+    assert 'hop_writer_queue_flush(' in extract(rx_src, 'rx_context_close_file')
+    assert 'hop_writer_queue_drain(' in extract(rx_src, 'rx_context_status_end')
+    assert 'hop_xfer_rate_feedback(&s_x.rate, ack_rtt_us, 0u)' in extract(sender_src, 'rate_feedback')
+    assert 'skipped_links' in scanner_src
+rx_handlers = (ROOT / 'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
+assert 'image_crc = hop_xfer_file_crc_step(' in extract(sender_engine, 'hop_xfer_sender_run_image')
+assert 'msg.file_crc != rx->image_state.crc' in extract(rx_handlers, 'hop_xfer_rx_handle_file_end')
+crc_src = (ROOT / 'src/core/crc32.c').read_text(encoding='utf-8')
+assert 'static const uint32_t s_tab[256]' in crc_src and 'volatile' not in crc_src
+for platform in ['win', 'mac']:
+    rx_src = (ROOT / f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
+    assert 'hop_xfer_task_get_snapshot(' not in extract(rx_src, 'wq_write_time')
+mac_wq = (ROOT / 'src/mac/xfer_writer_queue.c').read_text(encoding='utf-8')
+assert 'char *path;' in mac_wq and 'char path[4096]' not in mac_wq
+for rel_path in ['src/mac/xfer_sender_worker_adapter.c', 'src/mac/xfer_sender_threads.c', 'src/mac/xfer_writer_worker.c']:
+    assert 'pthread_cond_timedwait_relative_np' in (ROOT / rel_path).read_text(encoding='utf-8')

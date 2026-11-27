@@ -8,8 +8,8 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 source = (ROOT / 'src/mac/main_ui.m').read_text()
-start = source.index('/* Permissions belong to the process')
-end = source.index('static NSString *const kPageNames', start)
+start = source.index('static BOOL input_permissions')
+end = source.index('static const hop_xfer_task_snapshot *find_task', start)
 production = source[start:end]
 fixture = r'''
 #import <AppKit/AppKit.h>

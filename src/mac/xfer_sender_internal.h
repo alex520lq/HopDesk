@@ -10,13 +10,8 @@
 #include "../core/xfer_rate.h"
 #include "../core/xfer_tracking.h"
 #include "../core/xfer_sender_context.h"
-#include "../core/xfer_sender_ack_wait.h"
-#include "../core/xfer_sender_chunk.h"
 #include "../core/xfer_sender_engine_adapter.h"
-#include "../core/xfer_sender_queue.h"
-#include "../core/xfer_sender_active_job.h"
 #include "../core/xfer_sender_worker.h"
-#include "../core/xfer_sender_job_lifecycle.h"
 #define CHUNK_HDR (25u + HOP_DATA_PREFIX)
 typedef hop_xfer_sender_job_owner xfer_job_owner;
 #define XFER_JOB_OWNER_SUBMITTER HOP_XFER_SENDER_JOB_OWNER_SUBMITTER
@@ -31,7 +26,7 @@ typedef struct xf_job {
     uint32_t batch; int is_image; hop_xfer_task task;
     hop_xfer_task_state pending_finish_state; int pending_finish_valid;
     int pending_status_end; int pending_status_phase; char pending_status_detail[96];
-    hop_xfer_sender_context sender_context; intptr_t commit_socket; uint64_t commit_epoch;
+    hop_xfer_sender_context sender_context;
     int n; xf_entry *e; uint8_t *pixels; int image_payload_released;
     int w,h,stride,next_i,ok,attempt; uint64_t retry_at,give_up_at,scan_ns;
 } xf_job;
@@ -57,7 +52,6 @@ extern sender_platform_context s_sender_platform;
 extern hop_xfer_sender_context s_sender_context;
 extern const hop_xfer_sender_queue_ops s_sender_queue_ops;
 int sender_context_snapshot_session(void *,intptr_t,uint8_t [HOP_TASK_SESSION_BYTES],uint64_t *);
-hop_xfer_sender_job_result sender_commit_adapter_run(const xf_job *);
 void ack_deliver(uint32_t,uint32_t,int);
 int sender_context_session_current(void *,intptr_t,uint64_t);
 int sender_context_write_frame(void *,intptr_t,uint64_t,const hop_xfer_sender_frame_part *,size_t);

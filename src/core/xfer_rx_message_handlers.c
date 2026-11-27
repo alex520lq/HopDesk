@@ -1,8 +1,6 @@
 #include "hop.h"
-#include "xfer_rx_context.h"
-#include "xfer_rx_batch_rules.h"
+#include "xfer_rx_core.h"
 #include "xfer_rx_message_handlers.h"
-#include "xfer_rx_ack_handler.h"
 #include "xfer_tracking.h"
 #include <stdint.h>
 #include <stdio.h>
@@ -390,7 +388,14 @@ void hop_xfer_rx_handle_file_end(void *context, const uint8_t *p, uint32_t len) 
     if (!hop_xfer_decode_file_end(p, len, &msg)) return;
     if (!rx->batch_state.active ||
         !hop_xfer_rx_file_state_matches(&rx->file_state, msg.id)) return;
-    if (rx->file_state.is_image) return; /* image batches have no per-file ACK */
+    if (rx->file_state.is_image) {
+        if (msg.status != HOP_FILE_OK ||
+            (msg.file_crc != 0 && msg.file_crc != rx->image_state.crc)) {
+            hop_log(HOP_LOG_ERROR, "xfer: received image CRC or end status mismatch");
+            hop_xfer_rx_terminate_batch(rx, rx->batch_state.batch, HOP_ABORT_CRC, 1);
+        }
+        return; /* image batches have no per-file ACK */
+    }
 
     const uint32_t batch = rx->batch_state.batch;
     if (rx->services.status_file_phase)
@@ -571,6 +576,7 @@ if (!rx->batch_state.active) return; /* late data after termination */
                     hop_xfer_rx_terminate_batch(rx, rx->batch_state.batch,HOP_ABORT_TOO_LARGE,1);
                     return;
                 }
+                rx->image_state.crc = hop_xfer_file_crc_step(rx->image_state.crc, off, crc);
                 uint64_t receive_elapsed_ns=rx_now_ns(rx)-receive_started_ns;
                 if (rx->services.status_chunk_received) rx->services.status_chunk_received(rx->services.context,rx->batch_state.batch,rx->file_state.id,off,n,crc_elapsed_ns,receive_elapsed_ns);
                 return;
@@ -612,7 +618,7 @@ static void rx_ack_deliver_file(void *context, uint32_t batch, uint32_t id, uint
         rx->services.deliver_ack(rx->services.context, batch, id, status);
 }
 
-static void rx_ack_deliver_done(void *context, uint32_t batch, uint32_t status) {
+static void rx_ack_deliver_done(void *context, uint32_t batch, uint8_t status) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (rx && rx->services.deliver_ack)
         rx->services.deliver_ack(rx->services.context, batch, HOP_DONE_ACK_SLOT, (int)status);
@@ -676,3 +682,14 @@ void hop_xfer_rx_dispatch_done_ack_message(void *context, const uint8_t *p, uint
     if (!rx) return;
     (void)hop_xfer_rx_handle_done_ack(p, len, rx_ack_deliver_done, rx);
 }
+
+const hop_xfer_rx_dispatch_handlers hop_xfer_rx_default_dispatch_handlers = {
+    hop_xfer_rx_handle_file_begin,
+    hop_xfer_rx_handle_image_begin,
+    hop_xfer_rx_handle_file_chunk,
+    hop_xfer_rx_handle_file_end,
+    hop_xfer_rx_dispatch_file_ack_message,
+    hop_xfer_rx_handle_abort,
+    hop_xfer_rx_handle_done,
+    hop_xfer_rx_dispatch_done_ack_message
+};

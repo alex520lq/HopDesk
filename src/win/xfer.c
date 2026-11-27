@@ -256,6 +256,17 @@ int xfer_get_files(int direction,uint32_t batch,hop_xfer_file_status *out,int ca
     ReleaseSRWLockExclusive(&s_status_lock);
     return n;
 }
+int xfer_get_files_page(int direction,uint32_t batch,uint32_t offset,
+                        hop_xfer_file_status *out,int capacity,
+                        int *total,uint64_t *revision) {
+    if(direction!=HOP_XFER_DIR_SEND && direction!=HOP_XFER_DIR_RECEIVE) return -1;
+    if(capacity<0 || (capacity>0 && !out)) return -1;
+    AcquireSRWLockShared(&s_status_lock);
+    hop_xfer_tracking *t=status_for(direction);
+    int n=hop_xfer_tracking_files_page(t,batch,offset,out,capacity,total,revision);
+    ReleaseSRWLockShared(&s_status_lock);
+    return n;
+}
 int xfer_retry_file(uint32_t batch,int index) {
     /* A paste batch carries a request and clipboard-version destination. A new
      * ordinary transfer cannot reproduce it; reject rather than overwrite the
@@ -358,16 +369,35 @@ int sender_context_write_frame(void *user, intptr_t socket_handle,
                                       size_t part_count) {
     sender_platform_context *ctx = (sender_platform_context *)user;
     if (!ctx || !ctx->tx_lock || !parts || !part_count) return 0;
+    size_t total = 0;
+    for (size_t i = 0; i < part_count; ++i) {
+        if ((!parts[i].data && parts[i].size) ||
+            parts[i].size > (size_t)INT_MAX ||
+            total > SIZE_MAX - parts[i].size)
+            return 0;
+        total += parts[i].size;
+    }
+    uint8_t coalesced[1024];
+    int use_coalesced = part_count > 1 && total > 0 && total <= sizeof(coalesced);
+    if (use_coalesced) {
+        size_t off = 0;
+        for (size_t i = 0; i < part_count; ++i) {
+            if (parts[i].size) {
+                memcpy(coalesced + off, parts[i].data, parts[i].size);
+                off += parts[i].size;
+            }
+        }
+    }
     SOCKET sock = (SOCKET)socket_handle;
     EnterCriticalSection(ctx->tx_lock);
     int ok = sender_context_session_current(user, socket_handle, epoch);
-    for (size_t i = 0; ok && i < part_count; ++i) {
-        if ((!parts[i].data && parts[i].size) || parts[i].size > (size_t)INT_MAX) {
-            ok = 0;
-            break;
+    if (ok && use_coalesced) {
+        ok = xfer_send_all(sock, (const char *)coalesced, (int)total);
+    } else {
+        for (size_t i = 0; ok && i < part_count; ++i) {
+            if (parts[i].size)
+                ok = xfer_send_all(sock, (const char *)parts[i].data, (int)parts[i].size);
         }
-        if (parts[i].size)
-            ok = xfer_send_all(sock, (const char *)parts[i].data, (int)parts[i].size);
     }
     LeaveCriticalSection(ctx->tx_lock);
     return ok;
@@ -758,11 +788,14 @@ static void xfer_data_frame(void *opaque, uint8_t type, const uint8_t *payload, 
     xfer_data_frame_context *frame = (xfer_data_frame_context *)opaque;
     if (!frame || !xfer_data_frame_current(frame)) return;
     if (!hop_update_receive_enter()) {
+        int rejected = 0;
         EnterCriticalSection(&s_x.lock);
         if (s_x.client == frame->socket && s_x.epoch == frame->epoch) {
             s_x.peer_ready = 0; ++s_x.epoch; shutdown(frame->socket, SD_BOTH);
+            rejected = 1;
         }
         LeaveCriticalSection(&s_x.lock);
+        if (rejected) sender_context_wake_ack();
         return;
     }
     int guard = hop_watchdog_begin("data receive frame", 60000);
@@ -772,15 +805,21 @@ static void xfer_data_frame(void *opaque, uint8_t type, const uint8_t *payload, 
     LeaveCriticalSection(&s_x.lock);
     hop_rx_frame_action action = xfer_receive_process_frame(
         &frame->session, s_x.cfg.token, authenticated, type, payload, length);
+    int became_ready = 0, rejected = 0;
     EnterCriticalSection(&s_x.lock);
     if (s_x.client == frame->socket && s_x.epoch == frame->epoch) {
-        if (action == HOP_RX_FRAME_HELLO_ACCEPT) s_x.peer_ready = 1;
-        else if (action == HOP_RX_FRAME_HELLO_REJECT || action == HOP_RX_FRAME_REJECT_PEER) {
+        if (action == HOP_RX_FRAME_HELLO_ACCEPT) {
+            s_x.peer_ready = 1;
+            became_ready = 1;
+        } else if (action == HOP_RX_FRAME_HELLO_REJECT || action == HOP_RX_FRAME_REJECT_PEER) {
             s_x.peer_ready = 0; ++s_x.epoch;
             shutdown(frame->socket, SD_BOTH);
+            rejected = 1;
         }
     }
     LeaveCriticalSection(&s_x.lock);
+    if (became_ready && s_x.q_evt) SetEvent(s_x.q_evt);
+    if (rejected) sender_context_wake_ack();
     hop_watchdog_end(guard);
     hop_update_work_leave();
 }
@@ -807,6 +846,7 @@ static void retire_data_socket(SOCKET sock) {
     }
     shutdown(sock, SD_BOTH);
     LeaveCriticalSection(&s_x.lock);
+    sender_context_wake_ack();
     EnterCriticalSection(&s_txlock);
     closesocket(sock);
     LeaveCriticalSection(&s_txlock);
@@ -876,11 +916,10 @@ DWORD WINAPI xfer_data_listener_thread(LPVOID arg) {
                 if (bad) hop_log(HOP_LOG_WARN,"xfer: data handshake rejected: protocol, token or control session mismatch");
                 if (!bad) {
                     uint8_t reply[2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES];
+                    uint8_t wire[HOP_HEADER_SIZE + sizeof(reply)];
                     uint32_t reply_len = hop_xfer_hello_encode(reply, s_x.cfg.token, &session);
-                    uint8_t header[HOP_HEADER_SIZE];
-                    hop_encode_header(header, HOP_MSG_XFER_HELLO, reply_len);
-                    bad = !xfer_send_all(pending, (const char *)header, sizeof(header)) ||
-                          !xfer_send_all(pending, (const char *)reply, (int)reply_len);
+                    uint32_t wire_len = hop_encode_frame(HOP_MSG_XFER_HELLO, reply, reply_len, wire);
+                    bad = !reply_len || !xfer_send_all(pending, (const char *)wire, (int)wire_len);
                 }
                 if (!bad) {
                     hop_log(HOP_LOG_INFO, active == INVALID_SOCKET ? "xfer: authenticated data channel" :
@@ -896,6 +935,7 @@ DWORD WINAPI xfer_data_listener_thread(LPVOID arg) {
                     frame.session = session; frame.epoch = s_x.epoch; frame.socket = active;
                     hop_xfer_sender_active_job_reset_peer_abort(&s_x.active_job);
                     LeaveCriticalSection(&s_x.lock);
+                    if (s_x.q_evt) SetEvent(s_x.q_evt);
                 }
             }
             if (bad) { closesocket(pending); pending = INVALID_SOCKET; }
@@ -907,8 +947,10 @@ DWORD WINAPI xfer_data_listener_thread(LPVOID arg) {
                 if (pending != INVALID_SOCKET) closesocket(pending);
                 {
                     pending = sock; have = 0; need = HOP_HEADER_SIZE; started = hop_monotonic_ms();
-                    DWORD snd = 3000, rcv = 200;
+                    DWORD snd = 5000, rcv = 200;
+                    BOOL nodelay = TRUE;
                     int bufsz = 4 * 1024 * 1024;
+                    setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char *)&nodelay, sizeof(nodelay));
                     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&snd, sizeof(snd));
                     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&rcv, sizeof(rcv));
                     setsockopt(sock, SOL_SOCKET, SO_RCVBUF, (char *)&bufsz, sizeof(bufsz));
@@ -943,15 +985,23 @@ DWORD WINAPI xfer_data_client_thread(LPVOID unused){
             }
             delay=delay<8000?delay*2:8000;continue;
         }
-        DWORD snd=5000,rcv=200;net_set_keepalive(sock);
-        setsockopt(sock,SOL_SOCKET,SO_SNDTIMEO,(char*)&snd,sizeof(snd));setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,(char*)&rcv,sizeof(rcv));
+        DWORD snd=5000,rcv=200;
+        BOOL nodelay=TRUE;
+        int bufsz=4*1024*1024;
+        net_set_keepalive(sock);
+        setsockopt(sock,IPPROTO_TCP,TCP_NODELAY,(char*)&nodelay,sizeof(nodelay));
+        setsockopt(sock,SOL_SOCKET,SO_SNDTIMEO,(char*)&snd,sizeof(snd));
+        setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,(char*)&rcv,sizeof(rcv));
+        setsockopt(sock,SOL_SOCKET,SO_RCVBUF,(char*)&bufsz,sizeof(bufsz));
+        setsockopt(sock,SOL_SOCKET,SO_SNDBUF,(char*)&bufsz,sizeof(bufsz));
         xfer_receive_bind_session(&session);hop_decoder_reset(dec);
         EnterCriticalSection(&s_x.lock);s_x.session=session;s_x.client=sock;s_x.peer_ready=0;++s_x.epoch;
         frame.session=session;frame.epoch=s_x.epoch;frame.socket=sock;
         hop_xfer_sender_active_job_reset_peer_abort(&s_x.active_job);LeaveCriticalSection(&s_x.lock);
-        uint8_t hello[2+HOP_TOKEN_MAX+HOP_SESSION_BYTES],header[HOP_HEADER_SIZE];
-        uint32_t len=hop_xfer_hello_encode(hello,s_x.cfg.token,&session);hop_encode_header(header,HOP_MSG_XFER_HELLO,len);
-        if(!xfer_send_all(sock,(const char*)header,sizeof(header)) || !xfer_send_all(sock,(const char*)hello,(int)len))shutdown(sock,SD_BOTH);
+        uint8_t hello[2+HOP_TOKEN_MAX+HOP_SESSION_BYTES],wire[HOP_HEADER_SIZE+sizeof(hello)];
+        uint32_t len=hop_xfer_hello_encode(hello,s_x.cfg.token,&session);
+        uint32_t wire_len=hop_encode_frame(HOP_MSG_XFER_HELLO,hello,len,wire);
+        if(!len || !xfer_send_all(sock,(const char*)wire,(int)wire_len))shutdown(sock,SD_BOTH);
         uint64_t started=hop_monotonic_ms();int authed=0;
         while(WaitForSingleObject(s_x.stop,0)!=WAIT_OBJECT_0 && hop_session_matches(&session)){
             EnterCriticalSection(&s_x.lock);authed=s_x.peer_ready;LeaveCriticalSection(&s_x.lock);

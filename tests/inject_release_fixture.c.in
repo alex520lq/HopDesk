@@ -13,7 +13,8 @@ enum {kCGEventFlagMaskShift=1,kCGEventFlagMaskControl=2,kCGEventFlagMaskAlternat
  kCGEventFlagMaskCommand=8,kCGEventFlagMaskAlphaShift=16,kCGEventFlagsChanged=100,
  kCGEventLeftMouseDown=10,kCGEventLeftMouseUp=11,kCGEventRightMouseDown=12,kCGEventRightMouseUp=13,
  kCGEventOtherMouseDown=14,kCGEventOtherMouseUp=15,kCGMouseButtonLeft=0,kCGMouseButtonRight=1,
- kCGMouseButtonCenter=2,kCGHIDEventTap=0,kCGMouseEventClickState=1};
+ kCGMouseButtonCenter=2,kCGHIDEventTap=0,kCGMouseEventClickState=1,kCGEventSourceUserData=2};
+#define HOP_INJECT_EVENT_TAG INT64_C(0x484F504445534B)
 typedef struct {int type,down;unsigned code;CGEventFlags flags;CGMouseButton button;int click_state;} Event;
 typedef Event *CGEventRef;
 static int keyups,mouseups,enters;static Event last_event;
@@ -31,7 +32,7 @@ static CGEventRef CGEventCreateMouseEvent(void *src,CGEventType type,CGPoint pt,
 }
 static void CGEventSetType(CGEventRef e,int t){assert(e);e->type=t;}
 static void CGEventSetFlags(CGEventRef e,CGEventFlags f){assert(e);e->flags=f;}
-static void CGEventSetIntegerValueField(CGEventRef e,int field,int64_t value){assert(e && field==kCGMouseEventClickState);e->click_state=(int)value;}
+static void CGEventSetIntegerValueField(CGEventRef e,int field,int64_t value){assert(e && (field==kCGMouseEventClickState || field==kCGEventSourceUserData));if(field==kCGMouseEventClickState)e->click_state=(int)value;}
 static void CGEventPost(int tap,CGEventRef e){
  (void)tap;assert(e);last_event=*e;
  if(e->type==0 && !e->down)keyups++;

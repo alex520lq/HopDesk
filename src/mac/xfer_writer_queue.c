@@ -17,7 +17,7 @@ enum { RX_OPEN = 1, RX_WRITE, RX_CLOSE };
 
 typedef struct {
     int kind;
-    char path[4096];
+    char *path;
     uint64_t offset;
     uint32_t length;
     uint8_t *data;
@@ -115,6 +115,7 @@ static void worker_run(void *context, const void *task_data) {
 static void worker_complete(void *context, const void *task_data) {
     hop_writer_queue *queue = (hop_writer_queue *)context;
     const writer_command *command = (const writer_command *)task_data;
+    if (command->path) free(command->path);
     if (command->kind == RX_WRITE && command->task_owner)
         queue->callbacks.release_task_rx(queue->callback_context,
                                          command->task_owner, command->length);
@@ -140,8 +141,10 @@ static int enqueue_control(hop_writer_queue *queue, int kind, const char *path) 
     command.pool_slot = -1;
     if (path) {
         size_t length = strlen(path);
-        if (length >= sizeof(command.path)) return 0;
-        memcpy(command.path, path, length + 1);
+        if (length >= 4096u) return 0;
+        command.path = (char *)malloc(length + 1u);
+        if (!command.path) return 0;
+        memcpy(command.path, path, length + 1u);
     }
     int guard = watchdog_begin(queue, "disk queue wait",
                                queue->callbacks.io_deadline_ms + 5000);
@@ -150,6 +153,7 @@ static int enqueue_control(hop_writer_queue *queue, int kind, const char *path) 
         pthread_cond_wait(&queue->cv_space, &queue->lock);
     if (queue->stop || !hop_xfer_rx_queue_push(&queue->accounting, 0)) {
         pthread_mutex_unlock(&queue->lock);
+        free(command.path);
         watchdog_end(queue, guard);
         return 0;
     }
@@ -266,6 +270,17 @@ rollback:
     pthread_mutex_unlock(&queue->lock);
     watchdog_end(queue, guard);
     return 0;
+}
+
+void hop_writer_queue_flush(hop_writer_queue *queue) {
+    if (!queue) return;
+    int guard = watchdog_begin(queue, "disk queue wait",
+                               queue->callbacks.io_deadline_ms + 5000);
+    pthread_mutex_lock(&queue->lock);
+    while (!hop_xfer_rx_queue_drained(&queue->accounting))
+        pthread_cond_wait(&queue->cv_space, &queue->lock);
+    pthread_mutex_unlock(&queue->lock);
+    watchdog_end(queue, guard);
 }
 
 void hop_writer_queue_drain(hop_writer_queue *queue) {

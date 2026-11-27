@@ -16,7 +16,7 @@ enum { RX_OPEN = 1, RX_WRITE, RX_CLOSE };
 
 typedef struct {
     int kind;
-    wchar_t path[MAX_PATH];
+    wchar_t *path;
     uint64_t offset;
     uint32_t length;
     uint8_t *data;
@@ -114,6 +114,7 @@ static void worker_run(void *context, const void *task_data) {
 static void worker_complete(void *context, const void *task_data) {
     hop_writer_queue *queue = (hop_writer_queue *)context;
     const writer_command *command = (const writer_command *)task_data;
+    if (command->path) free(command->path);
     if (command->kind == RX_WRITE && command->task_owner &&
         queue->callbacks.release_task_rx)
         queue->callbacks.release_task_rx(queue->callback_context,
@@ -140,8 +141,10 @@ static int enqueue_control(hop_writer_queue *queue, int kind, const wchar_t *pat
     command.pool_slot = -1;
     if (path) {
         size_t length = wcslen(path);
-        if (length >= MAX_PATH) return 0;
-        memcpy(command.path, path, (length + 1) * sizeof(wchar_t));
+        if (length == 0 || length >= 32767u) return 0;
+        command.path = (wchar_t *)malloc((length + 1u) * sizeof(wchar_t));
+        if (!command.path) return 0;
+        memcpy(command.path, path, (length + 1u) * sizeof(wchar_t));
     }
     int guard = watchdog_begin(queue, "disk queue wait", queue->callbacks.io_deadline_ms + 5000);
     EnterCriticalSection(&queue->lock);
@@ -149,6 +152,7 @@ static int enqueue_control(hop_writer_queue *queue, int kind, const wchar_t *pat
         SleepConditionVariableCS(&queue->cv_space, &queue->lock, INFINITE);
     if (queue->stop || !hop_xfer_rx_queue_push(&queue->accounting, 0)) {
         LeaveCriticalSection(&queue->lock);
+        free(command.path);
         watchdog_end(queue, guard);
         return 0;
     }
@@ -256,6 +260,16 @@ rollback:
     LeaveCriticalSection(&queue->lock);
     watchdog_end(queue, guard);
     return 0;
+}
+
+void hop_writer_queue_flush(hop_writer_queue *queue) {
+    if (!queue) return;
+    int guard = watchdog_begin(queue, "disk queue wait", 35000);
+    EnterCriticalSection(&queue->lock);
+    while (!hop_xfer_rx_queue_drained(&queue->accounting))
+        SleepConditionVariableCS(&queue->cv_space, &queue->lock, INFINITE);
+    LeaveCriticalSection(&queue->lock);
+    watchdog_end(queue, guard);
 }
 
 void hop_writer_queue_drain(hop_writer_queue *queue) {

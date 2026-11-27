@@ -195,6 +195,13 @@ int main(void) {
     assert(symlink(a, link_path) == 0);
     reset_scan(&list);
     hop_xfer_scan_paths(&list, paths, 1, &scan_services);
+    assert(!list.failed && list.error == HOP_XFER_SCAN_OK &&
+           list.skipped_links == 1 && list.n == 4);
+    elist_free(&list);
+
+    reset_scan(&list);
+    const char *link_roots[] = {link_path};
+    hop_xfer_scan_paths(&list, link_roots, 1, &scan_services);
     assert(list.failed && list.error == HOP_XFER_SCAN_LINK_REJECTED);
     elist_free(&list);
 

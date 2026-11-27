@@ -43,6 +43,9 @@ void xfer_get_budget_snapshot(hop_xfer_budget_snapshot *out);
 int xfer_get_history(hop_xfer_history_entry *out, int capacity);
 /* Snapshot an explicitly identified task; stale snapshots return no files. */
 int xfer_get_files(int direction, uint32_t batch, hop_xfer_file_status *out, int capacity);
+int xfer_get_files_page(int direction, uint32_t batch, uint32_t offset,
+                        hop_xfer_file_status *out, int capacity,
+                        int *total, uint64_t *revision);
 /* Re-enqueue one failed source file from the latest visible batch. */
 int xfer_retry_file(uint32_t batch, int index);
 

@@ -1,13 +1,6 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include "xfer_sender_internal.h"
-#include "../core/xfer_sender_context_adapter.h"
-#include "../core/xfer_sender_engine.h"
-#include "../core/xfer_sender_scheduler.h"
-#include "../core/xfer_sender_retry.h"
-#include "../core/xfer_sender_lifecycle.h"
-#include "../core/xfer_sender_worker_flow.h"
-#include "../core/xfer_sender_worker.h"
 #include "../core/xfer_ack_window.h"
 #include "../core/xfer_buffer_pool.h"
 #include "../core/xfer_budget.h"
@@ -192,6 +185,41 @@ static void sender_context_log_message(void *user, int level,
     hop_log((hop_log_level)level, "%s", message ? message : "");
 }
 
+void sender_context_request_reconnect(void *user) {
+    sender_platform_context *ctx = (sender_platform_context *)user;
+    if (!ctx || !ctx->state_lock || !ctx->client || !ctx->peer_ready) return;
+    EnterCriticalSection(ctx->state_lock);
+    *ctx->peer_ready = 0;
+    if (*ctx->client != INVALID_SOCKET) shutdown(*ctx->client, SD_BOTH);
+    LeaveCriticalSection(ctx->state_lock);
+}
+
+int sender_context_ack_create(void) {
+    if (s_sender_platform.ack_coordinator) return 0;
+    hop_xfer_ack_coordinator *coordinator = hop_xfer_ack_coordinator_create();
+    if (!coordinator) return 0;
+    s_sender_platform.ack_coordinator = coordinator;
+    s_sender_context.ack_coordinator = coordinator;
+    return 1;
+}
+
+void sender_context_ack_destroy(void) {
+    hop_xfer_ack_coordinator_destroy(s_sender_platform.ack_coordinator);
+    s_sender_platform.ack_coordinator = NULL;
+    s_sender_context.ack_coordinator = NULL;
+}
+
+void sender_context_wake_ack(void) {
+    hop_xfer_ack_coordinator_wake(s_sender_platform.ack_coordinator);
+}
+
+void ack_deliver(uint32_t batch, uint32_t id, int status) {
+    hop_xfer_ack_coordinator *coordinator = s_sender_platform.ack_coordinator;
+    if (coordinator)
+        (void)hop_xfer_ack_coordinator_deliver(coordinator, batch, id, status,
+                                               rate_now_ns());
+}
+
 void sender_context_init(void) {
     memset(&s_sender_platform, 0, sizeof(s_sender_platform));
     s_sender_platform.state_lock = &s_x.lock;
@@ -233,11 +261,12 @@ void sender_context_init(void) {
 
 static void rate_feedback(uint64_t ack_rtt_us) {
     uint64_t before = s_x.rate.current_rate_bytes_per_sec;
-    uint32_t pressure = hop_xfer_rate_feedback_from_budget(&s_x.rate, ack_rtt_us);
+    /* Do not throttle outbound sending with local inbound rx_queue pressure. */
+    hop_xfer_rate_feedback(&s_x.rate, ack_rtt_us, 0u);
     if (s_x.rate.current_rate_bytes_per_sec < before) {
-        hop_log(HOP_LOG_INFO, "xfer: adaptive send rate %.1f MB/s (ack %.1f ms, local rx queue %u/1000)",
+        hop_log(HOP_LOG_INFO, "xfer: adaptive send rate %.1f MB/s (ack %.1f ms)",
                 (double)s_x.rate.current_rate_bytes_per_sec / 1048576.0,
-                (double)ack_rtt_us / 1000.0, pressure);
+                (double)ack_rtt_us / 1000.0);
     }
 }
 
@@ -260,7 +289,7 @@ static int send_chunk(const hop_xfer_sender_context *context,
  * 最多允许 4 个文件等待接收端落盘 ACK。数据帧仍然串行写入同一 TCP
  * stream；ACK 由接收端 writer 异步返回，按 batch/id 独立归位。 */
 
-#define SENDER_ACK_POLL_INTERVAL_MS 0u
+#define SENDER_ACK_POLL_INTERVAL_MS 100u
 
 uint64_t now_ms(void) { return (uint64_t)GetTickCount64(); }
 
@@ -656,10 +685,52 @@ static void sender_worker_send_abort(void *user,uint32_t batch) {
     if(call&&call->job)send_abort_msg_with_context(&call->job->sender_context,call->socket,
         batch,HOP_ABORT_CANCEL,HOP_ABORT_TO_RECEIVER);
 }
+static int sender_commit_current_connection(void *user, intptr_t *socket_handle,
+                                            uint64_t *epoch, uint8_t *session,
+                                            size_t session_capacity) {
+    (void)user;
+    if (!socket_handle || !epoch || !session ||
+        session_capacity < HOP_SESSION_BYTES) return 0;
+    EnterCriticalSection(&s_x.lock);
+    int ready = s_x.peer_ready && s_x.client != INVALID_SOCKET;
+    if (ready) {
+        *socket_handle = (intptr_t)s_x.client;
+        *epoch = s_x.epoch;
+        memcpy(session, s_x.session.bytes, HOP_SESSION_BYTES);
+    }
+    LeaveCriticalSection(&s_x.lock);
+    return ready;
+}
+static int sender_commit_send_done(void *user, intptr_t socket_handle,
+                                   uint64_t epoch, const uint8_t *payload,
+                                   uint32_t length, uint32_t batch) {
+    const xfer_job *job = (const xfer_job *)user;
+    if (!job) return 0;
+    s_send_epoch = (unsigned long)epoch;
+    return send_small_with_context(&job->sender_context, (SOCKET)socket_handle,
+                                   HOP_MSG_XFER_DONE, payload, length, batch);
+}
 static hop_xfer_sender_job_result sender_worker_send_done(void *user) {
     sender_worker_call *call=(sender_worker_call *)user;
     if(!call||!call->job)return HOP_XFER_SENDER_JOB_COMMIT_UNKNOWN;
-    return (hop_xfer_sender_job_result)sender_commit_adapter_run(call->job);
+    const xfer_job *job=call->job;
+    hop_xfer_sender_commit_adapter_ops ops;
+    memset(&ops,0,sizeof(ops));
+    ops.user=(void *)job;
+    ops.context=&job->sender_context;
+    ops.session=job->session.bytes;
+    ops.batch=job->batch;
+    ops.task_id=job->task.id;
+    ops.is_image=job->is_image;
+    ops.entry_count=job->n;
+    ops.ok_count=job->ok;
+    ops.done_ack_slot=HOP_DONE_ACK_SLOT;
+    ops.ack_timeout_ms=HOP_XFER_ACK_TIMEOUT_MS;
+    ops.reconnect_budget_ms=HOP_XFER_RECONNECT_BUDGET_MS;
+    ops.ack_poll_interval_ms=SENDER_ACK_POLL_INTERVAL_MS;
+    ops.current_connection=sender_commit_current_connection;
+    ops.send_done=sender_commit_send_done;
+    return hop_xfer_sender_engine_adapter_run_commit(&ops);
 }
 static void sender_worker_task_finish(void *user,hop_xfer_task_state state) {
     sender_worker_call *call=(sender_worker_call *)user;

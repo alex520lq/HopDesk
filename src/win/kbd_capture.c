@@ -145,9 +145,18 @@ static LRESULT CALLBACK kbd_proc(int code, WPARAM wp, LPARAM lp) {
             clip_request_remote_paste()) {
             s_local_paste_keyup_suppressed=1; return 1;
         }
+        if (down && k->vkCode == VK_ESCAPE &&
+            (g_app.cfg.input_mode & HOP_INPUT_KEYBOARD) &&
+            !(g_app.cfg.input_mode & HOP_INPUT_MOUSE) &&
+            (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_MENU) & 0x8000)) {
+            capture_force_toggle();
+            return 1;
+        }
         return CallNextHookEx(s_hook, code, wp, lp);
     }
     if(down && k->vkCode==VK_ESCAPE && (GetAsyncKeyState(VK_CONTROL)&0x8000) && (GetAsyncKeyState(VK_MENU)&0x8000)){capture_set_sharing(0);return 1;}
+    if (!(g_app.cfg.input_mode & HOP_INPUT_KEYBOARD))
+        return CallNextHookEx(s_hook, code, wp, lp);
     kc = hop_vk_to_mac((int)k->vkCode);
     if (kc != HOP_KEY_NONE) {
         send_key(kc, down);
@@ -159,6 +168,7 @@ static LRESULT CALLBACK kbd_proc(int code, WPARAM wp, LPARAM lp) {
 
 void kbd_init(win_app *app) {
     (void)app;
+    if (s_hook) return;
     s_nheld = 0;
     memset(s_physical_down,0,sizeof(s_physical_down));
     memset(s_local_release_pending,0,sizeof(s_local_release_pending));

@@ -1,4 +1,4 @@
-#include "../src/core/xfer_sender_retry.h"
+#include "../src/core/xfer_sender_worker.h"
 
 #include <assert.h>
 #include <stdint.h>

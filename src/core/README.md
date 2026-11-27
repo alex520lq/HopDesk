@@ -28,21 +28,16 @@
 
 ### Sender
 
+- `xfer_sender_context.c/.h`：显式依赖注入契约、Context 转发辅助以及 Chunk 限速分帧发送。
 - `xfer_sender_engine.c/.h`：文件/图片发送策略、CRC/分块顺序、ACK checkpoint 和 DONE/DONE_ACK 提交/重试策略。
-- `xfer_sender_chunk.c/.h`、`xfer_sender_ack_wait.c/.h`、`xfer_sender_retry.c/.h`：Chunk 处理、ACK 等待和重试决策。
-- `xfer_sender_queue.c/.h`、`xfer_sender_scheduler.c/.h`、`xfer_sender_active_job.c/.h`：FIFO、等待/摘取 Job、取消与 active marker 规则。
-- `xfer_sender_job_lifecycle.c/.h`、`xfer_sender_lifecycle.c/.h`：Job/Task/Reservation 终态和释放顺序。
-- `xfer_sender_worker.c/.h`、`xfer_sender_worker_flow.c/.h`：共享 Worker 执行流程与结果决策。
-- `xfer_sender_context.h`、`xfer_sender_context_adapter.c/.h`、`xfer_sender_engine_adapter.c/.h`：显式依赖注入与 Engine/Context 边界。平台 Adapter 提供文件句柄、socket 写帧、锁/等待原语、时钟和回调。
+- `xfer_sender_engine_adapter.c/.h`：将 `xfer_sender_context`、ACK 等待（`hop_xfer_sender_ack_wait`）与文件/图片/DONE 提交策略桥接到 `xfer_sender_engine`。
+- `xfer_sender_worker.c/.h`：共享 Sender 队列（FIFO）、调度器、Active Job / peer ABORT、重试/终态决策、Job/Task/Reservation 释放生命周期与 Worker 主循环。
 
 ### Receiver / Writer
 
-- `xfer_rx_frame_gate.c/.h`：数据帧 HELLO/token/session/batch 准入。
-- `xfer_rx_dispatch.c/.h`、`xfer_rx_message_handlers.c/.h`：消息类型分发与共享处理入口。
-- `xfer_rx_batch_rules.c/.h`、`xfer_rx_batch_state.c/.h`、`xfer_rx_file_state.c/.h`、`xfer_rx_image_state.c/.h`、`xfer_rx_image_buffer.c/.h`：批次、文件、图片状态与缓冲规则。
-- `xfer_rx_lifecycle.c/.h`、`xfer_rx_receipt.c/.h`、`xfer_rx_entry_reservations.c/.h`：终结、DONE receipt、Entry/Reservation 生命周期。
-- `xfer_rx_ack_handler.c/.h`、`xfer_rx_queue.c/.h`、`xfer_validate.c`：ACK 决策、Writer 队列容量/记账与输入校验。
-- `xfer_rx_context.h`、`xfer_rx_services.h`、`xfer_rx_platform_dispatch.h`：平台 Receiver 与 Core 之间的显式服务/调度契约。
+- `xfer_rx_core.c/.h`：共享 Receiver 核心状态与策略（Frame Gate、消息分发、DONE Receipt、Session/Tombstone Lifecycle、Batch Rules/State、Entry Reservation、File/Image 状态与缓冲、入站 ACK 解码，以及 `xfer_rx_context` / `hop_xfer_rx_services` 契约）。
+- `xfer_rx_message_handlers.c/.h`：共享协议消息处理入口与默认分发表 `hop_xfer_rx_default_dispatch_handlers`。
+- `xfer_rx_queue.c/.h`、`xfer_validate.c`：Writer 队列容量/记账与输入校验。
 - Writer 的锁、线程、文件句柄与平台 IO 分别由 `src/win` / `src/mac` 的 `xfer_writer_queue`、`xfer_writer_worker`、`xfer_writer_io` Adapter 实现；Core 只定义共享容量和 buffer 规则。
 
 ## 边界约束与未完成事项

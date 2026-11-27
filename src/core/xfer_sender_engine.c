@@ -88,6 +88,7 @@ int hop_xfer_sender_run_files(const hop_xfer_sender_engine_ops *ops,
         sender_window_item window[HOP_XFER_ACK_WINDOW_CAPACITY];
         memset(window, 0, sizeof(window));
         uint32_t window_count = 0;
+        uint64_t window_bytes = 0;
         int send_index = *next_index;
         int fill_result = HOP_XFER_SENDER_JOB_DONE;
 
@@ -111,6 +112,13 @@ int hop_xfer_sender_run_files(const hop_xfer_sender_engine_ops *ops,
                 sender_log(ops, 2, "xfer: sender entry snapshot is missing");
                 sender_unregister(ops, batch);
                 return HOP_XFER_SENDER_JOB_NET_DOWN;
+            }
+            uint64_t entry_bytes = ops->entry_size ? ops->entry_size(ops->user, entry) : 0;
+            if (window_count > 0 &&
+                (window_bytes >= HOP_XFER_ACK_WINDOW_MAX_BYTES ||
+                 entry_bytes >= HOP_XFER_ACK_WINDOW_MAX_BYTES ||
+                 entry_bytes > HOP_XFER_ACK_WINDOW_MAX_BYTES - window_bytes)) {
+                break;
             }
 
             sender_window_item *item = &window[window_count];
@@ -168,6 +176,8 @@ int hop_xfer_sender_run_files(const hop_xfer_sender_engine_ops *ops,
 
             item->attempts = attempts;
             item->deadline_ns = deadline_ns;
+            if (entry_bytes > UINT64_MAX - window_bytes) window_bytes = UINT64_MAX;
+            else window_bytes += entry_bytes;
             ++window_count;
             ++send_index;
         }
@@ -550,6 +560,7 @@ int hop_xfer_sender_run_image(const hop_xfer_sender_image_ops *ops,
 
     const uint64_t total = (uint64_t)stride * (uint64_t)height;
     uint64_t offset = 0;
+    uint32_t image_crc = 0;
     while (offset < total) {
         if (ops->cancel_requested(ops->user, batch))
             return HOP_XFER_SENDER_JOB_CANCELLED;
@@ -569,6 +580,7 @@ int hop_xfer_sender_run_image(const hop_xfer_sender_image_ops *ops,
                                    pixels + offset, length, crc, elapsed_ns))
             return HOP_XFER_SENDER_JOB_NET_DOWN;
 
+        image_crc = hop_xfer_file_crc_step(image_crc, offset, crc);
         offset += length;
         if (ops->yield_cpu) ops->yield_cpu(ops->user);
         if (ops->cancel_requested(ops->user, batch))
@@ -577,7 +589,7 @@ int hop_xfer_sender_run_image(const hop_xfer_sender_image_ops *ops,
             return HOP_XFER_SENDER_JOB_PEER_ABORT;
     }
 
-    if (!ops->send_image_end(ops->user, batch, 1, file_ok_status, 0))
+    if (!ops->send_image_end(ops->user, batch, 1, file_ok_status, image_crc))
         return HOP_XFER_SENDER_JOB_NET_DOWN;
 
     *ok_count = 1;

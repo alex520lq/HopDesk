@@ -93,12 +93,12 @@ static peer_socket connect_data_peer(uint16_t port, const char *token, const hop
     int enabled = 1;
     assert(setsockopt(peer, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0);
     assert(setsockopt(peer, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) == 0);
-    assert(read_frame(peer) == HOP_MSG_XFER_HELLO);
-    assert(hop_xfer_hello_bound(s_last_body, s_last_len, token, session));
     uint8_t hello[2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES];
     uint32_t length = hop_xfer_hello_encode(hello, token, session);
     assert(length);
     write_frame(peer, HOP_MSG_XFER_HELLO, hello, length);
+    assert(read_frame(peer) == HOP_MSG_XFER_HELLO);
+    assert(hop_xfer_hello_bound(s_last_body, s_last_len, token, session));
     return peer;
 }
 

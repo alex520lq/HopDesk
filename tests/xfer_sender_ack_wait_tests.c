@@ -1,5 +1,4 @@
-#include "../src/core/xfer_sender_ack_wait.h"
-#include "../src/core/xfer_sender_engine.h"
+#include "../src/core/xfer_sender_engine_adapter.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -13,6 +12,10 @@ typedef struct {
 } fixture;
 
 static uint64_t now(void *u){return ((fixture *)u)->now_ns;}
+int hop_xfer_ack_coordinator_register(hop_xfer_ack_coordinator *c,uint32_t b,uint32_t id){(void)c;(void)b;(void)id;return 1;}
+int hop_xfer_ack_coordinator_mark_sent(hop_xfer_ack_coordinator *c,uint32_t b,uint32_t id,uint64_t sent){(void)c;(void)b;(void)id;(void)sent;return 1;}
+int hop_xfer_ack_coordinator_set_deadline(hop_xfer_ack_coordinator *c,uint32_t b,uint32_t id,uint64_t d){(void)c;(void)b;(void)id;(void)d;return 1;}
+void hop_xfer_ack_coordinator_unregister_batch(hop_xfer_ack_coordinator *c,uint32_t b){(void)c;(void)b;}
 int hop_xfer_ack_coordinator_wait_take(hop_xfer_ack_coordinator *coordinator,
     uint32_t b,uint32_t id,uint32_t ms,int *status,uint64_t *rtt,int *expired){
     fixture *f=(fixture *)coordinator;f->waits++;f->last_wait_ms=ms;f->batch=b;f->id=id;
@@ -59,7 +62,16 @@ static void test_dynamic_slice(void){
 static void test_deadline_before_wait(void){
     fixture f;init(&f);hop_xfer_sender_context c=make_context(&f);
     assert(hop_xfer_sender_ack_wait(&c,7,9,12,99,3,100,100,NULL)==HOP_XFER_SENDER_ACK_WAIT_TIMEOUT);
-    assert(f.waits==0&&f.unregisters==1);
+    assert(f.waits==1&&f.last_wait_ms==0&&f.unregisters==1);
+}
+static void test_timely_ack_consumed_after_sender_delay(void){
+    fixture f;init(&f);f.now_ns=5000000;f.hit=1;f.status=HOP_XFER_SENDER_ACK_OK;f.rtt_ns=30000;
+    hop_xfer_sender_context c=make_context(&f);uint64_t rtt=0;
+    assert(hop_xfer_sender_ack_wait(&c,7,9,12,99,3,1000,100,&rtt)==HOP_XFER_SENDER_ACK_OK);
+    assert(rtt==30&&f.waits==1&&f.last_wait_ms==0&&f.unregisters==0);
+    init(&f);f.now_ns=5000000;f.hit=1;f.expired=1;c=make_context(&f);
+    assert(hop_xfer_sender_ack_wait(&c,7,9,12,99,3,1000,100,NULL)==HOP_XFER_SENDER_ACK_WAIT_TIMEOUT);
+    assert(f.waits==1&&f.last_wait_ms==0&&f.unregisters==0);
 }
 static void test_cancel_and_abort(void){
     fixture f;init(&f);f.cancel=1;hop_xfer_sender_context c=make_context(&f);
@@ -83,6 +95,7 @@ static void test_invalid_contract(void){
 }
 int main(void){
     test_delivered();test_dynamic_slice();test_deadline_before_wait();
+    test_timely_ack_consumed_after_sender_delay();
     test_cancel_and_abort();test_send_dead_and_late_ack();test_invalid_contract();
     puts("PASS: shared Sender ACK wait preserves deadline, cancellation, peer ABORT and connection identity");
     return 0;

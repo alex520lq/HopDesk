@@ -1,3 +1,10 @@
+#if defined(__APPLE__)
+#ifndef _DARWIN_C_SOURCE
+#define _DARWIN_C_SOURCE 1
+#endif
+#elif !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "xfer_ack_coordinator.h"
 
 #include <pthread.h>
@@ -7,6 +14,9 @@
 struct hop_xfer_ack_coordinator {
     pthread_mutex_t lock;
     pthread_cond_t cond;
+#if !defined(__APPLE__)
+    clockid_t wait_clock;
+#endif
     hop_xfer_ack_window window;
 };
 
@@ -14,11 +24,32 @@ hop_xfer_ack_coordinator *hop_xfer_ack_coordinator_create(void) {
     hop_xfer_ack_coordinator *c = (hop_xfer_ack_coordinator *)calloc(1, sizeof(*c));
     if (!c) return NULL;
     if (pthread_mutex_init(&c->lock, NULL) != 0) { free(c); return NULL; }
+#if defined(__APPLE__)
     if (pthread_cond_init(&c->cond, NULL) != 0) {
         pthread_mutex_destroy(&c->lock);
         free(c);
         return NULL;
     }
+#else
+    pthread_condattr_t attr;
+    if (pthread_condattr_init(&attr) != 0) {
+        pthread_mutex_destroy(&c->lock);
+        free(c);
+        return NULL;
+    }
+    if (pthread_condattr_setclock(&attr, CLOCK_MONOTONIC) == 0) {
+        c->wait_clock = CLOCK_MONOTONIC;
+    } else {
+        c->wait_clock = CLOCK_REALTIME;
+    }
+    int cond_rc = pthread_cond_init(&c->cond, &attr);
+    pthread_condattr_destroy(&attr);
+    if (cond_rc != 0) {
+        pthread_mutex_destroy(&c->lock);
+        free(c);
+        return NULL;
+    }
+#endif
     hop_xfer_ack_window_reset(&c->window);
     return c;
 }
@@ -78,12 +109,19 @@ int hop_xfer_ack_coordinator_wait_take(hop_xfer_ack_coordinator *c, uint32_t b, 
     pthread_mutex_lock(&c->lock);
     int hit = hop_xfer_ack_window_take_ex(&c->window, b, id, status, rtt, expired);
     if (!hit && timeout_ms) {
+#if defined(__APPLE__)
+        struct timespec rel;
+        rel.tv_sec = (time_t)(timeout_ms / 1000u);
+        rel.tv_nsec = (long)(timeout_ms % 1000u) * 1000000L;
+        (void)pthread_cond_timedwait_relative_np(&c->cond, &c->lock, &rel);
+#else
         struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
+        clock_gettime(c->wait_clock, &ts);
         ts.tv_sec += (time_t)(timeout_ms / 1000u);
         ts.tv_nsec += (long)(timeout_ms % 1000u) * 1000000L;
         if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
         (void)pthread_cond_timedwait(&c->cond, &c->lock, &ts);
+#endif
         hit = hop_xfer_ack_window_take_ex(&c->window, b, id, status, rtt, expired);
     }
     pthread_mutex_unlock(&c->lock);

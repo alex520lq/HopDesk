@@ -9,6 +9,13 @@ static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
             c->rejected=1;shutdown(c->sock,SD_BOTH);return;
         }
         EnterCriticalSection(&s->lock);
+        if (WaitForSingleObject(s->stop, 0) == WAIT_OBJECT_0 ||
+            InterlockedCompareExchange((LONG *)&s->disconnected, 0, 0)) {
+            c->rejected = 1;
+            shutdown(c->sock, SD_BOTH);
+            LeaveCriticalSection(&s->lock);
+            return;
+        }
         queue_clear(s);s->client=c->sock;c->epoch=++s->epoch;c->authed=1;
         c->session=session;hop_session_publish(&session);
         c->last_rx=s->last_ping=hop_monotonic_ms();
@@ -28,8 +35,10 @@ static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
         }
         if (!hop_session_generate(&c->session)) { c->rejected = 1; shutdown(c->sock, SD_BOTH); return; }
         EnterCriticalSection(&s->lock);
-        if (WaitForSingleObject(s->stop, 0) == WAIT_OBJECT_0) {
+        if (WaitForSingleObject(s->stop, 0) == WAIT_OBJECT_0 ||
+            InterlockedCompareExchange((LONG *)&s->disconnected, 0, 0)) {
             c->rejected = 1;
+            shutdown(c->sock, SD_BOTH);
         } else {
             int replaced = s->client != INVALID_SOCKET;
             if (replaced) shutdown(s->client, SD_BOTH);

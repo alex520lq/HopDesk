@@ -30,6 +30,31 @@ int main(void) {
     assert(hop_xfer_rx_fs_remove_tree(root, L"HopDesk") == 0);
     assert(hop_xfer_rx_fs_remove_tree(temporary, L"__no_such_root_marker__") == -2);
     free(path);
+
+    /* Long paths exceeding MAX_PATH (260) must create, write and clean up cleanly. */
+    assert(CreateDirectoryW(root, NULL));
+    const char *deep_rel =
+        "segment_01_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"
+        "segment_02_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/"
+        "segment_03_cccccccccccccccccccccccccccccc/"
+        "segment_04_dddddddddddddddddddddddddddddd/"
+        "segment_05_eeeeeeeeeeeeeeeeeeeeeeeeeeeeee/"
+        "segment_06_ffffffffffffffffffffffffffffff/"
+        "deep_file_payload.txt";
+    wchar_t *deep = hop_xfer_rx_fs_path_for(root, deep_rel);
+    assert(deep != NULL && wcslen(deep) > MAX_PATH);
+    assert(hop_xfer_rx_fs_ensure_dirs(deep));
+    wchar_t *deep_ext = (wchar_t *)malloc((wcslen(deep) + 5u) * sizeof(wchar_t));
+    assert(deep_ext != NULL);
+    wcscpy(deep_ext, L"\\\\?\\");
+    wcscat(deep_ext, deep);
+    file = CreateFileW(deep_ext, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    assert(file != INVALID_HANDLE_VALUE);
+    CloseHandle(file);
+    free(deep_ext);
+    assert(hop_xfer_rx_fs_remove_file(deep, NULL) == 1);
+    assert(hop_xfer_rx_fs_remove_tree(root, L"HopDesk") == 0);
+    free(deep);
     puts("PASS: Windows receiver filesystem adapter path, mkdir and guarded cleanup");
     return 0;
 }

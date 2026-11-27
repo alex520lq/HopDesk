@@ -35,7 +35,7 @@ with tempfile.TemporaryDirectory(prefix='hopdesk-regression-', ignore_cleanup_er
     run('tracking_config',(ROOT/'tests/regression_tests.c').read_text(encoding='utf-8'),['src/core/config.c','src/core/xfer_tracking.c'])
     run('rx_dispatch',r'''
 #include "hop.h"
-#include "xfer_rx_dispatch.h"
+#include "xfer_rx_core.h"
 #include <assert.h>
 #include <stdio.h>
 typedef struct { int calls; int marker; } test_context;
@@ -57,7 +57,7 @@ int main(void) {
     puts("PASS: receiver dispatch rejects missing/unknown handlers and forwards context");
     return 0;
 }
-''',['src/core/xfer_rx_dispatch.c'])
+''',['src/core/xfer_rx_core.c','src/core/xfer_validate.c','src/core/protocol.c','src/core/crc32.c','src/core/session.c'],threads=True)
     # Exercise the real Windows filesystem adapter with the exact staging
     # path shape produced by xfer_receive.c, not a generic "HopDesk" prefix.
     if os.name == 'nt':
@@ -115,7 +115,7 @@ int main(void) {
 
     run('rx_dispatch',r'''
 #include "hop.h"
-#include "xfer_rx_dispatch.h"
+#include "xfer_rx_core.h"
 #include <assert.h>
 int main(void) {
     assert(hop_xfer_rx_dispatch_classify(HOP_MSG_FILE_BEGIN)==HOP_RX_DISPATCH_FILE_BEGIN);
@@ -130,10 +130,10 @@ int main(void) {
     assert(hop_xfer_rx_dispatch_classify(255)==HOP_RX_DISPATCH_UNKNOWN);
     return 0;
 }
-''',['src/core/xfer_rx_dispatch.c'])
+''',['src/core/xfer_rx_core.c','src/core/xfer_validate.c','src/core/protocol.c','src/core/crc32.c','src/core/session.c'],threads=True)
 
     run('rx_batch_state',r'''
-#include "xfer_rx_batch_state.h"
+#include "xfer_rx_core.h"
 #include <assert.h>
 int main(void) {
     hop_xfer_rx_batch_state s;
@@ -150,7 +150,7 @@ int main(void) {
     assert(!s.active && !s.batch && s.generation==2);
     return 0;
 }
-''',['src/core/xfer_rx_batch_state.c'])
+''',['src/core/xfer_rx_core.c','src/core/xfer_validate.c','src/core/protocol.c','src/core/crc32.c','src/core/session.c'],threads=True)
 
     # The native hosts share one CUI page tree and model. Platform-specific
     # files provide only lifecycle, OS integration, and service adapters.
@@ -641,7 +641,7 @@ int main(void){
         assert 'queue->callbacks.task_cancelled' in writer
         assert 'if (!cancelled) run_command(queue, command);' in writer
     shared_rx_handlers=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
-    file_state_tests=(ROOT/'tests/xfer_rx_file_state_tests.c').read_text(encoding='utf-8')
+    file_state_tests=(ROOT/'tests/xfer_rx_core_tests.c').read_text(encoding='utf-8')
     assert 'hop_xfer_rx_file_state_prepare_entry' in file_state_tests
     assert 'hop_xfer_rx_file_state_evaluate_end' in file_state_tests
     assert 'HOP_RX_FILE_END_INCOMPLETE' in file_state_tests
@@ -761,16 +761,10 @@ int main(void){
     for platform in ['win','mac']:
         common=r'''
 #include "hop.h"
-#include "xfer_rx_batch_rules.h"
-#include "xfer_rx_batch_state.h"
-#include "xfer_rx_image_state.h"
-#include "xfer_rx_image_buffer.h"
-#include "xfer_rx_file_state.h"
+#include "xfer_rx_core.h"
 #include "xfer_tracking.h"
 #include "xfer_budget.h"
 #include "xfer_task.h"
-#include "xfer_rx_services.h"
-#include "xfer_rx_context.h"
 #include <assert.h>
 #include <wchar.h>
 #include <string.h>
@@ -901,7 +895,7 @@ int main(void){
         if platform=='win': common='#define FIXTURE_WINDOWS 1\n'+common
         sender_source=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
         core_finish_source=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
-        run('image_'+platform,common+'\n'+extract(core_finish_source,'hop_xfer_rx_reset_batch_state')+'\n'+extract(core_finish_source,'rx_release_terminal_resources')+'\n'+extract(core_finish_source,'hop_xfer_rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_dispatch.c'],threads=True)
+        run('image_'+platform,common+'\n'+extract(core_finish_source,'hop_xfer_rx_reset_batch_state')+'\n'+extract(core_finish_source,'rx_release_terminal_resources')+'\n'+extract(core_finish_source,'hop_xfer_rx_finish_batch')+main,['src/core/protocol.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_core.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/session.c'],threads=True)
     # Run the actual per-platform state wrappers, not only a reimplemented model.
     for platform in ['win','mac']:
         source=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
@@ -1063,9 +1057,9 @@ int main(void){
         receiver=(ROOT/f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
         assert 's_ack' not in receiver
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
-        context_header=(ROOT/'src/core/xfer_rx_context.h').read_text(encoding='utf-8')
+        context_header=(ROOT/'src/core/xfer_rx_core.h').read_text(encoding='utf-8')
         assert 'typedef struct xfer_rx_context' in context_header
-        state_contract='#include "xfer_rx_context.h"\n#include "xfer_rx_message_handlers.h"\nstatic xfer_rx_context s_rx;\nstatic void rx_release_terminal_resources(xfer_rx_context *rx, int close_writer, int discard_staging);'
+        state_contract='#include "xfer_rx_core.h"\n#include "xfer_rx_message_handlers.h"\nstatic xfer_rx_context s_rx;\nstatic void rx_release_terminal_resources(xfer_rx_context *rx, int close_writer, int discard_staging);'
         dispatch_names=[]
         dispatch_handlers='\n'.join(extract(receiver,name) for name in ['rx_reserve_entry_budget','rx_ack_deliver_file','rx_ack_deliver_done','rx_now_ns','hop_xfer_rx_bind_session'])+'\n'+'\n'.join(extract(receiver,name) for name in ['hop_xfer_rx_handle_file_begin','hop_xfer_rx_handle_image_begin','hop_xfer_rx_handle_file_chunk','hop_xfer_rx_handle_file_end','hop_xfer_rx_dispatch_file_ack_message','hop_xfer_rx_handle_abort','hop_xfer_rx_handle_done','hop_xfer_rx_dispatch_done_ack_message'])
         dispatch_handlers+='\nstatic const hop_xfer_rx_dispatch_handlers s_rx_dispatch_handlers = { hop_xfer_rx_handle_file_begin, hop_xfer_rx_handle_image_begin, hop_xfer_rx_handle_file_chunk, hop_xfer_rx_handle_file_end, hop_xfer_rx_dispatch_file_ack_message, hop_xfer_rx_handle_abort, hop_xfer_rx_handle_done, hop_xfer_rx_dispatch_done_ack_message };\n'
@@ -1141,7 +1135,7 @@ int main(void){
             assert 'xfer_rx_context *rx = (xfer_rx_context *)context;' in handler
             assert not any(token in handler for token in ['s_rx.', 's_x.', 's_ack.', 's_wq'])
         if platform=='win':fixture='#define FIXTURE_WINDOWS 1\n'+fixture
-        run('abort_'+platform,fixture,['src/core/protocol.c','src/core/crc32.c','src/core/xfer_sender_queue.c','src/core/xfer_sender_active_job.c','src/core/xfer_validate.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_dispatch.c','src/core/xfer_rx_ack_handler.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_file_state.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_image_buffer.c'],threads=True)
+        run('abort_'+platform,fixture,['src/core/protocol.c','src/core/crc32.c','src/core/xfer_sender_queue.c','src/core/xfer_sender_active_job.c','src/core/xfer_validate.c','src/core/xfer_budget.c','src/core/xfer_task.c','src/core/xfer_tracking.c','src/core/xfer_rx_core.c'],threads=True)
 
     inject=(ROOT/'src/mac/inject.c').read_text(encoding='utf-8')
     fixture=(ROOT/'tests/inject_release_fixture.c.in').read_text(encoding='utf-8')
@@ -1215,7 +1209,7 @@ int main(void){
         functions='\n'.join([extract(sender,'sender_context_session_current'),extract(sender,'sender_context_write_frame'),extract(sender,'sender_context_snapshot_session'),extract(sender,'send_small_with_context'),extract(sender,'send_small'),extract(sender,'send_chunk')]+[extract(receiver,name) for name in ['rx_release_terminal_resources','hop_xfer_rx_reset_batch_state','hop_xfer_rx_terminate_batch','hop_xfer_rx_bind_session','rx_bind_session','rx_expire_stale_session']])
         fixture=fixture.replace('@FUNCTIONS@',functions)
         if platform=='win': fixture='#define FIXTURE_WINDOWS 1\n'+fixture
-        run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c','src/core/xfer_sender_chunk.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_task.c','src/core/xfer_budget.c','src/core/xfer_sender_context_adapter.c','src/core/xfer_rx_frame_gate.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c'],threads=True)
+        run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c','src/core/xfer_sender_chunk.c','src/core/xfer_rx_core.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_task.c','src/core/xfer_budget.c','src/core/xfer_sender_context_adapter.c'],threads=True)
 
     control=(ROOT/'src/mac/net_client.m').read_text(encoding='utf-8')+'\n'+(ROOT/'src/mac/net_client_protocol.inc').read_text(encoding='utf-8')
     for platform,source_name,module_name in [('win','net_server.c','net_server_protocol.inc'),('mac','net_client.m','net_client_protocol.inc')]:
@@ -1305,10 +1299,10 @@ int main(void){
             assert admission < begin.index(side_effect), 'FILE_BEGIN side effect precedes budget admission: '+side_effect
         file_ack_handler=extract(receiver,'hop_xfer_rx_dispatch_file_ack_message')
         done_ack_handler=extract(receiver,'hop_xfer_rx_dispatch_done_ack_message')
-        services=(ROOT/'src/core/xfer_rx_services.h').read_text(encoding='utf-8')
+        services=(ROOT/'src/core/xfer_rx_core.h').read_text(encoding='utf-8')
         core_message_handlers=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         assert 'if (!rx->services.write_file_chunk || !rx->services.write_file_chunk(' in core_message_handlers
-        context_header=(ROOT/'src/core/xfer_rx_context.h').read_text(encoding='utf-8')
+        context_header=services
         assert 'typedef struct xfer_rx_context' in context_header
         assert 'hop_xfer_rx_services services;' in context_header
         assert 'void *writer;' in context_header
@@ -1349,7 +1343,7 @@ int main(void){
         done_handler=extract(receiver,'hop_xfer_rx_handle_done')
         assert 'hop_xfer_rx_done_receipt_find(rx->done_receipt,' in done_handler
         assert 'hop_xfer_rx_done_receipt_find(&rx->done_receipt,' not in done_handler
-        shared_ack=(ROOT/'src/core/xfer_rx_ack_handler.c').read_text(encoding='utf-8')
+        shared_ack=(ROOT/'src/core/xfer_rx_core.c').read_text(encoding='utf-8')
         assert 'ack.id < 1u' in shared_ack and 'ack.id > HOP_XFER_FILE_LIMIT' in shared_ack
         assert 'status > HOP_DONE_ACK_FAILED' in shared_ack
         lifecycle=extract(receiver,'hop_xfer_rx_begin_batch')

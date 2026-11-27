@@ -2,7 +2,7 @@
 #define HOP_XFER_RX_MESSAGE_HANDLERS_H
 #include <stdint.h>
 #include "hop.h"
-#include "xfer_rx_dispatch.h"
+#include "xfer_rx_core.h"
 #ifdef __cplusplus
 extern "C" {
 #endif

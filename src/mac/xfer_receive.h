@@ -1,7 +1,7 @@
 #ifndef HOP_MAC_XFER_RECEIVE_H
 #define HOP_MAC_XFER_RECEIVE_H
 
-#include "../core/xfer_rx_frame_gate.h"
+#include "../core/xfer_rx_core.h"
 
 #ifdef __cplusplus
 extern "C" {

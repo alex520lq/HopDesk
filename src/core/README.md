@@ -37,12 +37,9 @@
 
 ### Receiver / Writer
 
-- `xfer_rx_frame_gate.c/.h`：数据帧 HELLO/token/session/batch 准入。
-- `xfer_rx_dispatch.c/.h`、`xfer_rx_message_handlers.c/.h`：消息类型分发与共享处理入口。
-- `xfer_rx_batch_rules.c/.h`、`xfer_rx_batch_state.c/.h`、`xfer_rx_file_state.c/.h`、`xfer_rx_image_state.c/.h`、`xfer_rx_image_buffer.c/.h`：批次、文件、图片状态与缓冲规则。
-- `xfer_rx_lifecycle.c/.h`、`xfer_rx_receipt.c/.h`、`xfer_rx_entry_reservations.c/.h`：终结、DONE receipt、Entry/Reservation 生命周期。
-- `xfer_rx_ack_handler.c/.h`、`xfer_rx_queue.c/.h`、`xfer_validate.c`：ACK 决策、Writer 队列容量/记账与输入校验。
-- `xfer_rx_context.h`、`xfer_rx_services.h`：平台 Receiver 与 Core 之间的显式服务契约；共享默认消息分发表 `hop_xfer_rx_default_dispatch_handlers` 直接定义在 `xfer_rx_message_handlers.c`。
+- `xfer_rx_core.c/.h`：共享 Receiver 核心状态与策略（Frame Gate、消息分发、DONE Receipt、Session/Tombstone Lifecycle、Batch Rules/State、Entry Reservation、File/Image 状态与缓冲、入站 ACK 解码，以及 `xfer_rx_context` / `hop_xfer_rx_services` 契约）。
+- `xfer_rx_message_handlers.c/.h`：共享协议消息处理入口与默认分发表 `hop_xfer_rx_default_dispatch_handlers`。
+- `xfer_rx_queue.c/.h`、`xfer_validate.c`：Writer 队列容量/记账与输入校验。
 - Writer 的锁、线程、文件句柄与平台 IO 分别由 `src/win` / `src/mac` 的 `xfer_writer_queue`、`xfer_writer_worker`、`xfer_writer_io` Adapter 实现；Core 只定义共享容量和 buffer 规则。
 
 ## 边界约束与未完成事项

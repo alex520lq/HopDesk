@@ -20,9 +20,8 @@ $sources = @(
     (Join-Path $root 'src/core/xfer_tracking.c'),
     (Join-Path $root 'src/core/xfer_buffer_pool.c'),
     (Join-Path $root 'src/core/xfer_rx_queue.c'),
-    (Join-Path $root 'src/core/xfer_rx_batch_rules.c'),
-    (Join-Path $root 'src/core/xfer_rx_entry_reservations.c'),
-    (Join-Path $root 'src/core/xfer_rx_file_state.c')
+    (Join-Path $root 'src/core/xfer_rx_core.c'),
+    (Join-Path $root 'src/core/session.c')
 )
 $inc = Join-Path $root 'src/core'
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
@@ -160,104 +159,23 @@ if ($LASTEXITCODE -ne 0) { throw "Scanner adapter compilation failed ($LASTEXITC
 & $scannerTests
 if ($LASTEXITCODE -ne 0) { throw "Scanner adapter tests failed ($LASTEXITCODE)" }
 
-$rxAckHandler = Join-Path $build 'hopdesk-rx-ack-handler-tests.exe'
-$rxAckHandlerSources = @((Join-Path $root 'tests/xfer_rx_ack_handler_tests.c'), (Join-Path $root 'src/core/xfer_rx_ack_handler.c'), (Join-Path $root 'src/core/xfer_validate.c'), (Join-Path $root 'src/core/protocol.c'), (Join-Path $root 'src/core/crc32.c'))
+$rxCore = Join-Path $build 'hopdesk-rx-core-tests.exe'
+$rxCoreSources = @(
+    (Join-Path $root 'tests/xfer_rx_core_tests.c'),
+    (Join-Path $root 'src/core/xfer_rx_core.c'),
+    (Join-Path $root 'src/core/xfer_validate.c'),
+    (Join-Path $root 'src/core/protocol.c'),
+    (Join-Path $root 'src/core/crc32.c'),
+    (Join-Path $root 'src/core/session.c')
+)
 if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
-    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$rxAckHandler @rxAckHandlerSources
+    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$rxCore @rxCoreSources
 } else {
-    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $rxAckHandler @rxAckHandlerSources
+    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $rxCore @rxCoreSources
 }
-if ($LASTEXITCODE -ne 0) { throw "RX ACK handler test compilation failed ($LASTEXITCODE)" }
-& $rxAckHandler
-if ($LASTEXITCODE -ne 0) { throw "RX ACK handler tests failed ($LASTEXITCODE)" }
-
-$rxReceipt = Join-Path $build 'hopdesk-rx-receipt-tests.exe'
-$rxReceiptSources = @((Join-Path $root 'tests/xfer_rx_receipt_tests.c'), (Join-Path $root 'src/core/xfer_rx_receipt.c'), (Join-Path $root 'src/core/protocol.c'), (Join-Path $root 'src/core/crc32.c'))
-if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
-    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$rxReceipt @rxReceiptSources
-} else {
-    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $rxReceipt @rxReceiptSources
-}
-if ($LASTEXITCODE -ne 0) { throw "RX receipt test compilation failed ($LASTEXITCODE)" }
-& $rxReceipt
-if ($LASTEXITCODE -ne 0) { throw "RX receipt tests failed ($LASTEXITCODE)" }
-
-$rxLifecycle = Join-Path $build 'hopdesk-rx-lifecycle-tests.exe'
-$rxLifecycleSources = @((Join-Path $root 'tests/xfer_rx_lifecycle_tests.c'), (Join-Path $root 'src/core/xfer_rx_lifecycle.c'), (Join-Path $root 'src/core/protocol.c'), (Join-Path $root 'src/core/crc32.c'))
-if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
-    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$rxLifecycle @rxLifecycleSources
-} else {
-    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $rxLifecycle @rxLifecycleSources
-}
-if ($LASTEXITCODE -ne 0) { throw "RX lifecycle test compilation failed ($LASTEXITCODE)" }
-& $rxLifecycle
-if ($LASTEXITCODE -ne 0) { throw "RX lifecycle tests failed ($LASTEXITCODE)" }
-
-$rxBatchRules = Join-Path $build 'hopdesk-rx-batch-rules-tests.exe'
-$rxBatchRulesSources = @((Join-Path $root 'tests/xfer_rx_batch_rules_tests.c'), (Join-Path $root 'src/core/xfer_rx_batch_rules.c'))
-if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
-    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$rxBatchRules @rxBatchRulesSources
-} else {
-    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $rxBatchRules @rxBatchRulesSources
-}
-if ($LASTEXITCODE -ne 0) { throw "RX batch rules test compilation failed ($LASTEXITCODE)" }
-& $rxBatchRules
-if ($LASTEXITCODE -ne 0) { throw "RX batch rules tests failed ($LASTEXITCODE)" }
-
-$rxFrameGate = Join-Path $build 'hopdesk-rx-frame-gate-tests.exe'
-$rxFrameGateSources = @((Join-Path $root 'tests/xfer_rx_frame_gate_tests.c'), (Join-Path $root 'src/core/xfer_rx_frame_gate.c'), (Join-Path $root 'src/core/protocol.c'), (Join-Path $root 'src/core/session.c'))
-if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
-    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$rxFrameGate @rxFrameGateSources
-} else {
-    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $rxFrameGate @rxFrameGateSources
-}
-if ($LASTEXITCODE -ne 0) { throw "RX frame gate test compilation failed ($LASTEXITCODE)" }
-& $rxFrameGate
-if ($LASTEXITCODE -ne 0) { throw "RX frame gate tests failed ($LASTEXITCODE)" }
-
-$rxEntryReservations = Join-Path $build 'hopdesk-rx-entry-reservations-tests.exe'
-$rxEntryReservationSources = @((Join-Path $root 'tests/xfer_rx_entry_reservations_tests.c'), (Join-Path $root 'src/core/xfer_rx_entry_reservations.c'))
-if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
-    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$rxEntryReservations @rxEntryReservationSources
-} else {
-    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $rxEntryReservations @rxEntryReservationSources
-}
-if ($LASTEXITCODE -ne 0) { throw "RX entry reservation test compilation failed ($LASTEXITCODE)" }
-& $rxEntryReservations
-if ($LASTEXITCODE -ne 0) { throw "RX entry reservation tests failed ($LASTEXITCODE)" }
-
-$rxFileState = Join-Path $build 'hopdesk-rx-file-state-tests.exe'
-$rxFileStateSources = @((Join-Path $root 'tests/xfer_rx_file_state_tests.c'), (Join-Path $root 'src/core/xfer_rx_file_state.c'), (Join-Path $root 'src/core/xfer_validate.c'), (Join-Path $root 'src/core/protocol.c'), (Join-Path $root 'src/core/crc32.c'))
-if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
-    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$rxFileState @rxFileStateSources
-} else {
-    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $rxFileState @rxFileStateSources
-}
-if ($LASTEXITCODE -ne 0) { throw "RX file state test compilation failed ($LASTEXITCODE)" }
-& $rxFileState
-if ($LASTEXITCODE -ne 0) { throw "RX file state tests failed ($LASTEXITCODE)" }
-
-$rxImageState = Join-Path $build 'hopdesk-rx-image-state-tests.exe'
-$rxImageStateSources = @((Join-Path $root 'tests/xfer_rx_image_state_tests.c'), (Join-Path $root 'src/core/xfer_rx_image_state.c'))
-if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
-    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$rxImageState @rxImageStateSources
-} else {
-    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $rxImageState @rxImageStateSources
-}
-if ($LASTEXITCODE -ne 0) { throw "RX image state test compilation failed ($LASTEXITCODE)" }
-& $rxImageState
-if ($LASTEXITCODE -ne 0) { throw "RX image state tests failed ($LASTEXITCODE)" }
-
-$rxImageBuffer = Join-Path $build 'hopdesk-rx-image-buffer-tests.exe'
-$rxImageBufferSources = @((Join-Path $root 'tests/xfer_rx_image_buffer_tests.c'), (Join-Path $root 'src/core/xfer_rx_image_buffer.c'))
-if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
-    & cl.exe /nologo /std:c11 /W4 /utf-8 /I $inc /Fe:$rxImageBuffer @rxImageBufferSources
-} else {
-    & gcc -std=c11 -O2 -Wall -Wextra -I $inc -o $rxImageBuffer @rxImageBufferSources
-}
-if ($LASTEXITCODE -ne 0) { throw "RX image buffer test compilation failed ($LASTEXITCODE)" }
-& $rxImageBuffer
-if ($LASTEXITCODE -ne 0) { throw "RX image buffer tests failed ($LASTEXITCODE)" }
+if ($LASTEXITCODE -ne 0) { throw "RX core test compilation failed ($LASTEXITCODE)" }
+& $rxCore
+if ($LASTEXITCODE -ne 0) { throw "RX core tests failed ($LASTEXITCODE)" }
 
 $senderThreads = Join-Path $build 'hopdesk-sender-threads-tests.exe'
 $senderThreadsSources = @(

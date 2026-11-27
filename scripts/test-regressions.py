@@ -2351,3 +2351,7 @@ assert 'static const uint32_t s_tab[256]' in crc_src and 'volatile' not in crc_s
 for platform in ['win', 'mac']:
     rx_src = (ROOT / f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
     assert 'hop_xfer_task_get_snapshot(' not in extract(rx_src, 'wq_write_time')
+mac_wq = (ROOT / 'src/mac/xfer_writer_queue.c').read_text(encoding='utf-8')
+assert 'char *path;' in mac_wq and 'char path[4096]' not in mac_wq
+for rel_path in ['src/mac/xfer_sender_worker_adapter.c', 'src/mac/xfer_sender_threads.c', 'src/mac/xfer_writer_worker.c']:
+    assert 'pthread_cond_timedwait_relative_np' in (ROOT / rel_path).read_text(encoding='utf-8')

@@ -1,3 +1,10 @@
+#if defined(__APPLE__)
+#ifndef _DARWIN_C_SOURCE
+#define _DARWIN_C_SOURCE 1
+#endif
+#elif !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "xfer_sender_internal.h"
 #include <errno.h>
 #include <string.h>
@@ -27,6 +34,12 @@ static int sender_scheduler_is_stopping(void *user) {
 }
 static int sender_scheduler_wait_locked(void *user, uint32_t timeout_ms) {
     (void)user;
+#if defined(__APPLE__)
+    struct timespec rel;
+    rel.tv_sec = (time_t)(timeout_ms/1000u);
+    rel.tv_nsec = (long)(timeout_ms%1000u)*1000000L;
+    int rc=pthread_cond_timedwait_relative_np(&s_x.qcond,&s_x.qlock,&rel);
+#else
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME,&ts);
     ts.tv_sec += (time_t)(timeout_ms/1000u);
@@ -36,6 +49,7 @@ static int sender_scheduler_wait_locked(void *user, uint32_t timeout_ms) {
         ts.tv_nsec-=1000000000L;
     }
     int rc=pthread_cond_timedwait(&s_x.qcond,&s_x.qlock,&ts);
+#endif
     if (rc!=0 && rc!=ETIMEDOUT) {
         hop_log(HOP_LOG_WARN,"xfer: sender queue condition wait failed; falling back to bounded poll");
         pthread_mutex_unlock(&s_x.qlock);

@@ -1,6 +1,14 @@
+#if defined(__APPLE__)
+#ifndef _DARWIN_C_SOURCE
+#define _DARWIN_C_SOURCE 1
+#endif
+#elif !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "xfer_writer_worker.h"
 
 #include <pthread.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread/qos.h>
@@ -59,6 +67,43 @@ int hop_writer_worker_start(hop_writer_worker *worker, void *context,
 
 int hop_writer_worker_join(hop_writer_worker *worker) {
     if (!worker || worker->state != 1) return worker && worker->state == 2;
+#if defined(__APPLE__)
+    struct timespec start;
+    if (clock_gettime(CLOCK_MONOTONIC, &start) != 0) return 0;
+    uint64_t deadline_ns = (uint64_t)start.tv_sec * 1000000000ull +
+                           (uint64_t)start.tv_nsec + 3000000000ull;
+    pthread_mutex_lock(&worker->exit_lock);
+    while (!worker->exited) {
+        struct timespec now;
+        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+            pthread_mutex_unlock(&worker->exit_lock);
+            return 0;
+        }
+        uint64_t now_ns = (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+        if (now_ns >= deadline_ns) {
+            pthread_mutex_unlock(&worker->exit_lock);
+            return 0;
+        }
+        uint64_t rem_ns = deadline_ns - now_ns;
+        struct timespec rel = {
+            (time_t)(rem_ns / 1000000000ull),
+            (long)(rem_ns % 1000000000ull)
+        };
+        int wait_result = pthread_cond_timedwait_relative_np(
+            &worker->exit_cv, &worker->exit_lock, &rel);
+        if (wait_result == ETIMEDOUT) {
+            if (!worker->exited) {
+                pthread_mutex_unlock(&worker->exit_lock);
+                return 0;
+            }
+            break;
+        }
+        if (wait_result != 0) {
+            pthread_mutex_unlock(&worker->exit_lock);
+            return 0;
+        }
+    }
+#else
     struct timespec deadline;
     if (clock_gettime(CLOCK_REALTIME, &deadline) != 0) return 0;
     deadline.tv_sec += 3;
@@ -66,14 +111,18 @@ int hop_writer_worker_join(hop_writer_worker *worker) {
     while (!worker->exited) {
         int wait_result = pthread_cond_timedwait(&worker->exit_cv, &worker->exit_lock, &deadline);
         if (wait_result == ETIMEDOUT) {
-            pthread_mutex_unlock(&worker->exit_lock);
-            return 0;
+            if (!worker->exited) {
+                pthread_mutex_unlock(&worker->exit_lock);
+                return 0;
+            }
+            break;
         }
         if (wait_result != 0) {
             pthread_mutex_unlock(&worker->exit_lock);
             return 0;
         }
     }
+#endif
     pthread_mutex_unlock(&worker->exit_lock);
     if (pthread_join(worker->thread, NULL) != 0) return 0;
     pthread_cond_destroy(&worker->exit_cv);

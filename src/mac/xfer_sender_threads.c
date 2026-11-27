@@ -1,10 +1,27 @@
+#if defined(__APPLE__)
+#ifndef _DARWIN_C_SOURCE
+#define _DARWIN_C_SOURCE 1
+#endif
+#elif !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "xfer_sender_threads.h"
 
 #include <errno.h>
+#include <stdint.h>
 #include <string.h>
 #include <time.h>
 
 #define HOP_MAC_SENDER_JOIN_TIMEOUT_SECONDS 3
+
+#if defined(__APPLE__)
+static int monotonic_now_ns(uint64_t *out) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    *out = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+    return 1;
+}
+#endif
 
 static void *sender_thread_trampoline(void *opaque) {
     hop_mac_sender_thread_control *control =
@@ -18,6 +35,41 @@ static void *sender_thread_trampoline(void *opaque) {
     return result;
 }
 
+#if defined(__APPLE__)
+static int sender_thread_wait_exited(
+    hop_mac_sender_threads *threads,
+    hop_mac_sender_thread_control *control,
+    uint64_t deadline_ns) {
+    if (pthread_mutex_lock(&threads->exit_lock) != 0) return 0;
+    while (!control->exited) {
+        uint64_t now_ns = 0;
+        if (!monotonic_now_ns(&now_ns) || now_ns >= deadline_ns) {
+            pthread_mutex_unlock(&threads->exit_lock);
+            return 0;
+        }
+        uint64_t rem_ns = deadline_ns - now_ns;
+        struct timespec rel = {
+            (time_t)(rem_ns / 1000000000ull),
+            (long)(rem_ns % 1000000000ull)
+        };
+        int result = pthread_cond_timedwait_relative_np(
+            &threads->exit_cv, &threads->exit_lock, &rel);
+        if (result == ETIMEDOUT) {
+            if (!control->exited) {
+                pthread_mutex_unlock(&threads->exit_lock);
+                return 0;
+            }
+            break; /* Exit signal won the deadline race. */
+        }
+        if (result != 0) {
+            pthread_mutex_unlock(&threads->exit_lock);
+            return 0;
+        }
+    }
+    pthread_mutex_unlock(&threads->exit_lock);
+    return 1;
+}
+#else
 static int sender_thread_wait_exited(
     hop_mac_sender_threads *threads,
     hop_mac_sender_thread_control *control,
@@ -41,6 +93,7 @@ static int sender_thread_wait_exited(
     pthread_mutex_unlock(&threads->exit_lock);
     return 1;
 }
+#endif
 
 int hop_mac_sender_threads_start(
     hop_mac_sender_threads *threads,
@@ -92,7 +145,11 @@ static int sender_thread_join_one(
     int *started,
     hop_mac_sender_threads *threads,
     hop_mac_sender_thread_control *control,
+#if defined(__APPLE__)
+    uint64_t deadline) {
+#else
     const struct timespec *deadline) {
+#endif
     if (!*started) return 1;
     if (!sender_thread_wait_exited(threads, control, deadline)) return 0;
     if (pthread_join(*thread, NULL) != 0) return 0;
@@ -105,6 +162,18 @@ int hop_mac_sender_threads_join(hop_mac_sender_threads *threads) {
     if (!threads->exit_sync_initialized)
         return !threads->connection_started && !threads->sender_started;
 
+#if defined(__APPLE__)
+    uint64_t start_ns = 0;
+    if (!monotonic_now_ns(&start_ns)) return 0;
+    uint64_t deadline = start_ns +
+        (uint64_t)HOP_MAC_SENDER_JOIN_TIMEOUT_SECONDS * 1000000000ull;
+    int connection_joined = sender_thread_join_one(
+        &threads->connection_thread, &threads->connection_started,
+        threads, &threads->connection_control, deadline);
+    int sender_joined = sender_thread_join_one(
+        &threads->sender_thread, &threads->sender_started,
+        threads, &threads->sender_control, deadline);
+#else
     struct timespec deadline;
     if (clock_gettime(CLOCK_REALTIME, &deadline) != 0) return 0;
     deadline.tv_sec += HOP_MAC_SENDER_JOIN_TIMEOUT_SECONDS;
@@ -115,6 +184,7 @@ int hop_mac_sender_threads_join(hop_mac_sender_threads *threads) {
     int sender_joined = sender_thread_join_one(
         &threads->sender_thread, &threads->sender_started,
         threads, &threads->sender_control, &deadline);
+#endif
 
     if (!connection_joined || !sender_joined ||
         threads->connection_started || threads->sender_started)

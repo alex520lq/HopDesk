@@ -661,7 +661,7 @@ static void transfer_window_refresh(void) {
     s_retryButton.enabled = (st.direction == HOP_XFER_DIR_SEND);
 }
 
-void statusbar_show_transfers(void) { main_ui_show_page(3); }
+void statusbar_show_transfers(void) { main_ui_show_page(2); }
 
 /* Update controls are part of the main window. */
 void statusbar_check_updates(void) { check_for_updates(); }

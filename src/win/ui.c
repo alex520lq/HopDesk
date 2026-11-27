@@ -227,7 +227,7 @@ void ui_show_main(win_app *app) {
 }
 void ui_show_transfers(win_app *app) {
     (void)app;
-    main_ui_show_page(3);
+    main_ui_show_page(2);
 }
 void ui_refresh(win_app *app) {
     tray_refresh(app);

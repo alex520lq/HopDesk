@@ -39,11 +39,22 @@ CORE=$(find "$ROOT/src/core" -type f -name '*.c' -print | sort)
 MAC_C=$(find "$ROOT/src/mac" -type f -name '*.c' -print | sort)
 MAC_M=$(find "$ROOT/src/mac" -type f -name '*.m' -print | sort)
 PLATFORM=$(find "$ROOT/src/platform" -type f -name '*.c' -print | sort)
+CUI_ROOT="$ROOT/third_party/cui"
+if [ ! -f "$CUI_ROOT/CMakeLists.txt" ]; then
+    echo "CUI submodule is missing. Run: git submodule update --init --recursive" >&2
+    exit 1
+fi
+CUI_CORE=$(find "$CUI_ROOT/src" -maxdepth 1 -type f -name 'cui_*.c' ! -name 'cui_bidi.c' ! -name 'cui_shape.c' -print | sort)
+CUI_RENDER_C="$CUI_ROOT/src/render/cui_render_sw.c $CUI_ROOT/src/render/cui_render_gl.c"
+CUI_PLATFORM_C="$CUI_ROOT/src/platform/cui_app.c $CUI_ROOT/src/platform/cui_dialogs.c"
+CUI_RENDER_M="$CUI_ROOT/src/render/cui_render_metal.m"
+CUI_PLATFORM_M="$CUI_ROOT/src/platform/cui_app_cocoa.m"
+UI_C="$ROOT/src/ui/hopdesk_ui.c"
 if [ -z "$CORE$MAC_C$MAC_M" ]; then echo "No HopDesk source files found." >&2; exit 1; fi
 INC="$ROOT/src/core"
-FRAMEWORKS="-framework Cocoa -framework ApplicationServices -framework CoreGraphics -framework IOKit -framework CoreAudio -framework AudioToolbox"
+FRAMEWORKS="-framework Cocoa -framework ApplicationServices -framework CoreGraphics -framework IOKit -framework CoreAudio -framework AudioToolbox -framework QuartzCore -framework OpenGL -framework Metal"
 # shellcheck disable=SC2086
-clang -O2 -Wall -Wextra -fobjc-arc -include "$VERSION_HEADER" -I "$INC" -o "$MACOS/HopDesk" $CORE $PLATFORM $MAC_C $MAC_M $FRAMEWORKS
+clang -O2 -Wall -Wextra -fobjc-arc -DCUI_METAL -include "$VERSION_HEADER" -I "$INC" -I "$CUI_ROOT/include" -I "$CUI_ROOT/src" -o "$MACOS/HopDesk" $CORE $PLATFORM "$UI_C" $MAC_C $MAC_M $CUI_CORE $CUI_RENDER_C $CUI_PLATFORM_C $CUI_RENDER_M $CUI_PLATFORM_M $FRAMEWORKS
 
 cat > "$CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

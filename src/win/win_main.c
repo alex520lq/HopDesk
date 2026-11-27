@@ -8,6 +8,7 @@
 #include "main_ui.h"
 #include "../core/update_state.h"
 #include "../platform/audio_link.h"
+#include "../ui/hopdesk_ui.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -142,6 +143,16 @@ static void disp_sleep_mac(void) {
     capture_set_sharing(0);
 }
 
+void win_ui_display_action(int action) {
+    switch (action) {
+        case HOPDESK_UI_DISPLAY_TO_MAC: disp_switch_to_mac(); break;
+        case HOPDESK_UI_DISPLAY_TO_WINDOWS: disp_switch_to_win(); break;
+        case HOPDESK_UI_DISPLAY_WAKE: disp_wake_mac(); break;
+        case HOPDESK_UI_DISPLAY_SLEEP: disp_sleep_mac(); break;
+        default: break;
+    }
+}
+
 static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_APP_LINK:
@@ -158,6 +169,9 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_APP_CLIP_PASTE:
             clip_on_paste_message((HGLOBAL)lp, (DWORD)wp);
+            return 0;
+        case WM_APP_UI_SAVE_RESULT:
+            main_ui_save_complete((void *)lp);
             return 0;
         case WM_APP_TRAY:
             if (LOWORD(lp) == WM_LBUTTONUP || LOWORD(lp) == NIN_SELECT ||
@@ -205,6 +219,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         case WM_DESTROY:
+            g_app.exit_requested = 1;
             PostQuitMessage(0);
             return 0;
     }

@@ -256,6 +256,17 @@ int xfer_get_files(int direction,uint32_t batch,hop_xfer_file_status *out,int ca
     ReleaseSRWLockExclusive(&s_status_lock);
     return n;
 }
+int xfer_get_files_page(int direction,uint32_t batch,uint32_t offset,
+                        hop_xfer_file_status *out,int capacity,
+                        int *total,uint64_t *revision) {
+    if(direction!=HOP_XFER_DIR_SEND && direction!=HOP_XFER_DIR_RECEIVE) return -1;
+    if(capacity<0 || (capacity>0 && !out)) return -1;
+    AcquireSRWLockShared(&s_status_lock);
+    hop_xfer_tracking *t=status_for(direction);
+    int n=hop_xfer_tracking_files_page(t,batch,offset,out,capacity,total,revision);
+    ReleaseSRWLockShared(&s_status_lock);
+    return n;
+}
 int xfer_retry_file(uint32_t batch,int index) {
     /* A paste batch carries a request and clipboard-version destination. A new
      * ordinary transfer cannot reproduce it; reject rather than overwrite the

@@ -38,7 +38,8 @@ int hop_session_matches(const hop_session_id *session){(void)session;return 1;}
 #define SetEvent(p) ((void)(p))
 typedef unsigned long DWORD;
 typedef int SOCKET;
-static struct {int lock,slock,qlock,client,sock,cancel_rx,peer_ready,sync_initialized,shutting_down;hop_xfer_sender_active_job active_job;hop_xfer_sender_queue queue;hop_session_id session;} s_x;
+static struct {int lock,slock,qlock,client,sock,cancel_rx,peer_ready,sync_initialized,shutting_down;hop_config cfg;hop_xfer_sender_active_job active_job;hop_xfer_sender_queue queue;hop_session_id session;} s_x;
+static struct {hop_config cfg;} g_mac;
 static int s_x_lifecycle_lock;
 static int s_status_lock;
 static uint64_t s_status_revision;

@@ -397,9 +397,10 @@ int main(void){
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include <assert.h>
 typedef uint8_t BYTE;typedef uint16_t WORD;typedef uint32_t DWORD;typedef int32_t LONG;
-typedef struct {int role,client_edge,edge_margin_px;unsigned input_mode;} cfg_t;
+typedef struct {int role,client_edge,edge_margin_px,mouse_scale_pct,wheel_scale_pct,wheel_invert;unsigned input_mode;} cfg_t;
 typedef struct {cfg_t cfg;int peer_w,peer_h,state;unsigned peer_input_mode;void *net;} app_t;
 static app_t g_app;static BYTE held[256],buttons[3],paste_suppressed[256],key_release_pending[256],button_release_pending[3];static double px,py,over;static int sharing,clip_request_result,injected_key_events,fail_key_up;
 static int released_keys,released_buttons,refreshes;

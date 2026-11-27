@@ -1964,9 +1964,9 @@ static void test_cli_engine(void) {
     /* 2. Offline config set + atomic save + warnings */
     test_cli_reset_buf(&cap);
     const char *a_set[] = {"hopdesk", "config", "set",
-                           "token=my-secret", "mouse_scale_pct=125",
+                           "host=127.0.0.1", "token=my-secret", "mouse_scale_pct=125",
                            "wheel_invert=true", "audio_port=24820", "--json"};
-    CHECK(hop_cli_run(8, a_set, &ops) == 0);
+    CHECK(hop_cli_run(9, a_set, &ops) == 0);
     CHECK(strstr(cap.out, "\"ok\":true") != NULL);
     CHECK(strstr(cap.out, "\"agent_notified\":false") != NULL);
     CHECK(strstr(cap.out, "\"mouse_scale_pct\"") != NULL);

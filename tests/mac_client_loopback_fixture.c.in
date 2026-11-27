@@ -49,6 +49,7 @@ int net_send(uint8_t,const void*,uint32_t);
 void net_request_reconnect(void);
 void net_set_disconnected(int);
 int net_is_disconnected(void);
+void net_apply_input_mode(unsigned, unsigned, int);
 void hop_log(hop_log_level level,const char *fmt,...){(void)level;(void)fmt;}
 int hop_watchdog_begin(const char *name,unsigned timeout){(void)name;(void)timeout;return 0;}
 void hop_watchdog_end(int ticket){(void)ticket;}

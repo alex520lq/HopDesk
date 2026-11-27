@@ -1644,7 +1644,7 @@ int main(void) {
 
     # Cancellation and history remain in the shared page and route through
     # platform operations without reintroducing platform-owned list widgets.
-    assert 's_ops->cancel_task(chosen->id)' in ui
+    assert 's_ops->cancel_task(s_cancel_confirm_task)' in ui
     assert 's_ops->retry_file(s_model.file_batch, s_selected_file)' in ui
     assert 's_model.history_count' in ui and 's_model.history_total' in ui
     assert '"hopdesk-transfer-history"' in ui

@@ -380,6 +380,9 @@ static void draw_transfer(cui_ctx *ui) {
                     } else {
                         cui_row(ui, .width = CUI_FILL, .gap = 8, .wrap = true) {
                             cui_text(ui, "确认取消这个传输任务？");
+                            /* Keep the safe action first in keyboard/focus order. */
+                            if (cui_button(ui, "保留任务", .variant = CUI_BUTTON_SECONDARY))
+                                s_cancel_confirm_task = 0;
                             if (cui_button(ui, "确认取消", .variant = CUI_BUTTON_DANGER)) {
                                 if (s_ops && s_ops->cancel_task &&
                                     s_ops->cancel_task(s_cancel_confirm_task))
@@ -389,8 +392,6 @@ static void draw_transfer(cui_ctx *ui) {
                                 s_cancel_confirm_task = 0;
                                 s_force_refresh = 1;
                             }
-                            if (cui_button(ui, "保留任务", .variant = CUI_BUTTON_SECONDARY))
-                                s_cancel_confirm_task = 0;
                         }
                     }
                 }

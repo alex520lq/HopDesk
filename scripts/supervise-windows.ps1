@@ -6,7 +6,7 @@ $exe = (Resolve-Path -LiteralPath $Executable).Path
 $delay = 2
 while ($true) {
     $started = Get-Date
-    $process = Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) -Wait -PassThru
+    $process = Start-Process -FilePath $exe -ArgumentList '--agent' -WorkingDirectory (Split-Path -Parent $exe) -Wait -PassThru
     if ($process.ExitCode -eq 0) { break }
     if (((Get-Date) - $started).TotalSeconds -ge 60) { $delay = 2 }
     Start-Sleep -Seconds $delay

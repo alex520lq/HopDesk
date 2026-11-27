@@ -3,6 +3,7 @@
 
 /* Start after Core/xfer initialization; owns the IPC listener until run exits. */
 int split_agent_start(void);
+void split_agent_set_open_on_launch(int open);
 void split_agent_run(void);
 int split_agent_is_active(void);
 void split_agent_set_status(int connected, int sharing);

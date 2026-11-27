@@ -312,6 +312,27 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(h, msg, wp, lp);
 }
 
+static int cmdline_has_flag(const wchar_t *cmd, const wchar_t *flag) {
+    if (!cmd || !flag || !flag[0]) return 0;
+    size_t len = wcslen(flag);
+    const wchar_t *p = cmd;
+    while (*p) {
+        while (*p == L' ' || *p == L'\t') ++p;
+        if (!*p) break;
+        const wchar_t *start = p;
+        if (*p == L'"') {
+            ++p;
+            while (*p && *p != L'"') ++p;
+            if (*p == L'"') ++p;
+        } else {
+            while (*p && *p != L' ' && *p != L'\t') ++p;
+        }
+        if ((size_t)(p - start) == len && wcsncmp(start, flag, len) == 0)
+            return 1;
+    }
+    return 0;
+}
+
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     (void)prev; (void)show;
 
@@ -335,6 +356,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
         return 0;
     }
 
+    const int silent_agent = cmdline_has_flag(cmd, L"--agent") ||
+        GetEnvironmentVariableW(L"HOPDESK_UPDATE_READY", NULL, 0) > 0;
+
     /* ---- 单实例 ----
      * 两个实例会同时 bind 24817/24818，而 Windows 的 SO_REUSEADDR 允许
      * 后来者绑上同一个端口并把连接抢走 —— 表现是"对端连上了，但键鼠时灵时不灵"，
@@ -345,11 +369,24 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     static HANDLE s_instance_mtx = NULL;
     s_instance_mtx = CreateMutexW(NULL, TRUE, L"Local\\HopDesk.SingleInstance");
     if (s_instance_mtx && GetLastError() == ERROR_ALREADY_EXISTS) {
-        /* 托盘里已经有一个在跑，告诉用户去哪儿找，别让他以为程序没启动 */
-        MessageBoxW(NULL,
-                    L"HopDesk 已经在运行。\n\n"
-                    L"请到任务栏通知区域（托盘）里操作它的图标。",
-                    L"HopDesk", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+        if (!silent_agent) {
+            HWND existing = NULL;
+            for (int i = 0; i < 10 && !existing; ++i) {
+                existing = FindWindowExW(HWND_MESSAGE, NULL, L"HopDeskMsg", L"HopDesk");
+                if (!existing) Sleep(50);
+            }
+            if (existing) {
+                DWORD agent_pid = 0;
+                GetWindowThreadProcessId(existing, &agent_pid);
+                if (agent_pid) AllowSetForegroundWindow(agent_pid);
+                PostMessageW(existing, WM_COMMAND, 1090, 0);
+            } else {
+                MessageBoxW(NULL,
+                            L"HopDesk 已经在运行。\n\n"
+                            L"请到任务栏通知区域（托盘）里操作它的图标。",
+                            L"HopDesk", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+            }
+        }
         CloseHandle(s_instance_mtx);
         s_instance_mtx = NULL;
         return 0;
@@ -413,7 +450,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     if(g_app.cfg.input_mode & HOP_INPUT_KEYBOARD) kbd_init(&g_app);
     if(!hop_audio_set_mode(&g_app.cfg,g_app.cfg.audio_mode))
         hop_log(HOP_LOG_WARN,"audio: unable to start configured audio mode %u",g_app.cfg.audio_mode);
-    if (!win_split_agent_start(g_app.hwnd)) {
+    int split_started = win_split_agent_start(g_app.hwnd);
+    if (!split_started) {
         hop_log(HOP_LOG_ERROR, "unable to start local UI IPC");
         MessageBoxW(NULL, L"Unable to initialize HopDesk UI IPC.", L"HopDesk", MB_OK | MB_ICONERROR);
         DestroyWindow(g_app.hwnd);
@@ -421,6 +459,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     hop_watchdog_end(startup_guard);
     s_ui_guard = hop_watchdog_begin("Windows message loop", 30000);
     SetTimer(g_app.hwnd, IDT_HOOK, 3000, NULL);
+    /* Manual launch opens the main window once; closing it leaves the agent in the tray. */
+    if (split_started && !silent_agent) {
+        PostMessageW(g_app.hwnd, WM_COMMAND, 1090, 0);
+    }
 
     MSG m;
     while (GetMessageW(&m, NULL, 0, 0) > 0) {

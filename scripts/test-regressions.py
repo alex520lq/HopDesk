@@ -263,6 +263,12 @@ int main(void) {
     assert 'win_split_agent_start(g_app.hwnd)' in win_entry
     assert 'win_split_agent_stop();' in win_entry
     assert 'WM_APP_SPLIT_REQUEST' in win_entry and 'win_split_agent_dispatch();' in win_entry
+    assert 'L"--agent"' in win_entry and 'L"HOPDESK_UPDATE_READY"' in win_entry
+    assert 'PostMessageW(g_app.hwnd, WM_COMMAND, 1090, 0);' in win_entry
+    assert 'PostMessageW(existing, WM_COMMAND, 1090, 0);' in win_entry
+    assert 'split_agent_set_open_on_launch(!silent_agent);' in mac_main
+    assert '"--agent"' in mac_main and '"HOPDESK_UPDATE_READY"' in mac_main
+    assert "'--agent'" in (ROOT/'scripts/supervise-windows.ps1').read_text(encoding='utf-8')
     assert 'PIPE_REJECT_REMOTE_CLIENTS' in win_split
     assert 'GetNamedPipeClientProcessId' in win_split and 'GetNamedPipeServerProcessId' in win_split
     assert 'JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE' in win_split

@@ -340,8 +340,17 @@ int split_agent_start(void) {
     return 1;
 }
 
+static bool s_open_on_launch;
+
+void split_agent_set_open_on_launch(int open) {
+    s_open_on_launch = open != 0;
+}
+
 void split_agent_run(void) {
     statusbar_init();
+    if (s_open_on_launch && !atomic_load(&s_stopping)) {
+        dispatch_async(dispatch_get_main_queue(), ^{ statusbar_open_main(); });
+    }
     int guard = hop_watchdog_begin("macOS split-agent run loop", 30000);
     CFRunLoopTimerRef timer = CFRunLoopTimerCreateWithHandler(NULL, CFAbsoluteTimeGetCurrent() + 1,
         1, 0, 0, ^(CFRunLoopTimerRef heartbeat) {

@@ -247,6 +247,14 @@ static void open_main_window(void) {
         }];
 }
 
+void statusbar_open_main(void) {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ open_main_window(); });
+        return;
+    }
+    open_main_window();
+}
+
 static void statusbar_handle_click(NSEvent *event) {
     if (event && event.type == NSEventTypeRightMouseDown) {
         if (s_menu && s_item.button) [NSMenu popUpContextMenu:s_menu withEvent:event forView:s_item.button];

@@ -289,7 +289,7 @@ static int send_chunk(const hop_xfer_sender_context *context,
  * 最多允许 4 个文件等待接收端落盘 ACK。数据帧仍然串行写入同一 TCP
  * stream；ACK 由接收端 writer 异步返回，按 batch/id 独立归位。 */
 
-#define SENDER_ACK_POLL_INTERVAL_MS 0u
+#define SENDER_ACK_POLL_INTERVAL_MS 100u
 
 uint64_t now_ms(void) { return (uint64_t)GetTickCount64(); }
 

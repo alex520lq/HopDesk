@@ -28,6 +28,7 @@ _Static_assert(HOP_TASK_SESSION_BYTES == HOP_SESSION_BYTES, "task and protocol s
 #include <limits.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
 #include <pthread/qos.h>
 #include <sched.h>
@@ -390,16 +391,35 @@ int sender_context_write_frame(void *user, intptr_t socket_handle,
                                       size_t part_count) {
     sender_platform_context *ctx = (sender_platform_context *)user;
     if (!ctx || !ctx->tx_lock || !parts || !part_count) return 0;
+    size_t total = 0;
+    for (size_t i = 0; i < part_count; ++i) {
+        if ((!parts[i].data && parts[i].size) ||
+            parts[i].size > (size_t)INT_MAX ||
+            total > SIZE_MAX - parts[i].size)
+            return 0;
+        total += parts[i].size;
+    }
+    uint8_t coalesced[1024];
+    int use_coalesced = part_count > 1 && total > 0 && total <= sizeof(coalesced);
+    if (use_coalesced) {
+        size_t off = 0;
+        for (size_t i = 0; i < part_count; ++i) {
+            if (parts[i].size) {
+                memcpy(coalesced + off, parts[i].data, parts[i].size);
+                off += parts[i].size;
+            }
+        }
+    }
     int fd = (int)socket_handle;
     pthread_mutex_lock(ctx->tx_lock);
     int ok = sender_context_session_current(user, socket_handle, epoch);
-    for (size_t i = 0; ok && i < part_count; ++i) {
-        if ((!parts[i].data && parts[i].size) || parts[i].size > (size_t)INT_MAX) {
-            ok = 0;
-            break;
+    if (ok && use_coalesced) {
+        ok = send_all(fd, coalesced, total);
+    } else {
+        for (size_t i = 0; ok && i < part_count; ++i) {
+            if (parts[i].size)
+                ok = send_all(fd, parts[i].data, parts[i].size);
         }
-        if (parts[i].size)
-            ok = send_all(fd, parts[i].data, parts[i].size);
     }
     pthread_mutex_unlock(ctx->tx_lock);
     return ok;
@@ -810,11 +830,14 @@ static void xfer_data_frame(void *opaque, uint8_t type, const uint8_t *payload, 
     xfer_data_frame_context *frame = (xfer_data_frame_context *)opaque;
     if (!frame || !xfer_data_frame_current(frame)) return;
     if (!hop_update_receive_enter()) {
+        int rejected = 0;
         pthread_mutex_lock(&s_x.slock);
         if (s_x.sock == frame->socket && s_x.epoch == frame->epoch) {
             s_x.peer_ready = 0; ++s_x.epoch; shutdown(frame->socket, SHUT_RDWR);
+            rejected = 1;
         }
         pthread_mutex_unlock(&s_x.slock);
+        if (rejected) sender_context_wake_ack();
         return;
     }
     int guard = hop_watchdog_begin("data receive frame", 60000);
@@ -824,15 +847,25 @@ static void xfer_data_frame(void *opaque, uint8_t type, const uint8_t *payload, 
     pthread_mutex_unlock(&s_x.slock);
     hop_rx_frame_action action = xfer_receive_process_frame(
         &frame->session, g_mac.cfg.token, authenticated, type, payload, length);
+    int became_ready = 0, rejected = 0;
     pthread_mutex_lock(&s_x.slock);
     if (s_x.sock == frame->socket && s_x.epoch == frame->epoch) {
-        if (action == HOP_RX_FRAME_HELLO_ACCEPT) s_x.peer_ready = 1;
-        else if (action == HOP_RX_FRAME_HELLO_REJECT || action == HOP_RX_FRAME_REJECT_PEER) {
+        if (action == HOP_RX_FRAME_HELLO_ACCEPT) {
+            s_x.peer_ready = 1;
+            became_ready = 1;
+        } else if (action == HOP_RX_FRAME_HELLO_REJECT || action == HOP_RX_FRAME_REJECT_PEER) {
             s_x.peer_ready = 0; ++s_x.epoch;
             shutdown(frame->socket, SHUT_RDWR);
+            rejected = 1;
         }
     }
     pthread_mutex_unlock(&s_x.slock);
+    if (became_ready) {
+        pthread_mutex_lock(&s_x.qlock);
+        pthread_cond_signal(&s_x.qcond);
+        pthread_mutex_unlock(&s_x.qlock);
+    }
+    if (rejected) sender_context_wake_ack();
     hop_watchdog_end(guard);
     hop_update_work_leave();
 }
@@ -870,6 +903,8 @@ static int accept_data(const hop_session_id *expected){
     return -1;
 }
 static void configure_data_socket(int s) {
+    int nodelay = 1;
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
     int bufsz = 4 * 1024 * 1024;
     setsockopt(s, SOL_SOCKET, SO_RCVBUF, &bufsz, sizeof(bufsz));
     setsockopt(s, SOL_SOCKET, SO_SNDBUF, &bufsz, sizeof(bufsz));
@@ -908,6 +943,7 @@ static void retire_data_socket(int fd) {
     }
     shutdown(fd, SHUT_RDWR);
     pthread_mutex_unlock(&s_x.slock);
+    sender_context_wake_ack();
     pthread_mutex_lock(&s_txlock);
     close(fd);
     pthread_mutex_unlock(&s_txlock);
@@ -1027,12 +1063,10 @@ static void run_data_server(hop_decoder *dec, xfer_data_frame_context *frame) {
                     }
                     if (!bad) {
                         uint8_t reply[2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES];
+                        uint8_t wire[HOP_HEADER_SIZE + sizeof(reply)];
                         uint32_t reply_len = hop_xfer_hello_encode(reply, g_mac.cfg.token, &session);
-                        uint8_t header[HOP_HEADER_SIZE];
-                        hop_encode_header(header, HOP_MSG_XFER_HELLO, reply_len);
-                        bad = !reply_len ||
-                              !send_all(pending, header, sizeof(header)) ||
-                              !send_all(pending, reply, reply_len);
+                        uint32_t wire_len = hop_encode_frame(HOP_MSG_XFER_HELLO, reply, reply_len, wire);
+                        bad = !reply_len || !send_all(pending, wire, wire_len);
                     }
                     if (!bad) {
                         hop_log(HOP_LOG_INFO, active < 0 ? "xfer: authenticated data channel"
@@ -1055,6 +1089,7 @@ static void run_data_server(hop_decoder *dec, xfer_data_frame_context *frame) {
                         pthread_mutex_unlock(&s_x.slock);
                         pthread_mutex_lock(&s_x.qlock);
                         hop_xfer_sender_active_job_reset_peer_abort(&s_x.active_job);
+                        pthread_cond_signal(&s_x.qcond);
                         pthread_mutex_unlock(&s_x.qlock);
                     }
                 }

@@ -736,18 +736,13 @@ void hopdesk_ui_init(cui_ctx *ui) {
     s_force_refresh = 1;
     s_selected_file = -1;
     if (!s_settings.dirty && !s_settings.saving) s_settings.loaded = 0;
-    if (s_ops && s_ops->cjk_font_path) {
-        for (i = 0; i < 4; ++i) {
-            const char *path = s_ops->cjk_font_path(i);
-            if (path && path[0]) {
-                cui_font font = cui_font_load_file(ui, path);
-                if (font >= 0) {
-                    cui_font_add_fallback(ui, CUI_FONT_BODY, font);
-                    cui_font_add_fallback(ui, CUI_FONT_MEDIUM, font);
-                    cui_font_add_fallback(ui, CUI_FONT_DISPLAY, font);
-                    cui_font_add_fallback(ui, CUI_FONT_MONO, font);
-                }
-            }
+    if (s_ops && s_ops->load_cjk_font) {
+        cui_font font = s_ops->load_cjk_font(ui);
+        if (font >= 0) {
+            cui_font_add_fallback(ui, CUI_FONT_BODY, font);
+            cui_font_add_fallback(ui, CUI_FONT_MEDIUM, font);
+            cui_font_add_fallback(ui, CUI_FONT_DISPLAY, font);
+            cui_font_add_fallback(ui, CUI_FONT_MONO, font);
         }
     }
 }
@@ -811,6 +806,14 @@ void hopdesk_ui_frame(cui_ctx *ui) {
 
 void hopdesk_ui_shutdown(void) {
     s_ctx = NULL;
+    if (s_ops && s_ops->release_cjk_font)
+        s_ops->release_cjk_font();
+    memset(&s_model, 0, sizeof(s_model));
+    memset(&s_settings, 0, sizeof(s_settings));
+    s_selected_task = 0;
+    s_selected_file = -1;
+    s_file_offset = 0;
+    s_force_refresh = 1;
 }
 
 void hopdesk_ui_refresh(void) {

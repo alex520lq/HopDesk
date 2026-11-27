@@ -17,7 +17,6 @@ static pthread_mutex_t s_manager_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Manager lock always precedes the budget lock. No budget operation calls back
  * into this manager. A record owns exactly one reservation and one handle. */
-#define HOP_TASK_INDEX_BUCKETS 8192u
 typedef struct task_record {
     struct task_record *next, *hash_next;
     hop_xfer_task *owner;
@@ -227,7 +226,7 @@ int hop_xfer_task_init_classified(hop_xfer_task *task, uint64_t offer, uint32_t 
     r->state=HOP_XFER_TASK_CREATED; r->next=s_tasks; s_tasks=r;
     unsigned bucket=(unsigned)(r->id % HOP_TASK_INDEX_BUCKETS);
     r->hash_next=s_task_index[bucket]; s_task_index[bucket]=r; ++s_task_count;
-    task->id=r->id; task->initialized=1;
+    task->id=r->id; task->initialized=1; task->transfer_id=transfer;
     bump_revision(&s_task_revision);
     UNLOCK(); return 1;
 }

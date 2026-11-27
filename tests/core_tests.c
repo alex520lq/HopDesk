@@ -1382,22 +1382,26 @@ static void test_xfer_task_identity_and_lifecycle(void) {
 }
 
 static void test_xfer_task_index_collision(void) {
-    hop_xfer_task first={0}, tmp={0}, last={0};
+    hop_xfer_task first={0}, moved={0}, tmp={0}, last={0};
     hop_xfer_task_snapshot snap;
     CHECK(hop_xfer_task_init(&first,0,0,1));
-    const uint64_t first_id=first.id;
-    /* The manager index has 8192 buckets. Keep the first record alive while
-     * cycling enough IDs to force a real collision, then remove both orders. */
-    for (unsigned i=0; i<8191; ++i) {
+    CHECK(first.transfer_id==1);
+    CHECK(hop_xfer_task_move(&moved,&first));
+    CHECK(moved.transfer_id==1 && first.transfer_id==0);
+    const uint64_t first_id=moved.id;
+    /* Keep the first record alive while cycling HOP_TASK_INDEX_BUCKETS IDs
+     * to force a real bucket collision, then remove both orders. */
+    for (unsigned i=0; i<HOP_TASK_INDEX_BUCKETS-1u; ++i) {
         CHECK(hop_xfer_task_init(&tmp,0,0,2));
         hop_xfer_task_dispose(&tmp);
     }
     CHECK(hop_xfer_task_init(&last,0,0,3));
     const uint64_t last_id=last.id;
-    CHECK(last_id-first_id==8192);
+    CHECK(last_id-first_id==HOP_TASK_INDEX_BUCKETS);
     CHECK(hop_xfer_task_get_snapshot(first_id,&snap) && snap.transfer_id==1);
     CHECK(hop_xfer_task_get_snapshot(last_id,&snap) && snap.transfer_id==3);
-    hop_xfer_task_dispose(&first);
+    hop_xfer_task_dispose(&moved);
+    CHECK(moved.transfer_id==0);
     CHECK(!hop_xfer_task_get_snapshot(first_id,&snap));
     CHECK(hop_xfer_task_get_snapshot(last_id,&snap) && snap.transfer_id==3);
     hop_xfer_task_dispose(&last);

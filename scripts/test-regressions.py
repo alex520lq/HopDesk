@@ -2346,3 +2346,8 @@ for platform in ['win', 'mac']:
 rx_handlers = (ROOT / 'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
 assert 'image_crc = hop_xfer_file_crc_step(' in extract(sender_engine, 'hop_xfer_sender_run_image')
 assert 'msg.file_crc != rx->image_state.crc' in extract(rx_handlers, 'hop_xfer_rx_handle_file_end')
+crc_src = (ROOT / 'src/core/crc32.c').read_text(encoding='utf-8')
+assert 'static const uint32_t s_tab[256]' in crc_src and 'volatile' not in crc_src
+for platform in ['win', 'mac']:
+    rx_src = (ROOT / f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
+    assert 'hop_xfer_task_get_snapshot(' not in extract(rx_src, 'wq_write_time')

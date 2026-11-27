@@ -98,10 +98,10 @@ static uint64_t wq_now_ns(void *context) {
 }
 static void wq_write_time(void *context, void *owner, uint64_t elapsed_ns) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
-    hop_xfer_task_snapshot snapshot;
-    if (rx && owner && hop_xfer_task_get_snapshot(((hop_xfer_task *)owner)->id, &snapshot) &&
+    const hop_xfer_task *task = (const hop_xfer_task *)owner;
+    if (rx && task && task->initialized && task->transfer_id &&
         rx->services.status_stage_time)
-        rx->services.status_stage_time(rx->services.context, snapshot.transfer_id,
+        rx->services.status_stage_time(rx->services.context, task->transfer_id,
                                        HOP_XFER_TIME_WRITE, elapsed_ns);
 }
 static void wq_open_error(void *context, const char *path, int error) {

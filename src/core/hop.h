@@ -38,6 +38,8 @@ extern "C" {
 #define HOP_CHUNK_KB_MAX     4096
 /* 单帧载荷上限：按最大分块算（分块头 id4+off8+len4，另留余量） */
 #define HOP_MAX_PAYLOAD      ((uint32_t)HOP_CHUNK_KB_MAX * 1024u + 1024u)
+/* 控制通道帧上限：覆盖文本 (64 KB) 与 256 项文件 Offer (~66 KB)，避免控制通道分配 4 MB。 */
+#define HOP_CTRL_MAX_PAYLOAD (128u * 1024u)
 
 /* ---- 消息类型 ---- */
 typedef enum {
@@ -304,6 +306,8 @@ typedef struct hop_decoder hop_decoder;
 typedef void (*hop_on_message)(void *user, uint8_t type,
                                const uint8_t *payload, uint32_t plen);
 hop_decoder *hop_decoder_new(void *user, hop_on_message cb);
+hop_decoder *hop_decoder_new_with_limit(void *user, hop_on_message cb,
+                                        uint32_t max_payload);
 /* 返回 1 = 正常；0 = 流已损坏（帧长超限 / 内存不足），解码器进入粘滞失败态，
  * 之后的 feed 一律返回 0、不再回调，直到 reset。
  *

@@ -100,6 +100,10 @@ static int xfer_submit_paths_impl(const wchar_t *const *paths, int n, uint32_t r
     hop_xfer_scan_paths(&l, paths, n, &scan_services);
     uint64_t scan_elapsed_ns=rate_now_ns()-scan_started_ns;
 
+    if (l.skipped_links > 0)
+        hop_log(HOP_LOG_WARN, "xfer: skipped %d symbolic link(s) while scanning batch %u",
+                l.skipped_links, batch);
+
     if (l.failed || l.n == 0 || hop_xfer_task_cancel_requested(task.id)) {
         if (l.budget_rejected)
             hop_log(HOP_LOG_WARN, "xfer: global entries/pending-bytes budget exceeded; batch rejected (task=%llu)",

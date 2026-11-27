@@ -1384,9 +1384,11 @@ int main(void){
             assert 'hop_xfer_rx_fs_create_directory_if_missing(path)' in receive_impl
             assert 'hop_xfer_rx_fs_ensure_dirs(copy)' in receive_impl
             fs=(ROOT/'src/win/xfer_rx_fs.c').read_text(encoding='utf-8')
-            assert 'GetFileAttributesW(path)' in fs
-            assert 'operation.fAnyOperationsAborted' in fs
-            assert 'operation_result != 0 || operation.fAnyOperationsAborted' in fs
+            assert 'alloc_extended_path' in fs
+            assert 'GetFileAttributesW(target)' in fs
+            assert 'remove_tree_recursive' in fs
+            assert 'FILE_ATTRIBUTE_REPARSE_POINT' in fs
+            assert 'RemoveDirectoryW' in fs
             assert 'hop_xfer_rx_fs_path_for' in fs and 'hop_xfer_rx_fs_remove_tree' in fs
             assert 'L"\\\\HopDesk\\\\"' in receive_impl, 'Windows staging cleanup must match the single-separator production path'
             assert 'retaining path for retry' in receive_impl
@@ -2333,3 +2335,18 @@ assert mac_server_loop.index('hop_xfer_hello_bound(') < mac_server_loop.index('h
 assert 'pthread_cond_timedwait_relative_np' in mac_ack and 'CLOCK_MONOTONIC' in mac_ack
 assert 'HOP_XFER_ACK_WINDOW_MAX_BYTES' in sender_engine
 assert 'wait_take(context->ack_coordinator,\n                    batch, id, 0u' in ack_wait or 'batch, id, 0u' in ack_wait
+
+# Tier-2 transfer performance, validation, long-path and image CRC regressions.
+assert 'hop_decoder_new_with_limit(' in win_ctrl and 'HOP_CTRL_MAX_PAYLOAD' in win_ctrl
+assert 'hop_decoder_new_with_limit(' in mac_ctrl and 'HOP_CTRL_MAX_PAYLOAD' in mac_ctrl
+for platform in ['win', 'mac']:
+    rx_src = (ROOT / f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
+    sender_src = (ROOT / f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+    scanner_src = (ROOT / f'src/{platform}/xfer_scanner.c').read_text(encoding='utf-8')
+    assert 'hop_writer_queue_flush(' in extract(rx_src, 'rx_context_close_file')
+    assert 'hop_writer_queue_drain(' in extract(rx_src, 'rx_context_status_end')
+    assert 'hop_xfer_rate_feedback(&s_x.rate, ack_rtt_us, 0u)' in extract(sender_src, 'rate_feedback')
+    assert 'skipped_links' in scanner_src
+rx_handlers = (ROOT / 'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
+assert 'image_crc = hop_xfer_file_crc_step(' in extract(sender_engine, 'hop_xfer_sender_run_image')
+assert 'msg.file_crc != rx->image_state.crc' in extract(rx_handlers, 'hop_xfer_rx_handle_file_end')

@@ -194,23 +194,35 @@ void hop_encode_header(uint8_t out[HOP_HEADER_SIZE], uint8_t type,
 }
 
 /* ---- 解码状态机 ---- */
+#define HOP_DECODER_RETAIN_BYTES (512u * 1024u)
+
 struct hop_decoder {
     void         *user;
     hop_on_message cb;
     uint8_t       hdr[HOP_HEADER_SIZE];
     uint32_t      hdr_have;
     uint8_t      *body;
+    uint32_t      body_cap;
     uint32_t      body_len;    /* 期望长度 */
     uint32_t      body_have;
+    uint32_t      max_payload;
     int           failed;      /* 粘滞失败：流已损坏，只能 reset / 断开 */
 };
 
-hop_decoder *hop_decoder_new(void *user, hop_on_message cb) {
+hop_decoder *hop_decoder_new_with_limit(void *user, hop_on_message cb,
+                                        uint32_t max_payload) {
     hop_decoder *d = (hop_decoder *)calloc(1, sizeof(*d));
     if (!d) return NULL;
     d->user = user;
     d->cb = cb;
+    if (max_payload == 0 || max_payload > HOP_MAX_PAYLOAD)
+        max_payload = HOP_MAX_PAYLOAD;
+    d->max_payload = max_payload;
     return d;
+}
+
+hop_decoder *hop_decoder_new(void *user, hop_on_message cb) {
+    return hop_decoder_new_with_limit(user, cb, HOP_MAX_PAYLOAD);
 }
 
 void hop_decoder_reset(hop_decoder *d) {
@@ -218,6 +230,7 @@ void hop_decoder_reset(hop_decoder *d) {
     d->hdr_have = 0;
     d->body_have = 0;
     d->body_len = 0;
+    d->body_cap = 0;
     if (d->body) { free(d->body); d->body = NULL; }
 }
 
@@ -228,11 +241,20 @@ void hop_decoder_free(hop_decoder *d) {
 }
 
 static void emit(hop_decoder *d) {
-    d->cb(d->user, d->hdr[0], d->body, d->body_len);
+    const uint8_t *payload = d->body_len ? d->body : NULL;
+    uint32_t plen = d->body_len;
+    d->cb(d->user, d->hdr[0], payload, plen);
     d->hdr_have = 0;
     d->body_have = 0;
     d->body_len = 0;
-    if (d->body) { free(d->body); d->body = NULL; }
+    /* Reuse buffers up to HOP_DECODER_RETAIN_BYTES to avoid per-frame
+     * malloc/free on mouse/key and 256 KB data chunks, while releasing
+     * oversized 1-4 MB spikes promptly. */
+    if (d->body && d->body_cap > HOP_DECODER_RETAIN_BYTES) {
+        free(d->body);
+        d->body = NULL;
+        d->body_cap = 0;
+    }
 }
 
 int hop_decoder_failed(const hop_decoder *d) {
@@ -269,15 +291,18 @@ int hop_decoder_feed(hop_decoder *d, const uint8_t *buf, uint32_t n) {
             d->body_have = 0;
             /* 长度不可信 = 帧边界丢失。不能"跳过这一帧"：下一帧从哪开始
              * 已经无从知道，继续解只会把载荷字节当成帧头。 */
-            if (d->body_len > HOP_MAX_PAYLOAD) return fail(d);
+            if (d->body_len > d->max_payload) return fail(d);
             if (d->body_len == 0) {
-                d->body = NULL;
                 emit(d);
                 if (d->failed) return 0;
                 continue;
             }
-            d->body = (uint8_t *)malloc(d->body_len);
-            if (!d->body) return fail(d);
+            if (d->body_len > d->body_cap) {
+                if (d->body) { free(d->body); d->body = NULL; d->body_cap = 0; }
+                d->body = (uint8_t *)malloc(d->body_len);
+                if (!d->body) return fail(d);
+                d->body_cap = d->body_len;
+            }
         } else {
             uint32_t take = d->body_len - d->body_have;
             if (take > n - i) take = n - i;

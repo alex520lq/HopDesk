@@ -145,7 +145,13 @@ void hop_xfer_rate_feedback(hop_xfer_rate_limiter *rate,
                             uint32_t queue_pressure_permille) {
     int congested, healthy;
     if (!rate) return;
-    if (ack_rtt_us) rate->ack_rtt_ewma_us = ewma(rate->ack_rtt_ewma_us, ack_rtt_us);
+    if (ack_rtt_us) {
+        rate->ack_rtt_ewma_us = ewma(rate->ack_rtt_ewma_us, ack_rtt_us);
+    } else if (!rate->send_congested && rate->ack_rtt_ewma_us) {
+        /* Decay stale per-file ACK RTT during healthy chunk streaming so one
+         * slow disk-close ACK does not pin a later large file to min_rate. */
+        rate->ack_rtt_ewma_us -= (rate->ack_rtt_ewma_us + 7u) / 8u;
+    }
     if (queue_pressure_permille > 1000u) queue_pressure_permille = 1000u;
 
     congested = queue_pressure_permille >= RATE_QUEUE_CONGESTED_PERMILLE ||

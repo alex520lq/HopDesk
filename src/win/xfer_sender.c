@@ -233,11 +233,12 @@ void sender_context_init(void) {
 
 static void rate_feedback(uint64_t ack_rtt_us) {
     uint64_t before = s_x.rate.current_rate_bytes_per_sec;
-    uint32_t pressure = hop_xfer_rate_feedback_from_budget(&s_x.rate, ack_rtt_us);
+    /* Do not throttle outbound sending with local inbound rx_queue pressure. */
+    hop_xfer_rate_feedback(&s_x.rate, ack_rtt_us, 0u);
     if (s_x.rate.current_rate_bytes_per_sec < before) {
-        hop_log(HOP_LOG_INFO, "xfer: adaptive send rate %.1f MB/s (ack %.1f ms, local rx queue %u/1000)",
+        hop_log(HOP_LOG_INFO, "xfer: adaptive send rate %.1f MB/s (ack %.1f ms)",
                 (double)s_x.rate.current_rate_bytes_per_sec / 1048576.0,
-                (double)ack_rtt_us / 1000.0, pressure);
+                (double)ack_rtt_us / 1000.0);
     }
 }
 

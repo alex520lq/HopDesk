@@ -25,6 +25,7 @@ typedef struct {
     uint32_t lengths[8];
     uint32_t crcs[8];
     uint64_t crc_times[8];
+    uint32_t end_crc;
     uint64_t now;
 } fake_image;
 
@@ -69,7 +70,8 @@ static int image_end(void *user, uint32_t batch, uint32_t id,
                      uint8_t status, uint32_t file_crc) {
     fake_image *f = (fake_image *)user;
     assert(batch == 42 && id == 1);
-    assert(status == HOP_FILE_OK && file_crc == 0);
+    assert(status == HOP_FILE_OK);
+    f->end_crc = file_crc;
     ++f->end_calls;
     return !f->fail_end;
 }
@@ -114,6 +116,10 @@ static void test_chunk_order_crc_and_completion(void) {
     assert(f.offsets[0] == 0 && f.lengths[0] == 6);
     assert(f.offsets[1] == 6 && f.lengths[1] == 6);
     assert(f.offsets[2] == 12 && f.lengths[2] == 4);
+    uint32_t expected_crc = 0;
+    for (int i = 0; i < 3; ++i)
+        expected_crc = hop_xfer_file_crc_step(expected_crc, f.offsets[i], f.crcs[i]);
+    assert(f.end_crc == expected_crc && expected_crc != 0);
     assert(f.crc_times[0] == 100 && f.crc_times[1] == 100 && f.crc_times[2] == 100);
     assert(f.yield_calls == 3 && f.feedback_calls == 1 && f.status_calls == 1);
     assert(next == 1 && ok == 1);

@@ -268,6 +268,17 @@ rollback:
     return 0;
 }
 
+void hop_writer_queue_flush(hop_writer_queue *queue) {
+    if (!queue) return;
+    int guard = watchdog_begin(queue, "disk queue wait",
+                               queue->callbacks.io_deadline_ms + 5000);
+    pthread_mutex_lock(&queue->lock);
+    while (!hop_xfer_rx_queue_drained(&queue->accounting))
+        pthread_cond_wait(&queue->cv_space, &queue->lock);
+    pthread_mutex_unlock(&queue->lock);
+    watchdog_end(queue, guard);
+}
+
 void hop_writer_queue_drain(hop_writer_queue *queue) {
     if (!queue) return;
     int guard = watchdog_begin(queue, "disk queue wait",

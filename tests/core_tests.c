@@ -352,6 +352,18 @@ static void test_xfer_relative_path_validation(void) {
     CHECK(!hop_xfer_relpath_safe("folder/./file"));
     CHECK(!hop_xfer_relpath_safe("file:stream"));
     CHECK(!hop_xfer_relpath_safe("bad\nname"));
+    CHECK(!hop_xfer_relpath_safe("bad?name"));
+    CHECK(!hop_xfer_relpath_safe("bad*name"));
+    CHECK(!hop_xfer_relpath_safe("bad<name>"));
+    CHECK(!hop_xfer_relpath_safe("trailing "));
+    CHECK(!hop_xfer_relpath_safe("trailing."));
+    CHECK(!hop_xfer_relpath_safe("folder/trailing /a.txt"));
+    CHECK(!hop_xfer_relpath_safe("CON"));
+    CHECK(!hop_xfer_relpath_safe("folder/nul.txt"));
+    CHECK(!hop_xfer_relpath_safe("com1"));
+    CHECK(!hop_xfer_relpath_safe("LPT9.log"));
+    CHECK(hop_xfer_relpath_safe("console.txt"));
+    CHECK(hop_xfer_relpath_safe("COM0.txt"));
 }
 
 static void test_xfer_image_bounds(void) {
@@ -1024,6 +1036,24 @@ static void test_xfer_rate_limiter(void) {
     hop_xfer_rate_feedback(&rate,50000,0);
     CHECK(rate.current_rate_bytes_per_sec==128ull*1024ull*1024ull+
           (512ull*1024ull*1024ull)/100ull);
+
+    /* Healthy chunk streaming decays a stale high ACK RTT from an earlier file. */
+    hop_xfer_rate_init(&rate,1000,100,2000,100,0);
+    hop_xfer_rate_feedback(&rate,1000000,0);
+    CHECK(rate.ack_rtt_ewma_us==1000000&&rate.rate_decreases==1);
+    for(int i=0;i<32;i++)hop_xfer_rate_feedback(&rate,0,0);
+    CHECK(rate.ack_rtt_ewma_us<100000&&rate.rate_increases>0);
+
+    /* Per-channel decoder limit rejects control frames above HOP_CTRL_MAX_PAYLOAD. */
+    {
+        uint8_t hdr[HOP_HEADER_SIZE];
+        hop_encode_header(hdr, HOP_MSG_CLIP_TEXT, HOP_CTRL_MAX_PAYLOAD + 1u);
+        hop_decoder *ctrl = hop_decoder_new_with_limit(NULL, NULL, HOP_CTRL_MAX_PAYLOAD);
+        CHECK(ctrl != NULL);
+        CHECK(!hop_decoder_feed(ctrl, hdr, sizeof(hdr)));
+        CHECK(hop_decoder_failed(ctrl));
+        hop_decoder_free(ctrl);
+    }
 }
 
 static void test_xfer_task_image_buffer_transfer(void) {

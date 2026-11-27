@@ -351,9 +351,8 @@ static void rx_context_close_file(void *context) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
     if (!rx || !rx->writer) return;
     hop_writer_queue *writer = (hop_writer_queue *)rx->writer;
-    hop_writer_queue_drain(writer);
     (void)hop_writer_queue_enqueue_close(writer);
-    hop_writer_queue_drain(writer);
+    hop_writer_queue_flush(writer);
 }
 static int rx_context_file_error(void *context) {
     xfer_rx_context *rx = (xfer_rx_context *)context;
@@ -408,7 +407,8 @@ static int rx_context_status_begin(void *context, uint32_t batch, uint32_t files
     return status_begin(batch, HOP_XFER_DIR_RECEIVE, files, bytes, name, phase);
 }
 static void rx_context_status_end(void *context, uint32_t batch, int phase, const char *detail) {
-    (void)context;
+    xfer_rx_context *rx = (xfer_rx_context *)context;
+    if (rx && rx->writer) hop_writer_queue_drain((hop_writer_queue *)rx->writer);
     status_end(HOP_XFER_DIR_RECEIVE, batch, phase, detail);
 }
 static void rx_context_status_add_file(void *context, uint32_t batch, uint32_t id,

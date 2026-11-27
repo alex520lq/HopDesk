@@ -62,6 +62,7 @@ void elist_free(elist *list) {
     list->n = list->cap = 0;
     list->failed = 0;
     list->budget_rejected = 0;
+    list->skipped_links = 0;
     list->error = HOP_XFER_SCAN_OK;
 }
 
@@ -77,7 +78,8 @@ static struct dirent *guarded_readdir(DIR *directory,
     return entry;
 }
 
-static void walk_into(elist *list, const char *full, const char *relative, const hop_xfer_scan_services *services) {
+static void walk_into(elist *list, const char *full, const char *relative,
+                      const hop_xfer_scan_services *services, int depth) {
     if (!list || list->failed) return;
     if (services->is_cancelled(services->context)) { scan_fail(list, HOP_XFER_SCAN_CANCELLED); return; }
 
@@ -90,6 +92,10 @@ static void walk_into(elist *list, const char *full, const char *relative, const
         return;
     }
     if (S_ISLNK(st.st_mode)) {
+        if (depth > 0) {
+            ++list->skipped_links;
+            return;
+        }
         scan_fail(list, HOP_XFER_SCAN_LINK_REJECTED);
         return;
     }
@@ -165,7 +171,7 @@ static void walk_into(elist *list, const char *full, const char *relative, const
         }
         snprintf(child, full_len + name_len + 2, "%s/%s", full, de->d_name);
         snprintf(child_rel, rel_len + name_len + 2, "%s/%s", relative, de->d_name);
-        walk_into(list, child, child_rel, services);
+        walk_into(list, child, child_rel, services, depth + 1);
         free(child);
         free(child_rel);
         if (list->failed) break;
@@ -186,7 +192,7 @@ void hop_xfer_scan_paths(elist *list, const hop_xfer_scan_path *paths, int count
         if (!paths[i] || !paths[i][0]) { scan_fail(list, HOP_XFER_SCAN_INVALID_INPUT); break; }
         const char *base = strrchr(paths[i], '/');
         base = base ? base + 1 : paths[i];
-        walk_into(list, paths[i], base, services);
+        walk_into(list, paths[i], base, services, 0);
         if (list->failed) break;
     }
 }

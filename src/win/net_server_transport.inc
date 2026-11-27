@@ -2,7 +2,7 @@ static DWORD WINAPI reader_thread(LPVOID arg) {
     connection *c = (connection *)arg;
     net_server *s = c->server;
     char buf[8192];
-    c->decoder = hop_decoder_new(c, on_message);
+    c->decoder = hop_decoder_new_with_limit(c, on_message, HOP_CTRL_MAX_PAYLOAD);
     while (c->decoder && !c->rejected &&
            WaitForSingleObject(s->stop, 0) != WAIT_OBJECT_0 &&
            !InterlockedCompareExchange((LONG *)&s->disconnected, 0, 0)) {

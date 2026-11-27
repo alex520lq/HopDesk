@@ -14,6 +14,7 @@ typedef struct {
     uint64_t expected;
     uint64_t received;
     uint64_t capacity;
+    uint32_t crc;
 } hop_xfer_rx_image_state;
 
 typedef enum {

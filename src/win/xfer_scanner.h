@@ -52,6 +52,7 @@ typedef struct {
     int n, cap;
     int failed;
     int budget_rejected;
+    int skipped_links;
     hop_xfer_scan_error error;
 } elist;
 

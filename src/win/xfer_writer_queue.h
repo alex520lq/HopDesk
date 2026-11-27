@@ -27,6 +27,7 @@ int hop_writer_queue_enqueue_write(hop_writer_queue *queue, void *task_owner,
                                    uint64_t offset, const uint8_t *data,
                                    uint32_t length);
 int hop_writer_queue_enqueue_close(hop_writer_queue *queue);
+void hop_writer_queue_flush(hop_writer_queue *queue);
 void hop_writer_queue_drain(hop_writer_queue *queue);
 void hop_writer_queue_error_reset(hop_writer_queue *queue);
 int hop_writer_queue_error(const hop_writer_queue *queue);

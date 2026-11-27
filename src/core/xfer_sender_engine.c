@@ -560,6 +560,7 @@ int hop_xfer_sender_run_image(const hop_xfer_sender_image_ops *ops,
 
     const uint64_t total = (uint64_t)stride * (uint64_t)height;
     uint64_t offset = 0;
+    uint32_t image_crc = 0;
     while (offset < total) {
         if (ops->cancel_requested(ops->user, batch))
             return HOP_XFER_SENDER_JOB_CANCELLED;
@@ -579,6 +580,7 @@ int hop_xfer_sender_run_image(const hop_xfer_sender_image_ops *ops,
                                    pixels + offset, length, crc, elapsed_ns))
             return HOP_XFER_SENDER_JOB_NET_DOWN;
 
+        image_crc = hop_xfer_file_crc_step(image_crc, offset, crc);
         offset += length;
         if (ops->yield_cpu) ops->yield_cpu(ops->user);
         if (ops->cancel_requested(ops->user, batch))
@@ -587,7 +589,7 @@ int hop_xfer_sender_run_image(const hop_xfer_sender_image_ops *ops,
             return HOP_XFER_SENDER_JOB_PEER_ABORT;
     }
 
-    if (!ops->send_image_end(ops->user, batch, 1, file_ok_status, 0))
+    if (!ops->send_image_end(ops->user, batch, 1, file_ok_status, image_crc))
         return HOP_XFER_SENDER_JOB_NET_DOWN;
 
     *ok_count = 1;

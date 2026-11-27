@@ -380,7 +380,7 @@ static void *net_thread(void *arg) {
 void net_loop_run(void) {
     s_stop = 0;
     atomic_store_explicit(&s_local_input_mode, g_mac.cfg.input_mode & HOP_INPUT_MODES, memory_order_release);
-    s_dec = hop_decoder_new(NULL, on_message);
+    s_dec = hop_decoder_new_with_limit(NULL, on_message, HOP_CTRL_MAX_PAYLOAD);
     if (!s_dec) { hop_log(HOP_LOG_ERROR, "net: decoder allocation failed"); return; }
     if (pthread_create(&s_control_sender_thread, NULL, control_sender, NULL)) {
         hop_log(HOP_LOG_ERROR, "control sender creation failed");

@@ -70,10 +70,19 @@ static DWORD WINAPI sender_thread(LPVOID arg) {
         LeaveCriticalSection(&s->lock);
         if (it) {
             int guard = hop_watchdog_begin("control frame send", 10000);
-            uint8_t hdr[HOP_HEADER_SIZE];
-            hop_encode_header(hdr, it->type, it->len);
-            int ok = sock != INVALID_SOCKET && send_all(sock, hdr, sizeof(hdr)) &&
-                     send_all(sock, it->data, it->len);
+            int ok = 0;
+            if (sock != INVALID_SOCKET) {
+                if (it->len <= 1024u) {
+                    uint8_t frame[HOP_HEADER_SIZE + 1024u];
+                    uint32_t total = hop_encode_frame(it->type, it->data, it->len, frame);
+                    ok = send_all(sock, frame, total);
+                } else {
+                    uint8_t hdr[HOP_HEADER_SIZE];
+                    hop_encode_header(hdr, it->type, it->len);
+                    ok = send_all(sock, hdr, sizeof(hdr)) &&
+                         send_all(sock, it->data, it->len);
+                }
+            }
             hop_watchdog_end(guard);
             free(it);
             if (!ok) {
@@ -145,6 +154,8 @@ static DWORD WINAPI server_thread(LPVOID arg) {
         }
         if (!slot) { closesocket(sock); continue; }
         DWORD rcv = 500, snd = HOP_CTRL_SEND_TIMEOUT_MS;
+        BOOL nodelay = TRUE;
+        setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char *)&nodelay, sizeof(nodelay));
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&rcv, sizeof(rcv));
         setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&snd, sizeof(snd));
         net_set_keepalive(sock);
@@ -175,8 +186,7 @@ SOCKET net_connect_timeout_win(const char *host,uint16_t port,HANDLE stop) {
     struct addrinfo hints,*res=NULL;memset(&hints,0,sizeof(hints));
     hints.ai_family=AF_UNSPEC;hints.ai_socktype=SOCK_STREAM;
     char service[16];snprintf(service,sizeof(service),"%u",(unsigned)port);
-    int guard=hop_watchdog_begin("DNS resolution",5000);
-    int rc=getaddrinfo(host,service,&hints,&res);hop_watchdog_end(guard);
+    int rc=getaddrinfo(host,service,&hints,&res);
     if(rc)return INVALID_SOCKET;
     SOCKET sock=INVALID_SOCKET;
     uint64_t deadline=hop_monotonic_ms()+HOP_CONNECT_TIMEOUT_MS;
@@ -223,6 +233,8 @@ static DWORD WINAPI client_thread(LPVOID arg){
         hop_log(HOP_LOG_INFO,"net: control TCP connected; awaiting handshake");
         connection *c=&s->peers[0];memset(c,0,sizeof(*c));c->server=s;c->sock=sock;c->started=hop_monotonic_ms();
         DWORD rcv=500,snd=HOP_CTRL_SEND_TIMEOUT_MS;
+        BOOL nodelay=TRUE;
+        setsockopt(sock,IPPROTO_TCP,TCP_NODELAY,(char*)&nodelay,sizeof(nodelay));
         setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,(char*)&rcv,sizeof(rcv));
         setsockopt(sock,SOL_SOCKET,SO_SNDTIMEO,(char*)&snd,sizeof(snd));
         net_set_keepalive(sock);

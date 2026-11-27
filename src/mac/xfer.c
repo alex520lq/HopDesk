@@ -869,21 +869,242 @@ static int accept_data(const hop_session_id *expected){
     }
     return -1;
 }
+static void configure_data_socket(int s) {
+    int bufsz = 4 * 1024 * 1024;
+    setsockopt(s, SOL_SOCKET, SO_RCVBUF, &bufsz, sizeof(bufsz));
+    setsockopt(s, SOL_SOCKET, SO_SNDBUF, &bufsz, sizeof(bufsz));
+
+    /* 数据通道空闲时间最长：不开 keepalive，链路中间设备丢掉空闲
+     * 连接表项后这条 socket 就变黑洞 —— 对端发来的字节永远到不了，
+     * 而本端 read 一直 EAGAIN，连"断开"都感知不到。 */
+    net_set_keepalive(s);
+
+    /* 发送超时：ABORT 是从接收线程发的，如果发送线程正卡在 write 里
+     * （对端窗口满），接收线程拿不到发送锁就会跟着卡死 —— 那是死锁。
+     * 给个上限，卡住就当作传输失败，别把整个通道拖死。
+     * 256 KB 块在 100 Mbps 链路上只要 20 ms，5 秒是极宽的余量。 */
+    struct timeval sndto;
+    sndto.tv_sec = 5;
+    sndto.tv_usec = 0;
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &sndto, sizeof(sndto));
+
+    /* 接收超时不是错误处理，是给取消请求开一条唤醒通道：
+     * 对端暂停发送时 read 会一直阻塞，而 s_rx 只归本线程所有，
+     * 取消就只能干等 —— 用户点了"取消"，界面 30 秒没反应。
+     * 200 ms 醒一次，代价是空闲时每秒 5 次空转，可以忽略。 */
+    struct timeval rxto;
+    rxto.tv_sec = 0;
+    rxto.tv_usec = 200 * 1000;
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &rxto, sizeof(rxto));
+}
+
+static void retire_data_socket(int fd) {
+    if (fd < 0) return;
+    pthread_mutex_lock(&s_x.slock);
+    if (s_x.sock == fd) {
+        s_x.sock = -1;
+        ++s_x.epoch;
+        s_x.peer_ready = 0;
+    }
+    shutdown(fd, SHUT_RDWR);
+    pthread_mutex_unlock(&s_x.slock);
+    pthread_mutex_lock(&s_txlock);
+    close(fd);
+    pthread_mutex_unlock(&s_txlock);
+}
+
+/* Multiplex listen, active and candidate sockets so an authenticated peer
+ * can replace a stale connection without exposing token/session before auth. */
+static void run_data_server(hop_decoder *dec, xfer_data_frame_context *frame) {
+    int active = -1, pending = -1;
+    uint8_t hello[HOP_HEADER_SIZE + 2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES];
+    uint32_t have = 0, need = HOP_HEADER_SIZE;
+    uint64_t started = 0;
+    char buf[65536];
+
+    while (!s_x.stop) {
+        if (active < 0 && pending < 0) {
+            xfer_receive_poll_cancel(xfer_data_connection_ready());
+            hop_session_id session;
+            if (!hop_session_current(&session)) { usleep(200000); continue; }
+            int sock = accept_data(&session);
+            if (sock < 0) {
+                if (!hop_session_matches(&session)) continue;
+                for (int i = 0; i < 10 && !s_x.stop; ++i) {
+                    xfer_receive_poll_cancel(xfer_data_connection_ready());
+                    usleep(100 * 1000);
+                }
+                continue;
+            }
+            configure_data_socket(sock);
+            pending = sock;
+            have = 0;
+            need = HOP_HEADER_SIZE;
+            started = hop_monotonic_ms();
+        }
+
+        uint64_t now = hop_monotonic_ms();
+        if (active >= 0 && !hop_session_matches(&frame->session)) {
+            retire_data_socket(active);
+            active = -1;
+            xfer_receive_disconnected();
+        }
+        if (pending >= 0 && hop_handshake_expired(now, started)) {
+            close(pending);
+            pending = -1;
+        }
+        xfer_receive_poll_cancel(xfer_data_connection_ready());
+        if (active < 0 && pending < 0) continue;
+
+        fd_set rd;
+        FD_ZERO(&rd);
+        int maxfd = -1;
+        if (s_data_listener >= 0) {
+            FD_SET(s_data_listener, &rd);
+            if (s_data_listener > maxfd) maxfd = s_data_listener;
+        }
+        if (active >= 0) {
+            FD_SET(active, &rd);
+            if (active > maxfd) maxfd = active;
+        }
+        if (pending >= 0) {
+            FD_SET(pending, &rd);
+            if (pending > maxfd) maxfd = pending;
+        }
+        if (maxfd < 0) { usleep(200000); continue; }
+
+        struct timeval tv = {0, 200000};
+        int ready = select(maxfd + 1, &rd, NULL, NULL, &tv);
+        if (ready < 0) {
+            if (errno == EINTR) continue;
+            int had_active = active >= 0;
+            retire_data_socket(active);
+            active = -1;
+            if (had_active) xfer_receive_disconnected();
+            if (pending >= 0) { close(pending); pending = -1; }
+            if (s_data_listener >= 0) { close(s_data_listener); s_data_listener = -1; }
+            continue;
+        }
+        if (!ready) continue;
+
+        if (active >= 0 && FD_ISSET(active, &rd)) {
+            ssize_t r = read(active, buf, sizeof(buf));
+            if (r < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
+                /* transient wakeup */
+            } else if (r <= 0 || !hop_decoder_feed(dec, (const uint8_t *)buf, (uint32_t)r)) {
+                retire_data_socket(active);
+                active = -1;
+                xfer_receive_disconnected();
+                hop_log(HOP_LOG_WARN, "xfer: data channel closed");
+            }
+        }
+        if (pending >= 0 && FD_ISSET(pending, &rd)) {
+            ssize_t r = read(pending, hello + have, (size_t)(need - have));
+            if (r < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
+                /* transient wakeup */
+            } else {
+                int bad = r <= 0;
+                if (!bad) have += (uint32_t)r;
+                if (!bad && have == HOP_HEADER_SIZE && need == HOP_HEADER_SIZE) {
+                    uint32_t len = hop_get_be32(hello + 1);
+                    if (hello[0] != HOP_MSG_XFER_HELLO ||
+                        len < 2u + HOP_SESSION_BYTES ||
+                        len > 2u + HOP_TOKEN_MAX + HOP_SESSION_BYTES) {
+                        bad = 1;
+                    } else {
+                        need += len;
+                    }
+                }
+                if (!bad && have == need) {
+                    hop_session_id session;
+                    bad = !hop_session_current(&session) ||
+                          !hop_xfer_hello_bound(hello + HOP_HEADER_SIZE,
+                                                need - HOP_HEADER_SIZE,
+                                                g_mac.cfg.token, &session);
+                    if (bad) {
+                        hop_log(HOP_LOG_WARN,
+                                "xfer: data handshake rejected: protocol, token or control session mismatch");
+                    }
+                    if (!bad) {
+                        uint8_t reply[2 + HOP_TOKEN_MAX + HOP_SESSION_BYTES];
+                        uint32_t reply_len = hop_xfer_hello_encode(reply, g_mac.cfg.token, &session);
+                        uint8_t header[HOP_HEADER_SIZE];
+                        hop_encode_header(header, HOP_MSG_XFER_HELLO, reply_len);
+                        bad = !reply_len ||
+                              !send_all(pending, header, sizeof(header)) ||
+                              !send_all(pending, reply, reply_len);
+                    }
+                    if (!bad) {
+                        hop_log(HOP_LOG_INFO, active < 0 ? "xfer: authenticated data channel"
+                                                         : "xfer: replacing stale data connection");
+                        int replacing = active >= 0;
+                        retire_data_socket(active);
+                        if (replacing) xfer_receive_disconnected();
+                        xfer_receive_bind_session(&session);
+                        hop_decoder_reset(dec);
+                        active = pending;
+                        pending = -1;
+                        pthread_mutex_lock(&s_x.slock);
+                        s_x.session = session;
+                        s_x.sock = active;
+                        s_x.peer_ready = 1;
+                        ++s_x.epoch;
+                        frame->session = session;
+                        frame->epoch = s_x.epoch;
+                        frame->socket = active;
+                        pthread_mutex_unlock(&s_x.slock);
+                        pthread_mutex_lock(&s_x.qlock);
+                        hop_xfer_sender_active_job_reset_peer_abort(&s_x.active_job);
+                        pthread_mutex_unlock(&s_x.qlock);
+                    }
+                }
+                if (bad) { close(pending); pending = -1; }
+            }
+        }
+        if (s_data_listener >= 0 && FD_ISSET(s_data_listener, &rd)) {
+            int sock = accept(s_data_listener, NULL, NULL);
+            if (sock >= 0) {
+                int yes = 1;
+                if (setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &yes, sizeof(yes)) != 0) {
+                    close(sock);
+                } else {
+                    if (pending >= 0) close(pending);
+                    configure_data_socket(sock);
+                    pending = sock;
+                    have = 0;
+                    need = HOP_HEADER_SIZE;
+                    started = hop_monotonic_ms();
+                }
+            }
+        }
+    }
+
+    if (pending >= 0) close(pending);
+    retire_data_socket(active);
+}
+
 void *xfer_data_connection_thread(void *arg) {
     (void)arg;
     xfer_data_frame_context frame = {0};
     hop_decoder *dec = hop_decoder_new(&frame, xfer_data_frame);
     if (!dec) return NULL;
 
+    if (g_mac.cfg.role == HOP_ROLE_SERVER) {
+        run_data_server(dec, &frame);
+        if (s_data_listener >= 0) { close(s_data_listener); s_data_listener = -1; }
+        hop_decoder_free(dec);
+        return NULL;
+    }
+
     int backoff = 1;
     while (!s_x.stop) {
         xfer_receive_poll_cancel(xfer_data_connection_ready());
         hop_session_id session;
         if (!hop_session_current(&session)) { usleep(200000); continue; }
-        int s = g_mac.cfg.role==HOP_ROLE_SERVER?accept_data(&session):do_connect();
+        int s = do_connect();
         if (s < 0) {
             if (!hop_session_matches(&session)) continue;
-            if (g_mac.cfg.role==HOP_ROLE_CLIENT && g_mac.cfg.peer_host[0])
+            if (g_mac.cfg.peer_host[0])
                 hop_log(HOP_LOG_WARN,"xfer: TCP data connection failed: host=%s port=%u; check data port and firewall",
                         g_mac.cfg.peer_host,(unsigned)g_mac.cfg.data_port);
             /* 退避要能被 stop 打断 —— 否则退出时要等满 10 秒 */
@@ -897,32 +1118,7 @@ void *xfer_data_connection_thread(void *arg) {
         if (!hop_session_matches(&session)) { close(s); continue; }
         backoff = 1;
 
-        int bufsz = 4 * 1024 * 1024;
-        setsockopt(s, SOL_SOCKET, SO_RCVBUF, &bufsz, sizeof(bufsz));
-        setsockopt(s, SOL_SOCKET, SO_SNDBUF, &bufsz, sizeof(bufsz));
-
-        /* 数据通道空闲时间最长：不开 keepalive，链路中间设备丢掉空闲
-         * 连接表项后这条 socket 就变黑洞 —— 对端发来的字节永远到不了，
-         * 而本端 read 一直 EAGAIN，连"断开"都感知不到。 */
-        net_set_keepalive(s);
-
-        /* 发送超时：ABORT 是从接收线程发的，如果发送线程正卡在 write 里
-         * （对端窗口满），接收线程拿不到发送锁就会跟着卡死 —— 那是死锁。
-         * 给个上限，卡住就当作传输失败，别把整个通道拖死。
-         * 256 KB 块在 100 Mbps 链路上只要 20 ms，5 秒是极宽的余量。 */
-        struct timeval sndto;
-        sndto.tv_sec = 5;
-        sndto.tv_usec = 0;
-        setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &sndto, sizeof(sndto));
-
-        /* 接收超时不是错误处理，是给取消请求开一条唤醒通道：
-         * 对端暂停发送时 read 会一直阻塞，而 s_rx 只归本线程所有，
-         * 取消就只能干等 —— 用户点了"取消"，界面 30 秒没反应。
-         * 200 ms 醒一次，代价是空闲时每秒 5 次空转，可以忽略。 */
-        struct timeval rxto;
-        rxto.tv_sec = 0;
-        rxto.tv_usec = 200 * 1000;
-        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &rxto, sizeof(rxto));
+        configure_data_socket(s);
 
         pthread_mutex_lock(&s_x.slock);
         s_x.sock = s;
@@ -973,15 +1169,7 @@ void *xfer_data_connection_thread(void *arg) {
             xfer_receive_poll_cancel(xfer_data_connection_ready());
         }
 
-        pthread_mutex_lock(&s_x.slock);
-        s_x.sock = -1;
-        ++s_x.epoch;
-        s_x.peer_ready = 0;
-        pthread_mutex_unlock(&s_x.slock);
-        shutdown(s, SHUT_RDWR);
-        pthread_mutex_lock(&s_txlock);
-        close(s);
-        pthread_mutex_unlock(&s_txlock);
+        retire_data_socket(s);
         /* 只关文件，不清批次：发送端会带着同一个 batch 号回来，
          * 从断点条目继续发。这里清掉就变成"从头重传整批"了。 */
         if (!s_x.stop) xfer_receive_disconnected();

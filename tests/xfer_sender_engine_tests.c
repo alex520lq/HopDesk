@@ -6,11 +6,13 @@
 #include <string.h>
 
 #define ENTRY_COUNT 8
-typedef struct { const char *path; } fake_entry;
+typedef struct { const char *path; uint64_t size; } fake_entry;
 typedef struct {
     fake_entry entries[ENTRY_COUNT];
     int send_calls[ENTRY_COUNT];
     int ack_calls[ENTRY_COUNT];
+    int events[32];
+    int event_count;
     int send_dead_index;
     int send_dead_once;
     int ack_result[ENTRY_COUNT];
@@ -36,6 +38,10 @@ static const char *entry_path(void *user, const void *entry) {
     (void)user;
     return ((const fake_entry *)entry)->path;
 }
+static uint64_t entry_size(void *user, const void *entry) {
+    (void)user;
+    return ((const fake_entry *)entry)->size;
+}
 static int is_cancelled(void *user, uint32_t batch) {
     (void)batch;
     return ((fake_sender *)user)->cancel;
@@ -52,6 +58,7 @@ static hop_xfer_sender_send_result send_entry(void *user, uint32_t batch,
     int index = (int)id - 1;
     assert(entry == &f->entries[index]);
     ++f->send_calls[index];
+    if (f->event_count < 32) f->events[f->event_count++] = (int)id;
     if (index == f->send_dead_index && f->send_dead_once) {
         f->send_dead_once = 0;
         return HOP_XFER_SENDER_SEND_DEAD;
@@ -66,6 +73,7 @@ static hop_xfer_sender_ack_result wait_ack(void *user, uint32_t batch,
     (void)batch;
     assert(deadline == 1000000ull + id);
     ++f->ack_calls[id - 1];
+    if (f->event_count < 32) f->events[f->event_count++] = -(int)id;
     if (rtt) *rtt = 250;
     if (f->ack_calls[id - 1] == 1 && f->ack_first_result[id - 1] >= 0)
         return (hop_xfer_sender_ack_result)f->ack_first_result[id - 1];
@@ -213,12 +221,32 @@ static void test_ack_retry_and_cancel_abort(void) {
     assert(next == 0 && f.send_calls[0] == 0);
 }
 
+static void test_mixed_small_and_large_window_budget(void) {
+    fake_sender f; setup(&f);
+    f.entries[0].size = 1024ull;
+    f.entries[1].size = 100ull * 1024ull * 1024ull;
+    f.entries[2].size = 2048ull;
+    f.entries[3].size = 2048ull;
+    f.entries[4].size = 50ull * 1024ull * 1024ull;
+    hop_xfer_sender_engine_ops ops = make_ops(&f);
+    ops.entry_size = entry_size;
+    int next = 0, ok = 0;
+    assert(hop_xfer_sender_run_files(&ops, 14, 5, &next, &ok, 3) ==
+           HOP_XFER_SENDER_JOB_DONE);
+    assert(next == 5 && ok == 5);
+    /* Window order: [1] -> ack1, [2] -> ack2, [3,4] -> ack3,ack4, [5] -> ack5. */
+    const int expected[10] = {1, -1, 2, -2, 3, 4, -3, -4, 5, -5};
+    assert(f.event_count == 10);
+    for (int i = 0; i < 10; ++i) assert(f.events[i] == expected[i]);
+}
+
 int main(void) {
     test_happy_path_bounded_window();
     test_badpath_is_acknowledged_but_not_successful();
     test_disconnect_drains_confirmed_prefix();
     test_timeout_reconnects_without_checkpoint_advance();
     test_ack_retry_and_cancel_abort();
+    test_mixed_small_and_large_window_budget();
     puts("PASS: sender engine window, checkpoint, retry, cancellation and reconnect policy");
     return 0;
 }

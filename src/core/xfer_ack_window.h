@@ -4,6 +4,9 @@
 #include <stdint.h>
 
 #define HOP_XFER_ACK_WINDOW_CAPACITY 4u
+/* Pipeline small files up to this byte budget; large files confirm solo so a
+ * slow multi-gigabyte send cannot stall or invalidate an earlier file's ACK. */
+#define HOP_XFER_ACK_WINDOW_MAX_BYTES (4ull * 1024ull * 1024ull)
 
 typedef struct {
     uint32_t batch;

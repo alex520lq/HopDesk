@@ -16,7 +16,7 @@ def extract(source,name):
         j+=1
     return source[start:j]
 
-with tempfile.TemporaryDirectory(prefix='hopdesk-regression-') as directory:
+with tempfile.TemporaryDirectory(prefix='hopdesk-regression-', ignore_cleanup_errors=(os.name == 'nt')) as directory:
     work=pathlib.Path(directory)
     def run(name,source,extra=(),threads=False,libraries=()):
         path=work/(name+'.c');path.write_text(source,encoding='utf-8')
@@ -2308,3 +2308,28 @@ assert 'mac_cursor_restore();' in extract(mac_inject, 'inject_reset')
 assert 'mac_cursor_restore();' in extract(mac_inject, 'inject_button')
 assert 'mac_cursor_restore();' in extract(mac_inject, 'inject_wheel')
 assert 'click_count' in mouse_core and 'hop_mouse_click_tracker' in mouse_header
+
+# Transport latency, safety and cross-platform symmetry regressions.
+win_ctrl = (ROOT / 'src/win/net_server_transport.inc').read_text(encoding='utf-8')
+mac_ctrl = (ROOT / 'src/mac/net_client_transport.inc').read_text(encoding='utf-8')
+win_xfer = (ROOT / 'src/win/xfer.c').read_text(encoding='utf-8')
+mac_xfer = (ROOT / 'src/mac/xfer.c').read_text(encoding='utf-8')
+mac_ack = (ROOT / 'src/mac/xfer_ack_coordinator.c').read_text(encoding='utf-8')
+ack_wait = (ROOT / 'src/core/xfer_sender_ack_wait.c').read_text(encoding='utf-8')
+sender_engine = (ROOT / 'src/core/xfer_sender_engine.c').read_text(encoding='utf-8')
+
+assert 'TCP_NODELAY' in extract(win_ctrl, 'server_thread')
+assert 'TCP_NODELAY' in extract(win_ctrl, 'client_thread')
+assert 'TCP_NODELAY' in extract(mac_ctrl, 'net_thread')
+assert 'hop_encode_frame(' in extract(win_ctrl, 'sender_thread')
+assert 'hop_encode_frame(' in extract(mac_ctrl, 'control_sender')
+assert 'HOP_MSG_MOUSE_MOVE' in extract(mac_ctrl, 'net_send')
+assert 'hop_watchdog_begin("DNS resolution"' not in win_ctrl and 'hop_watchdog_begin("DNS resolution"' not in mac_ctrl
+assert 'SO_RCVBUF' in extract(win_xfer, 'xfer_data_client_thread')
+assert 'SO_SNDBUF' in extract(win_xfer, 'xfer_data_client_thread')
+mac_server_loop = extract(mac_xfer, 'run_data_server')
+assert 'hop_xfer_hello_bound(' in mac_server_loop and 'hop_xfer_hello_encode(' in mac_server_loop
+assert mac_server_loop.index('hop_xfer_hello_bound(') < mac_server_loop.index('hop_xfer_hello_encode(')
+assert 'pthread_cond_timedwait_relative_np' in mac_ack and 'CLOCK_MONOTONIC' in mac_ack
+assert 'HOP_XFER_ACK_WINDOW_MAX_BYTES' in sender_engine
+assert 'wait_take(context->ack_coordinator,\n                    batch, id, 0u' in ack_wait or 'batch, id, 0u' in ack_wait

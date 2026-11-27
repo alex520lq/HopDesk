@@ -33,6 +33,19 @@ int net_send(uint8_t type,const void *payload,uint32_t len){
     if(verdict==HOP_Q_DROP){pthread_mutex_unlock(&s_qlock);return 1;}
     if(verdict==HOP_Q_OVERFLOW){queue_clear_locked();s_online=0;pthread_mutex_unlock(&s_qlock);
         net_request_reconnect();return 0;}
+    if (type == HOP_MSG_MOUSE_MOVE && len == 4 && s_qtail &&
+        s_qtail->type == type && s_qtail->len == 4 &&
+        s_qtail->generation == s_generation) {
+        int dx = (int16_t)hop_get_be16(payload) + (int16_t)hop_get_be16(s_qtail->data);
+        int dy = (int16_t)hop_get_be16((const uint8_t *)payload + 2) +
+                 (int16_t)hop_get_be16(s_qtail->data + 2);
+        if (dx >= -32768 && dx <= 32767 && dy >= -32768 && dy <= 32767) {
+            hop_put_be16(s_qtail->data, (uint16_t)(int16_t)dx);
+            hop_put_be16(s_qtail->data + 2, (uint16_t)(int16_t)dy);
+            pthread_mutex_unlock(&s_qlock);
+            return 1;
+        }
+    }
     control_item *m=malloc(sizeof(*m)+len);
     if(!m){pthread_mutex_unlock(&s_qlock);net_request_reconnect();return 0;}
     m->next=NULL;m->type=type;m->len=len;m->generation=s_generation;if(len)memcpy(m->data,payload,len);
@@ -49,8 +62,18 @@ static void *control_sender(void *unused){
         pthread_mutex_unlock(&s_qlock);
         pthread_mutex_lock(&s_lock);
         if(s_sock>=0 && m->generation==s_generation){
-            uint8_t hdr[HOP_HEADER_SIZE];hop_encode_header(hdr,m->type,m->len);
-            if(!socket_send_all(s_sock,hdr,sizeof(hdr)) || (m->len&&!socket_send_all(s_sock,m->data,m->len)))shutdown(s_sock,SHUT_RDWR);
+            int ok;
+            if (m->len <= 1024u) {
+                uint8_t frame[HOP_HEADER_SIZE + 1024u];
+                uint32_t total = hop_encode_frame(m->type, m->data, m->len, frame);
+                ok = socket_send_all(s_sock, frame, total);
+            } else {
+                uint8_t hdr[HOP_HEADER_SIZE];
+                hop_encode_header(hdr, m->type, m->len);
+                ok = socket_send_all(s_sock, hdr, sizeof(hdr)) &&
+                     socket_send_all(s_sock, m->data, m->len);
+            }
+            if(!ok)shutdown(s_sock,SHUT_RDWR);
         }
         pthread_mutex_unlock(&s_lock);free(m);
     }
@@ -77,9 +100,7 @@ int net_connect_timeout(const char *host, uint16_t port, unsigned timeout_ms) {
     hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
     char portstr[16];
     snprintf(portstr, sizeof(portstr), "%u", (unsigned)port);
-    int guard = hop_watchdog_begin("DNS resolution", 5000);
     int resolved = getaddrinfo(host, portstr, &hints, &res);
-    hop_watchdog_end(guard);
     if (resolved) return -1;
     int fd = -1;
     uint64_t deadline = hop_monotonic_ms() + timeout_ms;
@@ -306,6 +327,8 @@ static void *net_thread(void *arg) {
         hop_log(HOP_LOG_INFO,"net: control TCP connected; awaiting handshake");
 
         net_set_keepalive(s);
+        int nodelay = 1;
+        setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
         struct timeval rcv = {0, 500000}, snd = {HOP_CTRL_SEND_TIMEOUT_MS / 1000, 0};
         setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &rcv, sizeof(rcv));
         setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &snd, sizeof(snd));

@@ -33,6 +33,12 @@ static const char *adapter_entry_path(void *user, const void *entry) {
     return ops && ops->entry_path ? ops->entry_path(ops->user, entry) : NULL;
 }
 
+static uint64_t adapter_entry_size(void *user, const void *entry) {
+    const hop_xfer_sender_engine_adapter_ops *ops =
+        (const hop_xfer_sender_engine_adapter_ops *)user;
+    return ops && ops->entry_size ? ops->entry_size(ops->user, entry) : 0;
+}
+
 static int file_cancel_requested(void *user, uint32_t batch) {
     return user ? adapter_cancel_requested(user, batch) : 0;
 }
@@ -337,6 +343,7 @@ int hop_xfer_sender_engine_adapter_run(
     engine_ops.peer_aborted = adapter_peer_aborted;
     engine_ops.entry_at = adapter_entry_at;
     engine_ops.entry_path = adapter_entry_path;
+    engine_ops.entry_size = adapter_entry_size;
     engine_ops.send_entry = adapter_send_entry;
     engine_ops.wait_ack = adapter_wait_ack;
     engine_ops.unregister_batch = adapter_unregister_batch;

@@ -55,6 +55,7 @@ typedef struct {
     int (*peer_aborted)(void *user, uint32_t batch);
     const void *(*entry_at)(void *user, int index);
     const char *(*entry_path)(void *user, const void *entry);
+    uint64_t (*entry_size)(void *user, const void *entry);
     hop_xfer_sender_send_result (*send_entry)(void *user, uint32_t batch,
                                                uint32_t id, const void *entry,
                                                uint64_t *ack_deadline_ns);

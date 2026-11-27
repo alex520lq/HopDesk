@@ -918,7 +918,7 @@ DWORD WINAPI xfer_data_listener_thread(LPVOID arg) {
                 if (pending != INVALID_SOCKET) closesocket(pending);
                 {
                     pending = sock; have = 0; need = HOP_HEADER_SIZE; started = hop_monotonic_ms();
-                    DWORD snd = 3000, rcv = 200;
+                    DWORD snd = 5000, rcv = 200;
                     int bufsz = 4 * 1024 * 1024;
                     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&snd, sizeof(snd));
                     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&rcv, sizeof(rcv));
@@ -954,8 +954,13 @@ DWORD WINAPI xfer_data_client_thread(LPVOID unused){
             }
             delay=delay<8000?delay*2:8000;continue;
         }
-        DWORD snd=5000,rcv=200;net_set_keepalive(sock);
-        setsockopt(sock,SOL_SOCKET,SO_SNDTIMEO,(char*)&snd,sizeof(snd));setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,(char*)&rcv,sizeof(rcv));
+        DWORD snd=5000,rcv=200;
+        int bufsz=4*1024*1024;
+        net_set_keepalive(sock);
+        setsockopt(sock,SOL_SOCKET,SO_SNDTIMEO,(char*)&snd,sizeof(snd));
+        setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,(char*)&rcv,sizeof(rcv));
+        setsockopt(sock,SOL_SOCKET,SO_RCVBUF,(char*)&bufsz,sizeof(bufsz));
+        setsockopt(sock,SOL_SOCKET,SO_SNDBUF,(char*)&bufsz,sizeof(bufsz));
         xfer_receive_bind_session(&session);hop_decoder_reset(dec);
         EnterCriticalSection(&s_x.lock);s_x.session=session;s_x.client=sock;s_x.peer_ready=0;++s_x.epoch;
         frame.session=session;frame.epoch=s_x.epoch;frame.socket=sock;

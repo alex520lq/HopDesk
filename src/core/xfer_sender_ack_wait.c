@@ -15,6 +15,17 @@ int hop_xfer_sender_ack_wait(const hop_xfer_sender_context *context,
     for (;;) {
         uint64_t now = context->now_ns(context->user);
         if (now >= deadline_ns) {
+            /* Consume an ACK that arrived before the deadline even if the
+             * sender only reached this wait after sending later entries. */
+            int status = 0, deadline_expired = 0;
+            uint64_t rtt_ns = 0;
+            if (hop_xfer_ack_coordinator_wait_take(context->ack_coordinator,
+                    batch, id, 0u, &status, &rtt_ns, &deadline_expired)) {
+                if (deadline_expired)
+                    return HOP_XFER_SENDER_ACK_WAIT_TIMEOUT;
+                if (rtt_us) *rtt_us = rtt_ns / 1000ull;
+                return status;
+            }
             hop_xfer_ack_coordinator_unregister(context->ack_coordinator, batch, id);
             return HOP_XFER_SENDER_ACK_WAIT_TIMEOUT;
         }

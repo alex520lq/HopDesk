@@ -131,6 +131,14 @@ static const hop_config_spec k_specs[] = {
       CFG_FIELD(mod_win) },
 
     /* ---- Display Switching (DDC/CI) ---- */
+    { "disp_shared", NULL, "display", HOP_CFG_BOOL, HOP_CFG_APPLY_HOT, 0,
+      0, 1, NULL, "false",
+      "Windows owns shared-monitor topology switching (explicit opt-in)",
+      CFG_FIELD(disp_shared) },
+    { "disp_device", NULL, "display", HOP_CFG_STRING, HOP_CFG_APPLY_HOT, 0,
+      0, 31, NULL, "",
+      "Shared Windows secondary display device name; never inferred from resolution",
+      CFG_FIELD(disp_device) },
     { "disp_win_input", NULL, "display", HOP_CFG_HEX16, HOP_CFG_APPLY_HOT, 0,
       0, 65535, NULL, "0x000F",
       "VCP 0x60 DDC input source code for Windows (decimal or 0x hex)",
@@ -707,6 +715,23 @@ int hop_config_validate(const hop_config *c, int strict_runtime,
                              s->key, v, s->min_val, s->max_val);
                 return 0;
             }
+        }
+    }
+    if (c->disp_shared) {
+        static const char prefix[] = "\\\\.\\DISPLAY";
+        const char *suffix = c->disp_device + sizeof(prefix) - 1;
+        int valid = strncmp(c->disp_device, prefix, sizeof(prefix) - 1) == 0;
+        if (valid) {
+            valid = *suffix >= '1' && *suffix <= '9';
+            for (; *suffix; ++suffix) if (*suffix < '0' || *suffix > '9') valid = 0;
+        }
+        if (!valid) {
+            set_err(err, err_cap, "disp_shared requires a Windows secondary disp_device (e.g. \\\\.\\DISPLAY2)");
+            return 0;
+        }
+        if (c->disp_win_input == c->disp_mac_input) {
+            set_err(err, err_cap, "shared display Windows and Mac inputs must be distinct");
+            return 0;
         }
     }
     if (c->port == c->data_port || c->port == c->audio_port || c->data_port == c->audio_port) {

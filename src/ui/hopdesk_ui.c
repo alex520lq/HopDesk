@@ -22,7 +22,7 @@ typedef struct {
     char disp_win[16], disp_mac[16];
     int role, server_edge, client_edge, ui_theme, log_level;
     int tab;
-    bool mac_cmd_open;
+    bool mac_cmd_open, shared_display;
     bool provide_mouse, provide_keyboard;
     bool audio_send, audio_play;
     bool wheel_invert, clip_text, clip_image, clip_file;
@@ -337,15 +337,16 @@ static void draw_overview(cui_ctx *ui) {
                         .disabled = s_model.manually_disconnected || !s_ops || !s_ops->disconnect
                     }))
                     action_disconnect();
-                if (cui_button(ui, "切换到 Mac 输入源", .disabled = !s_ops || !s_ops->display_action))
+                if (cui_button(ui, "显示器交给 Mac", .disabled = !s_ops || !s_ops->display_action))
                     if (s_ops && s_ops->display_action) s_ops->display_action(HOPDESK_UI_DISPLAY_TO_MAC);
-                if (cui_button(ui, "切换到 Windows 输入源", .disabled = !s_ops || !s_ops->display_action))
+                if (cui_button(ui, "显示器交给 Windows", .disabled = !s_ops || !s_ops->display_action))
                     if (s_ops && s_ops->display_action) s_ops->display_action(HOPDESK_UI_DISPLAY_TO_WINDOWS);
                 if (cui_button(ui, "唤醒显示器", .disabled = !s_ops || !s_ops->display_action))
                     if (s_ops && s_ops->display_action) s_ops->display_action(HOPDESK_UI_DISPLAY_WAKE);
             }
         }
 
+        if (s_model.display_status[0]) cui_text(ui, s_model.display_status);
         if (s_model.permissions_known) {
             cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 8) {
                 cui_heading(ui, "键鼠权限", 3);
@@ -692,6 +693,7 @@ static void settings_load(void) {
     s_settings.clip_image = s_model.config.clip_image != 0;
     s_settings.clip_file = s_model.config.clip_file != 0;
     s_settings.wake_sec = s_model.config.disp_wake_sec;
+    s_settings.shared_display = s_model.config.disp_shared != 0;
     s_settings.chunk_kb = s_model.config.xfer_chunk_kb;
     s_settings.rate_limit = s_model.config.xfer_rate_limit_mib;
     snprintf(s_settings.disp_win, sizeof(s_settings.disp_win), "0x%02X", (unsigned)s_model.config.disp_win_input);
@@ -762,6 +764,7 @@ static int settings_build_config(hop_config *out) {
     out->disp_win_input = win_input;
     out->disp_mac_input = mac_input;
     out->disp_wake_sec = (int)s_settings.wake_sec;
+    out->disp_shared = s_settings.shared_display;
     out->xfer_chunk_kb = (int)s_settings.chunk_kb;
     out->xfer_rate_limit_mib = (int)s_settings.rate_limit;
     out->input_mode = (s_settings.provide_mouse ? HOP_INPUT_MOUSE : 0u) |
@@ -1016,6 +1019,21 @@ static void draw_settings_input_and_display(cui_ctx *ui) {
 
         cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 12) {
             cui_heading(ui, "显示器切换（DDC/CI）", 3);
+#ifdef _WIN32
+            if (cui_switch(ui, "Windows 与 Mac 共用一块显示器", &s_settings.shared_display,
+                .description = "切到 Mac 时释放选定扩展屏，切回 Windows 时恢复；首次设置前请先在 Windows 中启用扩展"))
+                settings_mark_dirty();
+            if (s_settings.shared_display) {
+                if (cui_input(ui, "setting-shared-device", s_settings.cfg.disp_device,
+                    sizeof(s_settings.cfg.disp_device), .label = "Windows 共用扩展屏设备名",
+                    .placeholder = "例如 \\\\.\\DISPLAY2", .width = CUI_FILL) & CUI_CHANGED)
+                    settings_mark_dirty();
+                if (s_model.display_devices[0]) cui_text(ui, s_model.display_devices);
+                cui_text(ui, "请确认设备名对应共用屏；主屏不允许释放。两端还需分别配置正确的显示器输入源和 Mac 切源命令。");
+            }
+#else
+            cui_text(ui, "共屏开关与 Windows 目标扩展屏在 Windows 端设置。这里的切屏按钮会请求 Windows 统一处理。");
+#endif
             cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_START) {
                 if (cui_input(ui, "setting-disp-win", s_settings.disp_win, sizeof(s_settings.disp_win),
                     .label = "Windows 显示器输入源", .placeholder = "例如 0x0F", .width = CUI_GROW(1)) & CUI_CHANGED)

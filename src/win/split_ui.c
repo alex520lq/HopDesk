@@ -18,7 +18,7 @@
 #ifndef PIPE_REJECT_REMOTE_CLIENTS
 #define PIPE_REJECT_REMOTE_CLIENTS 0x00000008
 #endif
-#define WIN_SPLIT_VERSION 2u
+#define WIN_SPLIT_VERSION 3u
 #define WIN_SPLIT_IO_MS 1500u
 #define WIN_SPLIT_ACTION_MS 5000u
 #define WIN_SPLIT_ADDR_TTL_MS 10000u
@@ -163,6 +163,8 @@ static void agent_snapshot(hopdesk_ui_model *model,
     }
     s_agent_config.input_mode = g_app.cfg.input_mode;
     model->config = s_agent_config;
+    shared_display_status(model->display_status, sizeof(model->display_status));
+    shared_display_devices(model->display_devices, sizeof(model->display_devices));
     snprintf(model->local_addresses, sizeof(model->local_addresses), "%s",
         s_cached_addresses[0] ? s_cached_addresses : "No active LAN IPv4 address");
 

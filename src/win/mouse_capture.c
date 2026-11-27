@@ -47,15 +47,21 @@ static BOOL CALLBACK mon_proc(HMONITOR h, HDC hdc, LPRECT r, LPARAM lp) {
 
 /* 计算移交边缘的坐标与方向。两个出参总是被写入，返回值只表示"边缘移交是否启用"。
  * 这样调用方不需要先判断返回值再取坐标 —— 未初始化值没有生存空间。 */
+static struct mon_ctx s_monitors;
+static DWORD s_monitors_checked;
+static int s_monitors_cached;
+void capture_topology_changed(void) {
+    s_monitors_cached = 0;
+    s_have_last = 0;
+    s_edge_pending = 0;
+    KillTimer(g_app.hwnd, IDT_EDGE);
+}
 static int edge_boundary(int *edge_x, int *is_left) {
-    static struct mon_ctx c;
-    static DWORD checked;
-    static int cached;
     DWORD now = GetTickCount();
-    if (!cached || (DWORD)(now - checked) >= 2000) {
-        c.has_left = 0;
-        EnumDisplayMonitors(NULL, NULL, mon_proc, (LPARAM)&c);
-        checked = now; cached = 1;
+    if (!s_monitors_cached || (DWORD)(now - s_monitors_checked) >= 2000) {
+        s_monitors.has_left = 0;
+        EnumDisplayMonitors(NULL, NULL, mon_proc, (LPARAM)&s_monitors);
+        s_monitors_checked = now; s_monitors_cached = 1;
     }
 
     *is_left = (g_app.cfg.server_edge == HOP_EDGE_LEFT || g_app.cfg.server_edge==HOP_EDGE_TOP);
@@ -66,7 +72,7 @@ static int edge_boundary(int *edge_x, int *is_left) {
         *edge_x = GetSystemMetrics(vertical?SM_YVIRTUALSCREEN:SM_XVIRTUALSCREEN) +
                   GetSystemMetrics(vertical?SM_CYVIRTUALSCREEN:SM_CXVIRTUALSCREEN) - 1;
 
-    return vertical || !c.has_left; /* 左侧有实体屏时仅禁用水平左/右移交 */
+    return vertical || !s_monitors.has_left; /* 左侧有实体屏时仅禁用水平左/右移交 */
 }
 
 static int axis(POINT p){return g_app.cfg.server_edge>=HOP_EDGE_TOP?p.y:p.x;}
@@ -305,7 +311,7 @@ static LRESULT CALLBACK mouse_proc_hook(int code, WPARAM wp, LPARAM lp) {
      * 光标顶到 x=0 之后位置不再变化，系统不再投递 WM_MOUSEMOVE，
      * 事件驱动的"累计停留时长"永远等不到下一次事件，计时就死了。
      * （旧实现 switch_push_ms 正是这么坏掉的：设成正值等于彻底禁用移交。） */
-    if (wp == WM_MOUSEMOVE) {
+    if (wp == WM_MOUSEMOVE && !shared_display_busy()) {
         int edge_x, is_left;
         int delay = g_app.cfg.switch_delay_ms;
 
@@ -354,7 +360,7 @@ void capture_on_edge_timer(void) {
     int edge_x, is_left;
 
     s_edge_pending = 0;
-    if (g_app.state != HOP_LINK_LOCAL) return;
+    if (g_app.state != HOP_LINK_LOCAL || shared_display_busy()) return;
     if (!net_server_has_client(g_app.net)) return;
     if (!edge_boundary(&edge_x, &is_left)) return;
     if (in_cooldown()) return;

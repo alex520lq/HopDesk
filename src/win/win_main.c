@@ -198,6 +198,9 @@ static void on_recv(hop_recv *r) {
         case HOP_MSG_HELLO:
             on_hello(r->data, r->len);
             break;
+        case HOP_MSG_DISP_SWITCH:
+            shared_display_message(r->data, r->len);
+            break;
         case HOP_MSG_CAPABILITIES:
             on_capabilities(r->data, r->len);
             break;
@@ -231,6 +234,7 @@ static void on_recv(hop_recv *r) {
 /* 切到 Mac 显示：先让 Mac 醒，再切显示器输入源。
  * 两步之间必须留时间 —— 输入源一切走，Windows 就看不到画面了。 */
 static void disp_switch_to_mac(void) {
+    if (g_app.cfg.disp_shared) { (void)shared_display_start(1); return; }
     uint8_t p[4];
     if (!net_server_has_client(g_app.net)) {
         hop_log(HOP_LOG_WARN, "no client, cannot switch display");
@@ -246,6 +250,7 @@ static void disp_switch_to_mac(void) {
 
 /* 切回 Windows 显示：让 Mac 把输入源切回来；Mac 不可达就本机 DDC 硬切 */
 static void disp_switch_to_win(void) {
+    if (g_app.cfg.disp_shared) { (void)shared_display_start(0); return; }
     uint8_t p[2];
     hop_put_be16(p, g_app.cfg.disp_win_input);
     if (!net_server_send(g_app.net, HOP_MSG_DISP_INPUT, p, 2)) {
@@ -271,6 +276,10 @@ static void disp_sleep_mac(void) {
 }
 
 void win_ui_display_action(int action) {
+    if (shared_display_busy()) {
+        hop_log(HOP_LOG_WARN, "display: switch in progress; retry after completion");
+        return;
+    }
     switch (action) {
         case HOPDESK_UI_DISPLAY_TO_MAC: disp_switch_to_mac(); break;
         case HOPDESK_UI_DISPLAY_TO_WINDOWS: disp_switch_to_win(); break;
@@ -299,6 +308,13 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_APP_SPLIT_REQUEST:
             win_split_agent_dispatch();
+            return 0;
+        case WM_DISPLAYCHANGE:
+            capture_topology_changed();
+            return 0;
+        case WM_APP_DISPLAY_DONE:
+            capture_topology_changed();
+            ui_refresh(&g_app);
             return 0;
         case WM_APP_TRAY:
             if (LOWORD(lp) == WM_LBUTTONUP || LOWORD(lp) == NIN_SELECT ||
@@ -616,6 +632,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     KillTimer(g_app.hwnd, IDT_HOOK);
     win_inject_reset();
     kbd_shutdown();
+    shared_display_shutdown();
     capture_shutdown();
     hop_audio_shutdown();
     while (!clip_shutdown(g_app.hwnd)) Sleep(100); /* retain unresolved image Task owners */

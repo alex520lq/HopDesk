@@ -59,7 +59,7 @@ static void check_for_updates(void);
 }
 - (void)doInputWin:(id)sender {
     (void)sender;
-    disp_set_input(g_mac.cfg.disp_win_input);
+    (void)disp_switch_target(0);
 }
 /* 传了一半改主意：键鼠已经切走了、或者发现选错了文件 */
 - (void)doTransfers:(id)sender { (void)sender; statusbar_show_transfers(); }

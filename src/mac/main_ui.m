@@ -136,6 +136,7 @@ static void snapshot_model(hopdesk_ui_model *model,
         s_connected = connected;
         s_sharing = sharing;
     }
+    split_ui_display_status(model->display_status, sizeof(model->display_status));
     model->connected = s_connected;
     model->sharing = s_sharing;
     model->data_connected = split_ui_data_connected();
@@ -300,10 +301,12 @@ static void set_input_mode(unsigned input_mode) {
 static void display_action(int action) {
     switch (action) {
         case HOPDESK_UI_DISPLAY_TO_MAC:
-            disp_set_input(s_ui_config.disp_mac_input);
+            if (split_ui_is_active()) (void)mac_cli_agent_action(NULL, HOP_CLI_ACTION_DISPLAY_MAC);
+            else (void)disp_switch_target(1);
             break;
         case HOPDESK_UI_DISPLAY_TO_WINDOWS:
-            disp_set_input(s_ui_config.disp_win_input);
+            if (split_ui_is_active()) (void)mac_cli_agent_action(NULL, HOP_CLI_ACTION_DISPLAY_WIN);
+            else (void)disp_switch_target(0);
             break;
         case HOPDESK_UI_DISPLAY_WAKE:
             disp_wake(s_ui_config.disp_wake_sec);

@@ -71,8 +71,13 @@ void clipboard_apply_paths(const char *const *paths, int n);
 void clipboard_apply_image(const uint8_t *bgra, int w, int h, int stride);
 
 /* display.c（阶段 4） */
-void disp_wake(int sec);
+int disp_wake(int sec);
 void disp_sleep(void);
+int disp_switch_target(int target);
+void disp_switch_message(const uint8_t *p, uint32_t len);
+void mac_display_enqueue(const uint8_t *p, uint32_t len);
+void disp_switch_shutdown(void);
+void disp_switch_status(char *out, size_t cap);
 void disp_set_input(uint16_t vcp);
 
 /* statusbar.m */

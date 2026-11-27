@@ -153,6 +153,9 @@ jobs:
       - name: Run macOS control and listener loopback tests
         run: python3 scripts/test-mac-connection.py
 
+      - name: Run native macOS display command lifecycle tests
+        run: sh scripts/test-mac-display.sh
+
       - name: Run native macOS receive and resume integration tests
         run: python3 scripts/test-mac-receive.py
 

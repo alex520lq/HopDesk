@@ -4,6 +4,7 @@
  */
 #include "hop.h"
 #include "config_schema.h"
+#include "display_switch.h"
 #include "cli.h"
 #include "update_manifest.h"
 #include "xfer_budget.h"
@@ -1863,6 +1864,69 @@ static int test_cli_agent_action(void *ctx, hop_cli_action action) {
     return 1;
 }
 
+
+typedef struct { char steps[32], fail[16]; unsigned n; } display_case;
+static int display_step(display_case *c, char step) {
+    c->steps[c->n++] = step; c->steps[c->n] = 0;
+    return strchr(c->fail, step) == NULL;
+}
+static int display_wake(void *p) { return display_step(p, 'W'); }
+static int display_attach(void *p, int attach) { return display_step(p, attach ? 'A' : 'D'); }
+static int display_local(void *p, int target) { return display_step(p, target ? 'M' : 'P'); }
+static int display_peer(void *p, int target) { return display_step(p, target ? 'm' : 'p'); }
+static void test_display_switch(void) {
+    struct {int target; const char *fail, *steps; int result;} cases[] = {
+        {1,"","WAMD",HOP_DISPLAY_OK}, {0,"","AP",HOP_DISPLAY_OK},
+        {1,"W","W",HOP_DISPLAY_WAKE_FAILED},
+        {1,"A","WA",HOP_DISPLAY_ATTACH_FAILED},
+        {1,"M","WAMmD",HOP_DISPLAY_OK},
+        {1,"Mm","WAMmAP",HOP_DISPLAY_INPUT_FAILED},
+        {1,"D","WAMDAP",HOP_DISPLAY_DETACH_FAILED},
+        {1,"DP","WAMDAP",HOP_DISPLAY_ROLLBACK_FAILED},
+        {0,"P","APp",HOP_DISPLAY_OK},
+        {0,"Pp","APp",HOP_DISPLAY_INPUT_FAILED}
+    };
+    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); ++i) {
+        display_case c = {{0},{0},0};
+        snprintf(c.fail,sizeof(c.fail),"%s",cases[i].fail);
+        hop_display_ops ops = {&c,display_wake,display_local,display_peer,display_attach};
+        CHECK(hop_display_switch_run(cases[i].target,&ops) == cases[i].result);
+        CHECK(!strcmp(c.steps,cases[i].steps));
+    }
+    hop_display_msg messages[] = {
+        {HOP_DISPLAY_REQUEST,0,0,HOP_DISPLAY_MAC},
+        {HOP_DISPLAY_WAKE,0,123,60}, {HOP_DISPLAY_INPUT,0,124,17},
+        {HOP_DISPLAY_RESULT,1,124,0}, {HOP_DISPLAY_COMPLETE,1,0,1}
+    };
+    for (size_t i=0;i<sizeof(messages)/sizeof(messages[0]);++i) {
+        uint8_t wire[HOP_DISPLAY_WIRE_SIZE]; hop_display_msg decoded;
+        CHECK(hop_display_encode(wire,&messages[i]));
+        CHECK(hop_display_decode(&decoded,wire,sizeof(wire)));
+        CHECK(decoded.op==messages[i].op && decoded.id==messages[i].id &&
+            decoded.ok==messages[i].ok && decoded.value==messages[i].value);
+        CHECK(!hop_display_decode(&decoded,wire,sizeof(wire)-1));
+        wire[0]=255; CHECK(!hop_display_decode(&decoded,wire,sizeof(wire)));
+    }
+    uint8_t wire[HOP_DISPLAY_WIRE_SIZE];
+    hop_display_msg bad={HOP_DISPLAY_WAKE,0,0,60};
+    CHECK(!hop_display_encode(wire,&bad));
+    bad.id=1;bad.value=3601;CHECK(!hop_display_encode(wire,&bad));
+    bad.op=HOP_DISPLAY_INPUT;bad.value=65536;CHECK(!hop_display_encode(wire,&bad));
+    bad.op=HOP_DISPLAY_REQUEST;bad.id=0;bad.value=2;CHECK(!hop_display_encode(wire,&bad));
+    bad.op=HOP_DISPLAY_RESULT;bad.id=1;bad.value=0;bad.ok=2;CHECK(!hop_display_encode(wire,&bad));
+    hop_config cfg;hop_config_defaults(&cfg);char err[128];
+    CHECK(cfg.disp_shared==0 && cfg.disp_device[0]==0);
+    CHECK(hop_config_set_kv(&cfg,"disp_shared","true",err,sizeof(err))==1);
+    CHECK(hop_config_set_kv(&cfg,"disp_device","\\\\.\\DISPLAY2",err,sizeof(err))==1);
+    CHECK(cfg.disp_shared==1 && !strcmp(cfg.disp_device,"\\\\.\\DISPLAY2"));
+    CHECK(hop_config_validate(&cfg,0,err,sizeof(err)));
+    cfg.disp_win_input=cfg.disp_mac_input;CHECK(!hop_config_validate(&cfg,0,err,sizeof(err)));
+    cfg.disp_win_input=15;
+    CHECK(hop_config_set_kv(&cfg,"disp_device","DISPLAY2",err,sizeof(err))==1);
+    CHECK(!hop_config_validate(&cfg,0,err,sizeof(err)));
+    cfg.disp_device[0]=0;CHECK(!hop_config_validate(&cfg,0,err,sizeof(err)));
+}
+
 static void test_config_schema_and_runtime_apply(void) {
     CHECK(hop_config_spec_count() >= 50u);
     CHECK(hop_config_spec_find("port") != NULL);
@@ -2030,6 +2094,7 @@ int main(void) {
     RUN_TEST(test_token_authentication);
     RUN_TEST(test_config_defaults_and_loading);
     RUN_TEST(test_dual_roles);
+    RUN_TEST(test_display_switch);
     RUN_TEST(test_config_schema_and_runtime_apply);
     RUN_TEST(test_cli_engine);
     RUN_TEST(test_keymap);

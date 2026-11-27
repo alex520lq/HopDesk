@@ -13,6 +13,7 @@
 #define WM_APP_CLIP (WM_APP + 5) /* format + owned HGLOBAL; 0 = retry */
 #define WM_APP_CLIP_PASTE (WM_APP + 6) /* wParam: paste request ID; lParam: owned CF_HDROP */
 #define WM_APP_SPLIT_REQUEST (WM_APP + 7) /* agent-owned request, no message pointers */
+#define WM_APP_DISPLAY_DONE (WM_APP + 8)
 #define IDT_HOOK 5
 #define IDT_CLIP_RETRY 3              /* 剪贴板读写/发送延迟重试 */
 
@@ -94,6 +95,17 @@ void clip_apply_remote_image(const uint8_t *bgra, int w, int h, int stride);
 /* display.c（阶段 4） */
 int disp_set_input(uint16_t vcp);      /* DDC/CI 0x60 写输入源 */
 int disp_get_input(uint16_t *out);     /* 读当前输入源，用于日志/排错 */
+
+int disp_input_verified(const wchar_t *device, uint16_t vcp);
+int disp_input_busy(void);
+int disp_input_matches(const wchar_t *device, uint16_t vcp);
+int shared_display_start(int target); /* main-thread admission; immutable config snapshot */
+void shared_display_message(const uint8_t *p, uint32_t len);
+void shared_display_shutdown(void); /* join before stopping network */
+int shared_display_busy(void);
+void shared_display_status(char *out, size_t cap);
+void shared_display_devices(char *out, size_t cap);
+void capture_topology_changed(void);
 
 /* ui.c */
 void ui_init(win_app *app);

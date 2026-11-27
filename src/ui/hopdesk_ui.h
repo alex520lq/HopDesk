@@ -33,6 +33,8 @@ typedef struct hopdesk_ui_model {
     hop_config config;
     char local_addresses[512];
     char peer_label[128];
+    char display_status[192];
+    char display_devices[768];
     int connected;
     int sharing;
     int data_connected;

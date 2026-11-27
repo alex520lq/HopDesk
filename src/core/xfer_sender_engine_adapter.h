@@ -61,6 +61,29 @@ typedef struct {
 int hop_xfer_sender_engine_adapter_run(
     const hop_xfer_sender_engine_adapter_ops *ops);
 
+typedef struct {
+    void *user;
+    const hop_xfer_sender_context *context;
+    const uint8_t *session;
+    uint32_t batch;
+    uint64_t task_id;
+    int is_image;
+    int entry_count;
+    int ok_count;
+    uint32_t done_ack_slot;
+    uint32_t ack_timeout_ms;
+    uint32_t reconnect_budget_ms;
+    uint32_t ack_poll_interval_ms;
+    int (*current_connection)(void *user, intptr_t *socket_handle,
+                              uint64_t *epoch, uint8_t *session,
+                              size_t session_capacity);
+    int (*send_done)(void *user, intptr_t socket_handle, uint64_t epoch,
+                     const uint8_t *payload, uint32_t length, uint32_t batch);
+} hop_xfer_sender_commit_adapter_ops;
+
+hop_xfer_sender_job_result hop_xfer_sender_engine_adapter_run_commit(
+    const hop_xfer_sender_commit_adapter_ops *ops);
+
 #ifdef __cplusplus
 }
 #endif

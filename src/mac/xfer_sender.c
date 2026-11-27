@@ -162,6 +162,41 @@ static void sender_context_log_message(void *user, int level,
     hop_log((hop_log_level)level, "%s", message ? message : "");
 }
 
+void sender_context_request_reconnect(void *user) {
+    sender_platform_context *ctx = (sender_platform_context *)user;
+    if (!ctx || !ctx->session_lock || !ctx->sock || !ctx->peer_ready) return;
+    pthread_mutex_lock(ctx->session_lock);
+    *ctx->peer_ready = 0;
+    if (*ctx->sock >= 0) shutdown(*ctx->sock, SHUT_RDWR);
+    pthread_mutex_unlock(ctx->session_lock);
+}
+
+int sender_context_ack_create(void) {
+    if (s_sender_platform.ack_coordinator) return 0;
+    hop_xfer_ack_coordinator *coordinator = hop_xfer_ack_coordinator_create();
+    if (!coordinator) return 0;
+    s_sender_platform.ack_coordinator = coordinator;
+    s_sender_context.ack_coordinator = coordinator;
+    return 1;
+}
+
+void sender_context_ack_destroy(void) {
+    hop_xfer_ack_coordinator_destroy(s_sender_platform.ack_coordinator);
+    s_sender_platform.ack_coordinator = NULL;
+    s_sender_context.ack_coordinator = NULL;
+}
+
+void sender_context_wake_ack(void) {
+    hop_xfer_ack_coordinator_wake(s_sender_platform.ack_coordinator);
+}
+
+void ack_deliver(uint32_t batch, uint32_t id, int status) {
+    hop_xfer_ack_coordinator *coordinator = s_sender_platform.ack_coordinator;
+    if (coordinator)
+        (void)hop_xfer_ack_coordinator_deliver(coordinator, batch, id, status,
+                                               rate_now_ns());
+}
+
 void sender_context_init(void) {
     memset(&s_sender_platform, 0, sizeof(s_sender_platform));
     s_sender_platform.session_lock = &s_x.slock;
@@ -641,10 +676,52 @@ static void sender_worker_send_abort(void *user,uint32_t batch) {
     if(call&&call->job)if(call->socket>=0)send_abort_msg_with_context(&call->job->sender_context,call->socket,
         batch,HOP_ABORT_CANCEL);
 }
+static int sender_commit_current_connection(void *user, intptr_t *socket_handle,
+                                            uint64_t *epoch, uint8_t *session,
+                                            size_t session_capacity) {
+    (void)user;
+    if (!socket_handle || !epoch || !session ||
+        session_capacity < HOP_SESSION_BYTES) return 0;
+    pthread_mutex_lock(&s_x.slock);
+    int ready = s_x.peer_ready && s_x.sock >= 0;
+    if (ready) {
+        *socket_handle = (intptr_t)s_x.sock;
+        *epoch = s_x.epoch;
+        memcpy(session, s_x.session.bytes, HOP_SESSION_BYTES);
+    }
+    pthread_mutex_unlock(&s_x.slock);
+    return ready;
+}
+static int sender_commit_send_done(void *user, intptr_t socket_handle,
+                                   uint64_t epoch, const uint8_t *payload,
+                                   uint32_t length, uint32_t batch) {
+    const xf_job *job = (const xf_job *)user;
+    if (!job) return 0;
+    s_send_epoch = (unsigned long)epoch;
+    return send_small_with_context(&job->sender_context, (int)socket_handle,
+                                   HOP_MSG_XFER_DONE, payload, length, batch);
+}
 static hop_xfer_sender_job_result sender_worker_send_done(void *user) {
     sender_worker_call *call=(sender_worker_call *)user;
     if(!call||!call->job)return HOP_XFER_SENDER_JOB_COMMIT_UNKNOWN;
-    return (hop_xfer_sender_job_result)sender_commit_adapter_run(call->job);
+    const xf_job *job=call->job;
+    hop_xfer_sender_commit_adapter_ops ops;
+    memset(&ops,0,sizeof(ops));
+    ops.user=(void *)job;
+    ops.context=&job->sender_context;
+    ops.session=job->session.bytes;
+    ops.batch=job->batch;
+    ops.task_id=job->task.id;
+    ops.is_image=job->is_image;
+    ops.entry_count=job->n;
+    ops.ok_count=job->ok;
+    ops.done_ack_slot=HOP_DONE_ACK_SLOT;
+    ops.ack_timeout_ms=HOP_XFER_ACK_TIMEOUT_MS;
+    ops.reconnect_budget_ms=HOP_XFER_RECONNECT_BUDGET_MS;
+    ops.ack_poll_interval_ms=SENDER_ACK_POLL_INTERVAL_MS;
+    ops.current_connection=sender_commit_current_connection;
+    ops.send_done=sender_commit_send_done;
+    return hop_xfer_sender_engine_adapter_run_commit(&ops);
 }
 static void sender_worker_task_finish(void *user,hop_xfer_task_state state) {
     sender_worker_call *call=(sender_worker_call *)user;

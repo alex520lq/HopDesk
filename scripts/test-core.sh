@@ -221,13 +221,14 @@ clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-
   "$ROOT/src/core/protocol.c" "$ROOT/src/core/crc32.c"
 "$BUILD/hopdesk-sender-engine-tests"
 
-clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$ROOT/src/core" -o "$BUILD/hopdesk-sender-engine-adapter-tests" \
   "$ROOT/tests/xfer_sender_engine_adapter_tests.c" "$ROOT/src/core/xfer_sender_engine_adapter.c" \
   "$ROOT/src/core/xfer_sender_ack_wait.c" "$ROOT/src/core/xfer_sender_context_adapter.c" \
   "$ROOT/src/core/xfer_sender_engine.c" "$ROOT/src/core/xfer_tracking.c" \
   "$ROOT/src/core/xfer_ack_window.c" "$ROOT/src/core/xfer_validate.c" \
-  "$ROOT/src/core/protocol.c" "$ROOT/src/core/crc32.c"
+  "$ROOT/src/core/protocol.c" "$ROOT/src/core/crc32.c" \
+  "$ROOT/src/core/clock.c" "$ROOT/src/core/session.c"
 "$BUILD/hopdesk-sender-engine-adapter-tests"
 
 clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-omit-frame-pointer \

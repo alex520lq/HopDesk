@@ -17,7 +17,6 @@
 #include "../core/xfer_rx_entry_reservations.h"
 #include "../core/xfer_rx_file_state.h"
 #include "../core/xfer_rx_dispatch.h"
-#include "../core/xfer_rx_platform_dispatch.h"
 #include "../core/xfer_rx_services.h"
 #include "../core/xfer_rx_context.h"
 #include "../core/xfer_rx_message_handlers.h"
@@ -575,7 +574,7 @@ hop_rx_frame_action xfer_receive_process_frame(const hop_session_id *session,
     if (gate.action == HOP_RX_FRAME_DISPATCH) {
         if (!authenticated) return HOP_RX_FRAME_REJECT_PEER;
         (void)hop_xfer_rx_dispatch_message(type, gate.body, gate.body_length,
-            &hop_xfer_rx_platform_dispatch_handlers, &s_rx);
+            &hop_xfer_rx_default_dispatch_handlers, &s_rx);
     }
     return gate.action;
 }

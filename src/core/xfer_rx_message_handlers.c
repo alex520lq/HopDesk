@@ -684,3 +684,14 @@ void hop_xfer_rx_dispatch_done_ack_message(void *context, const uint8_t *p, uint
     if (!rx) return;
     (void)hop_xfer_rx_handle_done_ack(p, len, rx_ack_deliver_done, rx);
 }
+
+const hop_xfer_rx_dispatch_handlers hop_xfer_rx_default_dispatch_handlers = {
+    hop_xfer_rx_handle_file_begin,
+    hop_xfer_rx_handle_image_begin,
+    hop_xfer_rx_handle_file_chunk,
+    hop_xfer_rx_handle_file_end,
+    hop_xfer_rx_dispatch_file_ack_message,
+    hop_xfer_rx_handle_abort,
+    hop_xfer_rx_handle_done,
+    hop_xfer_rx_dispatch_done_ack_message
+};

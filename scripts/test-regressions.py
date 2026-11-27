@@ -573,10 +573,10 @@ int main(void){
     run('clipboard',clip_preamble+'\n'.join(extract(clip,n) for n in ['discard_pending','schedule_clip_retry','clip_staged_request_matches','clip_cancel_staged_if_match','discard_pending_replacing','apply_global_expected','apply_global','clip_retry_pending','clip_on_paste_message'])+clip_main,['src/core/xfer_clipboard_txn.c'])
     # A cross-device paste batch must never fall through to the ordinary clipboard writer.
     for platform in ['win','mac']:
-        rx='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.c','xfer_rx_protocol_handlers.c'))
-        receive=(ROOT/f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
+        rx=(ROOT/f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
+        receive=rx
         assert 'hop_xfer_rx_dispatch_message(type, gate.body, gate.body_length,' in receive
-        assert '&hop_xfer_rx_platform_dispatch_handlers, &s_rx' in receive
+        assert '&hop_xfer_rx_default_dispatch_handlers, &s_rx' in receive
         assert 'xfer_rx_protocol_adapter' not in receive
         assert receive.count('static hop_xfer_rx_done_receipt s_done_receipt;') == 1
         if platform=='win':
@@ -596,7 +596,6 @@ int main(void){
             assert 'inject_paste_shortcut()' not in apply_objects
             assert 'statusbar_notify_paste_ready()' in apply_objects
 
-        platform_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
         core_handlers=(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         begin=extract(core_handlers,'hop_xfer_rx_handle_file_begin')
         end=extract(core_handlers,'hop_xfer_rx_handle_file_end')
@@ -612,7 +611,7 @@ int main(void){
         assert 'hop_xfer_rx_file_state_evaluate_end' in end
         assert 'rx->services.close_file(' in end and 'rx->services.send_file_ack(' in end
         assert 'rx->services.remove_file(' in end and 'rx->services.is_top_level_path(' in end
-        assert 'rx_dispatch_file_begin' not in platform_handlers and 'rx_dispatch_file_end' not in platform_handlers
+        assert 'hop_xfer_rx_default_dispatch_handlers' in core_handlers
         # RX storage/accounting lives in the production writer implementation,
         # not in Receiver protocol code. Windows has completed this extraction;
         # macOS is intentionally checked against its current adapter until parity lands.
@@ -1035,7 +1034,7 @@ int main(void){
         chunk_core=(ROOT/'src/core/xfer_sender_chunk.c').read_text(encoding='utf-8')
         assert 'adapter_send_entry' in engine_adapter and 'adapter_wait_ack' in engine_adapter
         assert 'hop_xfer_sender_engine_adapter_run(&ops)' in protocol
-        assert 'sender_commit_adapter_run' in protocol and 'run_job' in protocol
+        assert 'hop_xfer_sender_engine_adapter_run_commit(&ops)' in protocol and 'run_job' in protocol
         assert 'hop_xfer_sender_ack_wait(' in ack_wait_core and 'hop_xfer_sender_ack_wait(' in engine_adapter
         assert 'hop_xfer_sender_send_chunk(' in chunk_core and 'hop_xfer_sender_send_chunk(&ops' in protocol
         assert 'rate_feedback' in protocol and 'rate_feedback' in engine_adapter
@@ -1061,10 +1060,9 @@ int main(void){
     # Exact production case bodies + lifecycle helpers; only OS I/O is doubled.
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
-        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.c','xfer_rx_protocol_handlers.c'))
+        receiver=(ROOT/f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
         assert 's_ack' not in receiver
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
-        protocol_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
         context_header=(ROOT/'src/core/xfer_rx_context.h').read_text(encoding='utf-8')
         assert 'typedef struct xfer_rx_context' in context_header
         state_contract='#include "xfer_rx_context.h"\n#include "xfer_rx_message_handlers.h"\nstatic xfer_rx_context s_rx;\nstatic void rx_release_terminal_resources(xfer_rx_context *rx, int close_writer, int discard_staging);'
@@ -1204,18 +1202,17 @@ int main(void){
 
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
-        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.c','xfer_rx_protocol_handlers.c'))
+        receiver=(ROOT/f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
         fixture=(ROOT/'tests/session_transport_fixture.c.in').read_text(encoding='utf-8')
         context_protocol=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
-        commit_adapter=(ROOT/f'src/{platform}/xfer_sender_commit_adapter.c').read_text(encoding='utf-8')
         assert 'hop_xfer_rx_gate_frame' in extract(receiver, 'xfer_receive_process_frame')
         assert 's_sender_context.user = &s_sender_platform' in context_protocol
         for callback in ['sender_context_is_stopping','sender_context_is_batch_cancelled','sender_context_peer_aborted','sender_context_wait_ns']:
             assert 's_x.' not in extract(context_protocol,callback)
         for callback in ['sender_context_session_current','sender_context_write_frame','sender_context_snapshot_session']:
             assert 's_x.' not in extract(sender,callback)
-        functions='\n'.join([extract(sender,'sender_context_session_current'),extract(sender,'sender_context_write_frame'),extract(sender,'sender_context_snapshot_session'),extract(sender,'send_small_with_context'),extract(commit_adapter,'sender_commit_is_stopping'),extract(commit_adapter,'sender_commit_wait_ms'),extract(sender,'send_small'),extract(sender,'send_chunk')]+[extract(receiver,name) for name in ['rx_release_terminal_resources','hop_xfer_rx_reset_batch_state','hop_xfer_rx_terminate_batch','hop_xfer_rx_bind_session','rx_bind_session','rx_expire_stale_session']])
+        functions='\n'.join([extract(sender,'sender_context_session_current'),extract(sender,'sender_context_write_frame'),extract(sender,'sender_context_snapshot_session'),extract(sender,'send_small_with_context'),extract(sender,'send_small'),extract(sender,'send_chunk')]+[extract(receiver,name) for name in ['rx_release_terminal_resources','hop_xfer_rx_reset_batch_state','hop_xfer_rx_terminate_batch','hop_xfer_rx_bind_session','rx_bind_session','rx_expire_stale_session']])
         fixture=fixture.replace('@FUNCTIONS@',functions)
         if platform=='win': fixture='#define FIXTURE_WINDOWS 1\n'+fixture
         run('session_transport_'+platform,fixture,['src/core/protocol.c','src/core/session.c','src/core/clock.c','src/core/watchdog.c','src/core/update_state.c','src/core/xfer_rate.c','src/core/xfer_sender_chunk.c','src/core/xfer_rx_receipt.c','src/core/xfer_rx_lifecycle.c','src/core/xfer_rx_batch_state.c','src/core/xfer_rx_batch_rules.c','src/core/xfer_validate.c','src/core/crc32.c','src/core/xfer_task.c','src/core/xfer_budget.c','src/core/xfer_sender_context_adapter.c','src/core/xfer_rx_frame_gate.c','src/core/xfer_rx_entry_reservations.c','src/core/xfer_rx_image_buffer.c','src/core/xfer_rx_image_state.c','src/core/xfer_rx_file_state.c'],threads=True)
@@ -1242,9 +1239,8 @@ int main(void){
     # batch/file ID is reused; the unresolved file remains the resume point.
     for platform in ['mac','win']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
-        receiver='\n'.join((ROOT/f'src/{platform}/{name}').read_text(encoding='utf-8') for name in ('xfer_receive.c','xfer_rx_protocol_handlers.c'))
+        receiver=(ROOT/f'src/{platform}/xfer_receive.c').read_text(encoding='utf-8')
         receiver+='\n'+(ROOT/'src/core/xfer_rx_message_handlers.c').read_text(encoding='utf-8')
-        protocol_handlers=(ROOT/f'src/{platform}/xfer_rx_protocol_handlers.c').read_text(encoding='utf-8')
         engine_adapter=(ROOT/'src/core/xfer_sender_engine_adapter.c').read_text(encoding='utf-8')
         ack_wait_core=(ROOT/'src/core/xfer_sender_ack_wait.c').read_text(encoding='utf-8')
         entry=extract(engine_adapter,'adapter_send_entry')
@@ -1267,22 +1263,19 @@ int main(void){
         kick=engine.index('ops->request_reconnect(ops->user)',timeout)
         net_down=engine.index('return HOP_XFER_SENDER_JOB_NET_DOWN;',kick)
         assert timeout < unregister < kick < net_down
-        connection_adapter=(ROOT/f'src/{platform}/xfer_sender_connection_adapter.c').read_text(encoding='utf-8')
-        reconnect=extract(connection_adapter,'sender_context_request_reconnect')
+        reconnect=extract(sender,'sender_context_request_reconnect')
         assert '*ctx->peer_ready = 0' in reconnect and 'shutdown(' in reconnect
         assert 'ctx->request_reconnect' in engine_adapter
         kick=extract(sender,'xfer_kick')
         assert 'sender_context_request_reconnect(&s_sender_platform)' in kick
         assert 'adapter_wait_ack' in engine_adapter
         assert 'static hop_xfer_ack_coordinator *s_ack' not in sender
-        assert 'hop_xfer_ack_coordinator_' not in sender
-        ack_platform=(ROOT/f'src/{platform}/xfer_sender_ack_platform_adapter.c').read_text(encoding='utf-8')
-        assert 'hop_xfer_ack_coordinator_create()' in ack_platform
-        assert 's_sender_context.ack_coordinator = coordinator' in ack_platform
+        assert 'hop_xfer_ack_coordinator_create()' in sender
+        assert 's_sender_context.ack_coordinator = coordinator' in sender
         assert 'hop_xfer_ack_coordinator_wait_take(context->ack_coordinator' in ack_wait_core
         peer_abort_body=extract(sender,'sender_context_peer_aborted')
         assert '*ctx->abort_batch == batch' in peer_abort_body
-        ack_deliver_body=extract(ack_platform,'ack_deliver')
+        ack_deliver_body=extract(sender,'ack_deliver')
         assert 'hop_xfer_ack_coordinator_deliver(coordinator, batch, id, status,' in ack_deliver_body
         platform_xfer=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')
         assert 's_ack' not in platform_xfer
@@ -1333,7 +1326,7 @@ int main(void){
         frame_processor=extract(receiver,'xfer_receive_process_frame')
         assert 'hop_xfer_rx_gate_frame(&input, token, type, payload, length)' in frame_processor
         assert 'if (!authenticated) return HOP_RX_FRAME_REJECT_PEER;' in frame_processor
-        assert '&hop_xfer_rx_platform_dispatch_handlers, &s_rx' in frame_processor
+        assert '&hop_xfer_rx_default_dispatch_handlers, &s_rx' in frame_processor
         receive_start=extract(receiver,'xfer_receive_start')
         assert 'hop_xfer_rx_lifecycle_init(&s_rx_lifecycle)' in receive_start
         assert 'hop_xfer_rx_done_receipt_clear(&s_done_receipt)' in receive_start
@@ -1348,11 +1341,11 @@ int main(void){
         assert 'hop_xfer_rx_batch_begin_decide(' in core_message_handlers
         assert 'hop_xfer_rx_batch_finish_decide(' in core_message_handlers
         for writer_call in ['reset_file_error','open_file','write_file_chunk','close_file','file_error']:
-            assert 'rx->services.'+writer_call in protocol_handlers or 'rx->services.'+writer_call in core_message_handlers
-        assert not any(token in protocol_handlers for token in ['wq_push(', 'wq_push_data(', 'wq_error_get(', 'rx_close_file(', 'hop_writer_queue_error_reset('])
-        assert not re.search(r'(?<!services\.)\b(?:rx_add_top|rx_remove_top|status_add_received_file|status_image|status_stage_time|status_chunk_timed|status_file_phase|rate_now_ns)\s*\(', protocol_handlers)
+            assert 'rx->services.'+writer_call in core_message_handlers
+        assert not any(token in core_message_handlers for token in ['wq_push(', 'wq_push_data(', 'wq_error_get(', 'rx_close_file(', 'hop_writer_queue_error_reset('])
+        assert not re.search(r'(?<!services\.)\b(?:rx_add_top|rx_remove_top|status_add_received_file|status_image|status_stage_time|status_chunk_timed|status_file_phase|rate_now_ns)\s*\(', core_message_handlers)
         for service in ['add_top_path','remove_top_path','finish_clipboard','cancel_clipboard','now_ns','status_begin','status_end','status_add_received_file','status_image','status_stage_time','status_chunk_received','status_file_phase','status_set_files_total','status_reset']:
-            assert 'rx->services.'+service in protocol_handlers or service in receiver
+            assert 'rx->services.'+service in core_message_handlers or service in receiver
         done_handler=extract(receiver,'hop_xfer_rx_handle_done')
         assert 'hop_xfer_rx_done_receipt_find(rx->done_receipt,' in done_handler
         assert 'hop_xfer_rx_done_receipt_find(&rx->done_receipt,' not in done_handler
@@ -1410,27 +1403,25 @@ int main(void){
     assert 'hop_xfer_sender_run_commit' in commit_core
     assert 'HOP_XFER_SENDER_COMMIT_ACK_TIMEOUT' in commit_core
     assert 'HOP_XFER_SENDER_COMMIT_ACK_SEND_DEAD' in commit_core
+    commit_adapter_core=(ROOT/'src/core/xfer_sender_engine_adapter.c').read_text(encoding='utf-8')
+    commit=extract(commit_adapter_core,'hop_xfer_sender_engine_adapter_run_commit')
+    assert 'hop_xfer_sender_run_commit' in commit
+    assert 'commit_current_connection' in commit_adapter_core
+    assert 'commit_wait_ack' in commit_adapter_core
+    commit_stop=extract(commit_adapter_core,'commit_is_stopping')
+    commit_wait=extract(commit_adapter_core,'commit_wait_ms')
+    assert 'ctx->is_stopping' in commit_stop
+    assert 'ctx->wait_ns' in commit_wait
     for platform in ['win','mac']:
         sender=(ROOT/f'src/{platform}/xfer.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_sender_worker_adapter.c').read_text(encoding='utf-8')+'\n'+(ROOT/f'src/{platform}/xfer_submit.c').read_text(encoding='utf-8')
-        commit_adapter=(ROOT/f'src/{platform}/xfer_sender_commit_adapter.c').read_text(encoding='utf-8')
-        commit=extract(commit_adapter,'sender_commit_adapter_run')
-        assert 'hop_xfer_sender_run_commit' in commit
-        assert 'ops.user = (void *)job' in commit
-        assert 'sender_commit_current_connection' in commit_adapter
-        assert 'sender_commit_wait_ack' in commit_adapter
-        commit_stop=extract(commit_adapter,'sender_commit_is_stopping')
-        commit_wait=extract(commit_adapter,'sender_commit_wait_ms')
-        assert 'job->sender_context.is_stopping' in commit_stop
-        assert 'job->sender_context.wait_ns' in commit_wait
-        assert 'sender_context_is_stopping(NULL)' not in commit_stop
-        connection_adapter=(ROOT/f'src/{platform}/xfer_sender_connection_adapter.c').read_text(encoding='utf-8')
-        reconnect=extract(connection_adapter,'sender_context_request_reconnect')
-        assert '*ctx->peer_ready = 0' in reconnect and 'shutdown(' in reconnect
-        ack_platform=(ROOT/f'src/{platform}/xfer_sender_ack_platform_adapter.c').read_text(encoding='utf-8')
-        assert 'hop_xfer_ack_coordinator_create()' in ack_platform
-        assert 'void ack_deliver(' in ack_platform
-        assert 'sender_context_ack_destroy' in ack_platform
         protocol_source=(ROOT/f'src/{platform}/xfer_sender.c').read_text(encoding='utf-8')
+        assert 'hop_xfer_sender_engine_adapter_run_commit' in protocol_source
+        assert 'sender_commit_current_connection' in protocol_source
+        reconnect=extract(protocol_source,'sender_context_request_reconnect')
+        assert '*ctx->peer_ready = 0' in reconnect and 'shutdown(' in reconnect
+        assert 'hop_xfer_ack_coordinator_create()' in protocol_source
+        assert 'void ack_deliver(' in protocol_source
+        assert 'sender_context_ack_destroy' in protocol_source
         ack_wait_header=(ROOT/'src/core/xfer_sender_ack_wait.h').read_text(encoding='utf-8')
         for macro in ['XFER_ACK_TIMEOUT','XFER_SEND_DEAD','XFER_LOCAL_IO','XFER_CANCELLED','XFER_PEER_ABORT','XFER_ACK_PENDING']:
             assert f'#define {macro} ' not in protocol_source
@@ -1637,18 +1628,17 @@ int main(void){
         assert 'hop_xfer_sender_engine_adapter_run(&ops)' in protocol
         assert 'hop_xfer_sender_run_files' not in protocol
         assert 'hop_xfer_sender_run_image' not in protocol
-        commit_adapter=(ROOT/f'src/{platform}/xfer_sender_commit_adapter.c').read_text(encoding='utf-8')
-        commit_wait_ack=extract(commit_adapter,'sender_commit_wait_ack')
-        assert 'job->commit_socket' in commit_wait_ack
-        assert 'job->commit_epoch' in commit_wait_ack
+        commit_wait_ack=extract(engine_adapter,'commit_wait_ack')
+        assert 'state->socket_handle' in commit_wait_ack
+        assert 'state->epoch' in commit_wait_ack
         assert 'hop_xfer_sender_ack_wait' in commit_wait_ack
-        commit_send=extract(commit_adapter,'sender_commit_send_done')
+        commit_send=extract(protocol,'sender_commit_send_done')
         assert 'send_small_with_context(&job->sender_context' in commit_send
         assert 'HOP_MSG_XFER_DONE' in commit_send
         abort_send=extract(protocol,'send_abort_msg_with_context')
         assert 'send_small_with_context(context' in abort_send
         assert 'send_abort_msg_with_context(&call->job->sender_context' in worker
-        assert 'sender_commit_adapter_run(' in worker
+        assert 'hop_xfer_sender_engine_adapter_run_commit(&ops)' in worker
         assert 'hop_xfer_sender_get_terminal_decision' not in thread and 'completion_path' in flow_core
 
     # Shared CUI task selection is keyed by Task ID, not row position.

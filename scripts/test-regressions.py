@@ -195,7 +195,7 @@ int main(void) {
     assert 'cui_request_wakeup(ui, 0.5f)' in ui
 
     # Shared task controls remain connected to the native transfer services.
-    assert 's_ops->cancel_task(chosen->id)' in ui
+    assert 's_ops->cancel_task(s_cancel_confirm_task)' in ui
     assert 's_cancel_confirm_task' in ui and '确认取消' in ui
     assert 's_ops->retry_file(s_model.file_batch, s_selected_file)' in ui
     assert '"取消选中任务"' in ui and '"重试选中文件"' in ui

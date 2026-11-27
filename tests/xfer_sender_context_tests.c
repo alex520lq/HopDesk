@@ -211,7 +211,7 @@ int main(void) {
     assert(ctx.peer_aborted(ctx.user, 42) == 1);
     ctx.request_reconnect(ctx.user);
     assert(state.reconnect_calls == 1);
-    hop_xfer_task task = {99, 1};
+    hop_xfer_task task = {99, 1, 0};
     const uint8_t session[HOP_TASK_SESSION_BYTES] = {1};
     int opaque_job = 123;
     ctx.status_start_job(ctx.user, &opaque_job);

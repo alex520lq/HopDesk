@@ -5,6 +5,7 @@
  * ===================================================================== */
 #include "hop.h"
 #include "xfer_budget.h"
+#include "xfer_rx_core.h"
 
 void hop_runtime_apply_config(const hop_config *c) {
     if (!c) return;
@@ -24,6 +25,13 @@ void hop_runtime_apply_config(const hop_config *c) {
         c->net_ctrl_queue_soft       > 0 ? c->net_ctrl_queue_soft                 : HOP_CTRL_QUEUE_SOFT,
         c->net_ctrl_queue_hard       > 0 ? c->net_ctrl_queue_hard                 : HOP_CTRL_QUEUE_HARD,
         c->net_ctrl_queue_mb         > 0 ? (size_t)c->net_ctrl_queue_mb * 1024u * 1024u : HOP_CTRL_QUEUE_BYTES);
+
+    /* 4. Receiver staging root & disconnect grace budget */
+    hop_xfer_rx_configure(
+        c->xfer_rx_dir,
+        c->xfer_rx_disconnect_budget_ms >= 5000
+            ? (uint64_t)c->xfer_rx_disconnect_budget_ms
+            : (uint64_t)HOP_XFER_RX_DISCONNECT_BUDGET_MS);
 
     /* 4. Transfer global budget limits */
     hop_xfer_budget_limits limits;

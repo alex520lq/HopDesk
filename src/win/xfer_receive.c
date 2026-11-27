@@ -4,7 +4,6 @@
  *  Receiver-owned production unit: writer queue integration, protocol dispatch,
  *  cancellation policy and staging state. Native data transport belongs to xfer.c.
  * ===================================================================== */
-#include "xfer_sender_internal.h"
 #include "xfer.h"
 #include "app.h"
 #include "xfer_rx_fs.h"
@@ -176,9 +175,10 @@ static int rx_context_create_staging_directory(void *context, const char *sessio
     if (rx->dir[0] && !rx_discard_dir(rx)) return 0;
     wchar_t base[MAX_PATH];
     DWORD n = 0;
-    if (s_x.cfg.xfer_rx_dir[0]) {
+    const char *custom_dir = hop_xfer_rx_configured_dir();
+    if (custom_dir && custom_dir[0]) {
         int wn = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                                     s_x.cfg.xfer_rx_dir, -1, base, MAX_PATH - 2);
+                                     custom_dir, -1, base, MAX_PATH - 2);
         if (wn <= 1) return 0;
         n = (DWORD)(wn - 1);
         if (base[n - 1] != L'\\' && base[n - 1] != L'/') {
@@ -602,8 +602,7 @@ void xfer_receive_poll_cancel(int connected) {
     rx_expire_stale_session();
     int requested = InterlockedExchange(&s_receive_cancel_requested, 0);
     if (requested || (s_rx.batch_state.active && hop_xfer_task_cancel_requested(s_rx.task.id))) rx_cancel_local();
-    uint64_t rx_budget = s_x.cfg.xfer_rx_disconnect_budget_ms >= 5000
-        ? (uint64_t)s_x.cfg.xfer_rx_disconnect_budget_ms : (uint64_t)HOP_XFER_RX_DISCONNECT_BUDGET_MS;
+    uint64_t rx_budget = hop_xfer_rx_disconnect_budget_ms();
     if (s_rx.batch_state.active && hop_xfer_task_rx_disconnect_expired(&s_rx.task,connected,hop_monotonic_ms(),rx_budget)) {
         hop_log(HOP_LOG_WARN,"xfer: receive batch %u expired while disconnected",s_rx.batch_state.batch);
         hop_xfer_rx_terminate_batch(&s_rx,s_rx.batch_state.batch,HOP_ABORT_TIMEOUT,0);

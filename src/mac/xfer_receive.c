@@ -186,7 +186,8 @@ int xfer_receive_owner_clean(void) {
  * 会变成两个不同字符串表示同一个文件，排查时容易看花眼。去掉尾斜杠。 */
 static const char *temp_root(void) {
     static char buf[1024];
-    const char *t = g_mac.cfg.xfer_rx_dir[0] ? g_mac.cfg.xfer_rx_dir : getenv("TMPDIR");
+    const char *custom = hop_xfer_rx_configured_dir();
+    const char *t = (custom && custom[0]) ? custom : getenv("TMPDIR");
     if (!t || !*t) return "/tmp";
 
     size_t n = strlen(t);
@@ -657,8 +658,7 @@ void xfer_receive_poll_cancel(int connected) {
     rx_expire_stale_session();
     int requested = __sync_lock_test_and_set(&s_receive_cancel_requested, 0);
     if (requested || (s_rx.batch_state.active && hop_xfer_task_cancel_requested(s_rx.task.id))) rx_cancel_local();
-    uint64_t rx_budget = g_mac.cfg.xfer_rx_disconnect_budget_ms >= 5000
-        ? (uint64_t)g_mac.cfg.xfer_rx_disconnect_budget_ms : (uint64_t)HOP_XFER_RX_DISCONNECT_BUDGET_MS;
+    uint64_t rx_budget = hop_xfer_rx_disconnect_budget_ms();
     if (s_rx.batch_state.active && hop_xfer_task_rx_disconnect_expired(&s_rx.task,connected,hop_monotonic_ms(),rx_budget)) {
         hop_log(HOP_LOG_WARN,"xfer: receive batch %u expired while disconnected",s_rx.batch_state.batch);
         hop_xfer_rx_terminate_batch(&s_rx,s_rx.batch_state.batch,HOP_ABORT_TIMEOUT,0);

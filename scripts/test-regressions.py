@@ -196,6 +196,7 @@ int main(void) {
 
     # Shared task controls remain connected to the native transfer services.
     assert 's_ops->cancel_task(chosen->id)' in ui
+    assert 's_cancel_confirm_task' in ui and '确认取消' in ui
     assert 's_ops->retry_file(s_model.file_batch, s_selected_file)' in ui
     assert '"取消选中任务"' in ui and '"重试选中文件"' in ui
     assert '"上一页"' in ui and '"下一页"' in ui and '"历史记录"' in ui

@@ -12,6 +12,7 @@ static int s_page = HOPDESK_UI_OVERVIEW;
 static int s_force_refresh = 1;
 static hop_xfer_task_id s_selected_task;
 static int s_selected_file = -1;
+static hop_xfer_task_id s_cancel_confirm_task;
 static uint32_t s_file_offset;
 
 typedef struct {
@@ -346,6 +347,7 @@ static void draw_transfer(cui_ctx *ui) {
                     snprintf(progress, sizeof(progress), "%.0f%%", task_progress(task) * 100.0f);
                     if (cui_table_row(ui, task->id == s_selected_task)) {
                         s_selected_task = task->id;
+                        s_cancel_confirm_task = 0;
                         s_file_offset = 0;
                         s_selected_file = -1;
                         s_force_refresh = 1;
@@ -362,18 +364,35 @@ static void draw_transfer(cui_ctx *ui) {
                 }
                 cui_table_end(ui);
             }
-            cui_row(ui, .width = CUI_FILL, .gap = 8, .wrap = true) {
-                if (cui_button(ui, "取消选中任务", .variant = CUI_BUTTON_DANGER,
-                    .disabled = !chosen || chosen->state >= HOP_XFER_TASK_COMPLETED || chosen->cancel_requested ||
-                                !s_ops || !s_ops->cancel_task)) {
-                    if (chosen && s_ops && s_ops->cancel_task && s_ops->cancel_task(chosen->id))
-                        ui_toast("已请求取消", "任务会在安全的生命周期节点停止。", CUI_TONE_INFO);
-                    else
-                        ui_toast("无法取消", "任务可能已经结束或正在提交结果。", CUI_TONE_WARNING);
-                    s_force_refresh = 1;
+            cui_column(ui, .width = CUI_FILL, .gap = 8) {
+                cui_row(ui, .width = CUI_FILL, .gap = 8, .wrap = true) {
+                    if (cui_button(ui, "取消选中任务", .variant = CUI_BUTTON_DANGER,
+                        .disabled = !chosen || chosen->state >= HOP_XFER_TASK_COMPLETED ||
+                                    chosen->cancel_requested || !s_ops || !s_ops->cancel_task))
+                        s_cancel_confirm_task = chosen ? chosen->id : 0;
+                    if (chosen)
+                        cui_muted(ui, chosen->detail[0] ? chosen->detail : task_state_text(chosen->state));
                 }
-                if (chosen) {
-                    cui_muted(ui, chosen->detail[0] ? chosen->detail : task_state_text(chosen->state));
+                if (s_cancel_confirm_task) {
+                    if (!chosen || chosen->id != s_cancel_confirm_task ||
+                        chosen->state >= HOP_XFER_TASK_COMPLETED || chosen->cancel_requested) {
+                        s_cancel_confirm_task = 0;
+                    } else {
+                        cui_row(ui, .width = CUI_FILL, .gap = 8, .wrap = true) {
+                            cui_text(ui, "确认取消这个传输任务？");
+                            if (cui_button(ui, "确认取消", .variant = CUI_BUTTON_DANGER)) {
+                                if (s_ops && s_ops->cancel_task &&
+                                    s_ops->cancel_task(s_cancel_confirm_task))
+                                    ui_toast("已请求取消", "任务会在安全的生命周期节点停止。", CUI_TONE_INFO);
+                                else
+                                    ui_toast("无法取消", "任务可能已经结束或正在提交结果。", CUI_TONE_WARNING);
+                                s_cancel_confirm_task = 0;
+                                s_force_refresh = 1;
+                            }
+                            if (cui_button(ui, "保留任务", .variant = CUI_BUTTON_SECONDARY))
+                                s_cancel_confirm_task = 0;
+                        }
+                    }
                 }
             }
         }
@@ -812,6 +831,7 @@ void hopdesk_ui_shutdown(void) {
     memset(&s_settings, 0, sizeof(s_settings));
     s_selected_task = 0;
     s_selected_file = -1;
+    s_cancel_confirm_task = 0;
     s_file_offset = 0;
     s_force_refresh = 1;
 }

@@ -12,7 +12,7 @@
 #define WM_APP_STATE   (WM_APP + 4)   /* 状态变化，刷新 UI */
 #define WM_APP_CLIP (WM_APP + 5) /* format + owned HGLOBAL; 0 = retry */
 #define WM_APP_CLIP_PASTE (WM_APP + 6) /* wParam: paste request ID; lParam: owned CF_HDROP */
-#define WM_APP_UI_SAVE_RESULT (WM_APP + 7) /* lParam: owned win_ui_save_result */
+#define WM_APP_SPLIT_REQUEST (WM_APP + 7) /* agent-owned request, no message pointers */
 #define IDT_HOOK 5
 #define IDT_CLIP_RETRY 3              /* 剪贴板读写/发送延迟重试 */
 
@@ -31,7 +31,6 @@ typedef struct {
     HWND           hwnd;          /* 隐藏消息窗口 */
     NOTIFYICONDATAW nid;
     int            tray_added;
-    int            exit_requested; /* WM_QUIT may be consumed by the nested CUI loop */
     hop_link_state state;
     HICON          icon_base;     /* immutable app icon resource */
     HICON          tray_icon;     /* current dynamically rendered status icon */

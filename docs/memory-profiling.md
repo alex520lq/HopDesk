@@ -43,7 +43,7 @@ After launching the next build, run pgrep -fl HopDesk again and verify that the 
 
 ## Windows
 
-Windows runs the UI and transfer engine in one HopDesk process. Find it with:
+The experimental CUI Windows build runs the tray/engine agent and an on-demand UI child. Find both processes with:
 
     Get-Process -Name HopDesk | Select-Object Id, ProcessName, WorkingSet64, PrivateMemorySize64, VirtualMemorySize64
 
@@ -80,3 +80,7 @@ Neither script changes HopDesk settings or terminates the process. Keep the CSV 
 The default build caps CAMetalLayer.maximumDrawableCount at 2, retaining native Retina resolution, the same UI size and the upstream three vertex/index upload slots. The latter are separate from full-window drawable surfaces. The build generates an adjusted source in build/ and does not modify the pinned CUI submodule. The override fails closed if the upstream initialization changes.
 
 Build the control with `HOPDESK_METAL_DRAWABLE_COUNT=3 sh scripts/build-mac.sh` and the experiment with `HOPDESK_METAL_DRAWABLE_COUNT=2 sh scripts/build-mac.sh`. Copy each package before the next build overwrites it. Compare identical window sizes, display scaling, page, time since opening, Activity Monitor Memory and vmmap summaries for the UI PID. At 1180 × 820 points and 2× backing scale, one BGRA8 surface has approximately 14.8 MiB of pixels; this is a theoretical capacity difference, not a measured reduction. Test repeated resizes, scroll, text input, transfer updates, and 20 open/close cycles. Revert to three drawables if double buffering introduces stalls or rendering defects. Keep the agent PID and its memory baseline separate.
+
+### Windows process isolation verification
+
+Use Task Manager Details or `Get-CimInstance Win32_Process -Filter "Name='HopDesk.exe'" | Select ProcessId,ParentProcessId,CommandLine` to distinguish the agent from its `--ui` child. Record WorkingSet64 and PrivateMemorySize64 separately. Start with only the agent, open the UI from the tray, then close the UI and verify that its PID exits while the agent PID and connection remain stable. Repeat 20 times, including an active transfer; exercise cancel, retry, page changes, reconnect, display, settings save followed immediately by close, audio hot-apply, logs and copy. Verify the agent exits its UI child on tray exit and update. Compare idle agent memory to its initial baseline. No Windows memory reduction is claimed until measured.

@@ -6,6 +6,7 @@
 #include "xfer.h"
 #include "update.h"
 #include "main_ui.h"
+#include "split_ui.h"
 #include "../core/update_state.h"
 #include "../platform/audio_link.h"
 #include "../ui/hopdesk_ui.h"
@@ -14,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <shellapi.h>
+#include <wchar.h>
 
 win_app g_app;
 static int s_ui_guard;
@@ -170,8 +172,8 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_APP_CLIP_PASTE:
             clip_on_paste_message((HGLOBAL)lp, (DWORD)wp);
             return 0;
-        case WM_APP_UI_SAVE_RESULT:
-            main_ui_save_complete((void *)lp);
+        case WM_APP_SPLIT_REQUEST:
+            win_split_agent_dispatch();
             return 0;
         case WM_APP_TRAY:
             if (LOWORD(lp) == WM_LBUTTONUP || LOWORD(lp) == NIN_SELECT ||
@@ -186,7 +188,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_TIMER:
             if (wp == IDT_HOOK) { hop_update_report_ready(HOP_VERSION); hop_watchdog_ping(s_ui_guard); win_inject_retry_pending(); if(g_app.cfg.role==HOP_ROLE_SERVER){kbd_retry_pending();capture_check_hooks();} ui_refresh(&g_app); return 0; }
-            if (wp == IDT_XFER_NOTIFY) { ui_transfer_poll(); return 0; }
+            if (wp == IDT_XFER_NOTIFY) { win_split_agent_reap(); ui_transfer_poll(); return 0; }
             if (wp == IDT_CLIP_RETRY) {
                 clip_retry_pending();
                 clip_on_update(); /* retry the latest local clipboard snapshot too */
@@ -219,7 +221,6 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         case WM_DESTROY:
-            g_app.exit_requested = 1;
             PostQuitMessage(0);
             return 0;
     }
@@ -227,9 +228,27 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
-    (void)prev; (void)cmd; (void)show;
+    (void)prev; (void)show;
 
     set_dpi_aware();
+    /* UI returns before agent singleton, tray, hooks, network, transfer,
+     * clipboard listener and audio startup. */
+    if (cmd && wcsncmp(cmd, L"--ui", 4) == 0) {
+        unsigned long parent = 0;
+        int page = 0;
+        wchar_t extra = 0;
+        wchar_t log_path[MAX_PATH];
+        if (swscanf(cmd, L"--ui %lu %d %lc", &parent, &page, &extra) != 2 ||
+            page < 0 || page >= HOPDESK_UI_PAGE_COUNT ||
+            !win_split_client_init((DWORD)parent)) return 1;
+        g_app.inst = inst;
+        beside(log_path, MAX_PATH, L"hopdesk.log");
+        WideCharToMultiByte(CP_UTF8, 0, log_path, -1, g_app.log_path,
+                            sizeof(g_app.log_path), NULL, NULL);
+        main_ui_show_page(page);
+        win_split_client_close();
+        return 0;
+    }
 
     /* ---- 单实例 ----
      * 两个实例会同时 bind 24817/24818，而 Windows 的 SO_REUSEADDR 允许
@@ -308,17 +327,22 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     if(g_app.cfg.role==HOP_ROLE_SERVER){capture_init(&g_app);kbd_init(&g_app);}
     if(!hop_audio_set_mode(&g_app.cfg,g_app.cfg.audio_mode))
         hop_log(HOP_LOG_WARN,"audio: unable to start configured audio mode %u",g_app.cfg.audio_mode);
+    if (!win_split_agent_start(g_app.hwnd)) {
+        hop_log(HOP_LOG_ERROR, "unable to start local UI IPC");
+        MessageBoxW(NULL, L"Unable to initialize HopDesk UI IPC.", L"HopDesk", MB_OK | MB_ICONERROR);
+        DestroyWindow(g_app.hwnd);
+    }
     hop_watchdog_end(startup_guard);
     s_ui_guard = hop_watchdog_begin("Windows message loop", 30000);
     SetTimer(g_app.hwnd, IDT_HOOK, 3000, NULL);
 
     MSG m;
     while (GetMessageW(&m, NULL, 0, 0) > 0) {
-        if(main_ui_translate(&m))continue;
         TranslateMessage(&m);
         DispatchMessageW(&m);
     }
 
+    win_split_agent_stop();
     hop_watchdog_end(s_ui_guard);
     KillTimer(g_app.hwnd, IDT_HOOK);
     win_inject_reset();

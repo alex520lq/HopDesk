@@ -1,10 +1,8 @@
 /* HopDesk Windows UI host: native tray and message shell, shared CUI window. */
 #include "app.h"
-#include "xfer.h"
-#include "update.h"
+#include "split_ui.h"
 #include "main_ui.h"
 #include "../ui/hopdesk_ui.h"
-#include "../platform/audio_link.h"
 
 #include <cui/cui_app.h>
 #include <stdio.h>
@@ -14,180 +12,65 @@
 
 static int s_running;
 static int s_ui_initialized;
-static int s_config_loaded;
 static hop_config s_ui_config;
+static HANDLE s_save_thread;
+static hop_config s_save_config;
+static int s_save_result;
+static ULONGLONG s_last_snapshot;
+static hop_xfer_task_id s_last_task;
+static uint32_t s_last_offset;
+static unsigned s_failed_snapshots;
 
-static const hop_xfer_task_snapshot *find_task(const hopdesk_ui_model *model,
-                                                hop_xfer_task_id id) {
-    int i;
-    if (!model || !id) return NULL;
-    for (i = 0; i < model->task_count; ++i)
-        if (model->tasks[i].id == id) return &model->tasks[i];
-    return NULL;
-}
-
-static void snapshot_model(hopdesk_ui_model *model,
-                           hop_xfer_task_id selected_task,
-                           uint32_t file_offset) {
-    uint64_t task_revision = 0, history_revision = 0, revision = 0;
-    int total = 0, n = 0;
-    const hop_xfer_task_snapshot *selected;
-
-    if (!model) return;
-    if (!s_config_loaded) {
-        s_ui_config = g_app.cfg;
-        (void)hop_config_load(&s_ui_config, g_app.config_path);
-        s_config_loaded = 1;
-    }
-    model->config = s_ui_config;
-    local_addresses(model->local_addresses, sizeof(model->local_addresses));
-
-    model->connected = g_app.state != HOP_LINK_DOWN;
-    model->sharing = g_app.state == HOP_LINK_SHARING;
-    model->data_connected = xfer_connected();
-    model->permissions_known = 0;
-    if (model->config.role == HOP_ROLE_CLIENT)
-        snprintf(model->peer_label, sizeof(model->peer_label), "%s",
-            model->config.peer_host[0] ? model->config.peer_host : "服务器地址未配置");
-    else
-        snprintf(model->peer_label, sizeof(model->peer_label), "%s",
-            model->connected ? "Mac" : "等待 Mac 连接");
-
-    {
-        hop_audio_status audio = hop_audio_get_status();
-        model->audio_requested = audio.requested;
-        model->audio_active = audio.active;
-        model->audio_unavailable = audio.unavailable;
-    }
-    xfer_get_status_pair(&model->transfer);
-
-    hop_xfer_task_get_revisions(&task_revision, &history_revision);
-    if (!model->task_snapshot_valid || task_revision != model->task_revision) {
-        n = hop_xfer_task_list_revisioned(model->tasks, HOPDESK_UI_TASK_CAP,
-                                          &total, &revision);
-        model->task_count = n > 0 ? n : 0;
-        model->task_total = total;
-        model->task_revision = revision;
-        model->task_snapshot_valid = 1;
-    }
-    if (!model->history_snapshot_valid || history_revision != model->history_revision) {
-        n = hop_xfer_task_history_store_list(model->history, HOPDESK_UI_HISTORY_CAP,
-            HOP_XFER_DIR_NONE, HOP_XFER_TASK_EMPTY, 1, &total);
-        model->history_count = n > 0 ? n : 0;
-        model->history_total = total;
-        model->history_revision = history_revision;
-        model->history_snapshot_valid = 1;
-    }
-
-    selected = find_task(model, selected_task);
-    if (!selected || !selected->transfer_id ||
-        (selected->direction != HOP_XFER_DIR_SEND &&
-         selected->direction != HOP_XFER_DIR_RECEIVE)) {
-        model->file_count = 0;
-        model->file_total = 0;
-        model->file_batch = 0;
-        model->file_offset = file_offset;
-        model->file_revision = 0;
-        model->file_direction = HOP_XFER_DIR_NONE;
-        return;
-    }
-
-    {
-        int file_total = 0;
-        uint64_t file_revision = 0;
-        (void)xfer_get_files_page(selected->direction, selected->transfer_id,
-            file_offset, NULL, 0, &file_total, &file_revision);
-        if (model->file_batch != selected->transfer_id ||
-            model->file_direction != selected->direction ||
-            model->file_offset != file_offset ||
-            model->file_revision != file_revision) {
-            n = xfer_get_files_page(selected->direction, selected->transfer_id,
-                file_offset, model->files, HOPDESK_UI_FILE_PAGE,
-                &file_total, &file_revision);
-            model->file_count = n > 0 ? n : 0;
-        }
-        model->file_total = file_total;
-        model->file_batch = selected->transfer_id;
-        model->file_direction = selected->direction;
-        model->file_offset = file_offset;
-        model->file_revision = file_revision;
-    }
-}
-
-typedef struct {
-    hop_config config;
-    int ok;
-} win_ui_save_result;
-
-static DWORD WINAPI save_config_worker(LPVOID argument) {
-    win_ui_save_result *result = (win_ui_save_result *)argument;
-    result->ok = hop_config_save_atomic(&result->config, g_app.config_path);
-    if (!PostMessageW(g_app.hwnd, WM_APP_UI_SAVE_RESULT, 0, (LPARAM)result))
-        free(result);
+static DWORD WINAPI save_config_worker(LPVOID unused) {
+    (void)unused;
+    s_save_result = win_split_save(&s_save_config);
     return 0;
 }
-
-static void save_config(const hop_config *config) {
-    win_ui_save_result *result;
-    HANDLE thread;
-    if (!config) {
-        hopdesk_ui_save_complete(0, "没有可保存的设置。");
-        return;
-    }
-    result = (win_ui_save_result *)calloc(1, sizeof(*result));
-    if (!result) {
-        hopdesk_ui_save_complete(0, "内存不足，无法保存设置。");
-        return;
-    }
-    result->config = *config;
-    thread = CreateThread(NULL, 0, save_config_worker, result, 0, NULL);
-    if (!thread) {
-        free(result);
-        hopdesk_ui_save_complete(0, "无法启动设置保存线程。");
-        return;
-    }
-    CloseHandle(thread);
-}
-
-void main_ui_save_complete(void *opaque) {
-    win_ui_save_result *result = (win_ui_save_result *)opaque;
-    int audio_ok;
-    if (!result) return;
-    if (!result->ok) {
-        free(result);
-        hopdesk_ui_save_complete(0, "保存失败；原配置未改变。请检查文件权限和磁盘空间。");
-        return;
-    }
-    s_ui_config = result->config;
-    /* Audio is hot-applied; role, ports, peer and authentication take effect on restart. */
-    g_app.cfg.audio_mode = result->config.audio_mode;
-    audio_ok = hop_audio_set_mode(&g_app.cfg, g_app.cfg.audio_mode);
-    free(result);
-    hopdesk_ui_save_complete(1, audio_ok
+static void collect_save(void) {
+    if (!s_save_thread || WaitForSingleObject(s_save_thread, 0) != WAIT_OBJECT_0) return;
+    CloseHandle(s_save_thread); s_save_thread = NULL;
+    if (s_save_result) s_ui_config = s_save_config;
+    s_last_snapshot = 0;
+    hopdesk_ui_save_complete(s_save_result != 0, s_save_result == 1
         ? "设置已保存。声音能力立即应用；网络、角色和认证参数重启后生效。"
-        : "设置已保存，但音频后台未能启动。请查看日志；重启后会按已保存配置重试。");
+        : s_save_result == 2 ? "设置已保存，但音频后台未能启动。请查看日志。"
+        : "后台保存未确认；请重新打开界面核对配置。");
 }
-
+static void save_config(const hop_config *config) {
+    if (!config || s_save_thread) return;
+    s_save_config = *config;
+    s_save_result = 0;
+    s_save_thread = CreateThread(NULL, 0, save_config_worker, NULL, 0, NULL);
+    if (!s_save_thread) hopdesk_ui_save_complete(0, "无法启动设置保存线程。");
+}
+static void snapshot_model(hopdesk_ui_model *model, hop_xfer_task_id selected_task,
+                           uint32_t file_offset) {
+    ULONGLONG now = GetTickCount64();
+    int page = -1;
+    collect_save();
+    if (!win_split_client_alive()) { main_ui_shutdown(); return; }
+    if (s_save_thread) return;
+    if (s_last_snapshot && now - s_last_snapshot < 250 &&
+        s_last_task == selected_task && s_last_offset == file_offset) return;
+    s_last_snapshot = now; s_last_task = selected_task; s_last_offset = file_offset;
+    if (win_split_snapshot(model, selected_task, file_offset, &page)) {
+        s_ui_config = model->config;
+        s_failed_snapshots = 0;
+        if (page >= 0 && page < HOPDESK_UI_PAGE_COUNT) hopdesk_ui_show_page(page);
+    } else {
+        model->connected = model->sharing = model->data_connected = 0;
+        if (++s_failed_snapshots >= 3) main_ui_shutdown();
+    }
+}
 static int cancel_task(hop_xfer_task_id id) {
-    return xfer_cancel_task(id);
+    s_last_snapshot = 0; return win_split_cancel(id);
 }
-
 static int retry_file(uint32_t batch, int index) {
-    return xfer_retry_file(batch, index);
+    s_last_snapshot = 0; return win_split_retry(batch, index);
 }
-
-static void reconnect_peer(void) {
-    if (g_app.net) net_server_drop(g_app.net);
-    xfer_kick();
-}
-
-static void display_action(int action) {
-    win_ui_display_action(action);
-}
-
-static void check_updates(void) {
-    update_check_async(g_app.hwnd);
-}
+static void reconnect_peer(void) { (void)win_split_reconnect(); s_last_snapshot = 0; }
+static void display_action(int action) { (void)win_split_display(action); }
+static void check_updates(void) { (void)win_split_update(); }
 
 static int load_logs(char *out, size_t capacity) {
     FILE *file;
@@ -234,7 +117,7 @@ static int copy_text(const char *utf8) {
         return 0;
     }
     GlobalUnlock(memory);
-    if (!OpenClipboard(g_app.hwnd)) {
+    if (!OpenClipboard(GetActiveWindow())) {
         GlobalFree(memory);
         return 0;
     }
@@ -344,11 +227,10 @@ void main_ui_show_page(int page) {
         hopdesk_ui_show_page(page);
         return;
     }
-    if (!s_config_loaded) {
-        s_ui_config = g_app.cfg;
-        (void)hop_config_load(&s_ui_config, g_app.config_path);
-        s_config_loaded = 1;
-    }
+    if (!win_split_client_active()) return;
+    hop_config_defaults(&s_ui_config);
+    s_last_snapshot = 0;
+    s_failed_snapshots = 0;
     hopdesk_ui_set_ops(&k_ui_ops);
     hopdesk_ui_show_page(page);
     memset(&desc, 0, sizeof(desc));
@@ -364,10 +246,11 @@ void main_ui_show_page(int page) {
     (void)cui_app_run(&desc, draw_frame, NULL);
     s_running = 0;
     s_ui_initialized = 0;
-    /* The CUI loop pumps the thread queue. If the hidden shell window posted
-     * WM_QUIT while the main window was open, it consumed that message; hand it
-     * back to the outer application loop after the CUI window has been destroyed. */
-    if (g_app.exit_requested) PostQuitMessage(0);
+    /* The context is gone: settle the save without calling UI callbacks. */
+    if (s_save_thread) {
+        WaitForSingleObject(s_save_thread, INFINITE);
+        CloseHandle(s_save_thread); s_save_thread = NULL;
+    }
     hopdesk_ui_shutdown();
 }
 
@@ -379,7 +262,3 @@ void main_ui_shutdown(void) {
     if (s_running) cui_app_quit(NULL);
 }
 
-int main_ui_translate(MSG *message) {
-    (void)message;
-    return 0;
-}

@@ -158,6 +158,8 @@ int main(void) {
     ui_header=(ROOT/'src/ui/hopdesk_ui.h').read_text(encoding='utf-8')
     mac_ui=(ROOT/'src/mac/main_ui.m').read_text(encoding='utf-8')
     win_ui=(ROOT/'src/win/main_ui.c').read_text(encoding='utf-8')
+    win_split=(ROOT/'src/win/split_ui.c').read_text(encoding='utf-8')
+    win_entry=(ROOT/'src/win/win_main.c').read_text(encoding='utf-8')
     mac_tray=(ROOT/'src/mac/statusbar.m').read_text(encoding='utf-8')
     win_tray=(ROOT/'src/win/ui.c').read_text(encoding='utf-8')
     migration=(ROOT/'docs/CUI_UI_MIGRATION.md').read_text(encoding='utf-8')
@@ -183,12 +185,12 @@ int main(void) {
     assert 'file_revision' in ui_header and 'file_offset' in ui_header
     assert 'task_revision != state.task_revision' in mac_ui
     assert 'history_revision != state.history_revision' in mac_ui
-    assert 'task_revision != model->task_revision' in win_ui
-    assert 'history_revision != model->history_revision' in win_ui
+    assert 'task_revision != model->task_revision' in win_split
+    assert 'history_revision != model->history_revision' in win_split
     assert 'split_ui_get_files(selected->direction, selected->transfer_id' in mac_ui
     assert 'HOPDESK_UI_FILE_PAGE' in mac_ui and 'file_revision' in mac_ui
-    assert 'xfer_get_files_page(selected->direction, selected->transfer_id' in win_ui
-    assert 'HOPDESK_UI_FILE_PAGE' in win_ui and 'file_revision' in win_ui
+    assert 'xfer_get_files_page(selected->direction, selected->transfer_id' in win_split
+    assert 'HOPDESK_UI_FILE_PAGE' in win_split and 'file_revision' in win_split
     assert 'int xfer_get_files_page(' in (ROOT/'src/win/xfer.c').read_text(encoding='utf-8')
     assert 'hop_xfer_tracking_files_page' in (ROOT/'src/core/xfer_tracking.c').read_text(encoding='utf-8')
     assert 'hop_xfer_task_list_revisioned' in (ROOT/'src/core/xfer_task.c').read_text(encoding='utf-8')
@@ -207,9 +209,9 @@ int main(void) {
     assert 'HOP_AUDIO_SEND' in ui and 'HOP_AUDIO_PLAY' in ui
     assert '"发送本机系统声音"' in ui and '"播放对端系统声音"' in ui
     assert 'split_ui_set_audio_mode' in mac_ui
-    assert 'hop_audio_set_mode' in win_ui
+    assert 'hop_audio_set_mode' in win_split
     assert 'mac_request_accessibility_permission' in mac_ui
-    assert 'win_ui_display_action' in win_ui
+    assert 'win_ui_display_action' in win_split
     assert 'win_ui_display_action' in (ROOT/'src/win/win_main.c').read_text(encoding='utf-8')
 
     # Native tray/status integrations remain platform-specific, while both
@@ -234,7 +236,20 @@ int main(void) {
     assert 'if (split_agent_is_active()) return;' in mac_ui
     assert 'while (s_save_pending)' in mac_ui
     assert 'if (split) return;' not in mac_tray
-    assert 'main_ui_show_page(2);' in win_tray
+    assert 'win_split_agent_open(HOPDESK_UI_TRANSFER);' in win_tray
+    assert 'win_split_agent_open(HOPDESK_UI_OVERVIEW);' in win_tray
+    assert 'main_ui_show_page(' not in win_tray
+    assert win_entry.index('win_split_client_init(') < win_entry.index('CreateMutexW(')
+    assert 'win_split_agent_start(g_app.hwnd)' in win_entry
+    assert 'win_split_agent_stop();' in win_entry
+    assert 'WM_APP_SPLIT_REQUEST' in win_entry and 'win_split_agent_dispatch();' in win_entry
+    assert 'PIPE_REJECT_REMOTE_CLIENTS' in win_split
+    assert 'GetNamedPipeClientProcessId' in win_split and 'GetNamedPipeServerProcessId' in win_split
+    assert 'JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE' in win_split
+    assert 'if (!win_split_client_active()) return;' in win_ui
+    assert 'win_split_snapshot(model' in win_ui and 'win_split_save(&s_save_config)' in win_ui
+    assert 'hop_config_save_atomic' not in win_ui and 'xfer_cancel_task(' not in win_ui
+    assert 'xfer_retry_file(' not in win_ui and 'hop_audio_set_mode(' not in win_ui
     assert 'NSStatusItem' in mac_tray and 'Shell_NotifyIconW' in win_tray
     assert 'HOP_XFER_FILE_LIMIT' not in mac_tray
     assert 'xfer_get_files(' not in mac_tray

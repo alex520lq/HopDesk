@@ -5,7 +5,7 @@
 #include "app.h"
 #include "resource.h"
 #include "xfer.h"
-#include "main_ui.h"
+#include "split_ui.h"
 
 #include <commctrl.h>
 #include <stdio.h>
@@ -223,15 +223,14 @@ void ui_show_menu(win_app *app) {
 
 void ui_show_main(win_app *app) {
     (void)app;
-    main_ui_show_page(0);
+    win_split_agent_open(HOPDESK_UI_OVERVIEW);
 }
 void ui_show_transfers(win_app *app) {
     (void)app;
-    main_ui_show_page(2);
+    win_split_agent_open(HOPDESK_UI_TRANSFER);
 }
 void ui_refresh(win_app *app) {
     tray_refresh(app);
-    main_ui_refresh();
 }
 void ui_notify_paste_ready(void) {
     if (!g_app.tray_added) return;
@@ -263,7 +262,6 @@ void ui_transfer_poll(void) {
 }
 void ui_shutdown(win_app *app) {
     KillTimer(app->hwnd,IDT_XFER_NOTIFY);
-    main_ui_shutdown();
     if(app->tray_added){Shell_NotifyIconW(NIM_DELETE,&app->nid);app->tray_added=0;}
     if (app->tray_icon) { DestroyIcon(app->tray_icon); app->tray_icon=NULL; }
     if (app->icon_base) { DestroyIcon(app->icon_base); app->icon_base=NULL; }

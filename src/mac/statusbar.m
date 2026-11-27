@@ -198,7 +198,8 @@ static void refresh_status_item(void) {
             phase = st->phase;
         }
     }
-    int state = s_status_sharing ? 2 : (s_status_connected ? 1 : 0);
+    int disconnected = net_is_disconnected();
+    int state = s_status_sharing ? 2 : (s_status_connected ? 1 : (disconnected ? -2 : 0));
     if (state == s_last_icon_state && progress == s_last_icon_progress &&
         direction == s_last_icon_direction && phase == s_last_icon_phase) return;
     s_last_icon_state=state; s_last_icon_progress=progress;
@@ -206,7 +207,8 @@ static void refresh_status_item(void) {
     s_item.button.image = make_status_image(s_status_connected, s_status_sharing, progress);
     s_item.button.imagePosition = NSImageLeft;
     s_item.button.title = progress >= 0 ? [NSString stringWithFormat:@"%d%%",progress] : (progress == -2 ? @"…" : @"");
-    NSString *stateText = s_status_sharing ? @"键鼠共享中" : (s_status_connected ? @"已连接" : @"未连接");
+    NSString *stateText = s_status_sharing ? @"键鼠共享中" :
+        (s_status_connected ? @"已连接" : (disconnected ? @"已手动断开" : @"未连接"));
     if (progress >= 0) {
         NSString *directionText = direction == HOP_XFER_DIR_SEND ? @"发送" : @"接收";
         s_item.button.toolTip = [NSString stringWithFormat:@"HopDesk · 正在%@ · %d%%",directionText,progress];

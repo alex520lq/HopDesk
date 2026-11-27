@@ -159,6 +159,7 @@ static void test_config_defaults_and_loading(void) {
     hop_config_defaults(&c);
     CHECK(c.port == HOP_DEFAULT_PORT);
     CHECK(c.data_port == HOP_DATA_PORT);
+    CHECK(c.ui_theme == HOP_THEME_SYSTEM);
     CHECK(c.xfer_chunk_kb == HOP_CHUNK_KB_DEFAULT);
     CHECK(c.xfer_rate_limit_mib == 128);
 #if defined(_WIN32)
@@ -182,6 +183,7 @@ static void test_config_defaults_and_loading(void) {
           "xfer_chunk_kb=512\n"
           "xfer_rate_limit_mib=256\n"
           "disp_win_input=0x0F\n"
+          "ui_theme=dark\n"
           "switch_push_ms=175\n", f);
     fclose(f);
 
@@ -195,6 +197,12 @@ static void test_config_defaults_and_loading(void) {
     CHECK(c.xfer_rate_limit_mib == 256);
     CHECK(c.audio_mode == default_audio_mode);
     CHECK(c.disp_win_input == 0x0F);
+    CHECK(c.ui_theme == HOP_THEME_DARK);
+    c.ui_theme = HOP_THEME_LIGHT;
+    CHECK(hop_config_save_atomic(&c, path) == 1);
+    hop_config_defaults(&c);
+    CHECK(hop_config_load(&c, path) == 1);
+    CHECK(c.ui_theme == HOP_THEME_LIGHT);
     CHECK(c.switch_delay_ms == 175);
 
     /* UI persistence writes a complete config atomically and remains readable. */
@@ -242,7 +250,38 @@ static void test_dual_roles(void) {
     FILE *f=fopen(path,"w");CHECK(f!=NULL);
     if(f){fputs("role=invalid\nport=9999\n",f);fclose(f);
         loaded=c;CHECK(!hop_config_load(&loaded,path));CHECK(loaded.port==c.port);}
+    /* Independent input_mode persistence and legacy fallback when input_mode is absent. */
+    f=fopen(path,"w");CHECK(f!=NULL);
+    if(f){fputs("role=client\nhost=10.0.0.2\n",f);fclose(f);
+        hop_config_defaults(&loaded);CHECK(hop_config_load(&loaded,path));
+        CHECK(loaded.role==HOP_ROLE_CLIENT && loaded.input_mode==0);}
+    hop_config_defaults(&c);c.role=HOP_ROLE_CLIENT;c.input_mode=HOP_INPUT_MOUSE;
+    snprintf(c.peer_host,sizeof(c.peer_host),"10.0.0.2");
+    CHECK(hop_config_save_atomic(&c,path));
+    hop_config_defaults(&loaded);CHECK(hop_config_load(&loaded,path));
+    CHECK(loaded.role==HOP_ROLE_CLIENT && loaded.input_mode==HOP_INPUT_MOUSE);
+    c.input_mode=HOP_INPUT_MODES+1u;CHECK(!hop_config_save_atomic(&c,path));
     remove(path);
+
+    /* Peer capability wire codec and takeover reconciliation. */
+    {
+        uint8_t wire[HOP_CAPABILITIES_BYTES];
+        hop_capabilities_msg decoded;
+        CHECK(hop_capabilities_encode(wire, HOP_INPUT_MOUSE, HOP_INPUT_MOUSE, HOP_AUDIO_SEND) == HOP_CAPABILITIES_BYTES);
+        CHECK(hop_capabilities_decode(wire, sizeof(wire), &decoded));
+        CHECK(decoded.input_mode == HOP_INPUT_MOUSE && decoded.takeover_mask == HOP_INPUT_MOUSE &&
+              decoded.audio_mode == HOP_AUDIO_SEND);
+        CHECK(!hop_capabilities_encode(wire, HOP_INPUT_MODES + 1u, 0, 0));
+        CHECK(!hop_capabilities_decode(wire, sizeof(wire) - 1, &decoded));
+        /* Explicit peer takeover clears claimed bits even on the listening end. */
+        CHECK(hop_input_reconcile(HOP_INPUT_MODES, HOP_INPUT_MOUSE, HOP_INPUT_MOUSE, HOP_ROLE_SERVER) == HOP_INPUT_KEYBOARD);
+        CHECK(hop_input_reconcile(HOP_INPUT_MODES, HOP_INPUT_MODES, HOP_INPUT_MODES, HOP_ROLE_SERVER) == 0);
+        /* Initial overlap without takeover yields deterministically on the dialing side. */
+        CHECK(hop_input_reconcile(HOP_INPUT_MODES, HOP_INPUT_MODES, 0, HOP_ROLE_CLIENT) == 0);
+        CHECK(hop_input_reconcile(HOP_INPUT_MODES, HOP_INPUT_MODES, 0, HOP_ROLE_SERVER) == HOP_INPUT_MODES);
+        /* Non-overlapping capabilities stay intact on both sides. */
+        CHECK(hop_input_reconcile(HOP_INPUT_MOUSE, HOP_INPUT_KEYBOARD, 0, HOP_ROLE_CLIENT) == HOP_INPUT_MOUSE);
+    }
     CHECK(hop_mac_to_vk(0x00)=='A');
     CHECK(hop_mac_to_vk(0x37)==0xA2); /* Cmd -> Windows Ctrl */
     CHECK(hop_mac_to_vk(0x3B)==0x5B); /* Control -> Windows key */

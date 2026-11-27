@@ -23,7 +23,7 @@
 #include <sys/select.h>
 
 static struct { hop_config cfg; } g_mac;
-static _Atomic int s_stop, valid=1, suppressed, cancel_polls;
+static _Atomic int s_stop, s_manual_disconnect, valid=1, suppressed, cancel_polls;
 static struct { _Atomic int stop; } s_x;
 static int s_listener=-1,s_data_listener=-1;
 void hop_log(hop_log_level level,const char *fmt,...){(void)level;(void)fmt;}

@@ -45,6 +45,7 @@ typedef enum {
     HOP_MSG_HELLO_ACK    = 2,   /* S -> C: 结果 {ok, name, w, h, ver, session}   */
     HOP_MSG_PING         = 3,
     HOP_MSG_PONG         = 4,
+    HOP_MSG_CAPABILITIES = 5,   /* 双向: local_input(1) + takeover_mask(1) + local_audio(1) + flags(1) */
 
     HOP_MSG_MOUSE_MOVE   = 10,  /* S -> C: dx,dy (int16 x2)        */
     HOP_MSG_MOUSE_BUTTON = 11,  /* S -> C: button(uint8),down(uint8),click_count(uint8, optional) */
@@ -220,6 +221,17 @@ typedef enum {
 
 typedef enum { HOP_ROLE_SERVER = 0, HOP_ROLE_CLIENT = 1 } hop_role;
 
+typedef enum {
+    HOP_THEME_SYSTEM = 0,
+    HOP_THEME_LIGHT  = 1,
+    HOP_THEME_DARK   = 2
+} hop_ui_theme;
+
+/* Local input provider capabilities; decoupled from TCP listen/connect mode. */
+#define HOP_INPUT_MOUSE     1u
+#define HOP_INPUT_KEYBOARD  2u
+#define HOP_INPUT_MODES     (HOP_INPUT_MOUSE | HOP_INPUT_KEYBOARD)
+
 /* Local audio capabilities; deliberately independent of the server/client role. */
 #define HOP_AUDIO_SEND  1u
 #define HOP_AUDIO_PLAY  2u
@@ -227,8 +239,10 @@ typedef enum { HOP_ROLE_SERVER = 0, HOP_ROLE_CLIENT = 1 } hop_role;
 
 /* ---- 配置 ---- */
 typedef struct {
-    hop_role role; /* independent of operating system; restart to change */
+    hop_role role; /* transport direction: listen (SERVER) or dial peer (CLIENT); restart to change */
+    unsigned input_mode; /* local MOUSE/KEYBOARD provider capabilities; hot-synced with peer */
     unsigned audio_mode; /* local SEND/PLAY capabilities; hot-applied independently of role */
+    int      ui_theme;   /* hop_ui_theme: 0=system, 1=light, 2=dark */
     uint16_t port;
     char     token[HOP_TOKEN_MAX];
     char     peer_host[64];        /* 客户端用：服务端地址 */
@@ -348,6 +362,20 @@ int hop_data_unwrap(uint8_t type, const uint8_t *p, uint32_t len,
 uint32_t hop_xfer_hello_encode(uint8_t *out, const char *token, const hop_session_id *id);
 int hop_xfer_hello_bound(const uint8_t *p, uint32_t len, const char *token,
                          const hop_session_id *expected);
+
+/* Peer capability sync & takeover payload (HOP_MSG_CAPABILITIES). */
+#define HOP_CAPABILITIES_BYTES 4u
+typedef struct {
+    unsigned input_mode;
+    unsigned takeover_mask;
+    unsigned audio_mode;
+} hop_capabilities_msg;
+uint32_t hop_capabilities_encode(uint8_t out[HOP_CAPABILITIES_BYTES],
+                                 unsigned input_mode, unsigned takeover_mask,
+                                 unsigned audio_mode);
+int hop_capabilities_decode(const uint8_t *p, uint32_t len, hop_capabilities_msg *out);
+unsigned hop_input_reconcile(unsigned local_input, unsigned peer_input,
+                             unsigned takeover_mask, hop_role local_role);
 
 /* HELLO: {tlen, token, nlen, name, w(4), h(4), ver(1)}；指针指向 payload 内部 */
 typedef struct {

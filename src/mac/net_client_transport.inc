@@ -127,7 +127,7 @@ static int accept_control(void){
         }
         hop_log(HOP_LOG_INFO,"net: listening on control port %u",(unsigned)g_mac.cfg.port);
     }
-    while(!s_stop){fd_set rd;FD_ZERO(&rd);FD_SET(s_listener,&rd);struct timeval tv={0,200000};
+    while(!s_stop && !s_manual_disconnect){fd_set rd;FD_ZERO(&rd);FD_SET(s_listener,&rd);struct timeval tv={0,200000};
         int n=select(s_listener+1,&rd,NULL,NULL,&tv);
         if(n>0){
             int peer=accept(s_listener,NULL,NULL);
@@ -136,6 +136,7 @@ static int accept_control(void){
         }
         if(n<0&&errno!=EINTR){close(s_listener);s_listener=-1;return -1;}
     }
+    if(s_manual_disconnect && s_listener>=0){close(s_listener);s_listener=-1;}
     return -1;
 }
 static int do_connect(void) {
@@ -166,9 +167,58 @@ void net_set_keepalive(int s) {
     setsockopt(s, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
 }
 
+unsigned net_get_input_mode(void) {
+    return atomic_load_explicit(&s_local_input_mode, memory_order_acquire) & HOP_INPUT_MODES;
+}
+
+void net_get_peer_capabilities(unsigned *peer_input, unsigned *peer_audio, int *known,
+                               char *peer_name, size_t peer_name_cap) {
+    if (peer_input) *peer_input = atomic_load_explicit(&s_peer_input_mode, memory_order_acquire) & HOP_INPUT_MODES;
+    if (peer_audio) *peer_audio = atomic_load_explicit(&s_peer_audio_mode, memory_order_acquire) & HOP_AUDIO_MODES;
+    if (known) *known = atomic_load_explicit(&s_peer_caps_known, memory_order_acquire) != 0;
+    if (peer_name && peer_name_cap) {
+        pthread_mutex_lock(&s_lock);
+        snprintf(peer_name, peer_name_cap, "%s", s_peer_name);
+        pthread_mutex_unlock(&s_lock);
+    }
+}
+
+void net_send_capabilities(unsigned takeover_mask) {
+    uint8_t payload[HOP_CAPABILITIES_BYTES];
+    unsigned local_input = net_get_input_mode();
+    if (hop_capabilities_encode(payload, local_input, takeover_mask & HOP_INPUT_MODES,
+                                g_mac.cfg.audio_mode & HOP_AUDIO_MODES))
+        (void)net_send(HOP_MSG_CAPABILITIES, payload, sizeof(payload));
+}
+
+void net_apply_input_mode(unsigned mode, unsigned takeover_mask, int persist) {
+    mode &= HOP_INPUT_MODES;
+    atomic_store_explicit(&s_local_input_mode, mode, memory_order_release);
+    g_mac.cfg.input_mode = mode;
+    mac_capture_set_input_mode(mode);
+    if (persist && g_mac.config_path[0]) {
+        hop_config saved = g_mac.cfg;
+        (void)hop_config_load(&saved, g_mac.config_path);
+        saved.input_mode = mode;
+        (void)hop_config_save_atomic(&saved, g_mac.config_path);
+    }
+    net_send_capabilities(takeover_mask & HOP_INPUT_MODES);
+}
+
 static void set_connected(int on) {
     clipboard_on_link(on);
-    if (!on) {
+    if (on) {
+        atomic_store_explicit(&s_peer_caps_known, 0, memory_order_release);
+        atomic_store_explicit(&s_peer_input_mode, 0, memory_order_release);
+        atomic_store_explicit(&s_peer_audio_mode, 0, memory_order_release);
+        net_send_capabilities(0);
+    } else {
+        atomic_store_explicit(&s_peer_caps_known, 0, memory_order_release);
+        atomic_store_explicit(&s_peer_input_mode, 0, memory_order_release);
+        atomic_store_explicit(&s_peer_audio_mode, 0, memory_order_release);
+        pthread_mutex_lock(&s_lock);
+        s_peer_name[0] = '\0';
+        pthread_mutex_unlock(&s_lock);
         hop_session_clear(&s_control_session);
         pthread_mutex_lock(&s_dispatch_lock);
         inject_reset();
@@ -178,7 +228,32 @@ static void set_connected(int on) {
     statusbar_update(on, 0);
 }
 
+int net_is_disconnected(void) {
+    return atomic_load_explicit(&s_manual_disconnect, memory_order_acquire) != 0;
+}
+
+void net_set_disconnected(int disconnected) {
+    int pause = disconnected ? 1 : 0;
+    int prev = atomic_exchange_explicit(&s_manual_disconnect, pause, memory_order_acq_rel);
+    if (pause) {
+        s_drop_requested = 1;
+        pthread_mutex_lock(&s_qlock); s_online = 0; queue_clear_locked(); pthread_mutex_unlock(&s_qlock);
+        pthread_mutex_lock(&s_lock);
+        if (s_sock >= 0) shutdown(s_sock, SHUT_RDWR);
+        pthread_mutex_unlock(&s_lock);
+        hop_session_id current;
+        if (hop_session_current(&current)) hop_session_clear(&current);
+        xfer_kick();
+        if (!prev) hop_log(HOP_LOG_INFO, "net: manually disconnected");
+        statusbar_update(0, 0);
+    } else if (prev) {
+        hop_log(HOP_LOG_INFO, "net: connection resumed");
+        statusbar_update(0, 0);
+    }
+}
+
 void net_request_reconnect(void) {
+    atomic_store_explicit(&s_manual_disconnect, 0, memory_order_release);
     s_drop_requested=1;
     hop_log(HOP_LOG_INFO,"net: reconnect requested");
 }
@@ -201,13 +276,26 @@ static void *net_thread(void *arg) {
     (void)arg;
     int backoff = 1;
     while (!s_stop) {
+        if (s_manual_disconnect) {
+            if (s_listener >= 0) { close(s_listener); s_listener = -1; }
+            backoff = 1;
+            usleep(100000);
+            continue;
+        }
+        s_drop_requested = 0;
         int s = g_mac.cfg.role==HOP_ROLE_SERVER?accept_control():do_connect();
+        if (s_manual_disconnect) {
+            if (s >= 0) close(s);
+            if (s_listener >= 0) { close(s_listener); s_listener = -1; }
+            backoff = 1;
+            continue;
+        }
         if (s < 0) {
             if(g_mac.cfg.role==HOP_ROLE_CLIENT && g_mac.cfg.peer_host[0])
                 hop_log(HOP_LOG_WARN,"net: TCP control connection failed: host=%s port=%u; check address, network and firewall",
                         g_mac.cfg.peer_host,(unsigned)g_mac.cfg.port);
-            for(int i=0;i<backoff*10&&!s_stop;++i)usleep(100000);
-            backoff = backoff < 10 ? backoff * 2 : 10;
+            for(int i=0;i<backoff*10&&!s_stop&&!s_manual_disconnect&&!s_drop_requested;++i)usleep(100000);
+            backoff = s_drop_requested ? 1 : (backoff < 10 ? backoff * 2 : 10);
             continue;
         }
         pthread_mutex_lock(&s_lock);
@@ -229,7 +317,7 @@ static void *net_thread(void *arg) {
         pthread_mutex_lock(&s_qlock);queue_clear_locked();s_online=1;pthread_mutex_unlock(&s_qlock);
         if(g_mac.cfg.role==HOP_ROLE_CLIENT)send_hello();
         char buf[2048];
-        while (!s_stop && !s_rejected && !s_drop_requested) {
+        while (!s_stop && !s_rejected && !s_drop_requested && !s_manual_disconnect) {
             uint64_t now = hop_monotonic_ms();
             if (!s_authed && hop_handshake_expired(now, started)) {
                 hop_log(HOP_LOG_WARN,"net: control handshake timed out");break;
@@ -256,8 +344,11 @@ static void *net_thread(void *arg) {
         pthread_mutex_lock(&s_qlock);s_online=0;queue_clear_locked();pthread_mutex_unlock(&s_qlock);
         set_connected(0);
         xfer_kick();
-        for(int i=0;i<backoff*10&&!s_stop;++i)usleep(100000);
-        backoff = backoff < 10 ? backoff * 2 : 10;
+        if (!s_manual_disconnect) {
+            s_drop_requested = 0;
+            for(int i=0;i<backoff*10&&!s_stop&&!s_manual_disconnect&&!s_drop_requested;++i)usleep(100000);
+            backoff = s_drop_requested ? 1 : (backoff < 10 ? backoff * 2 : 10);
+        }
     }
     if(s_listener>=0){close(s_listener);s_listener=-1;}
     return NULL;
@@ -265,6 +356,7 @@ static void *net_thread(void *arg) {
 
 void net_loop_run(void) {
     s_stop = 0;
+    atomic_store_explicit(&s_local_input_mode, g_mac.cfg.input_mode & HOP_INPUT_MODES, memory_order_release);
     s_dec = hop_decoder_new(NULL, on_message);
     if (!s_dec) { hop_log(HOP_LOG_ERROR, "net: decoder allocation failed"); return; }
     if (pthread_create(&s_control_sender_thread, NULL, control_sender, NULL)) {

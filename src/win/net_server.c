@@ -32,9 +32,10 @@ struct net_server {
     hop_config cfg;
     SOCKET listen_s, client;
     CRITICAL_SECTION lock, send_lock;
-    HANDLE stop, q_evt, thread, sender;
+    HANDLE stop, q_evt, wake, thread, sender;
     send_item *q_head, *q_tail;
     int q_count, listening;
+    volatile LONG disconnected;
     size_t q_bytes;
     unsigned long epoch;
     uint64_t last_ping;

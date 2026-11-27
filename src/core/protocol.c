@@ -118,6 +118,40 @@ int hop_clip_paste_failed_decode(const uint8_t *p, uint32_t len,
     return 1;
 }
 
+uint32_t hop_capabilities_encode(uint8_t out[HOP_CAPABILITIES_BYTES],
+                                 unsigned input_mode, unsigned takeover_mask,
+                                 unsigned audio_mode) {
+    if (!out || (input_mode & ~HOP_INPUT_MODES) ||
+        (takeover_mask & ~HOP_INPUT_MODES) ||
+        (audio_mode & ~HOP_AUDIO_MODES)) return 0;
+    out[0] = (uint8_t)input_mode;
+    out[1] = (uint8_t)takeover_mask;
+    out[2] = (uint8_t)audio_mode;
+    out[3] = 0;
+    return HOP_CAPABILITIES_BYTES;
+}
+
+int hop_capabilities_decode(const uint8_t *p, uint32_t len, hop_capabilities_msg *out) {
+    if (!p || !out || len != HOP_CAPABILITIES_BYTES) return 0;
+    if ((p[0] & ~HOP_INPUT_MODES) || (p[1] & ~HOP_INPUT_MODES) ||
+        (p[2] & ~HOP_AUDIO_MODES)) return 0;
+    out->input_mode = p[0];
+    out->takeover_mask = p[1];
+    out->audio_mode = p[2];
+    return 1;
+}
+
+unsigned hop_input_reconcile(unsigned local_input, unsigned peer_input,
+                             unsigned takeover_mask, hop_role local_role) {
+    unsigned next = local_input & HOP_INPUT_MODES;
+    unsigned claimed = takeover_mask & HOP_INPUT_MODES;
+    unsigned remote = peer_input & HOP_INPUT_MODES;
+    next &= ~claimed;
+    if ((next & remote) && local_role == HOP_ROLE_CLIENT)
+        next &= ~remote;
+    return next;
+}
+
 /* ---- 字节序 ---- */
 void hop_put_be16(uint8_t *p, uint16_t v) {
     p[0] = (uint8_t)(v >> 8);

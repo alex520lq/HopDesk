@@ -19,6 +19,9 @@ int win_split_save(const hop_config *config); /* 1 saved + audio applied; 2 save
 int win_split_cancel(hop_xfer_task_id task);
 int win_split_retry(uint32_t batch, int index);
 int win_split_reconnect(void);
+int win_split_disconnect(void);
 int win_split_display(int action);
 int win_split_update(void);
+int win_split_set_theme(int ui_theme);
+int win_split_set_input_mode(unsigned input_mode);
 #endif

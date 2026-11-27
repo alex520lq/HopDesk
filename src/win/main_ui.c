@@ -5,6 +5,7 @@
 #include "../ui/hopdesk_ui.h"
 
 #include <cui/cui_app.h>
+#include <dwmapi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +22,40 @@ static hop_xfer_task_id s_last_task;
 static uint32_t s_last_offset;
 static unsigned s_failed_snapshots;
 static int s_was_foreground;
+static int s_last_theme = -1;
+
+static void sync_titlebar_theme(cui_ctx *ui) {
+    int mode;
+    HWND hwnd;
+    BOOL dark;
+    if (!ui) return;
+    mode = (int)cui_get_theme_mode(ui);
+    if (mode == s_last_theme) return;
+    hwnd = (HWND)cui_app_native_window(NULL);
+    if (!hwnd) return;
+    s_last_theme = mode;
+    dark = mode == CUI_THEME_DARK ? TRUE : FALSE;
+    if (FAILED(DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark))))
+        (void)DwmSetWindowAttribute(hwnd, 19, &dark, sizeof(dark));
+}
+
+static void apply_theme(int ui_theme, int persist) {
+    cui_ctx *ui = cui_app_ui(NULL);
+    if (ui_theme < HOP_THEME_SYSTEM || ui_theme > HOP_THEME_DARK)
+        ui_theme = HOP_THEME_SYSTEM;
+    if (ui_theme == HOP_THEME_SYSTEM) {
+        cui_app_follow_system_theme(NULL, true);
+    } else {
+        cui_app_follow_system_theme(NULL, false);
+        if (ui) cui_set_theme(ui, ui_theme == HOP_THEME_DARK ? CUI_THEME_DARK : CUI_THEME_LIGHT);
+    }
+    if (ui) sync_titlebar_theme(ui);
+    s_ui_config.ui_theme = ui_theme;
+    if (persist) {
+        (void)win_split_set_theme(ui_theme);
+        s_last_snapshot = 0;
+    }
+}
 
 static cui_renderer_kind select_renderer(void) {
     const char *env = getenv("CUI_RENDERER");
@@ -42,7 +77,7 @@ static void collect_save(void) {
     if (s_save_result) s_ui_config = s_save_config;
     s_last_snapshot = 0;
     hopdesk_ui_save_complete(s_save_result != 0, s_save_result == 1
-        ? "设置已保存。声音能力立即应用；网络、角色和认证参数重启后生效。"
+        ? "设置已保存。键鼠与声音能力已即时应用；连接方式、端口与认证参数重启后生效。"
         : s_save_result == 2 ? "设置已保存，但音频后台未能启动。请查看日志。"
         : "后台保存未确认；请重新打开界面核对配置。");
 }
@@ -83,8 +118,14 @@ static int retry_file(uint32_t batch, int index) {
     s_last_snapshot = 0; return win_split_retry(batch, index);
 }
 static void reconnect_peer(void) { (void)win_split_reconnect(); s_last_snapshot = 0; }
+static void disconnect_peer(void) { (void)win_split_disconnect(); s_last_snapshot = 0; }
 static void display_action(int action) { (void)win_split_display(action); }
 static void check_updates(void) { (void)win_split_update(); }
+static void set_input_mode(unsigned input_mode) {
+    s_ui_config.input_mode = input_mode & HOP_INPUT_MODES;
+    (void)win_split_set_input_mode(s_ui_config.input_mode);
+    s_last_snapshot = 0;
+}
 
 static int load_logs(char *out, size_t capacity) {
     FILE *file;
@@ -215,6 +256,7 @@ static const hopdesk_ui_ops k_ui_ops = {
     cancel_task,
     retry_file,
     reconnect_peer,
+    disconnect_peer,
     display_action,
     check_updates,
     NULL,
@@ -222,7 +264,9 @@ static const hopdesk_ui_ops k_ui_ops = {
     copy_text,
     default_config,
     load_cjk_font,
-    release_cjk_font
+    release_cjk_font,
+    apply_theme,
+    set_input_mode
 };
 
 static void draw_frame(cui_ctx *ui, void *user) {
@@ -233,6 +277,7 @@ static void draw_frame(cui_ctx *ui, void *user) {
         s_ui_initialized = 1;
     }
     hopdesk_ui_frame(ui);
+    sync_titlebar_theme(ui);
 }
 
 void main_ui_show_page(int page) {
@@ -243,9 +288,22 @@ void main_ui_show_page(int page) {
     }
     if (!win_split_client_active()) return;
     hop_config_defaults(&s_ui_config);
+    {
+        hopdesk_ui_model *initial = (hopdesk_ui_model *)calloc(1, sizeof(*initial));
+        if (initial) {
+            int pending_page = -1;
+            if (win_split_snapshot(initial, 0, 0, &pending_page)) {
+                s_ui_config = initial->config;
+                if (pending_page >= 0 && pending_page < HOPDESK_UI_PAGE_COUNT)
+                    page = pending_page;
+            }
+            free(initial);
+        }
+    }
     s_last_snapshot = 0;
     s_failed_snapshots = 0;
     s_was_foreground = 0;
+    s_last_theme = -1;
     hopdesk_ui_set_ops(&k_ui_ops);
     hopdesk_ui_show_page(page);
     memset(&desc, 0, sizeof(desc));
@@ -255,7 +313,8 @@ void main_ui_show_page(int page) {
     desc.min_width = 960;
     desc.min_height = 640;
     desc.renderer = select_renderer();
-    desc.follow_system_theme = true;
+    desc.follow_system_theme = s_ui_config.ui_theme == HOP_THEME_SYSTEM;
+    desc.theme = s_ui_config.ui_theme == HOP_THEME_DARK ? CUI_THEME_DARK : CUI_THEME_LIGHT;
     desc.accent = CUI_ACCENT_BLUE;
     s_running = 1;
     (void)cui_app_run(&desc, draw_frame, NULL);

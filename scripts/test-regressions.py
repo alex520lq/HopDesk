@@ -205,6 +205,25 @@ int main(void) {
     assert '"取消选中任务"' in ui and '"重试选中文件"' in ui
     assert '"上一页"' in ui and '"下一页"' in ui and '"历史记录"' in ui
 
+    # Manual disconnect pauses reconnect/listening until explicitly resumed on both platforms.
+    assert 'int manually_disconnected;' in ui_header and 'void (*disconnect)(void);' in ui_header
+    assert 's_ops->disconnect()' in ui and '"断开连接"' in ui and '"恢复连接"' in ui and '"已手动断开"' in ui
+    assert 'IPC_DISCONNECT' in win_split and 'net_server_set_disconnected' in win_split
+    assert 'win_split_disconnect' in win_ui
+    assert 'SPLIT_IPC_DISCONNECT' in (ROOT/'src/mac/split_ipc.h').read_text(encoding='utf-8')
+    assert 'net_set_disconnected' in (ROOT/'src/mac/split_agent.m').read_text(encoding='utf-8')
+    assert 'split_ui_disconnect' in mac_ui and 'split_ui_is_disconnected' in mac_ui
+
+    # Peer-equal capability model: no server/client wording in UI, independent mouse/keyboard providers.
+    assert 'HOP_INPUT_MOUSE' in ui and 'HOP_INPUT_KEYBOARD' in ui
+    assert '"本机提供鼠标"' in ui and '"本机提供键盘"' in ui and '"对端提供"' in ui
+    assert '"等待对端连接（本机监听）"' in ui and '"主动连接对端（填写地址）"' in ui
+    assert '服务器' not in ui and '客户端' not in ui
+    assert 'IPC_INPUT_MODE' in win_split and 'win_split_set_input_mode' in win_ui
+    assert 'SPLIT_IPC_INPUT_MODE_SET' in (ROOT/'src/mac/split_ipc.h').read_text(encoding='utf-8')
+    assert 'SPLIT_IPC_INPUT_MODE_SET' in (ROOT/'src/mac/split_agent.m').read_text(encoding='utf-8')
+    assert 'split_ui_set_input_mode' in mac_ui and 'split_ui_get_capabilities' in mac_ui
+
     # The same settings UI exposes independent send/play audio capabilities.
     assert 'HOP_AUDIO_SEND' in ui and 'HOP_AUDIO_PLAY' in ui
     assert '"发送本机系统声音"' in ui and '"播放对端系统声音"' in ui
@@ -274,10 +293,10 @@ int main(void) {
     mac_main=(ROOT/'src/mac/main.c').read_text(encoding='utf-8')
     assert 'mac_capture_init();' in mac_main
     assert 'if(g_mac.cfg.role==HOP_ROLE_SERVER)mac_capture_init();' not in mac_main
-    assert 'CGEventMask mask=CGEventMaskBit(kCGEventKeyDown)|CGEventMaskBit(kCGEventKeyUp)' in capture
-    assert 'if(g_mac.cfg.role==HOP_ROLE_SERVER)' in extract(capture,'mac_capture_init')
+    assert 'CGEventMaskBit(kCGEventKeyDown)|CGEventMaskBit(kCGEventKeyUp)' in capture
+    assert 's_input_mode = g_mac.cfg.input_mode & HOP_INPUT_MODES;' in extract(capture,'mac_capture_init')
     edge_helper=extract(capture,'is_edge_motion_event')
-    assert 'if(is_edge_motion_event(type))' in extract(capture,'capture_event')
+    assert 'is_edge_motion_event(type)' in extract(capture,'capture_event')
     edge_preamble=r'''
 #include <assert.h>
 #include <stdio.h>
@@ -307,11 +326,12 @@ int main(void){
 #include <assert.h>
 #include "mouse_click.h"
 typedef uint8_t BYTE;typedef uint32_t DWORD;typedef struct {int x,y;} POINT;
-typedef struct {int server_edge,edge_margin_px,switch_cooldown_ms,screen_w,screen_h;} cfg_t;
+typedef struct {int server_edge,edge_margin_px,switch_cooldown_ms,screen_w,screen_h;unsigned input_mode;} cfg_t;
 typedef struct {cfg_t cfg;int peer_w,peer_h,state;void *net;} app_t;
 static app_t g_app;
 enum {HOP_EDGE_LEFT=0,HOP_EDGE_RIGHT=1,HOP_EDGE_TOP=2,HOP_EDGE_BOTTOM=3,
       HOP_LINK_LOCAL=1,HOP_LINK_SHARING=2,HOP_BTN_LEFT=0,
+      HOP_INPUT_MOUSE=1,HOP_INPUT_KEYBOARD=2,
       HOP_MSG_MOUSE_BUTTON=11,HOP_MSG_MOUSE_ENTER=14,HOP_MSG_KEY_DOWN=20};
 enum {SM_CYVIRTUALSCREEN=1,SM_CXVIRTUALSCREEN=2,SM_CYSCREEN=3,SM_CXSCREEN=4};
 static int s_sharing,s_have_last,s_physical_buttons[3],s_buttons[3],event_count,fail_enter,local_releases;
@@ -337,7 +357,8 @@ int main(void){
     POINT trigger={0,540};
     memset(&g_app,0,sizeof(g_app));g_app.cfg.server_edge=HOP_EDGE_LEFT;
     g_app.cfg.edge_margin_px=40;g_app.cfg.switch_cooldown_ms=300;
-    g_app.cfg.screen_w=1920;g_app.cfg.screen_h=1080;g_app.peer_w=1440;g_app.peer_h=900;
+    g_app.cfg.screen_w=1920;g_app.cfg.screen_h=1080;g_app.cfg.input_mode=HOP_INPUT_MOUSE|HOP_INPUT_KEYBOARD;
+    g_app.peer_w=1440;g_app.peer_h=900;
     g_app.state=HOP_LINK_LOCAL;s_physical_buttons[HOP_BTN_LEFT]=1;
     enter_sharing(trigger);
     assert(event_count==3 && events[0]==HOP_MSG_MOUSE_ENTER &&
@@ -346,6 +367,7 @@ int main(void){
 
     memset(&g_app,0,sizeof(g_app));g_app.cfg.server_edge=HOP_EDGE_LEFT;
     g_app.cfg.edge_margin_px=40;g_app.cfg.screen_w=1920;g_app.cfg.screen_h=1080;
+    g_app.cfg.input_mode=HOP_INPUT_MOUSE|HOP_INPUT_KEYBOARD;
     g_app.peer_w=1440;g_app.peer_h=900;g_app.state=HOP_LINK_LOCAL;
     memset(s_physical_buttons,0,sizeof(s_physical_buttons));s_physical_buttons[0]=1;
     s_sharing=0;s_have_last=0;event_count=0;local_releases=0;fail_enter=1;
@@ -366,11 +388,12 @@ int main(void){
 #include <string.h>
 #include <assert.h>
 typedef uint8_t BYTE;typedef uint16_t WORD;typedef uint32_t DWORD;typedef int32_t LONG;
-typedef struct {int role,client_edge,edge_margin_px;} cfg_t;
-typedef struct {cfg_t cfg;int peer_w,peer_h,state;void *net;} app_t;
+typedef struct {int role,client_edge,edge_margin_px;unsigned input_mode;} cfg_t;
+typedef struct {cfg_t cfg;int peer_w,peer_h,state;unsigned peer_input_mode;void *net;} app_t;
 static app_t g_app;static BYTE held[256],buttons[3],paste_suppressed[256],key_release_pending[256],button_release_pending[3];static double px,py,over;static int sharing,clip_request_result,injected_key_events,fail_key_up;
 static int released_keys,released_buttons,refreshes;
 enum {HOP_ROLE_CLIENT=1,HOP_EDGE_TOP=2,HOP_LINK_LOCAL=1,HOP_LINK_SHARING=2,
+ HOP_INPUT_MOUSE=1,HOP_INPUT_KEYBOARD=2,
  HOP_KEY_NONE=0xffff,HOP_MSG_EDGE_LEAVE=13,HOP_MSG_MOUSE_ENTER=14,HOP_MSG_MOUSE_MOVE=10,
  HOP_MSG_MOUSE_BUTTON=11,HOP_MSG_MOUSE_WHEEL=12,HOP_MSG_KEY_DOWN=20,HOP_MSG_KEY_UP=21,
  SM_CXSCREEN=1,SM_CYSCREEN=2,MOUSEEVENTF_HWHEEL=4,MOUSEEVENTF_WHEEL=8,

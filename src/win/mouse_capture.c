@@ -121,7 +121,7 @@ static void enter_sharing(POINT trigger) {
     s_have_last = 1;
     s_sharing = 1;
     g_app.state = HOP_LINK_SHARING;
-    kbd_begin_sharing();
+    if (g_app.cfg.input_mode & HOP_INPUT_KEYBOARD) kbd_begin_sharing();
     for (int i = 0; i < 3; ++i) if (s_physical_buttons[i]) {
         s_button_click_count[i] = 1;
         send_button(i, 1, 1);
@@ -131,7 +131,7 @@ static void enter_sharing(POINT trigger) {
     s_cooldown_until = GetTickCount() + (DWORD)g_app.cfg.switch_cooldown_ms;
 
     ui_refresh(&g_app);
-    hop_log(HOP_LOG_INFO, "mouse -> Mac (y=%d)", mac_y);
+    hop_log(HOP_LOG_INFO, "mouse -> peer (y=%d)", mac_y);
 }
 static void enter_local(void) {
     int edge_x, is_left;
@@ -143,9 +143,9 @@ static void enter_local(void) {
     memset(s_click_trackers, 0, sizeof(s_click_trackers));
     memset(s_button_click_count, 0, sizeof(s_button_click_count));
     s_sharing = 0;
-    g_app.state = HOP_LINK_LOCAL;
+    g_app.state = net_server_has_client(g_app.net) ? HOP_LINK_LOCAL : HOP_LINK_DOWN;
     kbd_end_sharing();
-    /* Empty EDGE_LEAVE ends client-side sharing, after all key/button releases. */
+    /* Empty EDGE_LEAVE ends peer-side mouse sharing, after all key/button releases. */
     net_server_send(g_app.net, HOP_MSG_EDGE_LEAVE, NULL, 0);
     for (int i = 0; i < 3; ++i) if (s_physical_buttons[i]) inject_local_button(i, 1);
 
@@ -161,26 +161,46 @@ static void enter_local(void) {
 }
 
 void capture_set_sharing(int sharing) {
-    if(g_app.cfg.role!=HOP_ROLE_SERVER)return;
-    if (sharing && !s_sharing) {
-        POINT pt;
-        GetCursorPos(&pt);
-        enter_sharing(pt);
-    } else if (!sharing && s_sharing) {
-        enter_local();
+    if (sharing) {
+        if (!(g_app.cfg.input_mode & HOP_INPUT_MOUSE)) {
+            if ((g_app.cfg.input_mode & HOP_INPUT_KEYBOARD) &&
+                g_app.state != HOP_LINK_SHARING && net_server_has_client(g_app.net)) {
+                g_app.state = HOP_LINK_SHARING;
+                kbd_begin_sharing();
+                ui_refresh(&g_app);
+            }
+            return;
+        }
+        if (!s_sharing) {
+            POINT pt;
+            GetCursorPos(&pt);
+            enter_sharing(pt);
+        }
+    } else {
+        if (s_sharing) {
+            enter_local();
+        } else if (g_app.state == HOP_LINK_SHARING) {
+            kbd_end_sharing();
+            g_app.state = net_server_has_client(g_app.net) ? HOP_LINK_LOCAL : HOP_LINK_DOWN;
+            ui_refresh(&g_app);
+        }
     }
 }
 
 void capture_force_toggle(void) {
-    if(g_app.cfg.role!=HOP_ROLE_SERVER)return;
+    if (!(g_app.cfg.input_mode & HOP_INPUT_MODES)) return;
     if (!net_server_has_client(g_app.net)) {
-        hop_log(HOP_LOG_WARN, "no client, cannot toggle");
+        hop_log(HOP_LOG_WARN, "no peer, cannot toggle");
         return;
     }
-    if (s_sharing) enter_local();
-    else {
-        POINT pt; GetCursorPos(&pt);
-        enter_sharing(pt);
+    if (g_app.cfg.input_mode & HOP_INPUT_MOUSE) {
+        if (s_sharing) enter_local();
+        else {
+            POINT pt; GetCursorPos(&pt);
+            enter_sharing(pt);
+        }
+    } else if (g_app.cfg.input_mode & HOP_INPUT_KEYBOARD) {
+        capture_set_sharing(g_app.state != HOP_LINK_SHARING);
     }
 }
 
@@ -347,6 +367,7 @@ void capture_on_edge_timer(void) {
 
 void capture_init(win_app *app) {
     (void)app;
+    if (s_hook) return;
     s_hook_tick = GetTickCount();
     s_sharing = 0;
     s_have_last = 0;

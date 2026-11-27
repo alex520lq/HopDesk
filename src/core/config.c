@@ -25,11 +25,14 @@ void hop_config_defaults(hop_config *c) {
     c->role = HOP_ROLE_SERVER;
 #if !defined(_WIN32)
     c->role = HOP_ROLE_CLIENT; /* preserve existing macOS installations */
+    c->input_mode = 0;
     c->audio_mode = HOP_AUDIO_SEND;
 #else
+    c->input_mode = HOP_INPUT_MODES;
     c->audio_mode = HOP_AUDIO_PLAY;
 #endif
     c->port            = HOP_DEFAULT_PORT;
+    c->ui_theme        = HOP_THEME_SYSTEM;
     c->server_edge     = HOP_EDGE_LEFT;
     c->client_edge     = HOP_EDGE_RIGHT;
     c->screen_w        = 0;
@@ -83,6 +86,14 @@ static int set_kv(hop_config *c, const char *k, const char *v) {
         else if (!strcmp(v,"client")) c->role=HOP_ROLE_CLIENT;
         else return -1;
     }
+    else if (!strcmp(k, "input_mode")) {
+        char *end = NULL;
+        errno = 0;
+        long mode = strtol(v, &end, 0);
+        if (errno || end == v || *end || mode < 0 ||
+            ((unsigned long)mode & ~(unsigned long)HOP_INPUT_MODES)) return -1;
+        c->input_mode = (unsigned)mode;
+    }
     else if (!strcmp(k, "audio_mode")) {
         char *end = NULL;
         errno = 0;
@@ -90,6 +101,12 @@ static int set_kv(hop_config *c, const char *k, const char *v) {
         if (errno || end == v || *end || mode < 0 ||
             ((unsigned long)mode & ~(unsigned long)HOP_AUDIO_MODES)) return -1;
         c->audio_mode = (unsigned)mode;
+    }
+    else if (!strcmp(k, "ui_theme")) {
+        if (!strcmp(v, "system")) c->ui_theme = HOP_THEME_SYSTEM;
+        else if (!strcmp(v, "light")) c->ui_theme = HOP_THEME_LIGHT;
+        else if (!strcmp(v, "dark")) c->ui_theme = HOP_THEME_DARK;
+        else return -1;
     }
     else if (!strcmp(k, "port"))          c->port = (uint16_t)atoi(v);
     else if (!strcmp(k, "token"))    snprintf(c->token, sizeof(c->token), "%s", v);
@@ -129,7 +146,7 @@ int hop_config_load(hop_config *c, const char *path) {
 #endif
     if (!f) return 0;
     hop_config candidate=*c;
-    int recognized=0, invalid=0;
+    int recognized=0, invalid=0, saw_role=0, saw_input_mode=0;
     char line[256];
     while (fgets(line, sizeof(line), f)) {
         char *p = trim(line);
@@ -140,8 +157,15 @@ int hop_config_load(hop_config *c, const char *path) {
         char *k = trim(p);
         char *v = trim(eq + 1);
         int result=set_kv(&candidate,k,v);
-        if(result<0) invalid=1; else recognized+=result;
+        if(result<0) invalid=1;
+        else {
+            recognized+=result;
+            if (!strcmp(k, "role")) saw_role = 1;
+            else if (!strcmp(k, "input_mode")) saw_input_mode = 1;
+        }
     }
+    if (saw_role && !saw_input_mode)
+        candidate.input_mode = candidate.role == HOP_ROLE_SERVER ? HOP_INPUT_MODES : 0;
     int ok=!ferror(f) && recognized>0 && !invalid;
     if(fclose(f)!=0)ok=0;
     if(ok)*c=candidate;
@@ -171,7 +195,9 @@ static int config_utf8_path(const char *src, wchar_t *dst, int cap) {
 int hop_config_save_atomic(const hop_config *c, const char *path) {
     if (!c || !path || !path[0] || strlen(path) > 900 ||
         (c->role!=HOP_ROLE_SERVER && c->role!=HOP_ROLE_CLIENT) ||
+        (c->input_mode & ~HOP_INPUT_MODES) ||
         (c->audio_mode & ~HOP_AUDIO_MODES) ||
+        c->ui_theme < HOP_THEME_SYSTEM || c->ui_theme > HOP_THEME_DARK ||
         c->xfer_rate_limit_mib < 16 || c->xfer_rate_limit_mib > 4096) return 0;
     char temp[1024];
     int temp_len = snprintf(temp, sizeof(temp), "%s.tmp", path);
@@ -200,7 +226,11 @@ int hop_config_save_atomic(const hop_config *c, const char *path) {
 #define CFG_WRITE(...) do { if (fprintf(f, __VA_ARGS__) < 0) ok = 0; } while (0)
     CFG_WRITE("# HopDesk configuration — edited by the native UI\n");
     CFG_WRITE("role=%s\n",c->role==HOP_ROLE_SERVER?"server":"client");
+    CFG_WRITE("input_mode=%u\n", c->input_mode);
     CFG_WRITE("audio_mode=%u\n", c->audio_mode);
+    CFG_WRITE("ui_theme=%s\n",
+        c->ui_theme == HOP_THEME_DARK ? "dark" :
+        c->ui_theme == HOP_THEME_LIGHT ? "light" : "system");
     CFG_WRITE("name=%s\n", name);
     CFG_WRITE("host=%s\n", host);
     CFG_WRITE("port=%u\n", (unsigned)c->port);

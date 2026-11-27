@@ -45,12 +45,57 @@ static void beside(wchar_t *out, int n, const wchar_t *name) {
     if (p) wcscpy(p + 1, name);
 }
 
+void win_send_capabilities(unsigned takeover_mask) {
+    uint8_t payload[HOP_CAPABILITIES_BYTES];
+    if (!g_app.net || !net_server_has_client(g_app.net)) return;
+    if (hop_capabilities_encode(payload, g_app.cfg.input_mode, takeover_mask, g_app.cfg.audio_mode))
+        (void)net_server_send(g_app.net, HOP_MSG_CAPABILITIES, payload, sizeof(payload));
+}
+
+void win_apply_input_mode(unsigned mode, unsigned takeover_mask, int persist) {
+    mode &= HOP_INPUT_MODES;
+    if (!(mode & HOP_INPUT_MOUSE)) {
+        capture_set_sharing(0);
+        capture_shutdown();
+    }
+    if (!(mode & HOP_INPUT_KEYBOARD)) {
+        kbd_end_sharing();
+        kbd_shutdown();
+    }
+    g_app.cfg.input_mode = mode;
+    if (mode & HOP_INPUT_MOUSE) {
+        win_inject_reset();
+        capture_init(&g_app);
+    }
+    if (mode & HOP_INPUT_KEYBOARD) {
+        kbd_init(&g_app);
+    }
+    if (g_app.state == HOP_LINK_SHARING && !(mode & HOP_INPUT_MODES))
+        g_app.state = net_server_has_client(g_app.net) ? HOP_LINK_LOCAL : HOP_LINK_DOWN;
+    if (persist) {
+        hop_config saved = g_app.cfg;
+        (void)hop_config_load(&saved, g_app.config_path);
+        saved.input_mode = mode;
+        (void)hop_config_save_atomic(&saved, g_app.config_path);
+    }
+    win_send_capabilities(takeover_mask & HOP_INPUT_MODES);
+    ui_refresh(&g_app);
+}
+
 static void on_link(int up) {
     clip_on_link(up != 0);
     if (up) {
+        g_app.peer_capabilities_known = 0;
+        g_app.peer_input_mode = 0;
+        g_app.peer_audio_mode = 0;
         if (up == 2 && g_app.state == HOP_LINK_SHARING) capture_set_sharing(0);
         if (g_app.state == HOP_LINK_DOWN) g_app.state = HOP_LINK_LOCAL;
+        win_send_capabilities(0);
     } else {
+        g_app.peer_capabilities_known = 0;
+        g_app.peer_input_mode = 0;
+        g_app.peer_audio_mode = 0;
+        g_app.peer_name[0] = '\0';
         win_inject_reset();
         if (g_app.state == HOP_LINK_SHARING) capture_set_sharing(0);
         g_app.state = HOP_LINK_DOWN;
@@ -66,22 +111,62 @@ static void on_hello(const uint8_t *p, uint32_t len) {
     if (!hop_hello_decode(p, len, &hello)) return;
     g_app.peer_w = (int)hello.width;
     g_app.peer_h = (int)hello.height;
+    if (hello.name && hello.name_len) {
+        size_t copy = hello.name_len < sizeof(g_app.peer_name) - 1
+            ? hello.name_len : sizeof(g_app.peer_name) - 1;
+        memcpy(g_app.peer_name, hello.name, copy);
+        g_app.peer_name[copy] = '\0';
+    }
 
     hop_log(HOP_LOG_INFO, "peer screen %dx%d", g_app.peer_w, g_app.peer_h);
 }
 
-static void on_recv(hop_recv *r) {
-    if(g_app.cfg.role==HOP_ROLE_CLIENT){
-        if(r->type==HOP_MSG_HELLO_ACK){int ok;uint32_t w,h;hop_session_id id;
-            if(hop_hello_ack_decode(r->data,r->len,&ok,&w,&h,&id)){g_app.peer_w=(int)w;g_app.peer_h=(int)h;}}
-        win_inject_message(r->type,r->data,r->len);
+static void on_capabilities(const uint8_t *p, uint32_t len) {
+    hop_capabilities_msg msg;
+    unsigned next;
+    if (!hop_capabilities_decode(p, len, &msg)) return;
+    g_app.peer_input_mode = msg.input_mode;
+    g_app.peer_audio_mode = msg.audio_mode;
+    g_app.peer_capabilities_known = 1;
+    next = hop_input_reconcile(g_app.cfg.input_mode, msg.input_mode,
+                               msg.takeover_mask, g_app.cfg.role);
+    if (next != g_app.cfg.input_mode) {
+        hop_log(HOP_LOG_INFO, "input: peer capability sync adjusted local input_mode %u -> %u",
+                g_app.cfg.input_mode, next);
+        win_apply_input_mode(next, 0, 1);
+    } else {
+        ui_refresh(&g_app);
     }
+}
+
+static void on_recv(hop_recv *r) {
+    if (r->type == HOP_MSG_HELLO_ACK) {
+        int ok; uint32_t w, h; hop_session_id id;
+        if (hop_hello_ack_decode(r->data, r->len, &ok, &w, &h, &id)) {
+            g_app.peer_w = (int)w;
+            g_app.peer_h = (int)h;
+            if (r->len >= 2) {
+                size_t nl = r->data[1];
+                if (nl > 0 && 2u + nl <= r->len) {
+                    size_t copy = nl < sizeof(g_app.peer_name) - 1 ? nl : sizeof(g_app.peer_name) - 1;
+                    memcpy(g_app.peer_name, r->data + 2, copy);
+                    g_app.peer_name[copy] = '\0';
+                }
+            }
+        }
+    }
+    win_inject_message(r->type, r->data, r->len);
     switch (r->type) {
         case HOP_MSG_HELLO:
             on_hello(r->data, r->len);
             break;
+        case HOP_MSG_CAPABILITIES:
+            on_capabilities(r->data, r->len);
+            break;
         case HOP_MSG_EDGE_LEAVE:
-            if (g_app.state == HOP_LINK_SHARING) capture_set_sharing(0);
+            if (r->len >= 1 && (g_app.cfg.input_mode & HOP_INPUT_MOUSE) &&
+                g_app.state == HOP_LINK_SHARING)
+                capture_set_sharing(0);
             break;
         case HOP_MSG_CLIP_TEXT:
             clip_apply_remote(r->data, r->len);
@@ -187,7 +272,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             clip_on_update();
             return 0;
         case WM_TIMER:
-            if (wp == IDT_HOOK) { hop_update_report_ready(HOP_VERSION); hop_watchdog_ping(s_ui_guard); win_inject_retry_pending(); if(g_app.cfg.role==HOP_ROLE_SERVER){kbd_retry_pending();capture_check_hooks();} ui_refresh(&g_app); return 0; }
+            if (wp == IDT_HOOK) { hop_update_report_ready(HOP_VERSION); hop_watchdog_ping(s_ui_guard); win_inject_retry_pending(); if(g_app.cfg.input_mode & HOP_INPUT_KEYBOARD)kbd_retry_pending(); if(g_app.cfg.input_mode & HOP_INPUT_MOUSE)capture_check_hooks(); ui_refresh(&g_app); return 0; }
             if (wp == IDT_XFER_NOTIFY) { win_split_agent_reap(); ui_transfer_poll(); return 0; }
             if (wp == IDT_CLIP_RETRY) {
                 clip_retry_pending();
@@ -324,7 +409,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
         return 1;
     }
     clip_init(g_app.hwnd);
-    if(g_app.cfg.role==HOP_ROLE_SERVER){capture_init(&g_app);kbd_init(&g_app);}
+    if(g_app.cfg.input_mode & HOP_INPUT_MOUSE) capture_init(&g_app);
+    if(g_app.cfg.input_mode & HOP_INPUT_KEYBOARD) kbd_init(&g_app);
     if(!hop_audio_set_mode(&g_app.cfg,g_app.cfg.audio_mode))
         hop_log(HOP_LOG_WARN,"audio: unable to start configured audio mode %u",g_app.cfg.audio_mode);
     if (!win_split_agent_start(g_app.hwnd)) {

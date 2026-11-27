@@ -23,7 +23,8 @@
 #define WIN_SPLIT_ADDR_TTL_MS 10000u
 #define WIN_SPLIT_MODEL_BYTES ((DWORD)offsetof(hopdesk_ui_model, logs))
 enum { IPC_SNAPSHOT = 1, IPC_SAVE, IPC_CANCEL, IPC_RETRY,
-       IPC_RECONNECT, IPC_DISPLAY, IPC_UPDATE };
+       IPC_RECONNECT, IPC_DISCONNECT, IPC_DISPLAY, IPC_UPDATE,
+       IPC_INPUT_MODE, IPC_THEME };
 typedef struct {
     uint32_t version, op;
     uint64_t task;
@@ -154,6 +155,7 @@ static void agent_snapshot(hopdesk_ui_model *model,
         (void)hop_config_load(&s_agent_config, g_app.config_path);
         s_agent_config_loaded = 1;
     }
+    s_agent_config.input_mode = g_app.cfg.input_mode;
     model->config = s_agent_config;
     snprintf(model->local_addresses, sizeof(model->local_addresses), "%s",
         s_cached_addresses[0] ? s_cached_addresses : "No active LAN IPv4 address");
@@ -161,13 +163,19 @@ static void agent_snapshot(hopdesk_ui_model *model,
     model->connected = g_app.state != HOP_LINK_DOWN;
     model->sharing = g_app.state == HOP_LINK_SHARING;
     model->data_connected = xfer_connected();
+    model->manually_disconnected = g_app.net && net_server_is_disconnected(g_app.net);
+    model->peer_input_mode = g_app.peer_input_mode;
+    model->peer_audio_mode = g_app.peer_audio_mode;
+    model->peer_capabilities_known = g_app.peer_capabilities_known;
     model->permissions_known = 0;
-    if (model->config.role == HOP_ROLE_CLIENT)
+    if (model->connected && g_app.peer_name[0])
+        snprintf(model->peer_label, sizeof(model->peer_label), "%s", g_app.peer_name);
+    else if (model->config.role == HOP_ROLE_CLIENT)
         snprintf(model->peer_label, sizeof(model->peer_label), "%s",
-            model->config.peer_host[0] ? model->config.peer_host : "服务器地址未配置");
+            model->config.peer_host[0] ? model->config.peer_host : "对端地址未配置");
     else
         snprintf(model->peer_label, sizeof(model->peer_label), "%s",
-            model->connected ? "Mac" : "等待 Mac 连接");
+            model->connected ? "已连接的对端设备" : (model->manually_disconnected ? "已手动断开" : "等待对端连接"));
 
     {
         hop_audio_status audio = hop_audio_get_status();
@@ -245,7 +253,10 @@ static int valid_config(const hop_config *c) {
         valid_text(c->mac_input_cmd, sizeof(c->mac_input_cmd)) &&
         valid_text(c->mac_sleep_cmd, sizeof(c->mac_sleep_cmd)) &&
         (c->role == HOP_ROLE_SERVER || (c->role == HOP_ROLE_CLIENT && c->peer_host[0])) &&
-        !(c->audio_mode & ~HOP_AUDIO_MODES) && c->port && c->data_port && c->port != c->data_port &&
+        !(c->input_mode & ~HOP_INPUT_MODES) &&
+        !(c->audio_mode & ~HOP_AUDIO_MODES) &&
+        c->ui_theme >= HOP_THEME_SYSTEM && c->ui_theme <= HOP_THEME_DARK &&
+        c->port && c->data_port && c->port != c->data_port &&
         c->server_edge >= 0 && c->server_edge <= 3 && c->client_edge >= 0 && c->client_edge <= 3 &&
         c->screen_w > 0 && c->screen_h > 0 &&
         c->switch_delay_ms >= 0 && c->switch_delay_ms <= 5000 &&
@@ -275,10 +286,45 @@ void win_split_agent_dispatch(void) {
     case IPC_SAVE:
         if (valid_config(&s_request.config) &&
             hop_config_save_atomic(&s_request.config, g_app.config_path)) {
+            unsigned prev_input = g_app.cfg.input_mode;
+            unsigned next_input = s_request.config.input_mode & HOP_INPUT_MODES;
+            unsigned takeover = next_input & ~prev_input;
             s_agent_config = s_request.config;
             s_agent_config_loaded = 1;
             g_app.cfg.audio_mode = s_request.config.audio_mode;
+            g_app.cfg.ui_theme = s_request.config.ui_theme;
+            if (next_input != prev_input)
+                win_apply_input_mode(next_input, takeover, 0);
+            else
+                win_send_capabilities(0);
             s_reply.result = hop_audio_set_mode(&g_app.cfg, g_app.cfg.audio_mode) ? 1 : 2;
+        }
+        break;
+    case IPC_INPUT_MODE:
+        if (s_request.action >= 0 && !((unsigned)s_request.action & ~HOP_INPUT_MODES)) {
+            unsigned prev_input = g_app.cfg.input_mode;
+            unsigned next_input = (unsigned)s_request.action;
+            unsigned takeover = next_input & ~prev_input;
+            if (!s_agent_config_loaded) {
+                s_agent_config = g_app.cfg;
+                (void)hop_config_load(&s_agent_config, g_app.config_path);
+                s_agent_config_loaded = 1;
+            }
+            s_agent_config.input_mode = next_input;
+            win_apply_input_mode(next_input, takeover, 1);
+            s_reply.result = 1;
+        }
+        break;
+    case IPC_THEME:
+        if (s_request.action >= HOP_THEME_SYSTEM && s_request.action <= HOP_THEME_DARK) {
+            if (!s_agent_config_loaded) {
+                s_agent_config = g_app.cfg;
+                (void)hop_config_load(&s_agent_config, g_app.config_path);
+                s_agent_config_loaded = 1;
+            }
+            s_agent_config.ui_theme = s_request.action;
+            g_app.cfg.ui_theme = s_request.action;
+            s_reply.result = hop_config_save_atomic(&s_agent_config, g_app.config_path) ? 1 : 2;
         }
         break;
     case IPC_CANCEL: s_reply.result = xfer_cancel_task(s_request.task); break;
@@ -286,8 +332,18 @@ void win_split_agent_dispatch(void) {
         if (s_request.index >= 0) s_reply.result = xfer_retry_file(s_request.batch, s_request.index);
         break;
     case IPC_RECONNECT:
-        if (g_app.net) net_server_drop(g_app.net);
+        if (g_app.net) {
+            net_server_set_disconnected(g_app.net, 0);
+            net_server_drop(g_app.net);
+        }
         xfer_kick();
+        ui_refresh(&g_app);
+        s_reply.result = 1;
+        break;
+    case IPC_DISCONNECT:
+        if (g_app.net) net_server_set_disconnected(g_app.net, 1);
+        xfer_kick();
+        ui_refresh(&g_app);
         s_reply.result = 1;
         break;
     case IPC_DISPLAY:
@@ -323,7 +379,7 @@ static DWORD WINAPI agent_worker(LPVOID unused) {
             goto disconnect;
         if (!io_exact(s_pipe, &s_request, sizeof(s_request), 0, s_stop, WIN_SPLIT_IO_MS) ||
             s_request.version != WIN_SPLIT_VERSION ||
-            s_request.op < IPC_SNAPSHOT || s_request.op > IPC_UPDATE) goto disconnect;
+            s_request.op < IPC_SNAPSHOT || s_request.op > IPC_THEME) goto disconnect;
         did_snapshot = s_request.op == IPC_SNAPSHOT;
         s_payload = did_snapshot ? malloc(WIN_SPLIT_MODEL_BYTES) : NULL;
         memset(&s_reply, 0, sizeof(s_reply));
@@ -534,10 +590,21 @@ int win_split_retry(uint32_t batch, int index) {
 int win_split_reconnect(void) {
     ipc_request r = {0}; r.op = IPC_RECONNECT; return client_call(&r, NULL, 0, NULL);
 }
+int win_split_disconnect(void) {
+    ipc_request r = {0}; r.op = IPC_DISCONNECT; return client_call(&r, NULL, 0, NULL);
+}
 int win_split_display(int action) {
     ipc_request r = {0}; r.op = IPC_DISPLAY; r.action = action;
     return client_call(&r, NULL, 0, NULL);
 }
 int win_split_update(void) {
     ipc_request r = {0}; r.op = IPC_UPDATE; return client_call(&r, NULL, 0, NULL);
+}
+int win_split_set_theme(int ui_theme) {
+    ipc_request r = {0}; r.op = IPC_THEME; r.action = ui_theme;
+    return client_call(&r, NULL, 0, NULL);
+}
+int win_split_set_input_mode(unsigned input_mode) {
+    ipc_request r = {0}; r.op = IPC_INPUT_MODE; r.action = (int32_t)(input_mode & HOP_INPUT_MODES);
+    return client_call(&r, NULL, 0, NULL);
 }

@@ -34,13 +34,19 @@ typedef struct {
     hop_link_state state;
     HICON          icon_base;     /* immutable app icon resource */
     HICON          tray_icon;     /* current dynamically rendered status icon */
-    int            peer_w, peer_h; /* 客户端（Mac）屏幕尺寸，握手时取得 */
+    int            peer_w, peer_h; /* 对端屏幕尺寸，握手时取得 */
+    char           peer_name[HOP_NAME_MAX]; /* 对端设备名称 */
+    unsigned       peer_input_mode; /* 对端当前提供的键鼠能力 */
+    unsigned       peer_audio_mode; /* 对端当前配置的声音能力 */
+    int            peer_capabilities_known;
     char           config_path[1024]; /* UTF-8 canonical config path */
     char           log_path[1024];    /* UTF-8 active log path */
 } win_app;
 
 extern win_app g_app;
 void local_addresses(char *out,size_t cap);
+void win_send_capabilities(unsigned takeover_mask);
+void win_apply_input_mode(unsigned mode, unsigned takeover_mask, int persist);
 
 /* mouse_capture.c */
 void capture_init(win_app *app);

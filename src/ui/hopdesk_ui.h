@@ -36,6 +36,7 @@ typedef struct hopdesk_ui_model {
     int connected;
     int sharing;
     int data_connected;
+    int manually_disconnected;
     int permissions_known;
     int permission_post;
     int permission_listen;
@@ -43,6 +44,9 @@ typedef struct hopdesk_ui_model {
     unsigned audio_requested;
     unsigned audio_active;
     unsigned audio_unavailable;
+    unsigned peer_input_mode;
+    unsigned peer_audio_mode;
+    int peer_capabilities_known;
 
     hop_xfer_status_pair transfer;
     hop_xfer_task_snapshot tasks[HOPDESK_UI_TASK_CAP];
@@ -75,6 +79,7 @@ typedef struct hopdesk_ui_ops {
     int (*cancel_task)(hop_xfer_task_id id);
     int (*retry_file)(uint32_t batch, int file_index);
     void (*reconnect)(void);
+    void (*disconnect)(void);
     void (*display_action)(int action);
     void (*check_updates)(void);
     void (*request_permissions)(void);
@@ -83,6 +88,8 @@ typedef struct hopdesk_ui_ops {
     void (*default_config)(hop_config *config);
     cui_font (*load_cjk_font)(cui_ctx *ui);
     void (*release_cjk_font)(void);
+    void (*apply_theme)(int ui_theme, int persist);
+    void (*set_input_mode)(unsigned input_mode);
 } hopdesk_ui_ops;
 
 void hopdesk_ui_set_ops(const hopdesk_ui_ops *ops);

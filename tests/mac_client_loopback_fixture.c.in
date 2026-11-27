@@ -32,7 +32,7 @@
 #ifndef TCP_KEEPALIVE
 #define TCP_KEEPALIVE TCP_KEEPIDLE
 #endif
-typedef struct {hop_config cfg;int screen_w,screen_h;} mac_app;
+typedef struct {hop_config cfg;int screen_w,screen_h;char config_path[1024];} mac_app;
 static _Atomic int status_connected;
 static _Atomic unsigned released_input_objects;
 
@@ -47,10 +47,13 @@ static _Atomic unsigned released_input_objects;
 
 int net_send(uint8_t,const void*,uint32_t);
 void net_request_reconnect(void);
+void net_set_disconnected(int);
+int net_is_disconnected(void);
 void hop_log(hop_log_level level,const char *fmt,...){(void)level;(void)fmt;}
 int hop_watchdog_begin(const char *name,unsigned timeout){(void)name;(void)timeout;return 0;}
 void hop_watchdog_end(int ticket){(void)ticket;}
 static void mac_capture_peer_geometry(uint32_t w,uint32_t h){(void)w;(void)h;}
+static void mac_capture_set_input_mode(unsigned m){(void)m;}
 static void mac_capture_return(void){}
 static void inject_set_peer_geometry(uint32_t w,uint32_t h){(void)w;(void)h;}
 static void inject_enter(int n){(void)n;}
@@ -123,7 +126,15 @@ static void test_client(void){
     test_input_objects_are_released(peer);shutdown(peer,SHUT_RDWR);close(peer);
     for(int i=0;i<150&&atomic_load(&status_connected);++i) usleep(20000);
     assert(!atomic_load(&status_connected));
-    peer=accept_bounded(listener);exchange(peer);net_request_stop();shutdown(peer,SHUT_RDWR);close(peer);close(listener);
+    peer=accept_bounded(listener);exchange(peer);
+    net_set_disconnected(1);assert(net_is_disconnected());
+    for(int i=0;i<150&&atomic_load(&status_connected);++i) usleep(20000);
+    assert(!atomic_load(&status_connected));shutdown(peer,SHUT_RDWR);close(peer);
+    {fd_set rd;FD_ZERO(&rd);FD_SET(listener,&rd);struct timeval tv={1,200000};
+     assert(select(listener+1,&rd,NULL,NULL,&tv)==0);}
+    net_request_reconnect();assert(!net_is_disconnected());
+    peer=accept_bounded(listener);exchange(peer);
+    net_request_stop();shutdown(peer,SHUT_RDWR);close(peer);close(listener);
     usleep(100000);alarm(0);puts("PASS: production macOS client HELLO/ACK and reconnect over TCP (simulated Windows server)");
 }
 static int connect_bounded(uint16_t port){

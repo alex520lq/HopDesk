@@ -34,6 +34,9 @@ unsigned long net_server_epoch(net_server *s);
 
 /* 主动断开当前客户端（例如握手 token 不匹配） */
 void        net_server_drop(net_server *s);
+/* 手动断开并暂停监听/自动重连，传入 0 恢复连接 */
+void        net_server_set_disconnected(net_server *s, int disconnected);
+int         net_server_is_disconnected(net_server *s);
 
 /* 给已连接的 socket 打开 TCP keepalive（控制通道与数据通道都用）。
  *

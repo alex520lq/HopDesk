@@ -29,6 +29,12 @@ static int s_sock = -1; /* exclusively under s_lock */
 static hop_session_id s_control_session; /* control reader owns; registry publishes snapshots */
 static _Atomic int     s_stop;
 static _Atomic int s_drop_requested;
+static _Atomic int s_manual_disconnect;
+static _Atomic unsigned s_local_input_mode;
+static _Atomic unsigned s_peer_input_mode;
+static _Atomic unsigned s_peer_audio_mode;
+static _Atomic int s_peer_caps_known;
+static char s_peer_name[HOP_NAME_MAX];
 static int             s_authed, s_rejected;
 static uint64_t        s_last_rx;
 static void set_connected(int on);

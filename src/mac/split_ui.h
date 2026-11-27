@@ -12,6 +12,7 @@ int split_ui_run(int start_agent);
 int split_ui_is_active(void);
 void split_ui_refresh_connection(int *connected, int *sharing);
 int split_ui_data_connected(void);
+int split_ui_is_disconnected(void);
 int split_ui_get_input_permissions(int *post, int *listen, int *accessibility);
 void split_ui_get_status_pair(hop_xfer_status_pair *out);
 int split_ui_get_transfer_state(split_ipc_transfer_state *out);
@@ -25,6 +26,11 @@ int split_ui_cancel_task(hop_xfer_task_id id);
 int split_ui_retry_file(uint32_t batch, int index);
 int split_ui_set_audio_mode(unsigned mode);
 void split_ui_get_audio_status(hop_audio_status *out);
+int split_ui_set_input_mode(unsigned mode);
+void split_ui_get_capabilities(unsigned *local_input, unsigned *peer_input,
+                               unsigned *peer_audio, int *peer_known,
+                               char *peer_name, size_t peer_name_cap);
 void split_ui_reconnect(void);
+void split_ui_disconnect(void);
 
 #endif

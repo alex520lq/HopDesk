@@ -149,14 +149,17 @@ static void tray_refresh(win_app *app) {
         wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 正在准备传输");
     } else if (!app->net) {
         wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 网络服务未启动");
-    } else if (!net_server_listening(app->net) || !xfer_listening()) {
+    } else if (net_server_is_disconnected(app->net)) {
+        wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 已手动断开");
+    } else if (app->cfg.role == HOP_ROLE_SERVER &&
+               (!net_server_listening(app->net) || !xfer_listening())) {
         wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 端口不可用，正在重试");
     } else if (state == 2) {
-        wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 键鼠正在 Mac");
+        wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 键鼠已切换到对端");
     } else if (state == 1) {
         wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 已连接");
     } else {
-        wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 等待 Mac 连接");
+        wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 等待对端连接");
     }
 
     int changed = state != s_last_tray_state ||

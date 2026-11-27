@@ -54,5 +54,5 @@ with tempfile.TemporaryDirectory(prefix='hopdesk-mac-tcp-') as directory:
     fixture = (ROOT / 'tests/mac_client_loopback_fixture.c.in').read_text(encoding='utf-8')
     fixture = fixture.replace('@PRODUCTION@', actual)
     run(work, 'mac_client_loopback', fixture,
-        ['src/core/protocol.c', 'src/core/session.c', 'src/core/clock.c',
+        ['src/core/protocol.c', 'src/core/config.c', 'src/core/session.c', 'src/core/clock.c',
          'src/core/xfer_validate.c', 'src/core/crc32.c'], objc=True)

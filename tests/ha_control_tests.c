@@ -161,6 +161,14 @@ static void test_client_role(HWND hwnd){
     peer=accept_bounded(control);assert(read_frame(peer)==HOP_MSG_HELLO);
     assert(hop_session_generate(&session));memcpy(ack+12,session.bytes,HOP_SESSION_BYTES);
     write_frame(peer,HOP_MSG_HELLO_ACK,ack,sizeof(ack));assert(wait_client(client,1,1500));
+    net_server_set_disconnected(client,1);assert(net_server_is_disconnected(client));
+    assert(wait_client(client,0,1500));closesocket(peer);
+    {fd_set rd;FD_ZERO(&rd);FD_SET(control,&rd);struct timeval tv={1,200000};
+     assert(select(0,&rd,NULL,NULL,&tv)==0);}
+    net_server_set_disconnected(client,0);assert(!net_server_is_disconnected(client));
+    peer=accept_bounded(control);assert(read_frame(peer)==HOP_MSG_HELLO);
+    assert(hop_session_generate(&session));memcpy(ack+12,session.bytes,HOP_SESSION_BYTES);
+    write_frame(peer,HOP_MSG_HELLO_ACK,ack,sizeof(ack));assert(wait_client(client,1,1500));
     assert(xfer_shutdown());net_server_stop(client);closesocket(peer);closesocket(control);closesocket(data);
     puts("PASS: production Windows client control/data handshake and reconnect (protocol peer double)");
 }
@@ -270,6 +278,20 @@ int main(void) {
     assert(net_server_has_client(server));
     assert(wait_client(server, 0, 7500)); /* no PONG: bounded blackhole recovery */
     closesocket(live);
+    live = connect_peer(cfg.port); hello(live, "test-secret");
+    assert(read_frame(live) == HOP_MSG_HELLO_ACK); assert(wait_client(server, 1, 1000));
+    net_server_set_disconnected(server, 1); assert(net_server_is_disconnected(server));
+    assert(wait_client(server, 0, 1500)); closesocket(live);
+    deadline = hop_monotonic_ms() + 1500;
+    while (net_server_listening(server) && hop_monotonic_ms() < deadline) Sleep(20);
+    assert(!net_server_listening(server));
+    net_server_set_disconnected(server, 0); assert(!net_server_is_disconnected(server));
+    deadline = hop_monotonic_ms() + 2000;
+    while (!net_server_listening(server) && hop_monotonic_ms() < deadline) Sleep(20);
+    assert(net_server_listening(server));
+    live = connect_peer(cfg.port); hello(live, "test-secret");
+    assert(read_frame(live) == HOP_MSG_HELLO_ACK); assert(wait_client(server, 1, 1000));
+    closesocket(live); assert(wait_client(server, 0, 1500));
     assert(read_frame(silent) == -1); closesocket(silent); /* handshake timeout */
     assert(read_frame(data_timeout) == -1); closesocket(data_timeout);
     assert(xfer_shutdown());

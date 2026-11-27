@@ -139,16 +139,32 @@ static void snapshot_model(hopdesk_ui_model *model,
     model->connected = s_connected;
     model->sharing = s_sharing;
     model->data_connected = split_ui_data_connected();
+    model->manually_disconnected = split_ui_is_disconnected();
+    {
+        unsigned local_input = model->config.input_mode;
+        unsigned peer_input = 0, peer_audio = 0;
+        int peer_known = 0;
+        char peer_name[HOP_NAME_MAX] = {0};
+        split_ui_get_capabilities(&local_input, &peer_input, &peer_audio, &peer_known,
+                                  peer_name, sizeof(peer_name));
+        s_ui_config.input_mode = local_input;
+        model->config.input_mode = local_input;
+        model->peer_input_mode = peer_input;
+        model->peer_audio_mode = peer_audio;
+        model->peer_capabilities_known = peer_known;
+        if (model->connected && peer_name[0])
+            snprintf(model->peer_label, sizeof(model->peer_label), "%s", peer_name);
+        else if (model->config.role == HOP_ROLE_CLIENT)
+            snprintf(model->peer_label, sizeof(model->peer_label), "%s",
+                model->config.peer_host[0] ? model->config.peer_host : "对端地址未配置");
+        else
+            snprintf(model->peer_label, sizeof(model->peer_label), "%s",
+                model->connected ? "已连接的对端设备" : (model->manually_disconnected ? "已手动断开" : "等待对端连接"));
+    }
     model->permissions_known = input_permissions(&post, &listen, &accessibility);
     model->permission_post = post;
     model->permission_listen = listen;
     model->permission_accessibility = accessibility;
-    if (model->config.role == HOP_ROLE_CLIENT)
-        snprintf(model->peer_label, sizeof(model->peer_label), "%s",
-            model->config.peer_host[0] ? model->config.peer_host : "服务器地址未配置");
-    else
-        snprintf(model->peer_label, sizeof(model->peer_label), "%s",
-            connected ? "已连接的对端设备" : "等待客户端连接");
 
     {
         hop_audio_status audio = {0};
@@ -240,9 +256,10 @@ static void save_config(const hop_config *config) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (ok) {
                 s_ui_config = copy;
+                (void)split_ui_set_input_mode(copy.input_mode);
                 if (split_ui_set_audio_mode(copy.audio_mode))
                     hopdesk_ui_save_complete(1,
-                        "设置已保存。声音能力立即应用；网络、角色和认证参数重启后生效。");
+                        "设置已保存。键鼠与声音能力已即时应用；连接方式、端口与认证参数重启后生效。");
                 else
                     hopdesk_ui_save_complete(1,
                         "设置已保存，但后台未能应用声音能力。请确认后台运行；重启后会按已保存配置重试。");
@@ -265,6 +282,15 @@ static int retry_file(uint32_t batch, int index) {
 
 static void reconnect_peer(void) {
     split_ui_reconnect();
+}
+
+static void disconnect_peer(void) {
+    split_ui_disconnect();
+}
+
+static void set_input_mode(unsigned input_mode) {
+    s_ui_config.input_mode = input_mode & HOP_INPUT_MODES;
+    (void)split_ui_set_input_mode(s_ui_config.input_mode);
 }
 
 static void display_action(int action) {
@@ -375,12 +401,36 @@ static cui_font load_cjk_font(cui_ctx *ui) {
     return -1;
 }
 
+static void apply_theme(int ui_theme, int persist) {
+    cui_ctx *ui = cui_app_ui(NULL);
+    if (ui_theme < HOP_THEME_SYSTEM || ui_theme > HOP_THEME_DARK)
+        ui_theme = HOP_THEME_SYSTEM;
+    if (ui_theme == HOP_THEME_SYSTEM) {
+        cui_app_follow_system_theme(NULL, true);
+    } else {
+        cui_app_follow_system_theme(NULL, false);
+        if (ui) cui_set_theme(ui, ui_theme == HOP_THEME_DARK ? CUI_THEME_DARK : CUI_THEME_LIGHT);
+    }
+    s_ui_config.ui_theme = ui_theme;
+    if (persist) {
+        hop_config copy = s_ui_config;
+        s_save_pending = 1;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            (void)hop_config_save_atomic(&copy, g_mac.config_path);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                s_save_pending = 0;
+            });
+        });
+    }
+}
+
 static const hopdesk_ui_ops k_ui_ops = {
     snapshot_model,
     save_config,
     cancel_task,
     retry_file,
     reconnect_peer,
+    disconnect_peer,
     display_action,
     check_updates,
     mac_request_accessibility_permission,
@@ -388,7 +438,9 @@ static const hopdesk_ui_ops k_ui_ops = {
     copy_text,
     default_config,
     load_cjk_font,
-    release_cjk_font
+    release_cjk_font,
+    apply_theme,
+    set_input_mode
 };
 
 static void draw_frame(cui_ctx *ui, void *user) {
@@ -428,7 +480,8 @@ void main_ui_show_page(int page) {
     desc.min_width = 960;
     desc.min_height = 640;
     desc.renderer = CUI_RENDERER_GPU;
-    desc.follow_system_theme = true;
+    desc.follow_system_theme = s_ui_config.ui_theme == HOP_THEME_SYSTEM;
+    desc.theme = s_ui_config.ui_theme == HOP_THEME_DARK ? CUI_THEME_DARK : CUI_THEME_LIGHT;
     desc.accent = CUI_ACCENT_BLUE;
     s_running = 1;
     (void)cui_app_run(&desc, draw_frame, NULL);

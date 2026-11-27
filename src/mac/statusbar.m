@@ -187,7 +187,7 @@ static NSImage *make_status_image(int connected, int sharing, int progress) {
 static void refresh_status_item(void) {
     if (!s_item || !s_item.button) return;
     int progress = -1, direction = 0, phase = 0;
-    if (!split_agent_is_active()) {
+    {
         hop_xfer_status_pair pair;
         xfer_get_status_pair(&pair);
         const hop_xfer_status *st = pair.primary_direction == HOP_XFER_DIR_SEND ? &pair.send : &pair.receive;
@@ -503,7 +503,8 @@ void statusbar_init(void) {
         s_item.button.action = @selector(doStatusItemClick:);
         [s_item.button sendActionOn:(NSEventMaskLeftMouseUp | NSEventMaskRightMouseDown)];
         refresh_status_item();
-        if (split) return;
+        /* The agent owns transfer state and the tray; progress and terminal
+         * notifications must work even when no UI process exists. */
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
             (void)timer;
             hop_xfer_status snapshot; memset(&snapshot, 0, sizeof(snapshot));
@@ -529,7 +530,10 @@ void statusbar_update(int connected, int sharing) {
     });
 }
 
-void statusbar_show_transfers(void) { main_ui_show_page(2); }
+void statusbar_show_transfers(void) {
+    if (split_agent_is_active()) open_main_window();
+    else main_ui_show_page(2);
+}
 
 /* Update controls are part of the main window. */
 void statusbar_check_updates(void) { check_for_updates(); }

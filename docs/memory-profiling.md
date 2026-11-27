@@ -15,7 +15,7 @@ Use a 300-second capture for each scenario. Start the capture, then exercise onl
 
 ## macOS
 
-HopDesk may run as two processes: the UI process and a background process launched with the --agent argument. The transfer engine, network loop, and transfer tracking memory run in the agent; the UI process owns the visible page and its presentation state. Profiling only the UI would miss most transfer-engine memory.
+On macOS the experimental CUI build runs as two processes by default when the main window is open: the UI process and a background process launched with the --agent argument. The transfer engine, network loop, and transfer tracking memory run in the agent; the UI process owns the visible page and its presentation state. Profiling only the UI would miss most transfer-engine memory.
 
 Find both processes:
 
@@ -31,7 +31,9 @@ For a full picture, run one sampler for the UI PID and another for the --agent P
 
 Repeat with distinct output names for each scenario, such as hopdesk-ui-many-files.csv and hopdesk-agent-many-files.csv. Each process capture also creates a .vmmap.txt summary when the process is still running.
 
-If the split agent is not active and only one HopDesk process exists, profile that process. For transfer-engine memory, the important process is the one that owns xfer_init and the network loop.
+A normal first launch without arguments starts the agent (as does explicit --agent); the tray starts the independent --ui process on demand. With the window closed only the agent should remain. The UI must exit after its CUI loop returns and any requested settings save settles. A normal no-argument agent has no --agent suffix; verify its PID by keeping the tray open while closing the UI. macOS AutoFill is an OS helper, not the HopDesk IPC agent; record it separately and verify whether it disappears after UI exit. Do not sum RSS as unique physical memory.
+
+For the lifecycle regression: record the agent PID and Activity Monitor Memory before the first UI open, open/close 20 times, and after each close verify the UI PID exits while the agent PID remains unchanged. Repeat while connected and during a file transfer; verify tray progress and completion notification, and close immediately after pressing Save to check persistence. Record the helper PID and whether it exits within 30–60 seconds. Compare agent memory against its own pre-open baseline, not the UI peak. Split mode currently requires manual application updates: stop the agent safely from the menu, then install the new build.
 
 When switching between baseline and current builds, quit HopDesk and unload the LaunchAgent before starting the other app bundle. Otherwise launchd may keep the previous agent executable loaded:
 

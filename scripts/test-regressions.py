@@ -223,7 +223,17 @@ int main(void) {
     assert 'hopdesk_ui_init(ui)' in mac_ui and 'hopdesk_ui_init(ui)' in win_ui
     assert 'hopdesk_ui_shutdown()' in mac_ui and 'hopdesk_ui_shutdown()' in win_ui
     assert 'CUI_RENDERER_GPU' in mac_ui and 'CUI_RENDERER_GPU' in win_ui
-    assert 'statusbar_show_transfers(void) { main_ui_show_page(2); }' in mac_tray
+    assert 'if (split_agent_is_active()) open_main_window();' in mac_tray
+    assert 'else main_ui_show_page(2);' in mac_tray
+    mac_main=(ROOT/'src/mac/main.c').read_text(encoding='utf-8')
+    mac_split_ui=(ROOT/'src/mac/split_ui.m').read_text(encoding='utf-8')
+    assert 'if (ui) return split_ui_run(start_agent);' in mac_main
+    assert 'if (!split_agent_start())' in mac_main and 'split_agent_run();' in mac_main
+    assert 'else app_run();' not in mac_main
+    assert '[app run];' not in mac_split_ui
+    assert 'if (split_agent_is_active()) return;' in mac_ui
+    assert 'while (s_save_pending)' in mac_ui
+    assert 'if (split) return;' not in mac_tray
     assert 'main_ui_show_page(2);' in win_tray
     assert 'NSStatusItem' in mac_tray and 'Shell_NotifyIconW' in win_tray
     assert 'HOP_XFER_FILE_LIMIT' not in mac_tray

@@ -399,7 +399,9 @@ static BOOL start_agent_job(void) {
 @implementation HopDeskSplitDelegate
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app {
     (void)app;
-    return YES;
+    /* cui_app_run owns the window loop. Return to split_ui_run for cleanup
+     * instead of letting AppKit terminate before an in-flight save settles. */
+    return NO;
 }
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)app hasVisibleWindows:(BOOL)visible {
     (void)app;
@@ -508,11 +510,10 @@ int split_ui_run(int start_agent) {
         __attribute__((objc_precise_lifetime)) HopDeskSplitDelegate *delegate = [HopDeskSplitDelegate new];
         app.delegate = delegate;
         configure_menu(delegate);
+        /* CUI runs its own event loop until the window closes. A second
+         * AppKit loop here would retain the entire UI process indefinitely. */
         statusbar_show_main();
-        int connected = 0, sharing = 0;
-        split_ui_refresh_connection(&connected, &sharing);
-        mac_check_input_permissions();
-        [app run];
+        app.delegate = nil;
         close(lock);
     }
     return 0;

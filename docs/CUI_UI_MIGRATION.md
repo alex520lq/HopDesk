@@ -63,3 +63,8 @@ The dual-platform CI build and existing portable/network/transfer tests remain
 the acceptance gate. Real two-device checks are still required for tray opening,
 window close/reopen, display actions, permissions, audio settings, transfer
 pagination/cancel/retry and long-running background services.
+
+
+### Experimental macOS memory isolation
+
+Normal first launch starts the tray/IPC agent; clicking the tray launches a separate UI process. Closing the window destroys the CUI app and returns from the UI process after any pending settings save. The agent continues network, input, audio, transfer and tray progress handling. No CUI window is permitted in the agent. Automatic application replacement is not yet supported in split mode; stop the agent safely and install the test build manually. The OS AutoFill helper, actual physical footprint and repeated open/close behavior require real-device validation; no measured memory reduction is claimed here.

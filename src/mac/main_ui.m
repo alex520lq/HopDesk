@@ -17,6 +17,9 @@
 #include <unistd.h>
 
 static int s_running;
+/* Main-thread owned; keep the UI process alive until a requested save and
+ * its IPC completion have finished, even if its window has been closed. */
+static int s_save_pending;
 static int s_ui_initialized;
 static int s_config_loaded;
 static int s_connected;
@@ -231,6 +234,7 @@ static void save_config(const hop_config *config) {
         return;
     }
     copy = *config;
+    s_save_pending = 1;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         int ok = hop_config_save_atomic(&copy, g_mac.config_path);
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -246,6 +250,7 @@ static void save_config(const hop_config *config) {
                 hopdesk_ui_save_complete(0,
                     "保存失败；原配置未改变。请检查文件权限和磁盘空间。");
             }
+            s_save_pending = 0;
         });
     });
 }
@@ -402,6 +407,8 @@ void statusbar_show_main(void) {
 
 void main_ui_show_page(int page) {
     cui_app_desc desc;
+    /* Defense in depth: the agent must never instantiate CUI/Metal. */
+    if (split_agent_is_active()) return;
     NSApplicationActivationPolicy previousPolicy = [NSApp activationPolicy];
     if (s_running) {
         hopdesk_ui_show_page(page);
@@ -425,9 +432,16 @@ void main_ui_show_page(int page) {
     desc.accent = CUI_ACCENT_BLUE;
     s_running = 1;
     (void)cui_app_run(&desc, draw_frame, NULL);
-    s_running = 0;
     s_ui_initialized = 0;
     hopdesk_ui_shutdown();
+    /* The CUI context is gone; completion callbacks must not touch it.
+     * Drain the save completion before returning to the process entry point. */
+    while (s_save_pending) {
+        @autoreleasepool {
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+        }
+    }
+    s_running = 0;
     /* CUI temporarily promotes an accessory app while its window is visible.
      * Restore the caller's policy; split UI processes entered as Regular and
      * stay Regular, while the menu-bar host returns to Accessory. */

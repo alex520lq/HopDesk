@@ -224,6 +224,9 @@ int main(void) {
     assert 'statusbar_show_transfers(void) { main_ui_show_page(2); }' in mac_tray
     assert 'main_ui_show_page(2);' in win_tray
     assert 'NSStatusItem' in mac_tray and 'Shell_NotifyIconW' in win_tray
+    assert 'HOP_XFER_FILE_LIMIT' not in mac_tray
+    assert 'xfer_get_files(' not in mac_tray
+    assert 'statusbar_show_transfers_legacy' not in mac_tray
 
     # Font mappings are owned by each host and released after the CUI app dies.
     assert 'cui_font (*load_cjk_font)(cui_ctx *ui)' in ui_header

@@ -213,6 +213,10 @@ int main(void) {
     # hosts create and tear down the same CUI application.
     assert 'cui_app_run(&desc, draw_frame, NULL)' in mac_ui
     assert 'cui_app_run(&desc, draw_frame, NULL)' in win_ui
+    assert 'NSApplicationActivationPolicy previousPolicy' in mac_ui
+    assert '[NSApp setActivationPolicy:previousPolicy]' in mac_ui
+    assert 'memset(model->tasks, 0, sizeof(model->tasks))' in mac_ui
+    assert 'model->task_snapshot_valid = 0' in mac_ui
     assert 'hopdesk_ui_init(ui)' in mac_ui and 'hopdesk_ui_init(ui)' in win_ui
     assert 'hopdesk_ui_shutdown()' in mac_ui and 'hopdesk_ui_shutdown()' in win_ui
     assert 'CUI_RENDERER_GPU' in mac_ui and 'CUI_RENDERER_GPU' in win_ui
@@ -229,7 +233,7 @@ int main(void) {
 
     assert 'third_party/cui' in (ROOT/'.gitmodules').read_text(encoding='utf-8')
     assert 'f9597a30d3bba4f7ef3e0f918e31c28bdcd4d2a3' in migration
-    assert 'Close' in migration or 'Closing the window' in migration
+    assert 'destroys the CUI app' in migration
     assert 'at most 32 live task summaries' in migration
     assert '24 rows at a time' in migration
 

@@ -175,6 +175,18 @@ static void snapshot_model(hopdesk_ui_model *model,
         }
     } else {
         memset(&model->transfer, 0, sizeof(model->transfer));
+        memset(model->tasks, 0, sizeof(model->tasks));
+        memset(model->history, 0, sizeof(model->history));
+        model->task_count = model->task_total = 0;
+        model->history_count = model->history_total = 0;
+        model->task_revision = model->history_revision = 0;
+        model->task_snapshot_valid = 0;
+        model->history_snapshot_valid = 0;
+        model->file_count = model->file_total = 0;
+        model->file_batch = 0;
+        model->file_direction = HOP_XFER_DIR_NONE;
+        model->file_offset = file_offset;
+        model->file_revision = 0;
     }
 
     selected = find_task(model, selected_task);
@@ -390,6 +402,7 @@ void statusbar_show_main(void) {
 
 void main_ui_show_page(int page) {
     cui_app_desc desc;
+    NSApplicationActivationPolicy previousPolicy = [NSApp activationPolicy];
     if (s_running) {
         hopdesk_ui_show_page(page);
         return;
@@ -415,6 +428,11 @@ void main_ui_show_page(int page) {
     s_running = 0;
     s_ui_initialized = 0;
     hopdesk_ui_shutdown();
+    /* CUI temporarily promotes an accessory app while its window is visible.
+     * Restore the caller's policy; split UI processes entered as Regular and
+     * stay Regular, while the menu-bar host returns to Accessory. */
+    if ([NSApp activationPolicy] != previousPolicy)
+        [NSApp setActivationPolicy:previousPolicy];
 }
 
 void main_ui_set_status(int connected, int sharing) {

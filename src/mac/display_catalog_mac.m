@@ -89,8 +89,23 @@ static void populate_cg_fallback(hop_display_inventory *dst) {
     }
 }
 
-static void collect_nsscreens_on_main(hop_display_inventory *dst) {
+static void copy_display_uuid(CGDirectDisplayID did, char *out, size_t cap) {
+    if (!out || !cap) return;
+    out[0] = '\0';
+    if (!did) return;
+    CFUUIDRef uuid = CGDisplayCreateUUIDFromDisplayID(did);
+    if (!uuid) return;
+    CFStringRef str = CFUUIDCreateString(kCFAllocatorDefault, uuid);
+    if (str) {
+        (void)CFStringGetCString(str, out, (CFIndex)cap, kCFStringEncodingUTF8);
+        CFRelease(str);
+    }
+    CFRelease(uuid);
+}
+
+static void collect_nsscreens_on_main(hop_display_inventory *dst, char uuids[HOP_DISPLAY_MAX_DEVICES][64]) {
     memset(dst, 0, sizeof(*dst));
+    if (uuids) memset(uuids, 0, sizeof(char) * HOP_DISPLAY_MAX_DEVICES * 64);
     dst->ddc_tool_ready = find_m1ddc_path() != nil ? 1 : 0;
     NSArray<NSScreen *> *screens = [NSScreen screens];
     CGDirectDisplayID mainID = CGMainDisplayID();
@@ -109,6 +124,7 @@ static void collect_nsscreens_on_main(hop_display_inventory *dst) {
         it->pos_x = (int32_t)bounds.origin.x;
         it->pos_y = (int32_t)bounds.origin.y;
         it->current_input = -1;
+        if (uuids) copy_display_uuid(did, uuids[dst->count], 64);
         if (!it->is_builtin) {
             int ext_idx = 0;
             for (int k = 0; k < dst->count; ++k) {
@@ -128,7 +144,7 @@ static void collect_nsscreens_on_main(hop_display_inventory *dst) {
     }
 }
 
-static void probe_m1ddc_into_inventory(hop_display_inventory *inv) {
+static void probe_m1ddc_into_inventory(hop_display_inventory *inv, const char uuids[HOP_DISPLAY_MAX_DEVICES][64]) {
     NSString *m1ddc = find_m1ddc_path();
     inv->ddc_tool_ready = m1ddc != nil ? 1 : 0;
     if (!m1ddc) {
@@ -140,11 +156,11 @@ static void probe_m1ddc_into_inventory(hop_display_inventory *inv) {
     NSString *listOut = run_tool_capture(m1ddc, @[@"display", @"list"], 3.0);
     int ddc_entries = 0;
     int read_ok = 0;
+    int used[HOP_DISPLAY_MAX_DEVICES] = {0};
     if (listOut.length) {
         /* Format: "[1] BenQ PD2700U (UUID...)" */
         NSArray<NSString *> *lines = [listOut componentsSeparatedByCharactersInSet:
             [NSCharacterSet newlineCharacterSet]];
-        int m1_slot = 0;
         for (NSString *raw in lines) {
             NSString *line = [raw stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
             if (![line hasPrefix:@"["]) continue;
@@ -157,21 +173,40 @@ static void probe_m1ddc_into_inventory(hop_display_inventory *inv) {
             NSRange paren = [rest rangeOfString:@" (" options:NSBackwardsSearch];
             NSString *model = (paren.location != NSNotFound) ? [rest substringToIndex:paren.location] : rest;
             model = [model stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            NSString *m1_uuid = nil;
+            if (paren.location != NSNotFound) {
+                NSString *tail = [rest substringFromIndex:paren.location + 2];
+                NSRange endParen = [tail rangeOfString:@")"];
+                if (endParen.location != NSNotFound && endParen.location > 0) {
+                    m1_uuid = [[tail substringToIndex:endParen.location]
+                        stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                }
+            }
 
             int matched = -1;
-            for (int i = 0; i < inv->count; ++i) {
-                if (inv->items[i].is_builtin) continue;
-                if (model.length && strcasecmp(inv->items[i].friendly_name, model.UTF8String) == 0) {
-                    matched = i;
-                    break;
+            if (uuids && m1_uuid.length) {
+                for (int i = 0; i < inv->count; ++i) {
+                    if (used[i] || inv->items[i].is_builtin) continue;
+                    if (uuids[i][0] && strcasecmp(uuids[i], m1_uuid.UTF8String) == 0) {
+                        matched = i;
+                        break;
+                    }
+                }
+            }
+            if (matched < 0 && model.length) {
+                for (int i = 0; i < inv->count; ++i) {
+                    if (used[i] || inv->items[i].is_builtin) continue;
+                    if (strcasecmp(inv->items[i].friendly_name, model.UTF8String) == 0) {
+                        matched = i;
+                        break;
+                    }
                 }
             }
             if (matched < 0) {
-                int ext_seen = 0;
                 for (int i = 0; i < inv->count; ++i) {
-                    if (inv->items[i].is_builtin) continue;
-                    if (ext_seen == m1_slot) { matched = i; break; }
-                    ++ext_seen;
+                    if (used[i] || inv->items[i].is_builtin) continue;
+                    matched = i;
+                    break;
                 }
             }
             if (matched < 0 && inv->count < HOP_DISPLAY_MAX_DEVICES) {
@@ -182,6 +217,7 @@ static void probe_m1ddc_into_inventory(hop_display_inventory *inv) {
                 inv->items[matched].current_input = -1;
             }
             if (matched >= 0) {
+                used[matched] = 1;
                 snprintf(inv->items[matched].device_id, sizeof(inv->items[matched].device_id), "%d", m1_idx);
                 if (model.length) {
                     snprintf(inv->items[matched].friendly_name, sizeof(inv->items[matched].friendly_name),
@@ -201,7 +237,6 @@ static void probe_m1ddc_into_inventory(hop_display_inventory *inv) {
                 }
                 ++ddc_entries;
             }
-            ++m1_slot;
         }
     }
 
@@ -245,11 +280,15 @@ int mac_display_probe_async(void) {
     pthread_mutex_unlock(&s_inv_lock);
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        hop_display_inventory base;
-        collect_nsscreens_on_main(&base);
+        typedef struct {
+            hop_display_inventory inv;
+            char uuids[HOP_DISPLAY_MAX_DEVICES][64];
+        } probe_seed;
+        probe_seed seed;
+        collect_nsscreens_on_main(&seed.inv, seed.uuids);
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-            hop_display_inventory fresh = base;
-            probe_m1ddc_into_inventory(&fresh);
+            hop_display_inventory fresh = seed.inv;
+            probe_m1ddc_into_inventory(&fresh, seed.uuids);
             fresh.probing = 0;
             pthread_mutex_lock(&s_inv_lock);
             s_inv = fresh;

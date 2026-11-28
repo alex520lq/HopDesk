@@ -4,9 +4,9 @@
 #include <stddef.h>
 #include "hop.h"
 
-#define HOP_UPDATE_MANIFEST_URL        "https://raw.githubusercontent.com/alex520lq/HopDesk-Releases/main/latest.txt"
-#define HOP_UPDATE_STABLE_MANIFEST_URL "https://raw.githubusercontent.com/alex520lq/HopDesk-Releases/main/stable.txt"
-#define HOP_UPDATE_DEV_MANIFEST_URL    "https://raw.githubusercontent.com/alex520lq/HopDesk-Releases/main/dev.txt"
+#define HOP_UPDATE_MANIFEST_URL        "https://raw.githubusercontent.com/alex520lq/HopDesk/updates/latest.txt"
+#define HOP_UPDATE_STABLE_MANIFEST_URL "https://raw.githubusercontent.com/alex520lq/HopDesk/updates/stable.txt"
+#define HOP_UPDATE_DEV_MANIFEST_URL    "https://raw.githubusercontent.com/alex520lq/HopDesk/updates/dev.txt"
 #define HOP_UPDATE_MANIFEST_MAX 8192u
 #define HOP_UPDATE_VERSION_MAX  32u
 #define HOP_UPDATE_TAG_MAX      40u

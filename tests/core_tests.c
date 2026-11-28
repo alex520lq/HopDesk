@@ -645,11 +645,11 @@ static void test_update_manifest_validation(void) {
         "format=1\n"
         "version=0.5.1\n"
         "tag=v0.5.1\n"
-        "windows_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v0.5.1/HopDesk-Windows.zip\n"
+        "windows_url=https://github.com/alex520lq/HopDesk/releases/download/v0.5.1/HopDesk-Windows.zip\n"
         "windows_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
-        "macos_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v0.5.1/HopDesk-macOS.zip\n"
+        "macos_url=https://github.com/alex520lq/HopDesk/releases/download/v0.5.1/HopDesk-macOS.zip\n"
         "macos_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
-        "notes_url=https://github.com/alex520lq/HopDesk-Releases/releases/tag/v0.5.1\n";
+        "notes_url=https://github.com/alex520lq/HopDesk/releases/tag/v0.5.1\n";
     hop_update_manifest parsed;
     int valid = 0;
     CHECK(hop_update_manifest_parse(manifest, sizeof(manifest) - 1, &parsed));
@@ -663,18 +663,18 @@ static void test_update_manifest_validation(void) {
 
     char tampered[sizeof(manifest) + 1];
     memcpy(tampered, manifest, sizeof(manifest));
-    char *url = strstr(tampered, "https://github.com/alex520lq/HopDesk-Releases");
+    char *url = strstr(tampered, "https://github.com/alex520lq/HopDesk");
     CHECK(url != NULL);
     if (url) url[8] = 'x';
     CHECK(!hop_update_manifest_parse(tampered, sizeof(manifest) - 1, &parsed));
 
     const char duplicate[] =
         "format=1\nversion=0.5.1\nversion=0.5.2\n"
-        "tag=v0.5.1\nwindows_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v0.5.1/HopDesk-Windows.zip\n"
+        "tag=v0.5.1\nwindows_url=https://github.com/alex520lq/HopDesk/releases/download/v0.5.1/HopDesk-Windows.zip\n"
         "windows_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
-        "macos_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v0.5.1/HopDesk-macOS.zip\n"
+        "macos_url=https://github.com/alex520lq/HopDesk/releases/download/v0.5.1/HopDesk-macOS.zip\n"
         "macos_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
-        "notes_url=https://github.com/alex520lq/HopDesk-Releases/releases/tag/v0.5.1\n";
+        "notes_url=https://github.com/alex520lq/HopDesk/releases/tag/v0.5.1\n";
     CHECK(!hop_update_manifest_parse(duplicate, sizeof(duplicate) - 1, &parsed));
 
     /* SemVer -dev.N ordering and strict validation */
@@ -693,11 +693,11 @@ static void test_update_manifest_validation(void) {
         "tag=v1.4.0\n"
         "ctrl_proto=8\n"
         "xfer_proto=8\n"
-        "windows_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v1.4.0/HopDesk-Windows.zip\n"
+        "windows_url=https://github.com/alex520lq/HopDesk/releases/download/v1.4.0/HopDesk-Windows.zip\n"
         "windows_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
-        "macos_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v1.4.0/HopDesk-macOS.zip\n"
+        "macos_url=https://github.com/alex520lq/HopDesk/releases/download/v1.4.0/HopDesk-macOS.zip\n"
         "macos_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
-        "notes_url=https://github.com/alex520lq/HopDesk-Releases/releases/tag/v1.4.0\n"
+        "notes_url=https://github.com/alex520lq/HopDesk/releases/tag/v1.4.0\n"
         "summary=Stable 1.4.0 release\n";
     const char dev_v2[] =
         "format=2\n"
@@ -706,11 +706,11 @@ static void test_update_manifest_validation(void) {
         "tag=v1.4.1-dev.1\n"
         "ctrl_proto=9\n"
         "xfer_proto=8\n"
-        "windows_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v1.4.1-dev.1/HopDesk-Windows.zip\n"
+        "windows_url=https://github.com/alex520lq/HopDesk/releases/download/v1.4.1-dev.1/HopDesk-Windows.zip\n"
         "windows_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n"
-        "macos_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v1.4.1-dev.1/HopDesk-macOS.zip\n"
+        "macos_url=https://github.com/alex520lq/HopDesk/releases/download/v1.4.1-dev.1/HopDesk-macOS.zip\n"
         "macos_sha256=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\n"
-        "notes_url=https://github.com/alex520lq/HopDesk-Releases/releases/tag/v1.4.1-dev.1\n"
+        "notes_url=https://github.com/alex520lq/HopDesk/releases/tag/v1.4.1-dev.1\n"
         "summary=Dev preview build\n";
     hop_update_manifest stable_m, dev_m;
     CHECK(hop_update_manifest_parse(stable_v2, sizeof(stable_v2) - 1, &stable_m));
@@ -725,11 +725,11 @@ static void test_update_manifest_validation(void) {
     /* Reject channel/version spoofing */
     const char spoofed[] =
         "format=2\nchannel=stable\nversion=1.4.1-dev.1\ntag=v1.4.1-dev.1\nctrl_proto=8\nxfer_proto=8\n"
-        "windows_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v1.4.1-dev.1/HopDesk-Windows.zip\n"
+        "windows_url=https://github.com/alex520lq/HopDesk/releases/download/v1.4.1-dev.1/HopDesk-Windows.zip\n"
         "windows_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n"
-        "macos_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v1.4.1-dev.1/HopDesk-macOS.zip\n"
+        "macos_url=https://github.com/alex520lq/HopDesk/releases/download/v1.4.1-dev.1/HopDesk-macOS.zip\n"
         "macos_sha256=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\n"
-        "notes_url=https://github.com/alex520lq/HopDesk-Releases/releases/tag/v1.4.1-dev.1\n";
+        "notes_url=https://github.com/alex520lq/HopDesk/releases/tag/v1.4.1-dev.1\n";
     CHECK(!hop_update_manifest_parse(spoofed, sizeof(spoofed) - 1, &parsed));
 
     /* Evaluation rules: same-channel anti-rollback + cross-channel bidirectional switch */

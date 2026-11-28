@@ -250,13 +250,13 @@ int hop_update_manifest_parse(const char *text, size_t len, hop_update_manifest 
         strcmp(out->tag, expected) != 0) return 0;
 
     if (snprintf(expected, sizeof(expected),
-                 "https://github.com/alex520lq/HopDesk-Releases/releases/download/%s/HopDesk-Windows.zip",
+                 "https://github.com/alex520lq/HopDesk/releases/download/%s/HopDesk-Windows.zip",
                  out->tag) <= 0 || strcmp(out->windows_url, expected) != 0) return 0;
     if (snprintf(expected, sizeof(expected),
-                 "https://github.com/alex520lq/HopDesk-Releases/releases/download/%s/HopDesk-macOS.zip",
+                 "https://github.com/alex520lq/HopDesk/releases/download/%s/HopDesk-macOS.zip",
                  out->tag) <= 0 || strcmp(out->macos_url, expected) != 0) return 0;
     if (snprintf(expected, sizeof(expected),
-                 "https://github.com/alex520lq/HopDesk-Releases/releases/tag/%s",
+                 "https://github.com/alex520lq/HopDesk/releases/tag/%s",
                  out->tag) <= 0 || strcmp(out->notes_url, expected) != 0) return 0;
 
     return valid_sha256(out->windows_sha256) && valid_sha256(out->macos_sha256);

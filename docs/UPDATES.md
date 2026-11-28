@@ -2,12 +2,13 @@
 
 ## 设计
 
-源码仓库 `alex520lq/HopDesk` 保持私有。桌面客户端不能安全地把私有仓库访问令牌内置在程序里，因此更新包和公开更新清单放在独立的公开仓库：
+HopDesk 主仓库 `alex520lq/HopDesk` 为公开仓库，直接复用单仓库 GitHub Releases 与内置 `GITHUB_TOKEN` 发布安装包、更新日志与双通道更新清单（无需额外创建第二个仓库或手动申请 PAT）：
 
-- 源码与 CI：`alex520lq/HopDesk`（Private）
-- 更新包、更新日志与清单：`alex520lq/HopDesk-Releases`（Public）
-- 稳定版清单：`https://raw.githubusercontent.com/alex520lq/HopDesk-Releases/main/stable.txt`（`format=2`，同时向 `latest.txt` 写入兼容旧客户端的 `format=1` 清单）
-- 开发版清单：`https://raw.githubusercontent.com/alex520lq/HopDesk-Releases/main/dev.txt`
+- 源码、CI 与 GitHub Releases：`alex520lq/HopDesk`（Public）
+- 稳定版清单：`https://raw.githubusercontent.com/alex520lq/HopDesk/updates/stable.txt`（`format=2`，同时向 `updates` 分支 `latest.txt` 写入兼容旧客户端的 `format=1` 清单）
+- 开发版清单：`https://raw.githubusercontent.com/alex520lq/HopDesk/updates/dev.txt`
+
+清单指针存放在同仓库独立的 orphan `updates` 分支，不污染 `main` 分支的提交历史，也不会触发多余 CI 构建。
 
 ### 双通道与跨通道切换规则
 
@@ -25,37 +26,26 @@ version=0.1.0
 tag=v0.1.0
 ctrl_proto=8
 xfer_proto=8
-windows_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v0.1.0/HopDesk-Windows.zip
+windows_url=https://github.com/alex520lq/HopDesk/releases/download/v0.1.0/HopDesk-Windows.zip
 windows_sha256=<64-hex>
-macos_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v0.1.0/HopDesk-macOS.zip
+macos_url=https://github.com/alex520lq/HopDesk/releases/download/v0.1.0/HopDesk-macOS.zip
 macos_sha256=<64-hex>
-notes_url=https://github.com/alex520lq/HopDesk-Releases/releases/tag/v0.1.0
+notes_url=https://github.com/alex520lq/HopDesk/releases/tag/v0.1.0
 summary=<单行中文摘要>
 ```
 
 客户端兼容旧版 `format=1` 清单（视作 `stable`），并严格校验通道与版本号匹配、固定 GitHub Release 路径、64 位 SHA-256 及协议版本号；任何未知键、重复键或篡改 URL 均拒绝。
 
-## 一次性 GitHub 配置
-
-自动发布依赖一个公开 Release 仓库和一个最小权限的访问令牌：
-
-1. 在 GitHub 创建公开仓库 `alex520lq/HopDesk-Releases`，初始化 `main` 分支（勾选 Add a README）。该仓库只放发布包、Release 和清单，不复制私有源码。
-2. 创建 Fine-grained personal access token，只授权 `HopDesk-Releases` 这一个仓库的 `Contents: Read and write` 权限。
-3. 打开私有源码仓库 `HopDesk` → Settings → Secrets and variables → Actions → New repository secret。
-4. 将 secret 命名为 `HOPDESK_RELEASE_TOKEN`，值填写上一步生成的 token。
-
-没有公开 Release 仓库或缺少 secret 时，普通 PR/`main` 双平台构建仍可运行，但 tag 发布步骤会明确失败；客户端会提示暂时无法读取更新清单。
-
 ## 发布新版本
 
-版本号以根目录 `VERSION` 为单一事实源，更新日志以 `CHANGELOG.md` 的 `## [v<version>]` 章节为准：
+版本号以根目录 `VERSION` 为单一事实源，更新日志以 `CHANGELOG.md` 的 `## [v<version>]` 章节为准。发布 job 使用 GitHub Actions 内置 `GITHUB_TOKEN`（仅 `release` job 授予 `contents: write`），无需额外配置仓库或 Secret：
 
 1. 更新 `VERSION` 与 `CHANGELOG.md`，并将代码合并到 `main`。
 2. 基于目标 `main` 提交创建并推送 tag：
    - 稳定版：`git tag v0.1.0 <commit> && git push origin v0.1.0`
    - 开发版：`git tag v0.2.0-dev.1 <commit> && git push origin v0.2.0-dev.1`
 3. GitHub Actions 在 Windows（MSVC）与 macOS runner 分别构建、运行全部核心/协议/TCP/更新测试并打包。
-4. 发布 job 使用 `scripts/release_notes.py` 从 `CHANGELOG.md` 和 `src/core/hop.h` 提取更新日志、协议版本与摘要，生成 `format=2` 清单，发布到 `alex520lq/HopDesk-Releases`（`dev` 自动标记为 Pre-release），并按单调策略更新对应通道指针（`stable.txt` + `latest.txt` 或 `dev.txt`）。
+4. 发布 job 使用 `scripts/release_notes.py` 从 `CHANGELOG.md` 和 `src/core/hop.h` 提取更新日志、协议版本与摘要，生成 `format=2` 清单，直接发布到 `alex520lq/HopDesk` 的 GitHub Releases（`dev` 自动标记为 Pre-release），并按单调策略更新同仓库 `updates` 分支的对应通道指针（`stable.txt` + `latest.txt` 或 `dev.txt`）。
 
 每个 tag 都是不可变资产。重跑仅允许哈希等字段完全一致；通道指针按各自通道单调推进，且拒绝跨通道覆盖。
 

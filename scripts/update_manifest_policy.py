@@ -17,7 +17,7 @@ V1_FIELDS = {
 V2_REQUIRED = V1_FIELDS | {'channel', 'ctrl_proto', 'xfer_proto'}
 V2_OPTIONAL = {'summary'}
 ALL_FIELDS = V2_REQUIRED | V2_OPTIONAL
-BASE = 'https://github.com/alex520lq/HopDesk-Releases/releases/'
+BASE = 'https://github.com/alex520lq/HopDesk/releases/'
 VERSION_RE = re.compile(
     r'^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-dev\.([1-9][0-9]*))?$'
 )

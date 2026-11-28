@@ -121,6 +121,13 @@ static HICON tray_make_status_icon(HICON base, int state, int progress) {
     return result ? result : CopyIcon(base);
 }
 
+static void utf8_to_wide(const char *utf8, wchar_t *out, size_t cap) {
+    if (!out || !cap) return;
+    out[0] = L'\0';
+    if (!utf8 || !utf8[0]) return;
+    (void)MultiByteToWideChar(CP_UTF8, 0, utf8, -1, out, (int)cap);
+}
+
 static void tray_refresh(win_app *app) {
     if (!app || !app->tray_added) return;
 
@@ -142,26 +149,28 @@ static void tray_refresh(win_app *app) {
     int direction = busy ? st->direction : 0;
     int phase = busy ? st->phase : 0;
 
-    wchar_t tip[128];
+    char tip_utf8[128];
     if (busy && progress >= 0) {
-        const wchar_t *verb = direction == HOP_XFER_DIR_SEND ? L"发送" : L"接收";
-        swprintf_s(tip, ARRAYSIZE(tip), L"HopDesk · 正在%ls · %d%%", verb, progress);
+        const char *verb = hop_tr(direction == HOP_XFER_DIR_SEND ? HOP_STR_TRAY_DIR_SEND : HOP_STR_TRAY_DIR_RECV);
+        snprintf(tip_utf8, sizeof(tip_utf8), hop_tr(HOP_STR_TRAY_TIP_TRANSFER), verb, progress);
     } else if (busy) {
-        wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 正在准备传输");
+        snprintf(tip_utf8, sizeof(tip_utf8), "%s", hop_tr(HOP_STR_TRAY_TIP_PREPARING));
     } else if (!app->net) {
-        wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 网络服务未启动");
+        snprintf(tip_utf8, sizeof(tip_utf8), "%s", hop_tr(HOP_STR_TRAY_TIP_NET_STOPPED));
     } else if (net_server_is_disconnected(app->net)) {
-        wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 已手动断开");
+        snprintf(tip_utf8, sizeof(tip_utf8), "%s", hop_tr(HOP_STR_TRAY_TIP_DISCONNECTED));
     } else if (app->cfg.role == HOP_ROLE_SERVER &&
                (!net_server_listening(app->net) || !xfer_listening())) {
-        wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 端口不可用，正在重试");
+        snprintf(tip_utf8, sizeof(tip_utf8), "%s", hop_tr(HOP_STR_TRAY_TIP_PORT_RETRY));
     } else if (state == 2) {
-        wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 键鼠已切换到对端");
+        snprintf(tip_utf8, sizeof(tip_utf8), "%s", hop_tr(HOP_STR_TRAY_TIP_SHARING));
     } else if (state == 1) {
-        wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 已连接");
+        snprintf(tip_utf8, sizeof(tip_utf8), "%s", hop_tr(HOP_STR_TRAY_TIP_CONNECTED));
     } else {
-        wcscpy_s(tip, ARRAYSIZE(tip), L"HopDesk · 等待对端连接");
+        snprintf(tip_utf8, sizeof(tip_utf8), "%s", hop_tr(HOP_STR_TRAY_TIP_WAITING));
     }
+    wchar_t tip[128];
+    utf8_to_wide(tip_utf8, tip, ARRAYSIZE(tip));
 
     int changed = state != s_last_tray_state ||
         progress != s_last_tray_progress || direction != s_last_tray_direction ||
@@ -213,12 +222,16 @@ void ui_init(win_app *app) {
 
 void ui_show_menu(win_app *app) {
     POINT pt; GetCursorPos(&pt);
+    wchar_t w_open[64], w_disp[96], w_quit[64];
+    utf8_to_wide(hop_tr(HOP_STR_TRAY_OPEN), w_open, ARRAYSIZE(w_open));
+    utf8_to_wide(hop_tr(HOP_STR_TRAY_SWITCH_DISPLAY), w_disp, ARRAYSIZE(w_disp));
+    utf8_to_wide(hop_tr(HOP_STR_TRAY_QUIT), w_quit, ARRAYSIZE(w_quit));
     HMENU menu=CreatePopupMenu();
-    AppendMenuW(menu,MF_STRING,IDM_OPEN_MAIN,L"打开");
+    AppendMenuW(menu,MF_STRING,IDM_OPEN_MAIN,w_open);
     if (app->cfg.disp_shared)
-        AppendMenuW(menu,MF_STRING,IDM_DISPLAY_TOGGLE,L"一键切换显示器");
+        AppendMenuW(menu,MF_STRING,IDM_DISPLAY_TOGGLE,w_disp);
     AppendMenuW(menu,MF_SEPARATOR,0,NULL);
-    AppendMenuW(menu,MF_STRING,IDM_EXIT_APP,L"退出");
+    AppendMenuW(menu,MF_STRING,IDM_EXIT_APP,w_quit);
     SetForegroundWindow(app->hwnd);
     UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,
                               pt.x, pt.y, 0, app->hwnd, NULL);

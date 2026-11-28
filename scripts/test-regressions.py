@@ -3,7 +3,7 @@
 Hosted CI still builds the full native applications. These focused tests are not
 physical-desktop clipboard or two-machine end-to-end tests.
 """
-import os, pathlib, re, shutil, subprocess, tempfile
+import os, pathlib, re, shutil, subprocess, sys, tempfile
 ROOT=pathlib.Path(__file__).resolve().parent.parent
 
 def extract(source,name):
@@ -164,14 +164,28 @@ int main(void) {
     win_tray=(ROOT/'src/win/ui.c').read_text(encoding='utf-8')
     migration=(ROOT/'docs/CUI_UI_MIGRATION.md').read_text(encoding='utf-8')
 
+    # Validate locale tables and codegen parity (zero external dependencies).
+    subprocess.run([sys.executable, str(ROOT/'scripts/gen-i18n.py'), '--check'], cwd=ROOT, check=True)
+    zh_locale=(ROOT/'locales/zh-CN.lang').read_text(encoding='utf-8')
+    en_locale=(ROOT/'locales/en.lang').read_text(encoding='utf-8')
+
     assert 'HOPDESK_UI_OVERVIEW = 0' in ui_header
     assert 'HOPDESK_UI_DEVICE' in ui_header and 'HOPDESK_UI_TRANSFER' in ui_header
     assert 'HOPDESK_UI_SETTINGS' in ui_header and 'HOPDESK_UI_PAGE_COUNT' in ui_header
-    assert '"概览", "设备", "传输", "设置"' in ui
-    for page in ['"概览"', '"设备"', '"传输"', '"设置"']:
-        assert page in ui
+    for key in ['T(NAV_OVERVIEW)', 'T(NAV_DEVICE)', 'T(NAV_TRANSFER)', 'T(NAV_SETTINGS)']:
+        assert key in ui
+    for entry in ['nav.overview=概览', 'nav.device=设备', 'nav.transfer=传输', 'nav.settings=设置']:
+        assert entry in zh_locale
+    for entry in ['nav.overview=Overview', 'nav.device=Devices', 'nav.transfer=Transfers', 'nav.settings=Settings']:
+        assert entry in en_locale
     assert 'cui_nav_item_ex' in ui and 'draw_overview(ui)' in ui
     assert 'draw_device(ui)' in ui and 'draw_transfer(ui)' in ui and 'draw_settings(ui)' in ui
+    # Hover help cards replace inline prose clutter and live language switcher is wired on both hosts.
+    assert 'cui_hover_card_begin' in ui and 'draw_help_hint' in ui and 'draw_heading_with_help' in ui
+    assert 'void (*apply_lang)(int ui_lang, int persist);' in ui_header
+    assert 's_ops->apply_lang(' in ui and 'CUI_ICON_GLOBE' in ui
+    assert 'IPC_LANG' in win_split and 'win_split_set_lang' in win_ui
+    assert 'detect_mac_system_lang' in mac_ui and 'hop_i18n_set_lang' in mac_ui
 
     # UI data stays bounded: live task/history summaries are capped and file
     # details are read in pages rather than materializing the 8192-entry ledger.
@@ -200,25 +214,32 @@ int main(void) {
 
     # Shared task controls remain connected to the native transfer services.
     assert 's_ops->cancel_task(s_cancel_confirm_task)' in ui
-    assert 's_cancel_confirm_task' in ui and '确认取消' in ui
+    assert 's_cancel_confirm_task' in ui and 'T(TRANSFER_BTN_CONFIRM_CANCEL)' in ui
     assert 's_ops->retry_file(s_model.file_batch, s_selected_file)' in ui
-    assert '"取消选中任务"' in ui and '"重试选中文件"' in ui
-    assert '"上一页"' in ui and '"下一页"' in ui and '"历史记录"' in ui
+    assert 'T(TRANSFER_BTN_CANCEL)' in ui and 'T(TRANSFER_BTN_RETRY)' in ui
+    assert 'T(TRANSFER_BTN_PREV)' in ui and 'T(TRANSFER_BTN_NEXT)' in ui and 'T(TRANSFER_CARD_HISTORY)' in ui
+    assert 'transfer.btn.confirm_cancel=确认取消' in zh_locale
+    assert 'transfer.btn.prev=上一页' in zh_locale and 'transfer.btn.next=下一页' in zh_locale
+    assert 'transfer.card.history=历史记录' in zh_locale
 
     # Manual disconnect pauses reconnect/listening until explicitly resumed on both platforms.
     assert 'int manually_disconnected;' in ui_header and 'void (*disconnect)(void);' in ui_header
-    assert 's_ops->disconnect()' in ui and '"断开连接"' in ui and '"恢复连接"' in ui and '"已手动断开"' in ui
+    assert 's_ops->disconnect()' in ui and 'T(BTN_DISCONNECT)' in ui and 'T(BTN_RESUME_CONNECT)' in ui
+    assert 'btn.disconnect=断开连接' in zh_locale and 'btn.resume_connect=恢复连接' in zh_locale
+    assert 'status.disconnected_manual=已手动断开' in zh_locale
     assert 'IPC_DISCONNECT' in win_split and 'net_server_set_disconnected' in win_split
     assert 'win_split_disconnect' in win_ui
     assert 'SPLIT_IPC_DISCONNECT' in (ROOT/'src/mac/split_ipc.h').read_text(encoding='utf-8')
     assert 'net_set_disconnected' in (ROOT/'src/mac/split_agent.m').read_text(encoding='utf-8')
     assert 'split_ui_disconnect' in mac_ui and 'split_ui_is_disconnected' in mac_ui
 
-    # Peer-equal capability model: no server/client wording in UI, independent mouse/keyboard providers.
+    # Peer-equal capability model: no server/client wording in UI/locales, independent mouse/keyboard providers.
     assert 'HOP_INPUT_MOUSE' in ui and 'HOP_INPUT_KEYBOARD' in ui
-    assert '"本机提供鼠标"' in ui and '"本机提供键盘"' in ui and '"对端提供"' in ui
-    assert '"等待对端连接（本机监听）"' in ui and '"主动连接对端（填写地址）"' in ui
+    assert 'T(INPUT_SWITCH_MOUSE)' in ui and 'T(INPUT_SWITCH_KBD)' in ui and 'T(CAP_OWNER_PEER)' in ui
+    assert 'connect.mode.server=等待对端连接（本机监听）' in zh_locale
+    assert 'connect.mode.client=主动连接对端（填写地址）' in zh_locale
     assert '服务器' not in ui and '客户端' not in ui
+    assert '服务器' not in zh_locale and '客户端' not in zh_locale
     assert 'IPC_INPUT_MODE' in win_split and 'win_split_set_input_mode' in win_ui
     assert 'SPLIT_IPC_INPUT_MODE_SET' in (ROOT/'src/mac/split_ipc.h').read_text(encoding='utf-8')
     assert 'SPLIT_IPC_INPUT_MODE_SET' in (ROOT/'src/mac/split_agent.m').read_text(encoding='utf-8')
@@ -227,7 +248,8 @@ int main(void) {
     # Dedicated Audio settings tab exposes a mutually-exclusive 3-way direction
     # selector with immediate hot-apply and peer capability sync on both platforms.
     assert 'HOP_AUDIO_SEND' in ui and 'HOP_AUDIO_PLAY' in ui
-    assert '"声音"' in ui and '"发送到对端"' in ui and '"本机播放对端"' in ui
+    assert 'T(SETTINGS_TAB_AUDIO)' in ui and 'T(AUDIO_DIR_SEND)' in ui and 'T(AUDIO_DIR_PLAY)' in ui
+    assert 'audio.dir.send=发送到对端' in zh_locale and 'audio.dir.play=本机播放对端' in zh_locale
     assert 'IPC_AUDIO_MODE' in win_split and 'win_split_set_audio_mode' in win_ui
     assert 'SPLIT_IPC_AUDIO_MODE_SET' in (ROOT/'src/mac/split_agent.m').read_text(encoding='utf-8')
     assert 'split_ui_set_audio_mode' in mac_ui
@@ -236,7 +258,8 @@ int main(void) {
     # Cross-platform autostart switch and system permission actions.
     win_sys = (ROOT/'src/win/system_integration.c').read_text(encoding='utf-8')
     mac_sys = (ROOT/'src/mac/system_integration.m').read_text(encoding='utf-8')
-    assert '"开机自动启动 HopDesk"' in ui and 's_ops->set_autostart' in ui and 's_ops->permission_action' in ui
+    assert 'T(AUTOSTART_SWITCH)' in ui and 's_ops->set_autostart' in ui and 's_ops->permission_action' in ui
+    assert 'autostart.switch=开机自动启动 HopDesk' in zh_locale
     assert 'IPC_AUTOSTART' in win_split and 'IPC_PERM_ACTION' in win_split
     assert 'win_autostart_set_enabled' in win_sys and 'win_permission_action' in win_sys
     assert 'mac_autostart_set_enabled' in mac_sys and 'mac_permission_action' in mac_sys
@@ -1663,9 +1686,11 @@ int main(void){
     ui=(ROOT/'src/ui/hopdesk_ui.c').read_text(encoding='utf-8')
     common=r"""
 #include "xfer_task.h"
+#include "i18n.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#define T(id) hop_tr(HOP_STR_##id)
 typedef struct {
     hop_xfer_task_snapshot tasks[8];
     int task_count;
@@ -1696,15 +1721,20 @@ int main(void) {
     s_model.task_count=0;
     assert(selected_task()==NULL);
 
+    hop_i18n_set_lang(HOP_LANG_ZH_CN);
     assert(strcmp(task_state_text(HOP_XFER_TASK_COMPLETED),"已完成")==0);
     assert(strcmp(task_state_text(HOP_XFER_TASK_CANCELLED),"已取消")==0);
     assert(strcmp(task_state_text(HOP_XFER_TASK_INTERRUPTED),"已中断")==0);
+    hop_i18n_set_lang(HOP_LANG_EN);
+    assert(strcmp(task_state_text(HOP_XFER_TASK_COMPLETED),"Completed")==0);
+    assert(strcmp(task_state_text(HOP_XFER_TASK_CANCELLED),"Cancelled")==0);
+    assert(strcmp(task_state_text(HOP_XFER_TASK_INTERRUPTED),"Interrupted")==0);
     puts("PASS: shared UI selection follows Task ID through reordering and stale rows");
     return 0;
 }
 """
     code=common+'\n'.join(extract(ui,n) for n in ['selected_task','task_state_text'])+main
-    run('task_list_selection_shared',code)
+    run('task_list_selection_shared',code,['src/core/i18n.c'])
 
     # Cancellation and history remain in the shared page and route through
     # platform operations without reintroducing platform-owned list widgets.

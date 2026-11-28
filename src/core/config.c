@@ -83,6 +83,10 @@ static const hop_config_spec k_specs[] = {
       HOP_THEME_SYSTEM, HOP_THEME_DARK, "system|light|dark", "system",
       "UI color theme",
       CFG_FIELD(ui_theme) },
+    { "ui_lang", NULL, "capabilities", HOP_CFG_ENUM, HOP_CFG_APPLY_HOT, 0,
+      HOP_LANG_AUTO, HOP_LANG_EN, "auto|zh-CN|en", "auto",
+      "UI language (auto follows OS locale)",
+      CFG_FIELD(ui_lang) },
 
     /* ---- Input, Edge & Keymap ---- */
     { "server_edge", NULL, "input", HOP_CFG_ENUM, HOP_CFG_APPLY_HOT, 0,
@@ -412,6 +416,7 @@ void hop_config_defaults(hop_config *c) {
     c->data_port       = HOP_DATA_PORT;
     c->audio_port      = HOP_AUDIO_PORT;
     c->ui_theme        = HOP_THEME_SYSTEM;
+    c->ui_lang         = HOP_LANG_AUTO;
     c->server_edge     = HOP_EDGE_LEFT;
     c->client_edge     = HOP_EDGE_RIGHT;
     c->screen_w        = 0;

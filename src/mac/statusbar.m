@@ -79,7 +79,11 @@ static void open_main_window(void);
 
 static NSStatusItem *s_item;
 static NSMenu *s_menu;
-static NSMenuItem *s_state;
+static NSMenuItem *s_openItem;
+static NSMenuItem *s_permItem;
+static NSMenuItem *s_quitItem;
+static BOOL s_isSplit;
+static int s_last_lang = -1;
 static HopController *s_ctrl;
 static int s_status_connected, s_status_sharing;
 static atomic_bool s_cursor_restore_pending = ATOMIC_VAR_INIT(false);
@@ -178,8 +182,19 @@ static NSImage *make_status_image(int connected, int sharing, int progress) {
     [image unlockFocus]; image.template = NO; return image;
 }
 
+static void refresh_menu_titles(void) {
+    int lang = hop_i18n_active_lang();
+    if (s_openItem) s_openItem.title = [NSString stringWithUTF8String:hop_tr(HOP_STR_TRAY_OPEN)];
+    if (s_permItem) s_permItem.title = [NSString stringWithUTF8String:hop_tr(HOP_STR_TRAY_CHECK_PERMISSIONS)];
+    if (s_quitItem) s_quitItem.title = [NSString stringWithUTF8String:hop_tr(s_isSplit ? HOP_STR_TRAY_STOP_AGENT : HOP_STR_TRAY_QUIT)];
+    s_last_lang = lang;
+}
+
 static void refresh_status_item(void) {
     if (!s_item || !s_item.button) return;
+    int lang = hop_i18n_active_lang();
+    int lang_changed = (lang != s_last_lang);
+    if (lang_changed) refresh_menu_titles();
     int progress = -1, direction = 0, phase = 0;
     {
         hop_xfer_status_pair pair;
@@ -194,20 +209,27 @@ static void refresh_status_item(void) {
     }
     int disconnected = net_is_disconnected();
     int state = s_status_sharing ? 2 : (s_status_connected ? 1 : (disconnected ? -2 : 0));
-    if (state == s_last_icon_state && progress == s_last_icon_progress &&
+    if (!lang_changed && state == s_last_icon_state && progress == s_last_icon_progress &&
         direction == s_last_icon_direction && phase == s_last_icon_phase) return;
     s_last_icon_state=state; s_last_icon_progress=progress;
     s_last_icon_direction=direction; s_last_icon_phase=phase;
     s_item.button.image = make_status_image(s_status_connected, s_status_sharing, progress);
     s_item.button.imagePosition = NSImageLeft;
     s_item.button.title = progress >= 0 ? [NSString stringWithFormat:@"%d%%",progress] : (progress == -2 ? @"…" : @"");
-    NSString *stateText = s_status_sharing ? @"键鼠共享中" :
-        (s_status_connected ? @"已连接" : (disconnected ? @"已手动断开" : @"未连接"));
     if (progress >= 0) {
-        NSString *directionText = direction == HOP_XFER_DIR_SEND ? @"发送" : @"接收";
-        s_item.button.toolTip = [NSString stringWithFormat:@"HopDesk · 正在%@ · %d%%",directionText,progress];
-    } else if (progress == -2) s_item.button.toolTip = @"HopDesk · 正在准备传输";
-    else s_item.button.toolTip = [NSString stringWithFormat:@"HopDesk · %@",stateText];
+        char tip[128];
+        snprintf(tip, sizeof(tip), hop_tr(HOP_STR_TRAY_TIP_TRANSFER),
+                 hop_tr(direction == HOP_XFER_DIR_SEND ? HOP_STR_TRAY_DIR_SEND : HOP_STR_TRAY_DIR_RECV),
+                 progress);
+        s_item.button.toolTip = [NSString stringWithUTF8String:tip];
+    } else if (progress == -2) {
+        s_item.button.toolTip = [NSString stringWithUTF8String:hop_tr(HOP_STR_TRAY_TIP_PREPARING)];
+    } else {
+        hop_str_id tip_id = s_status_sharing ? HOP_STR_TRAY_TIP_SHARING :
+            (s_status_connected ? HOP_STR_TRAY_TIP_CONNECTED :
+             (disconnected ? HOP_STR_TRAY_TIP_DISCONNECTED : HOP_STR_TRAY_TIP_UNCONNECTED));
+        s_item.button.toolTip = [NSString stringWithUTF8String:hop_tr(tip_id)];
+    }
 }
 
 static void open_main_window(void) {
@@ -251,6 +273,7 @@ void statusbar_open_main(void) {
 
 static void statusbar_handle_click(NSEvent *event) {
     if (event && event.type == NSEventTypeRightMouseDown) {
+        refresh_menu_titles();
         if (s_menu && s_item.button) [NSMenu popUpContextMenu:s_menu withEvent:event forView:s_item.button];
         return;
     }
@@ -264,20 +287,26 @@ void statusbar_init(void) {
 
         s_ctrl = [[HopController alloc] init];
         const BOOL split = split_agent_is_active();
+        s_isSplit = split;
         if (split) app.delegate = s_ctrl;
 
         s_item = [[NSStatusBar systemStatusBar]
                   statusItemWithLength:NSVariableStatusItemLength];
 
+        NSArray<NSString *> *prefLangs = [NSLocale preferredLanguages];
+        hop_i18n_set_system_lang((prefLangs.firstObject && [prefLangs.firstObject hasPrefix:@"zh"])
+                                 ? HOP_LANG_ZH_CN : HOP_LANG_EN);
+        hop_i18n_set_lang(g_mac.cfg.ui_lang);
+
         s_menu = [[NSMenu alloc] init];
-        NSMenuItem *open = [[NSMenuItem alloc] initWithTitle:@"打开" action:@selector(doOpen:) keyEquivalent:@""];
-        open.target = s_ctrl; [s_menu addItem:open];
-        NSMenuItem *permissions = [[NSMenuItem alloc] initWithTitle:@"检查键鼠权限…" action:@selector(doInputPermissions:) keyEquivalent:@""];
-        permissions.target = s_ctrl; [s_menu addItem:permissions];
+        s_openItem = [[NSMenuItem alloc] initWithTitle:@"" action:@selector(doOpen:) keyEquivalent:@""];
+        s_openItem.target = s_ctrl; [s_menu addItem:s_openItem];
+        s_permItem = [[NSMenuItem alloc] initWithTitle:@"" action:@selector(doInputPermissions:) keyEquivalent:@""];
+        s_permItem.target = s_ctrl; [s_menu addItem:s_permItem];
         [s_menu addItem:[NSMenuItem separatorItem]];
-        NSString *quitTitle = split ? @"停止 HopDesk 后台" : @"退出";
-        NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:quitTitle action:@selector(doQuit:) keyEquivalent:@"q"];
-        quit.target = s_ctrl; [s_menu addItem:quit];
+        s_quitItem = [[NSMenuItem alloc] initWithTitle:@"" action:@selector(doQuit:) keyEquivalent:@"q"];
+        s_quitItem.target = s_ctrl; [s_menu addItem:s_quitItem];
+        refresh_menu_titles();
 
         /* Left click opens the main window; right click opens the context menu. */
         s_item.button.target = s_ctrl;

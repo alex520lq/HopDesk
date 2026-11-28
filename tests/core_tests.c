@@ -806,12 +806,13 @@ static void test_display_catalog_helpers(void) {
     CHECK(hop_display_input_find_preset(0x1Bu) == 4);
     CHECK(hop_display_input_find_preset(0xD0u) == -1);
 
+    hop_i18n_set_lang(HOP_LANG_ZH_CN);
     hop_display_input_format_label(0x0Fu, buf, sizeof(buf));
     CHECK(strstr(buf, "DisplayPort 1") != NULL && strstr(buf, "0x0F") != NULL);
     hop_display_input_format_label(0x11u, buf, sizeof(buf));
     CHECK(strstr(buf, "HDMI 1") != NULL && strstr(buf, "0x11") != NULL);
     hop_display_input_format_label(0xD0u, buf, sizeof(buf));
-    CHECK(strstr(buf, "0xD0") != NULL);
+    CHECK(strstr(buf, "自定义") != NULL && strstr(buf, "0xD0") != NULL);
 
     hop_display_info info;
     memset(&info, 0, sizeof(info));
@@ -828,6 +829,14 @@ static void test_display_catalog_helpers(void) {
     CHECK(strstr(buf, "BenQ PD2700U") != NULL);
     CHECK(strstr(buf, "3840") != NULL && strstr(buf, "2160") != NULL);
     CHECK(strstr(buf, "DisplayPort 1") != NULL);
+    CHECK(strstr(buf, "右侧扩展屏") != NULL);
+
+    hop_i18n_set_lang(HOP_LANG_EN);
+    hop_display_input_format_label(0xD0u, buf, sizeof(buf));
+    CHECK(strstr(buf, "Custom") != NULL && strstr(buf, "0xD0") != NULL);
+    hop_display_format_monitor_label(&info, buf, sizeof(buf));
+    CHECK(strstr(buf, "Right Extended") != NULL);
+    hop_i18n_set_lang(HOP_LANG_AUTO);
 
     hop_display_mac_build_input_cmd(2, buf, sizeof(buf));
     CHECK(strcmp(buf, "m1ddc display 2 set input") == 0);
@@ -2301,6 +2310,39 @@ static void test_cli_engine(void) {
     remove(path);
 }
 
+static void test_i18n_translation_and_fallback(void) {
+    hop_i18n_set_lang(HOP_LANG_ZH_CN);
+    CHECK(hop_i18n_active_lang() == HOP_LANG_ZH_CN);
+    CHECK(strcmp(hop_tr(HOP_STR_NAV_OVERVIEW), "概览") == 0);
+    CHECK(strcmp(hop_tr(HOP_STR_AUDIO_DIR_SEND), "发送到对端") == 0);
+
+    hop_i18n_set_lang(HOP_LANG_EN);
+    CHECK(hop_i18n_active_lang() == HOP_LANG_EN);
+    CHECK(strcmp(hop_tr(HOP_STR_NAV_OVERVIEW), "Overview") == 0);
+    CHECK(strcmp(hop_tr(HOP_STR_AUDIO_DIR_SEND), "Send to Peer") == 0);
+
+    hop_i18n_set_system_lang(HOP_LANG_EN);
+    hop_i18n_set_lang(HOP_LANG_AUTO);
+    CHECK(hop_i18n_active_lang() == HOP_LANG_EN);
+    hop_i18n_set_system_lang(HOP_LANG_ZH_CN);
+    CHECK(hop_i18n_active_lang() == HOP_LANG_ZH_CN);
+    CHECK(strcmp(hop_tr(HOP_STR_COUNT), "") == 0);
+
+    hop_config cfg;
+    char err[128] = {0};
+    hop_config_defaults(&cfg);
+    CHECK(cfg.ui_lang == HOP_LANG_AUTO);
+    CHECK(hop_config_set_kv(&cfg, "ui_lang", "en", err, sizeof(err)) == 1);
+    CHECK(cfg.ui_lang == HOP_LANG_EN);
+    hop_runtime_apply_config(&cfg);
+    CHECK(hop_i18n_active_lang() == HOP_LANG_EN);
+    CHECK(hop_config_set_kv(&cfg, "ui_lang", "zh-CN", err, sizeof(err)) == 1);
+    CHECK(cfg.ui_lang == HOP_LANG_ZH_CN);
+    hop_runtime_apply_config(&cfg);
+    CHECK(hop_i18n_active_lang() == HOP_LANG_ZH_CN);
+    CHECK(hop_config_set_kv(&cfg, "ui_lang", "fr-FR", err, sizeof(err)) == -1);
+}
+
 int main(void) {
     hop_crc32_init();
 
@@ -2313,6 +2355,7 @@ int main(void) {
     RUN_TEST(test_dual_roles);
     RUN_TEST(test_display_switch);
     RUN_TEST(test_display_catalog_helpers);
+    RUN_TEST(test_i18n_translation_and_fallback);
     RUN_TEST(test_config_schema_and_runtime_apply);
     RUN_TEST(test_cli_engine);
     RUN_TEST(test_keymap);

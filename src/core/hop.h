@@ -227,6 +227,8 @@ typedef enum {
 
 typedef enum { HOP_ROLE_SERVER = 0, HOP_ROLE_CLIENT = 1 } hop_role;
 
+#include "i18n.h"
+
 typedef enum {
     HOP_THEME_SYSTEM = 0,
     HOP_THEME_LIGHT  = 1,
@@ -263,6 +265,7 @@ typedef struct {
     unsigned input_mode; /* local MOUSE/KEYBOARD provider capabilities; hot-synced with peer */
     unsigned audio_mode; /* local SEND/PLAY capabilities; hot-applied independently of role */
     int      ui_theme;   /* hop_ui_theme: 0=system, 1=light, 2=dark */
+    int      ui_lang;    /* hop_ui_lang: 0=auto, 1=zh-CN, 2=en */
     uint16_t port;
     uint16_t audio_port;           /* 音频通道端口（默认 24819） */
     char     token[HOP_TOKEN_MAX];

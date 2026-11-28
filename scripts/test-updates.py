@@ -112,7 +112,9 @@ with tempfile.TemporaryDirectory(prefix='hopdesk-updates-') as tmp:
     print('PASS: publisher rejects rollback, same-version mutation, cross-channel pollution, and extracts release notes')
 
     # Source-level contract checks supplement (not replace) native helper tests.
+    assert not (ROOT/'scripts/update-windows.ps1').read_bytes().startswith(b'\xef\xbb\xbf')
     win=(ROOT/'src/win/update.c').read_text(encoding='utf-8')
+    assert 'has_bom' in win
     assert win.index('hop_update_install_begin(xfer_busy)')<win.index('CreateProcessW(')
     after_spawn=win[win.index('    CloseHandle(pi.hThread);'):win.index('    return 1; /* admission')]
     assert 'prepared_ok' in after_spawn and 'PostMessageW(owner, WM_CLOSE' in after_spawn

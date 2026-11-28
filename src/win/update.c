@@ -333,9 +333,12 @@ static int apply_staged_installer(HWND owner, const wchar_t *archive, const char
         BYTE *bytes = size && size < 1024 * 1024 ? (BYTE *)malloc(size) : NULL;
         int ok = bytes && ReadFile(f, bytes, size, &read, NULL) && read == size;
         if (ok) {
-            SetFilePointer(f, 0, NULL, FILE_BEGIN);
-            BYTE bom[3] = {0xef, 0xbb, 0xbf};
-            ok = write_all(f, bom, 3) && write_all(f, bytes, size) && SetEndOfFile(f);
+            int has_bom = size >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf;
+            if (!has_bom) {
+                SetFilePointer(f, 0, NULL, FILE_BEGIN);
+                BYTE bom[3] = {0xef, 0xbb, 0xbf};
+                ok = write_all(f, bom, 3) && write_all(f, bytes, size) && SetEndOfFile(f);
+            }
         }
         free(bytes); if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
         if (!ok) { DeleteFileW(helper_run); RemoveDirectoryW(transaction); goto prepare_fail; }

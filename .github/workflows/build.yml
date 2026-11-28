@@ -268,7 +268,16 @@ jobs:
           } > release-assets/manifest.txt
           cp release-assets/manifest.txt "release-assets/$CHANNEL_FILE"
           if [ "$CHANNEL" = "stable" ]; then
-            cp release-assets/manifest.txt release-assets/latest.txt
+            {
+              echo "format=1"
+              echo "version=$VERSION"
+              echo "tag=$TAG"
+              echo "windows_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/$TAG/HopDesk-Windows.zip"
+              echo "windows_sha256=$WIN_SHA"
+              echo "macos_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/$TAG/HopDesk-macOS.zip"
+              echo "macos_sha256=$MAC_SHA"
+              echo "notes_url=https://github.com/alex520lq/HopDesk-Releases/releases/tag/$TAG"
+            } > release-assets/latest.txt
           fi
           {
             echo "channel=$CHANNEL"

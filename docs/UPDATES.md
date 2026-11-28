@@ -6,7 +6,7 @@
 
 - 源码与 CI：`alex520lq/HopDesk`（Private）
 - 更新包、更新日志与清单：`alex520lq/HopDesk-Releases`（Public）
-- 稳定版清单：`https://raw.githubusercontent.com/alex520lq/HopDesk-Releases/main/stable.txt`（同时同步 `latest.txt` 保持向后兼容）
+- 稳定版清单：`https://raw.githubusercontent.com/alex520lq/HopDesk-Releases/main/stable.txt`（`format=2`，同时向 `latest.txt` 写入兼容旧客户端的 `format=1` 清单）
 - 开发版清单：`https://raw.githubusercontent.com/alex520lq/HopDesk-Releases/main/dev.txt`
 
 ### 双通道与跨通道切换规则

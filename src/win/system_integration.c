@@ -8,11 +8,13 @@
 #include "../ui/hopdesk_ui.h"
 #include <shellapi.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
 
 static const wchar_t k_run_subkey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 static const wchar_t k_run_value[] = L"HopDesk";
+static LONG s_perm_uac_busy;
 
 void win_get_app_path(char *out, size_t cap) {
     if (!out || !cap) return;
@@ -84,38 +86,83 @@ int win_autostart_set_enabled(int enabled) {
     return ok;
 }
 
+typedef struct {
+    int action;
+    DWORD agent_pid;
+    HWND hwnd;
+    wchar_t exe[MAX_PATH];
+    wchar_t cfg[1024];
+} win_uac_job;
+
+static DWORD WINAPI uac_action_worker(LPVOID arg) {
+    win_uac_job *job = (win_uac_job *)arg;
+    if (job) {
+        if (job->action == HOPDESK_UI_PERM_ELEVATE) {
+            wchar_t args[1200] = {0};
+            if (job->cfg[0]) {
+                swprintf_s(args, ARRAYSIZE(args), L"--wait-pid %lu --config \"%ls\"",
+                           (unsigned long)job->agent_pid, job->cfg);
+            } else {
+                swprintf_s(args, ARRAYSIZE(args), L"--wait-pid %lu",
+                           (unsigned long)job->agent_pid);
+            }
+            HINSTANCE res = ShellExecuteW(NULL, L"runas", job->exe, args, NULL, SW_SHOWNORMAL);
+            if ((INT_PTR)res > 32) {
+                hop_log(HOP_LOG_INFO, "permission: elevated relaunch approved; closing standard instance");
+                if (job->hwnd) PostMessageW(job->hwnd, WM_CLOSE, 0, 0);
+            } else {
+                hop_log(HOP_LOG_WARN, "permission: elevated relaunch canceled or failed (%lld)",
+                        (long long)(INT_PTR)res);
+            }
+        } else if (job->action == HOPDESK_UI_PERM_FIREWALL_ALLOW) {
+            wchar_t args[MAX_PATH + 192] = {0};
+            swprintf_s(args, ARRAYSIZE(args),
+                       L"advfirewall firewall add rule name=\"HopDesk\" dir=in action=allow "
+                       L"program=\"%ls\" enable=yes profile=private,domain",
+                       job->exe);
+            HINSTANCE res = ShellExecuteW(NULL, L"runas", L"netsh.exe", args, NULL, SW_HIDE);
+            if ((INT_PTR)res > 32) {
+                hop_log(HOP_LOG_INFO, "permission: requested Windows Firewall allow rule via UAC");
+            } else {
+                hop_log(HOP_LOG_WARN, "permission: Windows Firewall rule request canceled or failed (%lld)",
+                        (long long)(INT_PTR)res);
+            }
+        }
+        free(job);
+    }
+    InterlockedExchange(&s_perm_uac_busy, 0);
+    return 0;
+}
+
 int win_permission_action(int action) {
     wchar_t exe[MAX_PATH] = {0};
     DWORD n = GetModuleFileNameW(NULL, exe, MAX_PATH);
     if (n == 0 || n >= MAX_PATH) return 0;
 
-    if (action == HOPDESK_UI_PERM_ELEVATE) {
-        if (win_is_elevated()) return 1;
-        wchar_t args[64] = {0};
-        swprintf_s(args, ARRAYSIZE(args), L"--wait-pid %lu", (unsigned long)GetCurrentProcessId());
-        HINSTANCE res = ShellExecuteW(NULL, L"runas", exe, args, NULL, SW_SHOWNORMAL);
-        if ((INT_PTR)res > 32) {
-            hop_log(HOP_LOG_INFO, "permission: elevated relaunch approved; closing standard instance");
-            if (g_app.hwnd) PostMessageW(g_app.hwnd, WM_CLOSE, 0, 0);
-            return 1;
+    if (action == HOPDESK_UI_PERM_ELEVATE || action == HOPDESK_UI_PERM_FIREWALL_ALLOW) {
+        if (action == HOPDESK_UI_PERM_ELEVATE && win_is_elevated()) return 1;
+        if (InterlockedCompareExchange(&s_perm_uac_busy, 1, 0) != 0) return 0;
+        win_uac_job *job = (win_uac_job *)calloc(1, sizeof(*job));
+        if (!job) {
+            InterlockedExchange(&s_perm_uac_busy, 0);
+            return 0;
         }
-        hop_log(HOP_LOG_WARN, "permission: elevated relaunch canceled or failed (%lld)", (long long)(INT_PTR)res);
-        return 0;
-    }
-
-    if (action == HOPDESK_UI_PERM_FIREWALL_ALLOW) {
-        wchar_t args[MAX_PATH + 192] = {0};
-        swprintf_s(args, ARRAYSIZE(args),
-                   L"advfirewall firewall add rule name=\"HopDesk\" dir=in action=allow "
-                   L"program=\"%ls\" enable=yes profile=private,domain",
-                   exe);
-        HINSTANCE res = ShellExecuteW(NULL, L"runas", L"netsh.exe", args, NULL, SW_HIDE);
-        if ((INT_PTR)res > 32) {
-            hop_log(HOP_LOG_INFO, "permission: requested Windows Firewall allow rule via UAC");
-            return 1;
+        job->action = action;
+        job->agent_pid = GetCurrentProcessId();
+        job->hwnd = g_app.hwnd;
+        wcscpy_s(job->exe, ARRAYSIZE(job->exe), exe);
+        if (g_app.config_path[0]) {
+            (void)MultiByteToWideChar(CP_UTF8, 0, g_app.config_path, -1,
+                                      job->cfg, (int)ARRAYSIZE(job->cfg));
         }
-        hop_log(HOP_LOG_WARN, "permission: Windows Firewall rule request canceled or failed (%lld)", (long long)(INT_PTR)res);
-        return 0;
+        HANDLE t = CreateThread(NULL, 0, uac_action_worker, job, 0, NULL);
+        if (!t) {
+            free(job);
+            InterlockedExchange(&s_perm_uac_busy, 0);
+            return 0;
+        }
+        CloseHandle(t);
+        return 1;
     }
 
     if (action == HOPDESK_UI_PERM_FIREWALL_OPEN) {

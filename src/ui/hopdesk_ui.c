@@ -382,16 +382,16 @@ static void trigger_permission_action(int action) {
             break;
         case HOPDESK_UI_PERM_ELEVATE:
             if (ok) {
-                ui_toast("正在以管理员身份重启", "UAC 授权已通过，正在切换到管理员实例…", CUI_TONE_SUCCESS);
+                ui_toast("请确认管理员授权", "已请求 Windows UAC 弹窗；点击「是」后将自动重启为管理员权限。", CUI_TONE_INFO);
             } else {
-                ui_toast("未启用管理员提权", "UAC 授权已取消或失败，当前仍以标准权限运行。", CUI_TONE_WARNING);
+                ui_toast("无法发起管理员提权", "请确认已有提权请求正在处理，或手动右键以管理员身份运行 HopDesk。", CUI_TONE_WARNING);
             }
             break;
         case HOPDESK_UI_PERM_FIREWALL_ALLOW:
-            ui_toast(ok ? "已提交防火墙放行规则" : "未添加防火墙规则",
-                ok ? "已请求为当前 HopDesk.exe 添加专用/域网络入站放行规则。"
-                   : "UAC 授权已取消或失败，可通过「打开防火墙设置」手动放行。",
-                ok ? CUI_TONE_SUCCESS : CUI_TONE_WARNING);
+            ui_toast(ok ? "请确认防火墙放行授权" : "无法发起防火墙放行",
+                ok ? "已请求 Windows UAC 弹窗；批准后将为当前 HopDesk.exe 添加专用/域网络入站放行规则。"
+                   : "请确认没有未完成的授权弹窗，或点击「打开防火墙设置」手动放行。",
+                ok ? CUI_TONE_INFO : CUI_TONE_WARNING);
             break;
         case HOPDESK_UI_PERM_FIREWALL_OPEN:
             if (!ok) ui_toast("无法打开防火墙设置", "请手动打开控制面板 → Windows Defender 防火墙。", CUI_TONE_WARNING);
@@ -1250,19 +1250,18 @@ static void draw_settings_connection_and_appearance(cui_ctx *ui) {
             }
             if (s_model.autostart_supported) {
                 bool autostart_on = s_model.autostart_enabled != 0;
+#ifdef _WIN32
+                const char *autostart_desc = "写入当前用户启动项（HKCU\\...\\Run），登录 Windows 后静默驻留托盘，无需管理员权限";
+#else
+                const char *autostart_desc = "通过用户级 LaunchAgent 在登录 macOS 后静默启动后台服务（退出当前会话不会中断）";
+#endif
                 cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 10) {
                     cui_row(ui, .width = CUI_FILL, .justify = CUI_JUSTIFY_BETWEEN, .align = CUI_ALIGN_CENTER) {
                         cui_heading(ui, "开机自启动", 3);
                         cui_badge_ex(ui, autostart_on ? "已开启" : "未开启",
                             &(cui_badge_opts){.tone = autostart_on ? CUI_TONE_SUCCESS : CUI_TONE_NEUTRAL, .dot = true});
                     }
-                    if (cui_switch(ui, "开机自动启动 HopDesk", &autostart_on,
-#ifdef _WIN32
-                        .description = "写入当前用户启动项（HKCU\\...\\Run），登录 Windows 后静默驻留托盘，无需管理员权限"
-#else
-                        .description = "通过用户级 LaunchAgent 在登录 macOS 后静默启动后台服务（退出当前会话不会中断）"
-#endif
-                        )) {
+                    if (cui_switch(ui, "开机自动启动 HopDesk", &autostart_on, .description = autostart_desc)) {
                         if (s_ops && s_ops->set_autostart) {
                             if (s_ops->set_autostart(autostart_on ? 1 : 0)) {
                                 s_model.autostart_enabled = autostart_on ? 1 : 0;

@@ -8,9 +8,10 @@
 #include "../core/xfer_task.h"
 #include "../core/xfer_task_history.h"
 #include "../core/xfer_status.h"
+#include "../core/update_controller.h"
 #include "xfer.h"
 
-#define SPLIT_IPC_VERSION 7u
+#define SPLIT_IPC_VERSION 8u
 #define SPLIT_IPC_ERROR 0x80000000u
 #define SPLIT_IPC_TIMEOUT_MS 200u
 #define SPLIT_IPC_MAX_PAYLOAD (16u * 1024u * 1024u)
@@ -21,8 +22,10 @@ typedef struct {
     int32_t audio_requested, audio_active, audio_unavailable;
     int32_t disconnected;
     int32_t local_input, peer_input, peer_audio, peer_caps_known;
+    int32_t protocol_mismatch;
     char peer_name[HOP_NAME_MAX];
     char display_status[192];
+    hop_update_snapshot update;
 } split_ipc_status;
 typedef struct {
     uint64_t id;
@@ -65,7 +68,8 @@ typedef enum {
     SPLIT_IPC_INPUT_MODE_SET,
     SPLIT_IPC_CONFIG_SAVE,
     SPLIT_IPC_CONFIG_RELOAD,
-    SPLIT_IPC_DISPLAY_ACTION
+    SPLIT_IPC_DISPLAY_ACTION,
+    SPLIT_IPC_UPDATE_ACTION
 } split_ipc_operation;
 
 /* The fixed-size header is in network byte order. Payloads are native structs

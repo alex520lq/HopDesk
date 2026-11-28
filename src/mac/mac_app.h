@@ -5,6 +5,7 @@
 #define MAC_APP_H
 
 #include "hop.h"
+#include "../core/update_controller.h"
 
 typedef struct {
     hop_config cfg; /* immutable after main startup; all threads read-only */
@@ -27,6 +28,7 @@ void net_request_stop(void);
 void net_request_reconnect(void); /* close current socket; background loop reconnects */
 void net_set_disconnected(int disconnected); /* pause/resume control & data link */
 int  net_is_disconnected(void);
+int  net_protocol_mismatch(void);
 void net_send_capabilities(unsigned takeover_mask);
 void net_apply_input_mode(unsigned mode, unsigned takeover_mask, int persist);
 unsigned net_get_input_mode(void);
@@ -81,6 +83,13 @@ void mac_display_enqueue(const uint8_t *p, uint32_t len);
 void disp_switch_shutdown(void);
 void disp_switch_status(char *out, size_t cap);
 void disp_set_input(uint16_t vcp);
+
+/* update.m */
+void mac_update_get_snapshot(hop_update_snapshot *out);
+void mac_update_check(int target_channel);
+void mac_update_download(void);
+void mac_update_apply(void);
+void mac_update_shutdown(void);
 
 /* statusbar.m */
 void statusbar_init(void);

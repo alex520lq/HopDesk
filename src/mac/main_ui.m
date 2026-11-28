@@ -24,6 +24,7 @@ static int s_ui_initialized;
 static int s_config_loaded;
 static int s_connected;
 static int s_sharing;
+static int s_update_applying_seen;
 static hop_config s_ui_config;
 static BOOL s_startupPermissionsChecked;
 
@@ -135,8 +136,16 @@ static void snapshot_model(hopdesk_ui_model *model,
         split_ui_refresh_connection(&connected, &sharing);
         s_connected = connected;
         s_sharing = sharing;
+        if (s_update_applying_seen && !split_ui_agent_connected()) {
+            main_ui_shutdown();
+            return;
+        }
     }
     split_ui_display_status(model->display_status, sizeof(model->display_status));
+    model->protocol_mismatch = split_ui_protocol_mismatch();
+    split_ui_get_update_snapshot(&model->update);
+    if (model->update.phase == HOP_UPDATE_APPLYING) s_update_applying_seen = 1;
+    else if (model->update.phase != HOP_UPDATE_IDLE) s_update_applying_seen = 0;
     model->connected = s_connected;
     model->sharing = s_sharing;
     model->data_connected = split_ui_data_connected();
@@ -323,8 +332,10 @@ static void display_action(int action) {
     }
 }
 
-static void check_updates(void) {
-    statusbar_check_updates();
+static void update_action(int action, int channel) {
+    if (action == HOP_UPDATE_ACTION_APPLY) s_update_applying_seen = 1;
+    (void)split_ui_update_action(action, channel);
+    hopdesk_ui_refresh();
 }
 
 static int load_logs(char *out, size_t capacity) {
@@ -445,7 +456,7 @@ static const hopdesk_ui_ops k_ui_ops = {
     reconnect_peer,
     disconnect_peer,
     display_action,
-    check_updates,
+    update_action,
     mac_request_accessibility_permission,
     load_logs,
     copy_text,

@@ -5,9 +5,12 @@ static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
     if (!c->authed && s->cfg.role==HOP_ROLE_CLIENT) {
         int ok;uint32_t w,h;hop_session_id session;
         if(type!=HOP_MSG_HELLO_ACK || !hop_hello_ack_decode(p,len,&ok,&w,&h,&session)||!ok){
-            hop_log(HOP_LOG_WARN,"net: control handshake rejected: invalid ACK or incompatible protocol");
+            hop_log(HOP_LOG_WARN,"net: control handshake rejected: invalid ACK or incompatible protocol (local ctrl v%d, xfer v%d)",
+                    HOP_CTRL_PROTO_VER, HOP_XFER_PROTO_VER);
+            InterlockedExchange(&s->protocol_mismatch, 1);
             c->rejected=1;shutdown(c->sock,SD_BOTH);return;
         }
+        InterlockedExchange(&s->protocol_mismatch, 0);
         EnterCriticalSection(&s->lock);
         if (WaitForSingleObject(s->stop, 0) == WAIT_OBJECT_0 ||
             InterlockedCompareExchange((LONG *)&s->disconnected, 0, 0)) {
@@ -26,9 +29,12 @@ static void on_message(void *user, uint8_t type, const uint8_t *p, uint32_t len)
     if (!c->authed) {
         hop_hello_msg hello;
         if (type != HOP_MSG_HELLO || !hop_hello_decode(p, len, &hello)) {
-            hop_log(HOP_LOG_WARN,"net: control handshake rejected: invalid HELLO or incompatible protocol");
+            hop_log(HOP_LOG_WARN,"net: control handshake rejected: invalid HELLO or incompatible protocol (local ctrl v%d, xfer v%d)",
+                    HOP_CTRL_PROTO_VER, HOP_XFER_PROTO_VER);
+            InterlockedExchange(&s->protocol_mismatch, 1);
             c->rejected = 1; shutdown(c->sock, SD_BOTH); return;
         }
+        InterlockedExchange(&s->protocol_mismatch, 0);
         if (!hop_token_matches(s->cfg.token, hello.token, hello.token_len)) {
             hop_log(HOP_LOG_WARN,"net: control handshake rejected: token mismatch");
             c->rejected = 1; shutdown(c->sock, SD_BOTH); return;

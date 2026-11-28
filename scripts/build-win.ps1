@@ -49,10 +49,20 @@ $cuiInc = Join-Path $cuiRoot 'include'
 $iconInc = Join-Path $root 'assets/appicon'
 $out = Join-Path $build 'hopdesk.exe'
 $version = $env:HOPDESK_VERSION
-if (-not $version) { $version = '0.5.0' }
-if ($version -notmatch '^[0-9]+[.][0-9]+[.][0-9]+$') { throw "Invalid HOPDESK_VERSION: $version" }
+if (-not $version) {
+    $versionFile = Join-Path $root 'VERSION'
+    if (Test-Path -LiteralPath $versionFile) {
+        $version = (Get-Content -LiteralPath $versionFile -Raw).Trim()
+    } else {
+        $version = '0.1.0'
+    }
+}
+if ($version -notmatch '^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-dev[.][1-9][0-9]*)?$') {
+    throw "Invalid HOPDESK_VERSION: $version"
+}
+$channel = if ($version -match '-dev[.]') { 'dev' } else { 'stable' }
 $versionHeader = Join-Path $build 'hop_version.h'
-$headerContent = '#define HOP_VERSION "' + $version + '"'
+$headerContent = "#define HOP_VERSION `"$version`"`n#define HOP_CHANNEL `"$channel`""
 Set-Content -LiteralPath $versionHeader -Value $headerContent -Encoding ascii
 $libs = 'ws2_32', 'dxva2', 'gdi32', 'shell32', 'user32', 'comctl32', 'winhttp', 'bcrypt', 'iphlpapi', 'ole32', 'uuid', 'mmdevapi', 'opengl32', 'imm32', 'dwmapi', 'comdlg32', 'advapi32'
 if ($Compiler -ne 'gcc') { $libs += 'd3d12', 'dxgi', 'd3dcompiler', 'dxguid' }

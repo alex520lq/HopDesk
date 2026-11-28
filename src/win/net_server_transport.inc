@@ -304,6 +304,9 @@ int net_server_listening(net_server *s) {
 int net_server_is_disconnected(net_server *s) {
     return s && InterlockedCompareExchange((LONG *)&s->disconnected, 0, 0) != 0;
 }
+int net_server_protocol_mismatch(net_server *s) {
+    return s && InterlockedCompareExchange((LONG *)&s->protocol_mismatch, 0, 0) != 0;
+}
 void net_server_set_disconnected(net_server *s, int disconnected) {
     if (!s) return;
     int pause = disconnected ? 1 : 0;

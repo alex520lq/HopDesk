@@ -40,6 +40,7 @@ void        net_server_drop(net_server *s);
 /* 手动断开并暂停监听/自动重连，传入 0 恢复连接 */
 void        net_server_set_disconnected(net_server *s, int disconnected);
 int         net_server_is_disconnected(net_server *s);
+int         net_server_protocol_mismatch(net_server *s);
 
 /* 给已连接的 socket 打开 TCP keepalive（控制通道与数据通道都用）。
  *

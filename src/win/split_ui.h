@@ -22,7 +22,7 @@ int win_split_retry(uint32_t batch, int index);
 int win_split_reconnect(void);
 int win_split_disconnect(void);
 int win_split_display(int action);
-int win_split_update(void);
+int win_split_update(int action, int channel);
 int win_split_set_theme(int ui_theme);
 int win_split_set_input_mode(unsigned input_mode);
 

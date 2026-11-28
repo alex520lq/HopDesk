@@ -1,89 +1,84 @@
-# HopDesk 自动更新与 Release 发布
+# HopDesk 自动更新与双通道 Release 发布
 
 ## 设计
 
-源码仓库 alex520lq/HopDesk 保持私有。桌面客户端不能安全地把私有仓库访问令牌内置在程序里，因此更新包和公开更新清单放在独立的公开仓库：
+源码仓库 `alex520lq/HopDesk` 保持私有。桌面客户端不能安全地把私有仓库访问令牌内置在程序里，因此更新包和公开更新清单放在独立的公开仓库：
 
-- 源码与 CI：alex520lq/HopDesk（Private）
-- 更新包与清单：alex520lq/HopDesk-Releases（Public）
-- 清单地址：https://raw.githubusercontent.com/alex520lq/HopDesk-Releases/main/latest.txt
+- 源码与 CI：`alex520lq/HopDesk`（Private）
+- 更新包、更新日志与清单：`alex520lq/HopDesk-Releases`（Public）
+- 稳定版清单：`https://raw.githubusercontent.com/alex520lq/HopDesk-Releases/main/stable.txt`（同时同步 `latest.txt` 保持向后兼容）
+- 开发版清单：`https://raw.githubusercontent.com/alex520lq/HopDesk-Releases/main/dev.txt`
 
-更新清单采用严格的 key=value 格式。客户端只接受固定 Release 仓库、固定资产路径、MAJOR.MINOR.PATCH 版本号和 64 位 SHA-256；不会执行清单中任意命令或任意下载地址。
+### 双通道与跨通道切换规则
+
+- **稳定版（`stable`）**：标签格式 `vMAJOR.MINOR.PATCH`（例如 `v0.1.0`、`v1.4.0`），发布为正式 GitHub Release，写入 `stable.txt` 与 `latest.txt`。
+- **开发版（`dev`）**：标签格式 `vMAJOR.MINOR.PATCH-dev.N`（例如 `v0.2.0-dev.1`、`v1.4.1-dev.1`），发布为 GitHub Pre-release，仅写入 `dev.txt`，绝不污染稳定版指针。
+- **同通道防回退**：在同一通道内只允许向更高版本升级（严格 SemVer 比较，`0.2.0-dev.1 < 0.2.0-dev.2 < 0.2.0`）。
+- **跨通道自由切换**：用户在客户端界面“设置 → 更新与日志”中选择另一个通道并点击“检查更新”时，允许双向切换——例如当前运行 `dev v1.4.1-dev.1` 可以直接切回 `stable v1.4.0`，或从 `stable v0.1.0` 切入 `dev v0.2.0-dev.1`。
+
+### 严格清单格式（`format=2`）
+
+```ini
+format=2
+channel=stable
+version=0.1.0
+tag=v0.1.0
+ctrl_proto=8
+xfer_proto=8
+windows_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v0.1.0/HopDesk-Windows.zip
+windows_sha256=<64-hex>
+macos_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v0.1.0/HopDesk-macOS.zip
+macos_sha256=<64-hex>
+notes_url=https://github.com/alex520lq/HopDesk-Releases/releases/tag/v0.1.0
+summary=<单行中文摘要>
+```
+
+客户端兼容旧版 `format=1` 清单（视作 `stable`），并严格校验通道与版本号匹配、固定 GitHub Release 路径、64 位 SHA-256 及协议版本号；任何未知键、重复键或篡改 URL 均拒绝。
 
 ## 一次性 GitHub 配置
 
 自动发布依赖一个公开 Release 仓库和一个最小权限的访问令牌：
 
-1. 在 GitHub 创建公开仓库 alex520lq/HopDesk-Releases，初始化 main 分支（例如勾选 Add a README）。该仓库只放发布包、Release 和 latest.txt，不要复制私有源码。
-2. 创建 Fine-grained personal access token，只授权 HopDesk-Releases 这一个仓库的 Contents: Read and write 权限。
-3. 打开私有源码仓库 HopDesk → Settings → Secrets and variables → Actions → New repository secret。
-4. 将 secret 命名为 HOPDESK_RELEASE_TOKEN，值填写上一步生成的 token。
+1. 在 GitHub 创建公开仓库 `alex520lq/HopDesk-Releases`，初始化 `main` 分支（勾选 Add a README）。该仓库只放发布包、Release 和清单，不复制私有源码。
+2. 创建 Fine-grained personal access token，只授权 `HopDesk-Releases` 这一个仓库的 `Contents: Read and write` 权限。
+3. 打开私有源码仓库 `HopDesk` → Settings → Secrets and variables → Actions → New repository secret。
+4. 将 secret 命名为 `HOPDESK_RELEASE_TOKEN`，值填写上一步生成的 token。
 
-没有公开 Release 仓库或缺少 secret 时，普通 PR/main 双平台构建仍可运行，但 tag 发布步骤会明确失败；客户端会显示暂时无法读取更新清单。
+没有公开 Release 仓库或缺少 secret 时，普通 PR/`main` 双平台构建仍可运行，但 tag 发布步骤会明确失败；客户端会提示暂时无法读取更新清单。
 
 ## 发布新版本
 
-版本必须使用 vMAJOR.MINOR.PATCH 格式，例如 v0.5.1：
+版本号以根目录 `VERSION` 为单一事实源，更新日志以 `CHANGELOG.md` 的 `## [v<version>]` 章节为准：
 
-1. 将准备发布的代码合并到私有仓库 main。
-2. 基于要发布的 main 提交创建并推送 tag：git tag v0.5.1 <commit>、git push origin v0.5.1。
-3. GitHub Actions 在 Windows 与 macOS runner 分别构建、运行核心/协议/TCP 测试并打包。
-4. 发布 job 计算两个 ZIP 的 SHA-256，生成 latest.txt，把两个平台安装包和清单发布到公开 Release 仓库，并更新其 main/latest.txt。
-5. 用户在 Windows 托盘或 macOS 菜单栏点击“检查更新…”，确认后下载、校验、安装并重新启动。
+1. 更新 `VERSION` 与 `CHANGELOG.md`，并将代码合并到 `main`。
+2. 基于目标 `main` 提交创建并推送 tag：
+   - 稳定版：`git tag v0.1.0 <commit> && git push origin v0.1.0`
+   - 开发版：`git tag v0.2.0-dev.1 <commit> && git push origin v0.2.0-dev.1`
+3. GitHub Actions 在 Windows（MSVC）与 macOS runner 分别构建、运行全部核心/协议/TCP/更新测试并打包。
+4. 发布 job 使用 `scripts/release_notes.py` 从 `CHANGELOG.md` 和 `src/core/hop.h` 提取更新日志、协议版本与摘要，生成 `format=2` 清单，发布到 `alex520lq/HopDesk-Releases`（`dev` 自动标记为 Pre-release），并按单调策略更新对应通道指针（`stable.txt` + `latest.txt` 或 `dev.txt`）。
 
-每个 tag 都是不可变的版本资产。发布 job 串行执行，上传资产前先检查已存在的同 tag 清单：只允许两个 ZIP 的哈希等字段完全一致的重跑；已存在但缺失清单、内容变化或查询失败时拒绝覆盖，需要人工核对或发布新版本号。
+每个 tag 都是不可变资产。重跑仅允许哈希等字段完全一致；通道指针按各自通道单调推进，且拒绝跨通道覆盖。
 
-公开 main/latest.txt 按数字版本比较，只向更高版本推进。旧 tag 晚完成或重跑可以保留历史 Release，但不会把更新入口降级；同版本清单变化及畸形现有清单失败关闭。公开 Release 仓库应只由该串行 job 写入清单，勿并行人工改写。
+## 界面内三段式更新流程（Windows & macOS 一致）
 
-## 客户端安装行为
+两端均由后台引擎统一持有更新状态机（共享 C Core `src/core/update_controller.c`），主窗口展示当前版本、通道和协议版本（`vX.Y.Z · 控制 vN / 数据 vN`）并与目标版本直观对比：
 
-### Windows
+1. **检查更新**：按所选通道异步拉取清单，展示目标版本、协议是否变更、是否为跨通道切换、更新摘要以及发布页链接。
+2. **下载更新**：后台流式下载安装包并显示实时进度，下载完成后自动校验 SHA-256。下载期间完全不中断正常键鼠/剪贴板/音频工作。
+3. **重启并安装更新**：用户主动点击后，关闭新传输准入并确认当前无活跃传输，再移交独立更新脚本完成替换、就绪回执验证（nonce + version + PID）及 5 秒存活观察；失败自动回滚并重启旧版本。
 
-- 使用 WinHTTP 通过 HTTPS 获取清单和 ZIP。
-- 下载时流式计算 SHA-256，限制包大小为 512 MB。
-- 只接受 GitHub 固定 Release 仓库的资产地址。
-- 独立 PowerShell 更新辅助程序先检查 ZIP 内文件名白名单，拒绝目录穿越和符号链接，并在目标目录准备临时 EXE。辅助程序回执准备成功后，旧进程才被要求退出；辅助程序启动后不再等待用户点击成功提示框。
-- 先写入同目录临时 EXE，再备份旧 EXE，替换失败时恢复备份；配置文件和日志不覆盖。
-- 启动新 EXE，等待与事务 nonce、预期版本及实际子进程 PID 绑定的 ready 回执，随后观察 5 秒。45 秒内未就绪、启动失败或观察期退出时，停止新进程、恢复并重启旧 EXE；只有确认后才删除备份。
+### macOS 固定签名保留与权限
 
-### macOS
+`scripts/update-macos.command` 在替换已安装的 `HopDesk.app` 前，会自动检测目标 App 的代码签名 designated requirement（`certificate leaf = H"<40位哈希>"`）。若已安装副本使用本机固定证书（例如 `HopDesk Local Signing`）或 Apple Developer ID 签名，更新脚本会自动使用同一证书对新 App 重签并执行 `codesign --verify --deep --strict`，从而在下载更新并自动重启后保留 macOS TCC 的辅助功能与输入监控权限。若旧副本仅为 ad-hoc 签名，则保持默认行为。
 
-- 使用 NSURLSession 异步获取清单和 ZIP，不阻塞菜单栏主线程。
-- 流式计算 SHA-256，并限制下载包大小为 512 MB。
-- 检查新 App 的 CFBundleIdentifier 必须是 com.hopdesk.app、CFBundleShortVersionString 等于目标版本，并运行 codesign --verify。
-- 独立脚本等待当前进程退出，在同一目录准备新 App，备份旧 App 后原子替换；失败时恢复备份。
-- 直接启动 bundle 内可执行文件以准确绑定 PID/环境；等待 45 秒内的 nonce/版本/PID 就绪回执及 5 秒存活观察，才删除旧 App。失败时终止新进程、恢复旧 App 并用 open 重启。~/Library/Application Support/HopDesk 中的配置和日志不会被替换。
+双进程模式（`--agent` + `--ui`）同样完整支持界面内三段式更新：更新动作通过本地 IPC 交由后台 Agent 执行，确认准备就绪后 Agent 安全退出交棒给更新脚本重启新版本，旧 UI 窗口同步自动关闭。
 
 ### 传输互斥与回执边界
 
-下载和用户确认期间不占用安装锁。真正安装前，两端统一关闭文件/图片提交和接收帧的新任务准入，再检查已有扫描预留、队列及发送/接收状态；任一忙碌则取消安装并恢复准入。已取得准入的扫描/提交/接收回调与安装切换互斥，避免“检查时空闲、下载后却截断新传输”。接收回调会等待忙碌探测结束：若因已有传输而拒绝安装，则继续处理该帧，不制造断线；只有已确定进入安装维护后收到新数据帧才会断开数据连接，交由原有重连/重试处理，不静默接收后丢弃。
-
-准备失败时旧进程继续运行；准备成功后辅助程序最多等待旧进程退出 60 秒。回执来自初始化完成后的 UI 定时器，证明该版本已进入事件循环，不证明双机连接、剪贴板权限或所有业务路径正常。回滚若因权限/磁盘错误也失败，会保留带事务后缀的 previous 备份，并记录恢复路径到临时目录的 HopDesk-update-error.log。
-
-新事务协议需要当前安装的程序与辅助脚本配套；首次采用本版本应完整安装包更新，不能仅替换 EXE 或混用旧辅助脚本。
+下载期间不占用安装锁。真正点击“重启并安装更新”时，两端统一调用 `hop_update_install_begin(xfer_busy)` 关闭新任务准入并检查活跃传输；若传输忙碌则保持已下载包就绪，用户可在传输结束后直接点击重启安装而无需重新下载。
 
 ## 回归验证
 
-- scripts/test-updates.py：真实共享 C 准入锁并发、回执版本/nonce/PID、清单防回退及同版本不可变测试；POSIX 下运行生产 macOS 脚本，使用 OS 命令替身并执行真实文件移动/子进程，覆盖正常、崩溃、无回执、错误 nonce、回执后早退、替换失败及旧进程不退出。
-- scripts/test-update-windows.ps1：在 Windows runner 编译真实 PE 夹具，用生产 powershell.exe 辅助程序验证正常启动、立即失败、错误 nonce、回执后早退的替换/回滚。接入 test-core.ps1；HA 传输测试同时链接新的共享准入模块。
-- 这些测试不替代 Windows/macOS 完整原生构建和真机更新验收；发布 job 的实际 GitHub 网络/凭据/重跑测试需单独验收，不因纯策略测试通过即视为发布成功。
-
-## 当前安全边界与发布前要求
-
-当前自动更新具备 HTTPS、固定来源校验、严格清单解析、SHA-256 完整性校验、受限 ZIP 内容、应用标识检查和失败回滚。但 SHA-256 与清单来自同一个公开 Release 服务，它不能抵御 Release 仓库账号或发布凭据被攻陷。
-
-当前 macOS 构建使用 ad-hoc code signing；当前 Windows 构建没有 Authenticode 签名。因此 codesign --verify 仅验证签名结构，不证明发布者身份。在向不受信任的外部用户公开分发前，必须配置 Windows Authenticode 证书、Apple Developer ID 签名与 notarization，并在更新器中固定/验证发布者身份。不得把当前 SHA-256 校验描述为独立的数字签名验证。
-
-当前安装方式是便携目录/用户目录更新。Windows 安装在受管理员保护的目录或 macOS 安装在不可写的 /Applications 时，更新可能因权限不足而失败；旧版本会保留，用户需将应用安装在当前用户可写的位置或手动处理权限。
-
-## macOS 权限与更新签名
-
-权限保存在 macOS 的 TCC 数据库中，不能通过复制 `hopdesk.conf` 或旧 App 目录转移。macOS 用代码的 designated requirement 识别是否为同一应用；ad-hoc 签名的身份绑定当前构建，新构建不能保证沿用旧授权。参考 Apple [TN3127: Inside Code Signing: Requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements)。
-
-- 启动时检查设备控制（辅助功能／事件投递）和输入监控，缺失时前台显示一次引导；显式点击权限入口可重复打开，不受启动提示去重影响。概览和设置页显示当前状态。
-- 双进程界面使用现有 IPC 状态中的后台权限；后台不弹窗。授权后重启后台，不能只重开窗口。普通模式需重启整个应用，以重新创建输入监听。
-- 当前 CI 仍为 ad-hoc 包。若系统设置中的 HopDesk 已开启却仍未授权，移除旧条目，重新添加当前安装路径的 App，再重启。避免交替运行不同安装目录中的副本。
-- 要让后续更新保持同一代码身份，发布构建需在 CI 配置同一 Apple Developer ID 签名身份，按现有 `HOPDESK_CODESIGN_IDENTITY` 传给构建脚本，并完成 notarization；私钥只放在受保护的签名环境或 CI secrets，不能提交到仓库。当前工作流没有导入证书，因此仅修改启动逻辑不能解决签名身份变化。
-- 本机已有固定证书的开发部署可使用 README 中的 `hopdesk-update-local --ci`。没有可用签名身份时，该工具不能代替证书；首次从 ad-hoc 迁移到固定身份仍需重新授权一次。
-
-定向回归：`python3 scripts/test-macos-input-permissions.py` 在 macOS 上编译执行提取的生产权限函数，以 OS／对话框替身覆盖启动去重、手动重开、后台权限来源和系统设置链接回退；不更改真实 TCC 授权，也不代表真实桌面授权验收。
+- `tests/core_tests.c`：`format=1`/`format=2` 清单解析、`-dev.N` SemVer 比较、同通道防回退、跨通道双向切换（含 `dev 1.4.1-dev.1 -> stable 1.4.0`）、`hop_update_snapshot` 状态机及 `update_channel` 配置项测试。
+- `scripts/test-updates.py`：共享准入锁、就绪回执、双通道发布策略防回退/防跨通道污染、`release_notes.py` 日志提取，以及 POSIX 下生产 `update-macos.command`（含 `-dev.1` 版本与固定证书重签保留）全路径回归。
+- `scripts/test-update-windows.ps1`：Windows runner 上编译真实 PE 夹具验证生产 `update-windows.ps1` 替换与回滚。

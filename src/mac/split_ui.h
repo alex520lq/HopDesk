@@ -34,6 +34,10 @@ void split_ui_get_capabilities(unsigned *local_input, unsigned *peer_input,
 void split_ui_reconnect(void);
 void split_ui_disconnect(void);
 void split_ui_display_status(char *out, size_t cap);
+int  split_ui_protocol_mismatch(void);
+void split_ui_get_update_snapshot(hop_update_snapshot *out);
+int  split_ui_update_action(int action, int channel);
+int  split_ui_agent_connected(void);
 int  split_ui_save_config(const hop_config *config);
 int  mac_cli_agent_get_status(void *ctx, hop_cli_status *out);
 int  mac_cli_agent_get_config(void *ctx, hop_config *out);

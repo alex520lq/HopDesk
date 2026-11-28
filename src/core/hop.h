@@ -13,7 +13,10 @@ extern "C" {
 #endif
 
 #ifndef HOP_VERSION
-#define HOP_VERSION        "0.5.0"
+#define HOP_VERSION        "0.1.0"
+#endif
+#ifndef HOP_CHANNEL
+#define HOP_CHANNEL        "stable"
 #endif
 #define HOP_DEFAULT_PORT   24817
 #define HOP_DATA_PORT      24818         /* 文件数据通道，与控制通道分离 */
@@ -231,6 +234,11 @@ typedef enum {
 } hop_ui_theme;
 
 typedef enum {
+    HOP_UPDATE_CHANNEL_STABLE = 0,
+    HOP_UPDATE_CHANNEL_DEV    = 1
+} hop_update_channel;
+
+typedef enum {
     HOP_MOD_TARGET_COMMAND = 0,
     HOP_MOD_TARGET_CONTROL = 1,
     HOP_MOD_TARGET_OPTION  = 2,
@@ -340,6 +348,7 @@ typedef struct {
     int      log_rotate_mb;        /* 日志轮转上限（MB） */
     int      io_deadline_ms;       /* IO 看门狗超时（ms） */
     int      update_check_enabled; /* 允许自动/常规更新检查（0/1） */
+    int      update_channel;       /* hop_update_channel: 0=stable, 1=dev */
 } hop_config;
 
 void hop_config_defaults(hop_config *c);

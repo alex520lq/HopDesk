@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <cui/cui.h>
 #include "../core/hop.h"
+#include "../core/update_controller.h"
 #include "../core/xfer_status.h"
 #include "../core/xfer_task.h"
 #include "../core/xfer_task_history.h"
@@ -50,6 +51,8 @@ typedef struct hopdesk_ui_model {
     unsigned peer_input_mode;
     unsigned peer_audio_mode;
     int peer_capabilities_known;
+    int protocol_mismatch;
+    hop_update_snapshot update;
 
     hop_xfer_status_pair transfer;
     hop_xfer_task_snapshot tasks[HOPDESK_UI_TASK_CAP];
@@ -84,7 +87,7 @@ typedef struct hopdesk_ui_ops {
     void (*reconnect)(void);
     void (*disconnect)(void);
     void (*display_action)(int action);
-    void (*check_updates)(void);
+    void (*update_action)(int action, int channel);
     void (*request_permissions)(void);
     int (*load_logs)(char *out, size_t capacity);
     int (*copy_text)(const char *utf8);

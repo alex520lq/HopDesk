@@ -639,11 +639,13 @@ int hop_cli_run(int argc, const char *const *argv, const hop_cli_ops *ops) {
         if (json) {
             cli_puts(ops, 0, "{\"ok\":true,\"version\":");
             json_str(ops, 0, HOP_VERSION);
+            cli_puts(ops, 0, ",\"channel\":");
+            json_str(ops, 0, HOP_CHANNEL);
             cli_printf(ops, 0, ",\"ctrl_proto\":%d,\"xfer_proto\":%d}\n",
                        HOP_CTRL_PROTO_VER, HOP_XFER_PROTO_VER);
         } else {
-            cli_printf(ops, 0, "HopDesk %s (ctrl v%d, xfer v%d)\n",
-                       HOP_VERSION, HOP_CTRL_PROTO_VER, HOP_XFER_PROTO_VER);
+            cli_printf(ops, 0, "HopDesk %s [%s] (ctrl v%d, xfer v%d)\n",
+                       HOP_VERSION, HOP_CHANNEL, HOP_CTRL_PROTO_VER, HOP_XFER_PROTO_VER);
         }
         return 0;
     }

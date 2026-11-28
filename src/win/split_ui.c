@@ -18,7 +18,7 @@
 #ifndef PIPE_REJECT_REMOTE_CLIENTS
 #define PIPE_REJECT_REMOTE_CLIENTS 0x00000008
 #endif
-#define WIN_SPLIT_VERSION 4u
+#define WIN_SPLIT_VERSION 5u
 #define WIN_SPLIT_IO_MS 1500u
 #define WIN_SPLIT_ACTION_MS 5000u
 #define WIN_SPLIT_ADDR_TTL_MS 10000u
@@ -175,6 +175,8 @@ static void agent_snapshot(hopdesk_ui_model *model,
     model->peer_input_mode = g_app.peer_input_mode;
     model->peer_audio_mode = g_app.peer_audio_mode;
     model->peer_capabilities_known = g_app.peer_capabilities_known;
+    model->protocol_mismatch = g_app.net ? net_server_protocol_mismatch(g_app.net) : 0;
+    update_get_snapshot(&model->update);
     model->permissions_known = 0;
     if (model->connected && g_app.peer_name[0])
         snprintf(model->peer_label, sizeof(model->peer_label), "%s", g_app.peer_name);
@@ -394,7 +396,20 @@ void win_split_agent_dispatch(void) {
             s_reply.result = win_ui_display_action(s_request.action) ? 1 : 0;
         }
         break;
-    case IPC_UPDATE: update_check_async(g_app.hwnd); s_reply.result = 1; break;
+    case IPC_UPDATE:
+        if (s_request.action == HOP_UPDATE_ACTION_DOWNLOAD) {
+            update_download_async(g_app.hwnd);
+            s_reply.result = 1;
+        } else if (s_request.action == HOP_UPDATE_ACTION_APPLY) {
+            update_apply_async(g_app.hwnd);
+            s_reply.result = 1;
+        } else {
+            int ch = s_request.index == HOP_UPDATE_CHANNEL_DEV
+                ? HOP_UPDATE_CHANNEL_DEV : HOP_UPDATE_CHANNEL_STABLE;
+            update_check_async(g_app.hwnd, ch);
+            s_reply.result = 1;
+        }
+        break;
     default: break;
     }
     InterlockedExchange(&s_pending, 0);
@@ -684,8 +699,9 @@ int win_split_display(int action) {
     ipc_request r = {0}; r.op = IPC_DISPLAY; r.action = action;
     return client_call(&r, NULL, 0, NULL);
 }
-int win_split_update(void) {
-    ipc_request r = {0}; r.op = IPC_UPDATE; return client_call(&r, NULL, 0, NULL);
+int win_split_update(int action, int channel) {
+    ipc_request r = {0}; r.op = IPC_UPDATE; r.action = action; r.index = channel;
+    return client_call(&r, NULL, 0, NULL);
 }
 int win_split_set_theme(int ui_theme) {
     ipc_request r = {0}; r.op = IPC_THEME; r.action = ui_theme;

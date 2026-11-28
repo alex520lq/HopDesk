@@ -476,8 +476,8 @@ typedef struct { int32_t count, total; } legacy_split_ipc_list;
 static uint32_t s_legacy_version;
 static int legacy_open_exchange(split_ipc_operation operation, const void *query,
                                 size_t query_size, uint64_t deadline, size_t *payload_size) {
-    static const uint32_t versions[3] = {5u, 3u, 2u};
-    for (size_t i = 0; i < 3; ++i) {
+    static const uint32_t versions[4] = {7u, 5u, 3u, 2u};
+    for (size_t i = 0; i < 4; ++i) {
         uint32_t version = versions[i];
         int fd = connect_agent(deadline);
         if (fd < 0) return -1;
@@ -507,7 +507,9 @@ static int legacy_agent_available(void) {
     int fd = legacy_open_exchange(SPLIT_IPC_STATUS, NULL, 0, deadline, &size);
     if (fd < 0) return 0;
     legacy_split_ipc_status status = {0};
-    int ok = (size == sizeof(status) || (s_legacy_version == 5 && size == 16 * sizeof(int32_t) + HOP_NAME_MAX)) &&
+    int ok = (size == sizeof(status) ||
+              (s_legacy_version == 5 && size == 16 * sizeof(int32_t) + HOP_NAME_MAX) ||
+              (s_legacy_version == 7 && size == 16 * sizeof(int32_t) + HOP_NAME_MAX + 192)) &&
         copy_socket(fd, &status, sizeof(status), 0, deadline);
     close(fd);
     return ok && status.pid > 0;
@@ -519,17 +521,17 @@ static int legacy_agent_has_active_tasks(void) {
     size_t size = 0;
     split_ipc_query query5 = {.capacity = HOP_TASK_MANAGER_MAX_LIVE};
     int fd = legacy_open_exchange(SPLIT_IPC_TASKS_GET,
-        s_legacy_version == 5 ? (void *)&query5 : (void *)&query,
-        s_legacy_version == 5 ? sizeof(query5) : sizeof(query), deadline, &size);
+        s_legacy_version >= 5 ? (void *)&query5 : (void *)&query,
+        s_legacy_version >= 5 ? sizeof(query5) : sizeof(query), deadline, &size);
     if (fd < 0 || size < sizeof(legacy_split_ipc_list)) {
         if (fd >= 0) close(fd);
         return -1;
     }
     legacy_split_ipc_list list = {0};
     int ok = copy_socket(fd, &list, sizeof(list), 0, deadline);
-    size_t header_size = s_legacy_version == 5 ? sizeof(split_ipc_list) : sizeof(list);
+    size_t header_size = s_legacy_version >= 5 ? sizeof(split_ipc_list) : sizeof(list);
     uint64_t revision;
-    if (ok && s_legacy_version == 5) ok = copy_socket(fd, &revision, sizeof(revision), 0, deadline);
+    if (ok && s_legacy_version >= 5) ok = copy_socket(fd, &revision, sizeof(revision), 0, deadline);
     if (!ok || list.count < 0 || list.total < list.count ||
         size != header_size + (size_t)list.count * sizeof(hop_xfer_task_snapshot)) {
         close(fd);
@@ -716,4 +718,34 @@ int split_ui_run(int start_agent) {
 void split_ui_display_status(char *out, size_t cap) {
     if (s_splitUI) snprintf(out, cap, "%s", s_agentAvailable ? s_status.display_status : "");
     else disp_switch_status(out, cap);
+}
+
+int split_ui_protocol_mismatch(void) {
+    return s_splitUI ? (s_agentAvailable && s_status.protocol_mismatch != 0) : net_protocol_mismatch();
+}
+
+int split_ui_agent_connected(void) {
+    return s_splitUI ? (s_agentAvailable != 0) : 1;
+}
+
+void split_ui_get_update_snapshot(hop_update_snapshot *out) {
+    if (!out) return;
+    if (s_splitUI) {
+        if (s_agentAvailable) *out = s_status.update;
+        else hop_update_snapshot_init(out, g_mac.cfg.update_channel);
+    } else {
+        mac_update_get_snapshot(out);
+    }
+}
+
+int split_ui_update_action(int act, int channel) {
+    int ch = channel == HOP_UPDATE_CHANNEL_DEV ? HOP_UPDATE_CHANNEL_DEV : HOP_UPDATE_CHANNEL_STABLE;
+    if (!s_splitUI) {
+        if (act == HOP_UPDATE_ACTION_DOWNLOAD) mac_update_download();
+        else if (act == HOP_UPDATE_ACTION_APPLY) mac_update_apply();
+        else mac_update_check(ch);
+        return 1;
+    }
+    split_ipc_query query = {.direction = act, .index = ch};
+    return action(SPLIT_IPC_UPDATE_ACTION, &query);
 }

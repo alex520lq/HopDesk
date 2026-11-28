@@ -22,6 +22,7 @@ int  mac_apply_hot_config(const hop_config *next);
 void net_loop_run(void);                 /* 连接 + 重连 + 接收（后台线程） */
 void net_loop_shutdown(void);             /* stop and join control workers */
 int  net_send(uint8_t type, const void *p, uint32_t len);
+int  net_send_session(const hop_session_id *expected, uint8_t type, const void *p, uint32_t len);
 void net_request_stop(void);
 void net_request_reconnect(void); /* close current socket; background loop reconnects */
 void net_set_disconnected(int disconnected); /* pause/resume control & data link */
@@ -72,6 +73,7 @@ void clipboard_apply_image(const uint8_t *bgra, int w, int h, int stride);
 
 /* display.c（阶段 4） */
 int disp_wake(int sec);
+void disp_wake_clear(void);
 void disp_sleep(void);
 int disp_switch_target(int target);
 void disp_switch_message(const uint8_t *p, uint32_t len);

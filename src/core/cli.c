@@ -152,7 +152,7 @@ static void print_help(const hop_cli_ops *ops) {
         "  hopdesk config reset [key ...] [--config <path>] [--no-live] [--json]\n"
         "  hopdesk config validate [--config <path>] [--strict] [--json]\n"
         "  hopdesk status [--json]\n"
-        "  hopdesk action <reconnect|disconnect|display-mac|display-win|display-wake|display-sleep|reload> [--json]\n"
+        "  hopdesk action <reconnect|disconnect|display-toggle|display-mac|display-win|display-wake|display-sleep|reload> [--json]\n"
         "  hopdesk --agent [--config <path>]\n"
         "  hopdesk version [--json]\n");
 }
@@ -589,6 +589,7 @@ static int cmd_action(const hop_cli_ops *ops, const char *name, int json) {
     }
     if (strcmp(name, "reconnect") == 0) act = HOP_CLI_ACTION_RECONNECT;
     else if (strcmp(name, "disconnect") == 0) act = HOP_CLI_ACTION_DISCONNECT;
+    else if (strcmp(name, "display-toggle") == 0) act = HOP_CLI_ACTION_DISPLAY_TOGGLE;
     else if (strcmp(name, "display-mac") == 0) act = HOP_CLI_ACTION_DISPLAY_MAC;
     else if (strcmp(name, "display-win") == 0) act = HOP_CLI_ACTION_DISPLAY_WIN;
     else if (strcmp(name, "display-wake") == 0) act = HOP_CLI_ACTION_DISPLAY_WAKE;

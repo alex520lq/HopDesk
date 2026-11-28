@@ -25,17 +25,40 @@ static void queue_clear_locked(void){
     while(s_qhead){control_item *n=s_qhead->next;free(s_qhead);s_qhead=n;}
     s_qtail=NULL;s_qcount=0;s_qbytes=0;
 }
+static int queue_admit_locked(uint8_t type, const void *payload, uint32_t len, int *reconnect) {
+    hop_queue_verdict verdict = hop_ctrl_queue_admit(type, s_qcount, s_qbytes, len);
+    if (verdict == HOP_Q_DROP) return 1;
+    if (verdict == HOP_Q_OVERFLOW) {
+        queue_clear_locked(); s_online = 0; *reconnect = 1; return 0;
+    }
+    control_item *m = malloc(sizeof(*m) + len);
+    if (!m) { *reconnect = 1; return 0; }
+    m->next = NULL; m->type = type; m->len = len; m->generation = s_generation;
+    if (len) memcpy(m->data, payload, len);
+    if (s_qtail) s_qtail->next = m; else s_qhead = m;
+    s_qtail = m; s_qcount++; s_qbytes += len;
+    pthread_cond_signal(&s_qcond);
+    return 1;
+}
+int net_send_session(const hop_session_id *expected, uint8_t type, const void *payload, uint32_t len) {
+    if (!expected || len > HOP_MAX_PAYLOAD || (len && !payload)) return 0;
+    int reconnect = 0;
+    pthread_mutex_lock(&s_qlock);
+    int ok = s_online && hop_session_matches(expected) &&
+             queue_admit_locked(type, payload, len, &reconnect);
+    pthread_mutex_unlock(&s_qlock);
+    if (reconnect) net_request_reconnect();
+    return ok;
+}
 int net_send(uint8_t type,const void *payload,uint32_t len){
     if(len>HOP_MAX_PAYLOAD || (len&&!payload))return 0;
+    int reconnect = 0;
     pthread_mutex_lock(&s_qlock);
     if(!s_online || (!hop_session_current(NULL)&&type!=HOP_MSG_HELLO)){pthread_mutex_unlock(&s_qlock);return 0;}
-    hop_queue_verdict verdict=hop_ctrl_queue_admit(type,s_qcount,s_qbytes,len);
-    if(verdict==HOP_Q_DROP){pthread_mutex_unlock(&s_qlock);return 1;}
-    if(verdict==HOP_Q_OVERFLOW){queue_clear_locked();s_online=0;pthread_mutex_unlock(&s_qlock);
-        net_request_reconnect();return 0;}
     if (type == HOP_MSG_MOUSE_MOVE && len == 4 && s_qtail &&
         s_qtail->type == type && s_qtail->len == 4 &&
-        s_qtail->generation == s_generation) {
+        s_qtail->generation == s_generation &&
+        hop_ctrl_queue_admit(type, s_qcount, s_qbytes, len) == HOP_Q_ADMIT) {
         int dx = (int16_t)hop_get_be16(payload) + (int16_t)hop_get_be16(s_qtail->data);
         int dy = (int16_t)hop_get_be16((const uint8_t *)payload + 2) +
                  (int16_t)hop_get_be16(s_qtail->data + 2);
@@ -46,11 +69,10 @@ int net_send(uint8_t type,const void *payload,uint32_t len){
             return 1;
         }
     }
-    control_item *m=malloc(sizeof(*m)+len);
-    if(!m){pthread_mutex_unlock(&s_qlock);net_request_reconnect();return 0;}
-    m->next=NULL;m->type=type;m->len=len;m->generation=s_generation;if(len)memcpy(m->data,payload,len);
-    if(s_qtail)s_qtail->next=m;else s_qhead=m;s_qtail=m;s_qcount++;s_qbytes+=len;
-    pthread_cond_signal(&s_qcond);pthread_mutex_unlock(&s_qlock);return 1;
+    int ok = queue_admit_locked(type, payload, len, &reconnect);
+    pthread_mutex_unlock(&s_qlock);
+    if (reconnect) net_request_reconnect();
+    return ok;
 }
 static void *control_sender(void *unused){
     (void)unused;

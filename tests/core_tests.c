@@ -1865,38 +1865,68 @@ static int test_cli_agent_action(void *ctx, hop_cli_action action) {
 }
 
 
-typedef struct { char steps[32], fail[16]; unsigned n; } display_case;
+typedef struct { char steps[32], fail[16]; unsigned n; int attach_fail_once; } display_case;
 static int display_step(display_case *c, char step) {
     c->steps[c->n++] = step; c->steps[c->n] = 0;
     return strchr(c->fail, step) == NULL;
 }
 static int display_wake(void *p) { return display_step(p, 'W'); }
-static int display_attach(void *p, int attach) { return display_step(p, attach ? 'A' : 'D'); }
+static void display_clear_wake(void *p) { (void)display_step(p, 'c'); }
+static int display_attach(void *p, int attach) {
+    display_case *c = (display_case *)p;
+    char step = attach ? 'A' : 'D';
+    c->steps[c->n++] = step; c->steps[c->n] = 0;
+    if (attach && c->attach_fail_once) { c->attach_fail_once = 0; return 0; }
+    return strchr(c->fail, step) == NULL;
+}
 static int display_local(void *p, int target) { return display_step(p, target ? 'M' : 'P'); }
 static int display_peer(void *p, int target) { return display_step(p, target ? 'm' : 'p'); }
+static int display_sleep(void *p) { return display_step(p, 's'); }
 static void test_display_switch(void) {
-    struct {int target; const char *fail, *steps; int result;} cases[] = {
-        {1,"","WAMD",HOP_DISPLAY_OK}, {0,"","AP",HOP_DISPLAY_OK},
-        {1,"W","W",HOP_DISPLAY_WAKE_FAILED},
-        {1,"A","WA",HOP_DISPLAY_ATTACH_FAILED},
-        {1,"M","WAMmD",HOP_DISPLAY_OK},
-        {1,"Mm","WAMmAP",HOP_DISPLAY_INPUT_FAILED},
-        {1,"D","WAMDAP",HOP_DISPLAY_DETACH_FAILED},
-        {1,"DP","WAMDAP",HOP_DISPLAY_ROLLBACK_FAILED},
-        {0,"P","APp",HOP_DISPLAY_OK},
-        {0,"Pp","APp",HOP_DISPLAY_INPUT_FAILED}
+    struct {int target; int use_sleep; int attach_once; const char *fail, *steps; int result;} cases[] = {
+        {1,0,0,"","WAMD",HOP_DISPLAY_OK},
+        {0,0,0,"","APc",HOP_DISPLAY_OK},
+        {1,0,0,"W","W",HOP_DISPLAY_WAKE_FAILED},
+        {1,0,0,"A","WA",HOP_DISPLAY_ATTACH_FAILED},
+        {1,0,0,"M","WAMmD",HOP_DISPLAY_OK},
+        {1,0,0,"Mm","WAMmAP",HOP_DISPLAY_INPUT_FAILED},
+        {1,0,0,"D","WAMDAP",HOP_DISPLAY_DETACH_FAILED},
+        {1,0,0,"DP","WAMDAP",HOP_DISPLAY_ROLLBACK_FAILED},
+        {0,0,0,"P","APpc",HOP_DISPLAY_OK},
+        {0,0,0,"Pp","APp",HOP_DISPLAY_INPUT_FAILED},
+        {0,1,0,"Pp","APpsc",HOP_DISPLAY_OK},
+        {0,1,0,"Pps","APps",HOP_DISPLAY_INPUT_FAILED},
+        {0,0,1,"","ApAPc",HOP_DISPLAY_OK},
+        {0,0,0,"A","ApA",HOP_DISPLAY_ATTACH_FAILED}
     };
     for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); ++i) {
-        display_case c = {{0},{0},0};
+        display_case c = {{0},{0},0,cases[i].attach_once};
         snprintf(c.fail,sizeof(c.fail),"%s",cases[i].fail);
-        hop_display_ops ops = {&c,display_wake,display_local,display_peer,display_attach};
+        hop_display_ops ops = {
+            &c, display_wake, display_clear_wake, display_local, display_peer,
+            cases[i].use_sleep ? display_sleep : NULL, display_attach
+        };
         CHECK(hop_display_switch_run(cases[i].target,&ops) == cases[i].result);
         CHECK(!strcmp(c.steps,cases[i].steps));
     }
+    /* Reality-based AUTO direction resolution */
+    CHECK(hop_display_resolve_target(HOP_DISPLAY_MAC, 0, -1, 0x11) == HOP_DISPLAY_MAC);
+    CHECK(hop_display_resolve_target(HOP_DISPLAY_WINDOWS, 1, 0x0F, 0x11) == HOP_DISPLAY_WINDOWS);
+    CHECK(hop_display_resolve_target(HOP_DISPLAY_AUTO, 0, -1, 0x11) == HOP_DISPLAY_WINDOWS);
+    CHECK(hop_display_resolve_target(HOP_DISPLAY_AUTO, 1, 0x11, 0x11) == HOP_DISPLAY_WINDOWS);
+    CHECK(hop_display_resolve_target(HOP_DISPLAY_AUTO, 1, 0x0F11, 0x11) == HOP_DISPLAY_WINDOWS);
+    CHECK(hop_display_resolve_target(HOP_DISPLAY_AUTO, 1, 0x0F, 0x11) == HOP_DISPLAY_MAC);
+    CHECK(hop_display_resolve_target(HOP_DISPLAY_AUTO, 1, -1, 0x11) == HOP_DISPLAY_MAC);
+
     hop_display_msg messages[] = {
         {HOP_DISPLAY_REQUEST,0,0,HOP_DISPLAY_MAC},
-        {HOP_DISPLAY_WAKE,0,123,60}, {HOP_DISPLAY_INPUT,0,124,17},
-        {HOP_DISPLAY_RESULT,1,124,0}, {HOP_DISPLAY_COMPLETE,1,0,1}
+        {HOP_DISPLAY_REQUEST,0,0,HOP_DISPLAY_AUTO},
+        {HOP_DISPLAY_WAKE,0,123,1800},
+        {HOP_DISPLAY_WAKE_CLEAR,0,0,0},
+        {HOP_DISPLAY_INPUT,0,124,17},
+        {HOP_DISPLAY_SLEEP,0,125,0},
+        {HOP_DISPLAY_RESULT,1,124,0},
+        {HOP_DISPLAY_COMPLETE,1,0,HOP_DISPLAY_AUTO}
     };
     for (size_t i=0;i<sizeof(messages)/sizeof(messages[0]);++i) {
         uint8_t wire[HOP_DISPLAY_WIRE_SIZE]; hop_display_msg decoded;
@@ -1912,14 +1942,41 @@ static void test_display_switch(void) {
     CHECK(!hop_display_encode(wire,&bad));
     bad.id=1;bad.value=3601;CHECK(!hop_display_encode(wire,&bad));
     bad.op=HOP_DISPLAY_INPUT;bad.value=65536;CHECK(!hop_display_encode(wire,&bad));
-    bad.op=HOP_DISPLAY_REQUEST;bad.id=0;bad.value=2;CHECK(!hop_display_encode(wire,&bad));
+    bad.op=HOP_DISPLAY_REQUEST;bad.id=0;bad.value=3;CHECK(!hop_display_encode(wire,&bad));
     bad.op=HOP_DISPLAY_RESULT;bad.id=1;bad.value=0;bad.ok=2;CHECK(!hop_display_encode(wire,&bad));
+    bad.op=HOP_DISPLAY_WAKE_CLEAR;bad.id=1;bad.value=0;bad.ok=0;CHECK(!hop_display_encode(wire,&bad));
+    bad.op=HOP_DISPLAY_SLEEP;bad.id=0;bad.value=0;bad.ok=0;CHECK(!hop_display_encode(wire,&bad));
     hop_config cfg;hop_config_defaults(&cfg);char err[128];
     CHECK(cfg.disp_shared==0 && cfg.disp_device[0]==0);
+    CHECK(cfg.disp_ddc_retries==3 && cfg.disp_verify_timeout_ms==8000 &&
+          cfg.disp_poll_ms==200 && cfg.disp_wake_settle_ms==300 &&
+          cfg.disp_wake_timeout_ms==10000 && cfg.disp_sleep_fallback==0);
     CHECK(hop_config_set_kv(&cfg,"disp_shared","true",err,sizeof(err))==1);
     CHECK(hop_config_set_kv(&cfg,"disp_device","\\\\.\\DISPLAY2",err,sizeof(err))==1);
-    CHECK(cfg.disp_shared==1 && !strcmp(cfg.disp_device,"\\\\.\\DISPLAY2"));
+    CHECK(hop_config_set_kv(&cfg,"disp_ddc_retries","5",err,sizeof(err))==1);
+    CHECK(hop_config_set_kv(&cfg,"disp_verify_timeout_ms","10000",err,sizeof(err))==1);
+    CHECK(hop_config_set_kv(&cfg,"disp_poll_ms","250",err,sizeof(err))==1);
+    CHECK(hop_config_set_kv(&cfg,"disp_wake_settle_ms","350",err,sizeof(err))==1);
+    CHECK(hop_config_set_kv(&cfg,"disp_wake_timeout_ms","12000",err,sizeof(err))==1);
+    CHECK(hop_config_set_kv(&cfg,"disp_sleep_fallback","true",err,sizeof(err))==1);
+    CHECK(cfg.disp_shared==1 && !strcmp(cfg.disp_device,"\\\\.\\DISPLAY2") &&
+          cfg.disp_ddc_retries==5 && cfg.disp_verify_timeout_ms==10000 &&
+          cfg.disp_poll_ms==250 && cfg.disp_wake_settle_ms==350 &&
+          cfg.disp_wake_timeout_ms==12000 && cfg.disp_sleep_fallback==1);
     CHECK(hop_config_validate(&cfg,0,err,sizeof(err)));
+    CHECK(hop_config_set_kv(&cfg,"disp_ddc_retries","0",err,sizeof(err))==-1);
+    CHECK(hop_config_set_kv(&cfg,"disp_poll_ms","10",err,sizeof(err))==-1);
+    CHECK(hop_config_set_kv(&cfg,"disp_verify_timeout_ms","500",err,sizeof(err))==-1);
+    CHECK(hop_config_set_kv(&cfg,"disp_wake_timeout_ms","500",err,sizeof(err))==-1);
+    {
+        test_cli_capture cap; memset(&cap, 0, sizeof(cap)); cap.agent_running = 1;
+        hop_cli_ops cops; memset(&cops, 0, sizeof(cops));
+        cops.io_ctx = &cap; cops.write_out = test_cli_write_out; cops.write_err = test_cli_write_err;
+        cops.agent_action = test_cli_agent_action;
+        const char *argv[] = {"hopdesk", "action", "display-toggle", "--json"};
+        CHECK(hop_cli_run(4, argv, &cops) == 0);
+        CHECK(cap.action_calls == 1 && cap.last_action == HOP_CLI_ACTION_DISPLAY_TOGGLE);
+    }
     cfg.disp_win_input=cfg.disp_mac_input;CHECK(!hop_config_validate(&cfg,0,err,sizeof(err)));
     cfg.disp_win_input=15;
     CHECK(hop_config_set_kv(&cfg,"disp_device","DISPLAY2",err,sizeof(err))==1);

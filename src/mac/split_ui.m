@@ -228,6 +228,10 @@ int mac_cli_agent_action(void *ctx, hop_cli_action act) {
             q.index = HOPDESK_UI_DISPLAY_TO_WINDOWS;
             ok = exchange_payload(SPLIT_IPC_DISPLAY_ACTION, &q, sizeof(q), &res, sizeof(res), &reached);
             break;
+        case HOP_CLI_ACTION_DISPLAY_TOGGLE:
+            q.index = HOPDESK_UI_DISPLAY_TOGGLE;
+            ok = exchange_payload(SPLIT_IPC_DISPLAY_ACTION, &q, sizeof(q), &res, sizeof(res), &reached);
+            break;
         case HOP_CLI_ACTION_DISPLAY_WAKE:
             q.index = HOPDESK_UI_DISPLAY_WAKE;
             ok = exchange_payload(SPLIT_IPC_DISPLAY_ACTION, &q, sizeof(q), &res, sizeof(res), &reached);

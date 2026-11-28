@@ -8,6 +8,7 @@
 #include "main_ui.h"
 #include "split_ui.h"
 #include "../core/cli.h"
+#include "../core/display_switch.h"
 #include "../core/update_state.h"
 #include "../platform/audio_link.h"
 #include "../ui/hopdesk_ui.h"
@@ -233,12 +234,12 @@ static void on_recv(hop_recv *r) {
 
 /* 切到 Mac 显示：先让 Mac 醒，再切显示器输入源。
  * 两步之间必须留时间 —— 输入源一切走，Windows 就看不到画面了。 */
-static void disp_switch_to_mac(void) {
-    if (g_app.cfg.disp_shared) { (void)shared_display_start(1); return; }
+static int disp_switch_to_mac(void) {
+    if (g_app.cfg.disp_shared) return shared_display_start(HOP_DISPLAY_MAC);
     uint8_t p[4];
     if (!net_server_has_client(g_app.net)) {
         hop_log(HOP_LOG_WARN, "no client, cannot switch display");
-        return;
+        return 0;
     }
     hop_put_be32(p, (uint32_t)g_app.cfg.disp_wake_sec);
     net_server_send(g_app.net, HOP_MSG_DISP_WAKE, p, 4);
@@ -246,11 +247,12 @@ static void disp_switch_to_mac(void) {
     UINT wake_delay = g_app.cfg.disp_wake_delay_ms >= 0
         ? (UINT)g_app.cfg.disp_wake_delay_ms : (UINT)DISP_WAKE_DELAY_MS;
     SetTimer(g_app.hwnd, IDT_DISP, wake_delay, NULL);
+    return 1;
 }
 
 /* 切回 Windows 显示：让 Mac 把输入源切回来；Mac 不可达就本机 DDC 硬切 */
-static void disp_switch_to_win(void) {
-    if (g_app.cfg.disp_shared) { (void)shared_display_start(0); return; }
+static int disp_switch_to_win(void) {
+    if (g_app.cfg.disp_shared) return shared_display_start(HOP_DISPLAY_WINDOWS);
     uint8_t p[2];
     hop_put_be16(p, g_app.cfg.disp_win_input);
     if (!net_server_send(g_app.net, HOP_MSG_DISP_INPUT, p, 2)) {
@@ -258,34 +260,45 @@ static void disp_switch_to_win(void) {
         disp_set_input(g_app.cfg.disp_win_input);
     }
     capture_set_sharing(0);
+    return 1;
 }
 
-static void disp_wake_mac(void) {
+static int disp_switch_toggle(void) {
+    if (!g_app.cfg.disp_shared) {
+        hop_log(HOP_LOG_WARN, "display: one-key toggle requires disp_shared=true");
+        return 0;
+    }
+    return shared_display_start(HOP_DISPLAY_AUTO);
+}
+
+static int disp_wake_mac(void) {
     uint8_t p[4];
     if (!net_server_has_client(g_app.net)) {
         hop_log(HOP_LOG_WARN, "no client, cannot wake display");
-        return;
+        return 0;
     }
     hop_put_be32(p, (uint32_t)g_app.cfg.disp_wake_sec);
-    net_server_send(g_app.net, HOP_MSG_DISP_WAKE, p, 4);
+    return net_server_send(g_app.net, HOP_MSG_DISP_WAKE, p, 4);
 }
 
-static void disp_sleep_mac(void) {
-    net_server_send(g_app.net, HOP_MSG_DISP_SLEEP, NULL, 0);
+static int disp_sleep_mac(void) {
+    int ok = net_server_send(g_app.net, HOP_MSG_DISP_SLEEP, NULL, 0);
     capture_set_sharing(0);
+    return ok;
 }
 
-void win_ui_display_action(int action) {
+int win_ui_display_action(int action) {
     if (shared_display_busy()) {
         hop_log(HOP_LOG_WARN, "display: switch in progress; retry after completion");
-        return;
+        return 0;
     }
     switch (action) {
-        case HOPDESK_UI_DISPLAY_TO_MAC: disp_switch_to_mac(); break;
-        case HOPDESK_UI_DISPLAY_TO_WINDOWS: disp_switch_to_win(); break;
-        case HOPDESK_UI_DISPLAY_WAKE: disp_wake_mac(); break;
-        case HOPDESK_UI_DISPLAY_SLEEP: disp_sleep_mac(); break;
-        default: break;
+        case HOPDESK_UI_DISPLAY_TO_MAC: return disp_switch_to_mac();
+        case HOPDESK_UI_DISPLAY_TO_WINDOWS: return disp_switch_to_win();
+        case HOPDESK_UI_DISPLAY_TOGGLE: return disp_switch_toggle();
+        case HOPDESK_UI_DISPLAY_WAKE: return disp_wake_mac();
+        case HOPDESK_UI_DISPLAY_SLEEP: return disp_sleep_mac();
+        default: return 0;
     }
 }
 
@@ -352,13 +365,14 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 case 1091: DestroyWindow(h); return 0;
                 case 1001: capture_force_toggle(); return 0;
                 case 1002: DestroyWindow(h); return 0;
-                case 1003: disp_switch_to_mac(); return 0;
-                case 1004: disp_switch_to_win(); return 0;
-                case 1005: disp_sleep_mac(); return 0;
+                case 1003: (void)win_ui_display_action(HOPDESK_UI_DISPLAY_TO_MAC); return 0;
+                case 1004: (void)win_ui_display_action(HOPDESK_UI_DISPLAY_TO_WINDOWS); return 0;
+                case 1005: (void)win_ui_display_action(HOPDESK_UI_DISPLAY_SLEEP); return 0;
                 case 1006: xfer_cancel(); return 0;
                 case 1007: ui_show_transfers(&g_app); return 0;
                 case 1008: update_check_async(g_app.hwnd); return 0;
-                case 1009: disp_wake_mac(); return 0;
+                case 1009: (void)win_ui_display_action(HOPDESK_UI_DISPLAY_WAKE); return 0;
+                case 1010: (void)win_ui_display_action(HOPDESK_UI_DISPLAY_TOGGLE); return 0;
             }
             break;
         case WM_DESTROY:

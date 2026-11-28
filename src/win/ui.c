@@ -12,6 +12,7 @@
 #include <string.h>
 #include <wchar.h>
 
+#define IDM_DISPLAY_TOGGLE 1010
 #define IDM_OPEN_MAIN 1090
 #define IDM_EXIT_APP  1091
 
@@ -214,6 +215,8 @@ void ui_show_menu(win_app *app) {
     POINT pt; GetCursorPos(&pt);
     HMENU menu=CreatePopupMenu();
     AppendMenuW(menu,MF_STRING,IDM_OPEN_MAIN,L"打开");
+    if (app->cfg.disp_shared)
+        AppendMenuW(menu,MF_STRING,IDM_DISPLAY_TOGGLE,L"一键切换显示器");
     AppendMenuW(menu,MF_SEPARATOR,0,NULL);
     AppendMenuW(menu,MF_STRING,IDM_EXIT_APP,L"退出");
     SetForegroundWindow(app->hwnd);

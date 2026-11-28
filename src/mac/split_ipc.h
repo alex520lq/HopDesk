@@ -10,7 +10,7 @@
 #include "../core/xfer_status.h"
 #include "xfer.h"
 
-#define SPLIT_IPC_VERSION 6u
+#define SPLIT_IPC_VERSION 7u
 #define SPLIT_IPC_ERROR 0x80000000u
 #define SPLIT_IPC_TIMEOUT_MS 200u
 #define SPLIT_IPC_MAX_PAYLOAD (16u * 1024u * 1024u)

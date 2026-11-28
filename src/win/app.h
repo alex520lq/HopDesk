@@ -96,7 +96,9 @@ void clip_apply_remote_image(const uint8_t *bgra, int w, int h, int stride);
 int disp_set_input(uint16_t vcp);      /* DDC/CI 0x60 写输入源 */
 int disp_get_input(uint16_t *out);     /* 读当前输入源，用于日志/排错 */
 
-int disp_input_verified(const wchar_t *device, uint16_t vcp);
+int disp_input_read(const wchar_t *device, uint16_t *out);
+int disp_input_verified(const wchar_t *device, uint16_t vcp,
+                        int retries, int timeout_ms, int poll_ms);
 int disp_input_busy(void);
 int disp_input_matches(const wchar_t *device, uint16_t vcp);
 int shared_display_start(int target); /* main-thread admission; immutable config snapshot */
@@ -118,7 +120,7 @@ void main_ui_show_page(int page);
 void main_ui_refresh(void);
 void main_ui_shutdown(void);
 void ui_transfer_poll(void);
-void win_ui_display_action(int action);
+int  win_ui_display_action(int action);
 void ui_notify_paste_ready(void);
 
 #endif

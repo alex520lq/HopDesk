@@ -289,7 +289,8 @@ static void serve(int fd) {
         switch (query.index) {
             case HOPDESK_UI_DISPLAY_TO_MAC:     result.result = disp_switch_target(1); break;
             case HOPDESK_UI_DISPLAY_TO_WINDOWS: result.result = disp_switch_target(0); break;
-            case HOPDESK_UI_DISPLAY_WAKE:       disp_wake(g_mac.cfg.disp_wake_sec); result.result = 1; break;
+            case HOPDESK_UI_DISPLAY_TOGGLE:     result.result = disp_switch_target(2); break;
+            case HOPDESK_UI_DISPLAY_WAKE:       result.result = disp_wake(g_mac.cfg.disp_wake_sec); break;
             case HOPDESK_UI_DISPLAY_SLEEP:      disp_sleep(); result.result = 1; break;
             default: break;
         }

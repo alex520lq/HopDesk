@@ -119,7 +119,7 @@ static int retry_file(uint32_t batch, int index) {
 }
 static void reconnect_peer(void) { (void)win_split_reconnect(); s_last_snapshot = 0; }
 static void disconnect_peer(void) { (void)win_split_disconnect(); s_last_snapshot = 0; }
-static void display_action(int action) { (void)win_split_display(action); }
+static void display_action(int action) { (void)win_split_display(action); s_last_snapshot = 0; }
 static void check_updates(void) { (void)win_split_update(); }
 static void set_input_mode(unsigned input_mode) {
     s_ui_config.input_mode = input_mode & HOP_INPUT_MODES;

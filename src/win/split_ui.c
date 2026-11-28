@@ -18,7 +18,7 @@
 #ifndef PIPE_REJECT_REMOTE_CLIENTS
 #define PIPE_REJECT_REMOTE_CLIENTS 0x00000008
 #endif
-#define WIN_SPLIT_VERSION 3u
+#define WIN_SPLIT_VERSION 4u
 #define WIN_SPLIT_IO_MS 1500u
 #define WIN_SPLIT_ACTION_MS 5000u
 #define WIN_SPLIT_ADDR_TTL_MS 10000u
@@ -390,9 +390,8 @@ void win_split_agent_dispatch(void) {
         break;
     case IPC_DISPLAY:
         if (s_request.action >= HOPDESK_UI_DISPLAY_TO_MAC &&
-            s_request.action <= HOPDESK_UI_DISPLAY_SLEEP) {
-            win_ui_display_action(s_request.action);
-            s_reply.result = 1;
+            s_request.action <= HOPDESK_UI_DISPLAY_TOGGLE) {
+            s_reply.result = win_ui_display_action(s_request.action) ? 1 : 0;
         }
         break;
     case IPC_UPDATE: update_check_async(g_app.hwnd); s_reply.result = 1; break;
@@ -759,10 +758,11 @@ int win_cli_agent_action(void *ctx, hop_cli_action action) {
     switch (action) {
     case HOP_CLI_ACTION_RECONNECT:     r.op = IPC_RECONNECT; break;
     case HOP_CLI_ACTION_DISCONNECT:    r.op = IPC_DISCONNECT; break;
-    case HOP_CLI_ACTION_DISPLAY_MAC:   r.op = IPC_DISPLAY; r.action = HOPDESK_UI_DISPLAY_TO_MAC; break;
-    case HOP_CLI_ACTION_DISPLAY_WIN:   r.op = IPC_DISPLAY; r.action = HOPDESK_UI_DISPLAY_TO_WINDOWS; break;
-    case HOP_CLI_ACTION_DISPLAY_WAKE:  r.op = IPC_DISPLAY; r.action = HOPDESK_UI_DISPLAY_WAKE; break;
-    case HOP_CLI_ACTION_DISPLAY_SLEEP: r.op = IPC_DISPLAY; r.action = HOPDESK_UI_DISPLAY_SLEEP; break;
+    case HOP_CLI_ACTION_DISPLAY_MAC:    r.op = IPC_DISPLAY; r.action = HOPDESK_UI_DISPLAY_TO_MAC; break;
+    case HOP_CLI_ACTION_DISPLAY_WIN:    r.op = IPC_DISPLAY; r.action = HOPDESK_UI_DISPLAY_TO_WINDOWS; break;
+    case HOP_CLI_ACTION_DISPLAY_TOGGLE: r.op = IPC_DISPLAY; r.action = HOPDESK_UI_DISPLAY_TOGGLE; break;
+    case HOP_CLI_ACTION_DISPLAY_WAKE:   r.op = IPC_DISPLAY; r.action = HOPDESK_UI_DISPLAY_WAKE; break;
+    case HOP_CLI_ACTION_DISPLAY_SLEEP:  r.op = IPC_DISPLAY; r.action = HOPDESK_UI_DISPLAY_SLEEP; break;
     case HOP_CLI_ACTION_RELOAD:        r.op = IPC_CLI_RELOAD; break;
     default: return -1;
     }

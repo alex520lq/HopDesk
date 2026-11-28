@@ -142,14 +142,13 @@ static int set_target_input_unlocked(const wchar_t *device, uint16_t vcp) {
 static int get_target_input_unlocked(const wchar_t *device, uint16_t *out) {
     PHYS_MON *pm = NULL;
     DWORD n = open_target(device, &pm);
-    DWORD cur = 0, max = 0;
-    int vct = 0;
+    DWORD cur = 0, max = 0, vct = 0;
     int ok = 0;
 
     if (n == 0) return 0;
     if (p_getvcp &&
         p_getvcp(pm[0].hPhysicalMonitor, VCP_INPUT_SOURCE,
-                 (LPDWORD)&vct, &cur, &max)) {
+                 &vct, &cur, &max)) {
         *out = (uint16_t)cur;
         ok = 1;
     }
@@ -207,21 +206,39 @@ int disp_set_input(uint16_t vcp) {
 }
 
 int disp_get_input(uint16_t *out) { return get_target_input(NULL, out); }
-/* Worker only. Re-enumerate handles on every read after a source/topology change. */
-int disp_input_verified(const wchar_t *device, uint16_t vcp) {
-    uint16_t current;
-    if (get_target_input(device, &current) && current == vcp) return 1;
-    if (!set_target_input(device, vcp)) return 0;
-    DWORD start = GetTickCount();
-    do {
-        if (get_target_input(device, &current) && current == vcp) return 1;
-        Sleep(200);
-    } while ((DWORD)(GetTickCount() - start) < 6000);
-    return 0;
+int disp_input_read(const wchar_t *device, uint16_t *out) {
+    return out ? get_target_input(device, out) : 0;
+}
+static int vcp_matches(uint16_t current, uint16_t want) {
+    return current == want || (want <= 0xFFu && (current & 0xFFu) == want);
 }
 int disp_input_matches(const wchar_t *device, uint16_t vcp) {
     uint16_t current;
-    return get_target_input(device, &current) && current == vcp;
+    return get_target_input(device, &current) && vcp_matches(current, vcp);
+}
+/* Worker only. Re-enumerate handles on every read after a source/topology change. */
+int disp_input_verified(const wchar_t *device, uint16_t vcp,
+                        int retries, int timeout_ms, int poll_ms) {
+    if (retries < 1) retries = 1;
+    if (retries > 10) retries = 10;
+    if (timeout_ms < 1000) timeout_ms = 1000;
+    if (timeout_ms > 30000) timeout_ms = 30000;
+    if (poll_ms < 50) poll_ms = 50;
+    if (poll_ms > 2000) poll_ms = 2000;
+
+    if (disp_input_matches(device, vcp)) return 1;
+    int wrote = 0;
+    for (int attempt = 0; attempt < retries; ++attempt) {
+        if (set_target_input(device, vcp)) { wrote = 1; break; }
+        if (attempt + 1 < retries) Sleep(800);
+    }
+    if (!wrote) return 0;
+    DWORD start = GetTickCount();
+    do {
+        if (disp_input_matches(device, vcp)) return 1;
+        Sleep((DWORD)poll_ms);
+    } while ((DWORD)(GetTickCount() - start) < (DWORD)timeout_ms);
+    return 0;
 }
 
 int disp_input_busy(void) {

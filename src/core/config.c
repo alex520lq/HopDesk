@@ -159,6 +159,30 @@ static const hop_config_spec k_specs[] = {
       0, 15, NULL, "0",
       "Windows DDC target monitor index (0 = primary monitor)",
       CFG_FIELD(disp_monitor_index) },
+    { "disp_ddc_retries", NULL, "display", HOP_CFG_INT, HOP_CFG_APPLY_HOT, 0,
+      1, 10, NULL, "3",
+      "Windows DDC SetVCPFeature write attempts before fallback",
+      CFG_FIELD(disp_ddc_retries) },
+    { "disp_verify_timeout_ms", NULL, "display", HOP_CFG_INT, HOP_CFG_APPLY_HOT, 0,
+      1000, 30000, NULL, "8000",
+      "Timeout waiting for DDC input readback or Windows topology change (ms)",
+      CFG_FIELD(disp_verify_timeout_ms) },
+    { "disp_poll_ms", NULL, "display", HOP_CFG_INT, HOP_CFG_APPLY_HOT, 0,
+      50, 2000, NULL, "200",
+      "Polling interval for DDC readback and display topology confirmation (ms)",
+      CFG_FIELD(disp_poll_ms) },
+    { "disp_wake_settle_ms", NULL, "display", HOP_CFG_INT, HOP_CFG_APPLY_HOT, 0,
+      0, 10000, NULL, "300",
+      "Settle delay after macOS confirms wake before writing shared DDC input (ms)",
+      CFG_FIELD(disp_wake_settle_ms) },
+    { "disp_wake_timeout_ms", NULL, "display", HOP_CFG_INT, HOP_CFG_APPLY_HOT, 0,
+      1000, 30000, NULL, "10000",
+      "Timeout waiting for macOS wake or display command reply (ms)",
+      CFG_FIELD(disp_wake_timeout_ms) },
+    { "disp_sleep_fallback", NULL, "display", HOP_CFG_BOOL, HOP_CFG_APPLY_HOT, 0,
+      0, 1, NULL, "false",
+      "Allow sleeping macOS display as a last fallback when reclaiming Windows screen",
+      CFG_FIELD(disp_sleep_fallback) },
     { "mac_input_cmd", NULL, "display", HOP_CFG_STRING, HOP_CFG_APPLY_HOT, 0,
       0, 95, NULL, "m1ddc display 1 set input",
       "macOS command prefix for DDC input switching (VCP value appended)",
@@ -403,11 +427,17 @@ void hop_config_defaults(hop_config *c) {
     c->peer_host[0]    = '\0';
     c->device_name[0]  = '\0';
 
-    c->disp_win_input     = 0x0F;
-    c->disp_mac_input     = 0x11;
-    c->disp_wake_sec      = 60;
-    c->disp_wake_delay_ms = 1200;
-    c->disp_monitor_index = 0;
+    c->disp_win_input         = 0x0F;
+    c->disp_mac_input         = 0x11;
+    c->disp_wake_sec          = 60;
+    c->disp_wake_delay_ms     = 1200;
+    c->disp_monitor_index     = 0;
+    c->disp_ddc_retries       = 3;
+    c->disp_verify_timeout_ms = 8000;
+    c->disp_poll_ms           = 200;
+    c->disp_wake_settle_ms    = 300;
+    c->disp_wake_timeout_ms   = 10000;
+    c->disp_sleep_fallback    = 0;
     snprintf(c->mac_input_cmd, sizeof(c->mac_input_cmd),
              "%s", "m1ddc display 1 set input");
     snprintf(c->mac_sleep_cmd, sizeof(c->mac_sleep_cmd),

@@ -308,11 +308,17 @@ static void display_action(int action) {
             if (split_ui_is_active()) (void)mac_cli_agent_action(NULL, HOP_CLI_ACTION_DISPLAY_WIN);
             else (void)disp_switch_target(0);
             break;
+        case HOPDESK_UI_DISPLAY_TOGGLE:
+            if (split_ui_is_active()) (void)mac_cli_agent_action(NULL, HOP_CLI_ACTION_DISPLAY_TOGGLE);
+            else (void)disp_switch_target(2);
+            break;
         case HOPDESK_UI_DISPLAY_WAKE:
-            disp_wake(s_ui_config.disp_wake_sec);
+            if (split_ui_is_active()) (void)mac_cli_agent_action(NULL, HOP_CLI_ACTION_DISPLAY_WAKE);
+            else (void)disp_wake(s_ui_config.disp_wake_sec);
             break;
         case HOPDESK_UI_DISPLAY_SLEEP:
-            disp_sleep();
+            if (split_ui_is_active()) (void)mac_cli_agent_action(NULL, HOP_CLI_ACTION_DISPLAY_SLEEP);
+            else disp_sleep();
             break;
     }
 }

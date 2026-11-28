@@ -28,6 +28,9 @@ void        net_server_stop(net_server *s);
 /* 线程安全发送；返回 0 失败（无连接或发送错误） */
 int         net_server_send(net_server *s, uint8_t type,
                            const void *payload, uint32_t len);
+/* 绑定连接 epoch 原子发送；若连接已替换则返回 0，避免把旧事务指令发给新会话 */
+int         net_server_send_epoch(net_server *s, unsigned long expected_epoch,
+                                  uint8_t type, const void *payload, uint32_t len);
 int         net_server_has_client(net_server *s);
 int         net_server_listening(net_server *s);
 unsigned long net_server_epoch(net_server *s);

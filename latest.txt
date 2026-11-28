@@ -1,0 +1,8 @@
+format=1
+version=0.1.0
+tag=v0.1.0
+windows_url=https://github.com/alex520lq/HopDesk/releases/download/v0.1.0/HopDesk-Windows.zip
+windows_sha256=a83145986103c8880da574d3cee4e32fda1e2f7ab0f14cad4cb1aed4f97fa13b
+macos_url=https://github.com/alex520lq/HopDesk/releases/download/v0.1.0/HopDesk-macOS.zip
+macos_sha256=5191615f6e177b72f26a00a7f4bf82135a0f6e08efef6d053245efecfad3d5e6
+notes_url=https://github.com/alex520lq/HopDesk/releases/tag/v0.1.0

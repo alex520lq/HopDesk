@@ -1,0 +1,12 @@
+format=2
+channel=stable
+version=0.1.0
+tag=v0.1.0
+ctrl_proto=8
+xfer_proto=8
+windows_url=https://github.com/alex520lq/HopDesk/releases/download/v0.1.0/HopDesk-Windows.zip
+windows_sha256=a83145986103c8880da574d3cee4e32fda1e2f7ab0f14cad4cb1aed4f97fa13b
+macos_url=https://github.com/alex520lq/HopDesk/releases/download/v0.1.0/HopDesk-macOS.zip
+macos_sha256=5191615f6e177b72f26a00a7f4bf82135a0f6e08efef6d053245efecfad3d5e6
+notes_url=https://github.com/alex520lq/HopDesk/releases/tag/v0.1.0
+summary=版本号体系重置为 0.1.0，建立 VERSION 单一事实源与 CHANGELOG.md 自动生成 GitHub Release 更新日志流水线。

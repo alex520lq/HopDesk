@@ -5,6 +5,14 @@ HopDesk 采用基于 GitHub Releases 的双通道版本发布体系：
 - **稳定版（`stable`）**：正式发布标签 `vMAJOR.MINOR.PATCH`（例如 `v0.1.0`），更新清单位于 `alex520lq/HopDesk` 仓库 `updates` 分支的 `stable.txt`（并同步 `latest.txt`）。
 - **开发版（`dev`）**：预览/测试标签 `vMAJOR.MINOR.PATCH-dev.N`（例如 `v0.2.0-dev.1`），更新清单位于 `alex520lq/HopDesk` 仓库 `updates` 分支的 `dev.txt`，发布为 GitHub Pre-release，与稳定版互不干扰，客户端可自由双向切换。
 
+## [v0.1.1-dev.3] - 2026-11-28
+
+### 亮点
+- **界面内一键「开机自启动」勾选**：设置 → 连接与外观新增即时生效的「开机自动启动 HopDesk」开关；Windows 写入当前用户启动项（`HKCU\...\Run`，静默驻留托盘、无需 UAC），macOS 自动维护用户级 LaunchAgent（`~/Library/LaunchAgents/com.hopdesk.agent.plist`，静默启动且关闭时不中断当前会话）。
+- **跨平台「系统权限」一站式处理**：
+  - **macOS**：实时展示「辅助功能」「输入监控」「录屏与系统录音」三项状态，提供一键直达各系统设置页按钮与一键复制当前应用路径（并在概览与声音页增加快捷跳转）。
+  - **Windows**：实时检测标准/管理员权限状态，支持标准 UAC 一键「以管理员身份重启」（自动等待旧实例退出平滑交接，解决任务管理器/管理员窗口控制受限问题）、一键放行 Windows 防火墙入站规则及快速打开防火墙设置。
+
 ## [v0.1.1-dev.2] - 2026-11-28
 
 ### 亮点

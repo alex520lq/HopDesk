@@ -34,6 +34,16 @@ enum {
     HOPDESK_UI_DISPLAY_IDENTIFY
 };
 
+enum {
+    HOPDESK_UI_PERM_DIALOG = 0,
+    HOPDESK_UI_PERM_ACCESSIBILITY = 1,
+    HOPDESK_UI_PERM_INPUT_MONITORING = 2,
+    HOPDESK_UI_PERM_SCREEN_AUDIO = 3,
+    HOPDESK_UI_PERM_ELEVATE = 4,
+    HOPDESK_UI_PERM_FIREWALL_ALLOW = 5,
+    HOPDESK_UI_PERM_FIREWALL_OPEN = 6
+};
+
 typedef struct hopdesk_ui_model {
     hop_config config;
     char local_addresses[512];
@@ -49,6 +59,10 @@ typedef struct hopdesk_ui_model {
     int permission_post;
     int permission_listen;
     int permission_accessibility;
+    int permission_elevated;
+    int autostart_supported;
+    int autostart_enabled;
+    char app_path[512];
     unsigned audio_requested;
     unsigned audio_active;
     unsigned audio_unavailable;
@@ -101,6 +115,8 @@ typedef struct hopdesk_ui_ops {
     void (*apply_theme)(int ui_theme, int persist);
     void (*set_input_mode)(unsigned input_mode);
     void (*set_audio_mode)(unsigned audio_mode);
+    int (*set_autostart)(int enabled);
+    int (*permission_action)(int action);
 } hopdesk_ui_ops;
 
 void hopdesk_ui_set_ops(const hopdesk_ui_ops *ops);

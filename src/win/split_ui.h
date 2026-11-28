@@ -26,6 +26,8 @@ int win_split_update(int action, int channel);
 int win_split_set_theme(int ui_theme);
 int win_split_set_input_mode(unsigned input_mode);
 int win_split_set_audio_mode(unsigned audio_mode);
+int win_split_set_autostart(int enabled);
+int win_split_permission_action(int action);
 
 /* Headless local CLI -> running agent IPC (same-user ACL control pipe). */
 int win_cli_agent_get_status(void *ctx, hop_cli_status *out);

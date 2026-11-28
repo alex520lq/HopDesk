@@ -97,6 +97,12 @@ void mac_update_download(void);
 void mac_update_apply(void);
 void mac_update_shutdown(void);
 
+/* system_integration.m */
+void mac_get_app_path(char *out, size_t cap);
+int  mac_autostart_is_enabled(void);
+int  mac_autostart_set_enabled(int enabled);
+int  mac_permission_action(int action);
+
 /* statusbar.m */
 void statusbar_init(void);
 void statusbar_open_main(void);

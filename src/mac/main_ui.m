@@ -176,6 +176,10 @@ static void snapshot_model(hopdesk_ui_model *model,
     model->permission_post = post;
     model->permission_listen = listen;
     model->permission_accessibility = accessibility;
+    model->permission_elevated = 0;
+    model->autostart_supported = 1;
+    model->autostart_enabled = mac_autostart_is_enabled();
+    mac_get_app_path(model->app_path, sizeof(model->app_path));
 
     {
         hop_audio_status audio = {0};
@@ -316,6 +320,18 @@ static void set_audio_mode(unsigned audio_mode) {
     s_ui_config.audio_mode = audio_mode & HOP_AUDIO_MODES;
     (void)split_ui_set_audio_mode(s_ui_config.audio_mode);
     hopdesk_ui_refresh();
+}
+
+static int set_autostart(int enabled) {
+    int ok = mac_autostart_set_enabled(enabled);
+    hopdesk_ui_refresh();
+    return ok;
+}
+
+static int permission_action(int action) {
+    int ok = mac_permission_action(action);
+    hopdesk_ui_refresh();
+    return ok;
 }
 
 static void display_action(int action) {
@@ -465,7 +481,9 @@ static const hopdesk_ui_ops k_ui_ops = {
     release_cjk_font,
     apply_theme,
     set_input_mode,
-    set_audio_mode
+    set_audio_mode,
+    set_autostart,
+    permission_action
 };
 
 static void draw_frame(cui_ctx *ui, void *user) {

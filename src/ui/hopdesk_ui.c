@@ -353,6 +353,161 @@ static void draw_stat_card(cui_ctx *ui, const char *title, const char *value,
     }
 }
 
+static void trigger_permission_action(int action) {
+    int ok = 0;
+    if (s_ops && s_ops->permission_action) {
+        ok = s_ops->permission_action(action);
+    } else if (action == HOPDESK_UI_PERM_DIALOG && s_ops && s_ops->request_permissions) {
+        s_ops->request_permissions();
+        ok = 1;
+    }
+    switch (action) {
+        case HOPDESK_UI_PERM_ACCESSIBILITY:
+            ui_toast(ok ? "已打开辅助功能设置" : "无法打开系统设置",
+                ok ? "请在「隐私与安全性 → 辅助功能」中允许 HopDesk，授权后重启生效。"
+                   : "请手动打开「系统设置 → 隐私与安全性 → 辅助功能」授权 HopDesk。",
+                ok ? CUI_TONE_INFO : CUI_TONE_WARNING);
+            break;
+        case HOPDESK_UI_PERM_INPUT_MONITORING:
+            ui_toast(ok ? "已打开输入监控设置" : "无法打开系统设置",
+                ok ? "请在「隐私与安全性 → 输入监控」中允许 HopDesk，授权后重启生效。"
+                   : "请手动打开「系统设置 → 隐私与安全性 → 输入监控」授权 HopDesk。",
+                ok ? CUI_TONE_INFO : CUI_TONE_WARNING);
+            break;
+        case HOPDESK_UI_PERM_SCREEN_AUDIO:
+            ui_toast(ok ? "已打开录屏与系统录音设置" : "无法打开系统设置",
+                ok ? "请在「录屏与系统录音」中允许 HopDesk，以启用 macOS 系统声音发送。"
+                   : "请手动打开「系统设置 → 隐私与安全性 → 录屏与系统录音」。",
+                ok ? CUI_TONE_INFO : CUI_TONE_WARNING);
+            break;
+        case HOPDESK_UI_PERM_ELEVATE:
+            if (ok) {
+                ui_toast("正在以管理员身份重启", "UAC 授权已通过，正在切换到管理员实例…", CUI_TONE_SUCCESS);
+            } else {
+                ui_toast("未启用管理员提权", "UAC 授权已取消或失败，当前仍以标准权限运行。", CUI_TONE_WARNING);
+            }
+            break;
+        case HOPDESK_UI_PERM_FIREWALL_ALLOW:
+            ui_toast(ok ? "已提交防火墙放行规则" : "未添加防火墙规则",
+                ok ? "已请求为当前 HopDesk.exe 添加专用/域网络入站放行规则。"
+                   : "UAC 授权已取消或失败，可通过「打开防火墙设置」手动放行。",
+                ok ? CUI_TONE_SUCCESS : CUI_TONE_WARNING);
+            break;
+        case HOPDESK_UI_PERM_FIREWALL_OPEN:
+            if (!ok) ui_toast("无法打开防火墙设置", "请手动打开控制面板 → Windows Defender 防火墙。", CUI_TONE_WARNING);
+            break;
+        default:
+            break;
+    }
+}
+
+static void draw_permissions_card(cui_ctx *ui) {
+    cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 10) {
+        cui_row(ui, .width = CUI_FILL, .justify = CUI_JUSTIFY_BETWEEN, .align = CUI_ALIGN_CENTER) {
+            cui_heading(ui, "系统权限", 3);
+#ifdef _WIN32
+            cui_badge_ex(ui, s_model.permission_elevated ? "管理员权限" : "标准权限",
+                &(cui_badge_opts){.tone = s_model.permission_elevated ? CUI_TONE_SUCCESS : CUI_TONE_INFO, .dot = true});
+#else
+            int all_ok = s_model.permissions_known &&
+                         s_model.permission_post &&
+                         s_model.permission_listen &&
+                         s_model.permission_accessibility;
+            cui_badge_ex(ui, all_ok ? "键鼠权限已就绪" : "待授权",
+                &(cui_badge_opts){.tone = all_ok ? CUI_TONE_SUCCESS : CUI_TONE_WARNING, .dot = true});
+#endif
+        }
+
+#ifdef _WIN32
+        cui_secondary(ui, s_model.permission_elevated
+            ? "当前已以管理员身份运行，可正常控制任务管理器与管理员权限窗口。"
+            : "标准权限下可正常使用；如需控制任务管理器、安装程序或管理员窗口，请以管理员身份重启。");
+        cui_row(ui, .width = CUI_FILL, .gap = 8, .wrap = true) {
+            if (cui_button_ex(ui, s_model.permission_elevated ? "已是管理员权限" : "以管理员身份重启",
+                    &(cui_button_opts){
+                        .variant = s_model.permission_elevated ? CUI_BUTTON_OUTLINE : CUI_BUTTON_PRIMARY,
+                        .size = CUI_SIZE_SM,
+                        .icon = CUI_ICON_SHIELD,
+                        .disabled = s_model.permission_elevated || !s_ops || !s_ops->permission_action
+                    })) {
+                trigger_permission_action(HOPDESK_UI_PERM_ELEVATE);
+            }
+            if (cui_button_ex(ui, "一键放行防火墙", &(cui_button_opts){
+                    .variant = CUI_BUTTON_SECONDARY,
+                    .size = CUI_SIZE_SM,
+                    .icon = CUI_ICON_WIFI,
+                    .disabled = !s_ops || !s_ops->permission_action
+                })) {
+                trigger_permission_action(HOPDESK_UI_PERM_FIREWALL_ALLOW);
+            }
+            if (cui_button_ex(ui, "打开防火墙设置", &(cui_button_opts){
+                    .variant = CUI_BUTTON_OUTLINE,
+                    .size = CUI_SIZE_SM,
+                    .disabled = !s_ops || !s_ops->permission_action
+                })) {
+                trigger_permission_action(HOPDESK_UI_PERM_FIREWALL_OPEN);
+            }
+        }
+#else
+        cui_secondary(ui, "macOS 需要「辅助功能」与「输入监控」才能共享键鼠；发送本机系统声音另需「录屏与系统录音」权限。");
+        if (s_model.permissions_known) {
+            cui_row(ui, .width = CUI_FILL, .gap = 6, .wrap = true) {
+                cui_badge_ex(ui, (s_model.permission_accessibility && s_model.permission_post) ? "辅助功能：已授权" : "辅助功能：未授权",
+                    &(cui_badge_opts){.tone = (s_model.permission_accessibility && s_model.permission_post) ? CUI_TONE_SUCCESS : CUI_TONE_WARNING, .size = CUI_SIZE_SM});
+                cui_badge_ex(ui, s_model.permission_listen ? "输入监控：已授权" : "输入监控：未授权",
+                    &(cui_badge_opts){.tone = s_model.permission_listen ? CUI_TONE_SUCCESS : CUI_TONE_WARNING, .size = CUI_SIZE_SM});
+                cui_badge_ex(ui, "系统录音：按需授权",
+                    &(cui_badge_opts){.tone = CUI_TONE_NEUTRAL, .size = CUI_SIZE_SM});
+            }
+        }
+        cui_row(ui, .width = CUI_FILL, .gap = 8, .wrap = true) {
+            if (cui_button_ex(ui, "打开辅助功能", &(cui_button_opts){
+                    .variant = (s_model.permissions_known && (!s_model.permission_accessibility || !s_model.permission_post))
+                        ? CUI_BUTTON_PRIMARY : CUI_BUTTON_SECONDARY,
+                    .size = CUI_SIZE_SM,
+                    .icon = CUI_ICON_SHIELD,
+                    .disabled = !s_ops || !s_ops->permission_action
+                })) {
+                trigger_permission_action(HOPDESK_UI_PERM_ACCESSIBILITY);
+            }
+            if (cui_button_ex(ui, "打开输入监控", &(cui_button_opts){
+                    .variant = (s_model.permissions_known && !s_model.permission_listen)
+                        ? CUI_BUTTON_PRIMARY : CUI_BUTTON_SECONDARY,
+                    .size = CUI_SIZE_SM,
+                    .icon = CUI_ICON_KEYBOARD,
+                    .disabled = !s_ops || !s_ops->permission_action
+                })) {
+                trigger_permission_action(HOPDESK_UI_PERM_INPUT_MONITORING);
+            }
+            if (cui_button_ex(ui, "打开系统录音设置", &(cui_button_opts){
+                    .variant = CUI_BUTTON_OUTLINE,
+                    .size = CUI_SIZE_SM,
+                    .icon = CUI_ICON_VOLUME_2,
+                    .disabled = !s_ops || !s_ops->permission_action
+                })) {
+                trigger_permission_action(HOPDESK_UI_PERM_SCREEN_AUDIO);
+            }
+        }
+#endif
+        if (s_model.app_path[0]) {
+            cui_row(ui, .width = CUI_FILL, .justify = CUI_JUSTIFY_BETWEEN, .align = CUI_ALIGN_CENTER, .gap = 8) {
+                char path_line[560];
+                snprintf(path_line, sizeof(path_line), "当前路径：%s", s_model.app_path);
+                cui_muted(ui, path_line);
+                if (cui_button_ex(ui, "复制路径", &(cui_button_opts){
+                        .variant = CUI_BUTTON_OUTLINE,
+                        .size = CUI_SIZE_SM,
+                        .icon = CUI_ICON_COPY,
+                        .disabled = !s_ops || !s_ops->copy_text
+                    }) && s_ops && s_ops->copy_text) {
+                    if (s_ops->copy_text(s_model.app_path))
+                        ui_toast("应用路径已复制", "可在系统权限设置中按此路径核对或重新添加 HopDesk。", CUI_TONE_SUCCESS);
+                }
+            }
+        }
+    }
+}
+
 static void draw_overview(cui_ctx *ui) {
     char peer[160], control[96], data[96], audio[96];
     snprintf(peer, sizeof(peer), "%s",
@@ -485,9 +640,30 @@ static void draw_overview(cui_ctx *ui) {
                         &(cui_badge_opts){.tone = s_model.permission_accessibility ? CUI_TONE_SUCCESS : CUI_TONE_WARNING});
                 }
                 if (!s_model.permission_post || !s_model.permission_listen || !s_model.permission_accessibility) {
-                    if (cui_button(ui, "检查键鼠权限", .variant = CUI_BUTTON_SECONDARY) &&
-                        s_ops && s_ops->request_permissions)
-                        s_ops->request_permissions();
+                    cui_row(ui, .width = CUI_FILL, .gap = 8, .wrap = true) {
+                        if (cui_button_ex(ui, "打开辅助功能", &(cui_button_opts){
+                                .variant = (!s_model.permission_accessibility || !s_model.permission_post)
+                                    ? CUI_BUTTON_PRIMARY : CUI_BUTTON_SECONDARY,
+                                .size = CUI_SIZE_SM,
+                                .icon = CUI_ICON_SHIELD,
+                                .disabled = !s_ops || !s_ops->permission_action
+                            }))
+                            trigger_permission_action(HOPDESK_UI_PERM_ACCESSIBILITY);
+                        if (cui_button_ex(ui, "打开输入监控", &(cui_button_opts){
+                                .variant = !s_model.permission_listen
+                                    ? CUI_BUTTON_PRIMARY : CUI_BUTTON_SECONDARY,
+                                .size = CUI_SIZE_SM,
+                                .icon = CUI_ICON_KEYBOARD,
+                                .disabled = !s_ops || !s_ops->permission_action
+                            }))
+                            trigger_permission_action(HOPDESK_UI_PERM_INPUT_MONITORING);
+                        if (cui_button_ex(ui, "检查键鼠权限", &(cui_button_opts){
+                                .variant = CUI_BUTTON_OUTLINE,
+                                .size = CUI_SIZE_SM,
+                                .disabled = !s_ops || !s_ops->request_permissions
+                            }) && s_ops && s_ops->request_permissions)
+                            s_ops->request_permissions();
+                    }
                 }
             }
         }
@@ -1072,18 +1248,36 @@ static void draw_settings_connection_and_appearance(cui_ctx *ui) {
                     apply_ui_theme(ui, s_settings.ui_theme, 1);
                 }
             }
-            cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 10) {
-                cui_heading(ui, "快速入口", 3);
-                cui_secondary(ui, "声音共享已独立为「声音」标签页，支持三选一单向流向与双端自动联动。");
-                cui_row(ui, .width = CUI_FILL, .gap = 8, .wrap = true) {
-                    if (cui_button_ex(ui, "前往声音设置", &(cui_button_opts){
-                            .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM, .icon = CUI_ICON_VOLUME_2 }))
-                        s_settings.tab = 2;
-                    if (cui_button_ex(ui, "前往键鼠与显示", &(cui_button_opts){
-                            .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM, .icon = CUI_ICON_MONITOR }))
-                        s_settings.tab = 1;
+            if (s_model.autostart_supported) {
+                bool autostart_on = s_model.autostart_enabled != 0;
+                cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 10) {
+                    cui_row(ui, .width = CUI_FILL, .justify = CUI_JUSTIFY_BETWEEN, .align = CUI_ALIGN_CENTER) {
+                        cui_heading(ui, "开机自启动", 3);
+                        cui_badge_ex(ui, autostart_on ? "已开启" : "未开启",
+                            &(cui_badge_opts){.tone = autostart_on ? CUI_TONE_SUCCESS : CUI_TONE_NEUTRAL, .dot = true});
+                    }
+                    if (cui_switch(ui, "开机自动启动 HopDesk", &autostart_on,
+#ifdef _WIN32
+                        .description = "写入当前用户启动项（HKCU\\...\\Run），登录 Windows 后静默驻留托盘，无需管理员权限"
+#else
+                        .description = "通过用户级 LaunchAgent 在登录 macOS 后静默启动后台服务（退出当前会话不会中断）"
+#endif
+                        )) {
+                        if (s_ops && s_ops->set_autostart) {
+                            if (s_ops->set_autostart(autostart_on ? 1 : 0)) {
+                                s_model.autostart_enabled = autostart_on ? 1 : 0;
+                                ui_toast(autostart_on ? "已开启开机自启动" : "已关闭开机自启动",
+                                    autostart_on ? "下次登录系统时将自动在后台启动 HopDesk。"
+                                                 : "已移除开机自启动项，不影响当前正在运行的会话。",
+                                    CUI_TONE_SUCCESS);
+                            } else {
+                                ui_toast("开机自启动设置失败", "请检查用户目录或注册表写入权限后重试。", CUI_TONE_WARNING);
+                            }
+                        }
+                    }
                 }
             }
+            draw_permissions_card(ui);
         }
     }
 }
@@ -1168,7 +1362,17 @@ static void draw_settings_audio(cui_ctx *ui) {
 #ifdef _WIN32
             cui_muted(ui, "Windows 使用系统进程回环采集系统声音（自动排除 HopDesk 自身播放），端口配置位于「连接与外观」。");
 #else
-            cui_muted(ui, "macOS 发送本机系统声音需要 macOS 14.2+ 并在「系统设置 → 隐私与安全性 → 录屏与系统录音」中允许 HopDesk；仅播放对端声音无需额外权限。");
+            cui_row(ui, .width = CUI_FILL, .justify = CUI_JUSTIFY_BETWEEN, .align = CUI_ALIGN_CENTER, .gap = 8) {
+                cui_muted(ui, "macOS 发送本机系统声音需要 macOS 14.2+ 并在「录屏与系统录音」中允许 HopDesk；仅播放对端声音无需额外权限。");
+                if (cui_button_ex(ui, "打开系统录音设置", &(cui_button_opts){
+                        .variant = CUI_BUTTON_OUTLINE,
+                        .size = CUI_SIZE_SM,
+                        .icon = CUI_ICON_SHIELD,
+                        .disabled = !s_ops || !s_ops->permission_action
+                    })) {
+                    trigger_permission_action(HOPDESK_UI_PERM_SCREEN_AUDIO);
+                }
+            }
 #endif
         }
 
@@ -1708,12 +1912,19 @@ static void draw_settings_maintenance(cui_ctx *ui) {
                 &(cui_select_opts){.label = "日志记录等级", .width = CUI_FILL}))
                 settings_mark_dirty();
             cui_row(ui, .width = CUI_FILL, .gap = 8, .wrap = true) {
-                if (cui_button_ex(ui, "检查键鼠权限", &(cui_button_opts){
+                if (cui_button_ex(ui, "前往权限与开机自启", &(cui_button_opts){
                         .variant = CUI_BUTTON_SECONDARY,
+                        .icon = CUI_ICON_SHIELD
+                    }))
+                    s_settings.tab = 0;
+#ifndef _WIN32
+                if (cui_button_ex(ui, "检查键鼠权限", &(cui_button_opts){
+                        .variant = CUI_BUTTON_OUTLINE,
                         .icon = CUI_ICON_SHIELD,
                         .disabled = !s_ops || !s_ops->request_permissions
                     }))
                     if (s_ops && s_ops->request_permissions) s_ops->request_permissions();
+#endif
             }
         }
 

@@ -1,0 +1,12 @@
+format=2
+channel=dev
+version=0.1.1-dev.1
+tag=v0.1.1-dev.1
+ctrl_proto=8
+xfer_proto=8
+windows_url=https://github.com/alex520lq/HopDesk/releases/download/v0.1.1-dev.1/HopDesk-Windows.zip
+windows_sha256=0d1dca8a9c56cd86425b9fdcb99b10affa7b7ec102b67945ba0ce63d55ec8b92
+macos_url=https://github.com/alex520lq/HopDesk/releases/download/v0.1.1-dev.1/HopDesk-macOS.zip
+macos_sha256=86490f045d855c4efa5ec6fdb877dc163056bc27dd709d0882592d7bfad841fd
+notes_url=https://github.com/alex520lq/HopDesk/releases/tag/v0.1.1-dev.1
+summary=显示器切换设置全面产品化：不再要求用户手输 \\.\DISPLAY2 或十六进制 0x0F/0x11 输入源代码。

@@ -18,7 +18,7 @@
 #ifndef PIPE_REJECT_REMOTE_CLIENTS
 #define PIPE_REJECT_REMOTE_CLIENTS 0x00000008
 #endif
-#define WIN_SPLIT_VERSION 6u
+#define WIN_SPLIT_VERSION 7u
 #define WIN_SPLIT_IO_MS 1500u
 #define WIN_SPLIT_ACTION_MS 5000u
 #define WIN_SPLIT_ADDR_TTL_MS 10000u
@@ -26,8 +26,8 @@
 #define WIN_CTRL_PIPE_NAME L"\\\\.\\pipe\\HopDesk.Control.v1"
 enum { IPC_SNAPSHOT = 1, IPC_SAVE, IPC_CANCEL, IPC_RETRY,
        IPC_RECONNECT, IPC_DISCONNECT, IPC_DISPLAY, IPC_UPDATE,
-       IPC_INPUT_MODE, IPC_THEME, IPC_CLI_STATUS, IPC_CLI_CONFIG_GET,
-       IPC_CLI_RELOAD };
+       IPC_INPUT_MODE, IPC_AUDIO_MODE, IPC_THEME, IPC_CLI_STATUS,
+       IPC_CLI_CONFIG_GET, IPC_CLI_RELOAD };
 typedef struct {
     uint32_t version, op;
     uint64_t task;
@@ -162,6 +162,7 @@ static void agent_snapshot(hopdesk_ui_model *model,
         s_agent_config_loaded = 1;
     }
     s_agent_config.input_mode = g_app.cfg.input_mode;
+    s_agent_config.audio_mode = g_app.cfg.audio_mode;
     model->config = s_agent_config;
     shared_display_status(model->display_status, sizeof(model->display_status));
     shared_display_devices(model->display_devices, sizeof(model->display_devices));
@@ -357,6 +358,19 @@ void win_split_agent_dispatch(void) {
             }
             s_agent_config.input_mode = next_input;
             win_apply_input_mode(next_input, takeover, 1);
+            s_reply.result = 1;
+        }
+        break;
+    case IPC_AUDIO_MODE:
+        if (s_request.action >= 0 && !((unsigned)s_request.action & ~HOP_AUDIO_MODES)) {
+            unsigned next_audio = (unsigned)s_request.action;
+            if (!s_agent_config_loaded) {
+                s_agent_config = g_app.cfg;
+                (void)hop_config_load(&s_agent_config, g_app.config_path);
+                s_agent_config_loaded = 1;
+            }
+            s_agent_config.audio_mode = next_audio;
+            win_apply_audio_mode(next_audio, 1, 1);
             s_reply.result = 1;
         }
         break;
@@ -710,6 +724,10 @@ int win_split_set_theme(int ui_theme) {
 }
 int win_split_set_input_mode(unsigned input_mode) {
     ipc_request r = {0}; r.op = IPC_INPUT_MODE; r.action = (int32_t)(input_mode & HOP_INPUT_MODES);
+    return client_call(&r, NULL, 0, NULL);
+}
+int win_split_set_audio_mode(unsigned audio_mode) {
+    ipc_request r = {0}; r.op = IPC_AUDIO_MODE; r.action = (int32_t)(audio_mode & HOP_AUDIO_MODES);
     return client_call(&r, NULL, 0, NULL);
 }
 

@@ -56,7 +56,9 @@ static int acquire_single_instance(void) {
 int mac_apply_hot_config(const hop_config *next) {
     if (!next) return 0;
     unsigned prev_input = net_get_input_mode();
+    unsigned prev_audio = g_mac.cfg.audio_mode;
     unsigned next_input = next->input_mode & HOP_INPUT_MODES;
+    unsigned next_audio = next->audio_mode & HOP_AUDIO_MODES;
     unsigned takeover = next_input & ~prev_input;
 
     hop_role live_role = g_mac.cfg.role;
@@ -75,14 +77,18 @@ int mac_apply_hot_config(const hop_config *next) {
     g_mac.cfg.xfer_rx_queue_slots = live_rx_slots;
     g_mac.cfg.xfer_rx_queue_mb = live_rx_mb;
     g_mac.cfg.clip_poll_ms = live_poll_ms;
+    g_mac.cfg.audio_mode = next_audio;
 
     hop_runtime_apply_config(&g_mac.cfg);
     if (next_input != prev_input)
         net_apply_input_mode(next_input, takeover, 0);
-    else
-        net_send_capabilities(0);
     hop_config runtime = g_mac.cfg;
-    return hop_audio_set_mode(&runtime, runtime.audio_mode);
+    int ok = hop_audio_set_mode(&runtime, runtime.audio_mode);
+    if (next_audio != prev_audio)
+        net_apply_audio_mode(next_audio, 1, 0);
+    else if (next_input == prev_input)
+        net_send_capabilities(0);
+    return ok;
 }
 
 int main(int argc, char **argv) {

@@ -20,14 +20,14 @@ typedef struct {
     double port, data_port, audio_port, switch_delay, cooldown, margin, wake_sec;
     double wake_delay_ms, wake_settle_ms, wake_timeout_ms;
     double ddc_retries, verify_timeout_ms, poll_ms, monitor_index;
+    double audio_keepalive_ms, audio_peer_timeout_ms, audio_send_limit_ms;
     double chunk_kb, rate_limit, mouse_scale, wheel_scale;
     char disp_win[16], disp_mac[16];
     int role, server_edge, client_edge, ui_theme, log_level, update_channel;
-    int win_input_preset, mac_input_preset;
+    int win_input_preset, mac_input_preset, audio_dir;
     int tab;
-    bool mac_cmd_open, shared_display, sleep_fallback;
+    bool mac_cmd_open, audio_adv_open, shared_display, sleep_fallback;
     bool provide_mouse, provide_keyboard;
-    bool audio_send, audio_play;
     bool wheel_invert, clip_text, clip_image, clip_file;
     int loaded, dirty, saving;
     char note[256];
@@ -61,14 +61,62 @@ static const char *const k_theme_icons[] = {
     CUI_ICON_MONITOR, CUI_ICON_SUN, CUI_ICON_MOON
 };
 static const char *const k_settings_tabs[] = {
-    "连接与外观", "键鼠与显示", "文件传输", "更新与日志"
+    "连接与外观", "键鼠与显示", "声音", "文件传输", "更新与日志"
+};
+static const char *const k_audio_directions[] = {
+    "关闭", "发送到对端", "本机播放对端"
+};
+static const char *const k_audio_direction_icons[] = {
+    CUI_ICON_VOLUME_X, CUI_ICON_SEND, CUI_ICON_VOLUME_2
 };
 static const char *const k_update_channels[] = {
     "稳定版 (stable)", "开发版 (dev)"
 };
 static const char *const k_settings_tab_icons[] = {
-    CUI_ICON_WIFI, CUI_ICON_KEYBOARD, CUI_ICON_REPEAT, CUI_ICON_TERMINAL
+    CUI_ICON_WIFI, CUI_ICON_KEYBOARD, CUI_ICON_VOLUME_2, CUI_ICON_REPEAT, CUI_ICON_TERMINAL
 };
+
+static int audio_mode_to_dir(unsigned mode) {
+    if ((mode & HOP_AUDIO_SEND) && !(mode & HOP_AUDIO_PLAY)) return 1;
+    if ((mode & HOP_AUDIO_PLAY) && !(mode & HOP_AUDIO_SEND)) return 2;
+    if (mode & HOP_AUDIO_SEND) return 1;
+    return 0;
+}
+
+static unsigned audio_dir_to_mode(int dir) {
+    if (dir == 1) return HOP_AUDIO_SEND;
+    if (dir == 2) return HOP_AUDIO_PLAY;
+    return 0u;
+}
+
+static const char *audio_direction_summary(void) {
+    unsigned req = s_model.audio_requested & HOP_AUDIO_MODES;
+    unsigned act = s_model.audio_active & HOP_AUDIO_MODES;
+    unsigned peer = s_model.peer_audio_mode & HOP_AUDIO_MODES;
+    if (s_model.audio_unavailable) return "音频设备或权限不可用";
+    if (act & HOP_AUDIO_SEND) return "本机 → 对端 正在发送";
+    if (act & HOP_AUDIO_PLAY) return "对端 → 本机 正在播放";
+    if (req == 0u) return "已关闭";
+    if (!s_model.connected) return req == HOP_AUDIO_SEND ? "本机待发送（未连接）" : "本机待播放（未连接）";
+    if (s_model.peer_capabilities_known && req == HOP_AUDIO_PLAY && peer == HOP_AUDIO_PLAY)
+        return "两端均设为播放（请在一端切换）";
+    if (s_model.peer_capabilities_known && req == HOP_AUDIO_SEND && peer == HOP_AUDIO_SEND)
+        return "两端均设为发送（正在协调）";
+    if (req == HOP_AUDIO_SEND) return "本机已开启发送（等待对端就绪）";
+    if (req == HOP_AUDIO_PLAY) return "本机已开启播放（等待对端发送）";
+    return "待机";
+}
+
+static cui_tone audio_direction_tone(void) {
+    if (s_model.audio_unavailable) return CUI_TONE_WARNING;
+    if (s_model.audio_active) return CUI_TONE_SUCCESS;
+    if (s_model.connected && s_model.peer_capabilities_known &&
+        ((s_model.audio_requested == HOP_AUDIO_PLAY && s_model.peer_audio_mode == HOP_AUDIO_PLAY) ||
+         (s_model.audio_requested == HOP_AUDIO_SEND && s_model.peer_audio_mode == HOP_AUDIO_SEND)))
+        return CUI_TONE_WARNING;
+    if (s_model.audio_requested) return CUI_TONE_INFO;
+    return CUI_TONE_NEUTRAL;
+}
 
 static void ui_toast(const char *title, const char *detail, cui_tone tone) {
     if (!s_ctx) return;
@@ -329,7 +377,7 @@ static void draw_overview(cui_ctx *ui) {
                 }
                 cui_text(ui, proto_detail);
                 if (cui_button(ui, "前往检查更新", .variant = CUI_BUTTON_SECONDARY))
-                    open_settings_tab(3);
+                    open_settings_tab(4);
             }
         }
         if (s_model.update.phase == HOP_UPDATE_READY) {
@@ -346,7 +394,7 @@ static void draw_overview(cui_ctx *ui) {
                             s_ops->update_action(HOP_UPDATE_ACTION_APPLY, s_model.update.target_channel);
                     }
                     if (cui_button(ui, "查看更新详情", .variant = CUI_BUTTON_SECONDARY))
-                        open_settings_tab(3);
+                        open_settings_tab(4);
                 }
             }
         }
@@ -361,9 +409,9 @@ static void draw_overview(cui_ctx *ui) {
                 input_summary_text(),
                 s_model.sharing ? "正在控制对端" : (s_model.connected ? "已同步能力" : "等待连接"),
                 input_summary_tone());
-            draw_stat_card(ui, "声音通道",
-                s_model.audio_active ? "运行中" : "未运行",
-                audio, s_model.audio_active ? CUI_TONE_SUCCESS : CUI_TONE_NEUTRAL);
+            draw_stat_card(ui, "声音共享",
+                audio_direction_summary(),
+                audio, audio_direction_tone());
         }
 
         cui_card(ui, .width = CUI_FILL, .pad = 18, .gap = 12) {
@@ -514,18 +562,14 @@ static void draw_device(cui_ctx *ui) {
             }
         }
         cui_card(ui, .width = CUI_FILL, .pad = 18, .gap = 8) {
-            cui_heading(ui, "声音能力", 3);
-            cui_text(ui, "声音发送和播放是独立服务能力，两端均可按需开启，不与连接方式绑定。");
-            cui_row(ui, .width = CUI_FILL, .gap = 8, .wrap = true) {
-                cui_badge_ex(ui, (s_model.audio_requested & HOP_AUDIO_SEND) ? "发送已配置" : "发送已关闭",
-                    &(cui_badge_opts){.tone = (s_model.audio_requested & HOP_AUDIO_SEND) ? CUI_TONE_INFO : CUI_TONE_NEUTRAL});
-                cui_badge_ex(ui, (s_model.audio_requested & HOP_AUDIO_PLAY) ? "播放已配置" : "播放已关闭",
-                    &(cui_badge_opts){.tone = (s_model.audio_requested & HOP_AUDIO_PLAY) ? CUI_TONE_INFO : CUI_TONE_NEUTRAL});
-                cui_badge_ex(ui, s_model.audio_unavailable ? "音频设备不可用" : "音频状态正常",
-                    &(cui_badge_opts){.tone = s_model.audio_unavailable ? CUI_TONE_WARNING : CUI_TONE_SUCCESS});
+            cui_row(ui, .width = CUI_FILL, .justify = CUI_JUSTIFY_BETWEEN, .align = CUI_ALIGN_CENTER) {
+                cui_heading(ui, "声音共享", 3);
+                cui_badge_ex(ui, audio_direction_summary(),
+                    &(cui_badge_opts){.tone = audio_direction_tone(), .dot = true});
             }
-            if (cui_button(ui, "配置声音能力", .variant = CUI_BUTTON_SECONDARY))
-                open_settings_tab(0);
+            cui_text(ui, "声音流向为单向三选一（关闭 / 发送到对端 / 本机播放对端），切换后两端自动协同。");
+            if (cui_button(ui, "配置声音设置", .variant = CUI_BUTTON_SECONDARY))
+                open_settings_tab(2);
         }
     }
 }
@@ -778,6 +822,9 @@ static void settings_load(void) {
     s_settings.verify_timeout_ms = s_model.config.disp_verify_timeout_ms ? s_model.config.disp_verify_timeout_ms : 8000;
     s_settings.poll_ms = s_model.config.disp_poll_ms ? s_model.config.disp_poll_ms : 200;
     s_settings.monitor_index = s_model.config.disp_monitor_index;
+    s_settings.audio_keepalive_ms = s_model.config.audio_keepalive_ms ? s_model.config.audio_keepalive_ms : 1000;
+    s_settings.audio_peer_timeout_ms = s_model.config.audio_peer_timeout_ms ? s_model.config.audio_peer_timeout_ms : 3000;
+    s_settings.audio_send_limit_ms = s_model.config.audio_send_limit_ms ? s_model.config.audio_send_limit_ms : 120;
     s_settings.shared_display = s_model.config.disp_shared != 0;
     s_settings.sleep_fallback = s_model.config.disp_sleep_fallback != 0;
     s_settings.chunk_kb = s_model.config.xfer_chunk_kb;
@@ -804,8 +851,7 @@ static void settings_load(void) {
         ? HOP_UPDATE_CHANNEL_DEV : HOP_UPDATE_CHANNEL_STABLE;
     s_settings.provide_mouse = (s_model.config.input_mode & HOP_INPUT_MOUSE) != 0;
     s_settings.provide_keyboard = (s_model.config.input_mode & HOP_INPUT_KEYBOARD) != 0;
-    s_settings.audio_send = (s_model.config.audio_mode & HOP_AUDIO_SEND) != 0;
-    s_settings.audio_play = (s_model.config.audio_mode & HOP_AUDIO_PLAY) != 0;
+    s_settings.audio_dir = audio_mode_to_dir(s_model.config.audio_mode);
     s_settings.loaded = 1;
 }
 
@@ -872,8 +918,10 @@ static int settings_build_config(hop_config *out) {
     out->xfer_rate_limit_mib = (int)s_settings.rate_limit;
     out->input_mode = (s_settings.provide_mouse ? HOP_INPUT_MOUSE : 0u) |
                       (s_settings.provide_keyboard ? HOP_INPUT_KEYBOARD : 0u);
-    out->audio_mode = (s_settings.audio_send ? HOP_AUDIO_SEND : 0u) |
-                      (s_settings.audio_play ? HOP_AUDIO_PLAY : 0u);
+    out->audio_mode = audio_dir_to_mode(s_settings.audio_dir);
+    out->audio_keepalive_ms = (int)s_settings.audio_keepalive_ms;
+    out->audio_peer_timeout_ms = (int)s_settings.audio_peer_timeout_ms;
+    out->audio_send_limit_ms = (int)s_settings.audio_send_limit_ms;
     out->ui_theme = (s_settings.ui_theme >= HOP_THEME_SYSTEM &&
                      s_settings.ui_theme <= HOP_THEME_DARK)
         ? s_settings.ui_theme : HOP_THEME_SYSTEM;
@@ -910,7 +958,7 @@ static void draw_settings_bar(cui_ctx *ui) {
         settings_save();
 
     cui_row(ui, .width = CUI_FILL, .align = CUI_ALIGN_CENTER, .gap = 10, .wrap = true) {
-        if (cui_tabs_ex(ui, "hopdesk-settings-tabs", k_settings_tabs, 4, &s_settings.tab,
+        if (cui_tabs_ex(ui, "hopdesk-settings-tabs", k_settings_tabs, 5, &s_settings.tab,
                 &(cui_tabs_opts){.variant = CUI_TABS_PILL, .icons = k_settings_tab_icons})) {
             s_scroll_reset_pending = 1;
         }
@@ -1025,22 +1073,120 @@ static void draw_settings_connection_and_appearance(cui_ctx *ui) {
                 }
             }
             cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 10) {
-                cui_heading(ui, "声音能力", 3);
-                cui_secondary(ui, "两端对等配置发送或播放系统声音，保存后即时生效。");
-                if (cui_switch(ui, "发送本机系统声音", &s_settings.audio_send,
-                    .description = "将本机系统声音发送到对端")) settings_mark_dirty();
-                if (cui_switch(ui, "播放对端系统声音", &s_settings.audio_play,
-                    .description = "接收并播放对端系统声音")) settings_mark_dirty();
+                cui_heading(ui, "快速入口", 3);
+                cui_secondary(ui, "声音共享已独立为「声音」标签页，支持三选一单向流向与双端自动联动。");
                 cui_row(ui, .width = CUI_FILL, .gap = 8, .wrap = true) {
-                    cui_badge_ex(ui, (s_model.audio_requested & HOP_AUDIO_SEND) ? "本机发送已开" : "本机发送关闭",
-                        &(cui_badge_opts){.tone = (s_model.audio_requested & HOP_AUDIO_SEND) ? CUI_TONE_INFO : CUI_TONE_NEUTRAL});
-                    cui_badge_ex(ui, (s_model.audio_active & HOP_AUDIO_SEND) ? "发送运行中" : "发送未运行",
-                        &(cui_badge_opts){.tone = (s_model.audio_active & HOP_AUDIO_SEND) ? CUI_TONE_SUCCESS : CUI_TONE_NEUTRAL});
-                    cui_badge_ex(ui, (s_model.audio_active & HOP_AUDIO_PLAY) ? "播放运行中" : "播放未运行",
-                        &(cui_badge_opts){.tone = (s_model.audio_active & HOP_AUDIO_PLAY) ? CUI_TONE_SUCCESS : CUI_TONE_NEUTRAL});
-                    if (s_model.connected && s_model.peer_capabilities_known && (s_model.peer_audio_mode & HOP_AUDIO_SEND))
-                        cui_badge_ex(ui, "对端正在发送声音", &(cui_badge_opts){.tone = CUI_TONE_SUCCESS});
+                    if (cui_button_ex(ui, "前往声音设置", &(cui_button_opts){
+                            .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM, .icon = CUI_ICON_VOLUME_2 }))
+                        s_settings.tab = 2;
+                    if (cui_button_ex(ui, "前往键鼠与显示", &(cui_button_opts){
+                            .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM, .icon = CUI_ICON_MONITOR }))
+                        s_settings.tab = 1;
                 }
+            }
+        }
+    }
+}
+
+static void apply_audio_direction(int dir) {
+    unsigned next = audio_dir_to_mode(dir);
+    s_settings.audio_dir = dir;
+    s_settings.cfg.audio_mode = next;
+    s_model.config.audio_mode = next;
+    if (s_ops && s_ops->set_audio_mode) {
+        s_ops->set_audio_mode(next);
+        if (next == HOP_AUDIO_SEND) {
+            ui_toast("声音流向已切换",
+                s_model.connected ? "本机开始发送系统声音，对端已自动切换为接收播放。"
+                                  : "已设为本机发送系统声音，连接建立后生效。",
+                CUI_TONE_SUCCESS);
+        } else if (next == HOP_AUDIO_PLAY) {
+            ui_toast("声音流向已切换",
+                s_model.connected ? "本机开始播放对端声音，对端已自动切换为发送声音。"
+                                  : "已设为本机播放对端声音，连接建立后生效。",
+                CUI_TONE_SUCCESS);
+        } else {
+            ui_toast("声音共享已关闭",
+                s_model.connected ? "本机与对端均已关闭声音转发。" : "已关闭本机声音转发。",
+                CUI_TONE_INFO);
+        }
+    } else {
+        settings_mark_dirty();
+    }
+}
+
+static void draw_settings_audio(cui_ctx *ui) {
+    const char *peer_audio_text = "对端状态未知";
+    cui_tone peer_audio_tone = CUI_TONE_NEUTRAL;
+    if (s_model.connected && s_model.peer_capabilities_known) {
+        if (s_model.peer_audio_mode == HOP_AUDIO_SEND) {
+            peer_audio_text = "对端：发送声音";
+            peer_audio_tone = CUI_TONE_INFO;
+        } else if (s_model.peer_audio_mode == HOP_AUDIO_PLAY) {
+            peer_audio_text = "对端：接收播放";
+            peer_audio_tone = CUI_TONE_INFO;
+        } else if (s_model.peer_audio_mode == HOP_AUDIO_MODES) {
+            peer_audio_text = "对端：发送 + 播放（旧版）";
+            peer_audio_tone = CUI_TONE_WARNING;
+        } else {
+            peer_audio_text = "对端：已关闭";
+            peer_audio_tone = CUI_TONE_NEUTRAL;
+        }
+    } else if (!s_model.connected) {
+        peer_audio_text = "对端：未连接";
+    }
+
+    cui_column(ui, .width = CUI_FILL, .gap = 14) {
+        cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 12) {
+            cui_row(ui, .width = CUI_FILL, .justify = CUI_JUSTIFY_BETWEEN, .align = CUI_ALIGN_CENTER) {
+                cui_heading(ui, "声音共享流向", 3);
+                cui_badge_ex(ui, audio_direction_summary(),
+                    &(cui_badge_opts){.tone = audio_direction_tone(), .dot = true});
+            }
+            cui_secondary(ui, "选择声音传输方向后即时生效并自动保存；已连接时对端会自动切换到互补角色，避免两边同时发送或回声循环。");
+            if (cui_segmented_ex(ui, "setting-audio-direction", k_audio_directions, 3,
+                    &s_settings.audio_dir,
+                    &(cui_segmented_opts){.full_width = true, .icons = k_audio_direction_icons})) {
+                apply_audio_direction(s_settings.audio_dir);
+            }
+
+            cui_row(ui, .width = CUI_FILL, .gap = 8, .wrap = true) {
+                cui_badge_ex(ui,
+                    s_settings.audio_dir == 1 ? "本机：发送到对端" :
+                    (s_settings.audio_dir == 2 ? "本机：播放对端声音" : "本机：关闭"),
+                    &(cui_badge_opts){.tone = s_settings.audio_dir ? CUI_TONE_INFO : CUI_TONE_NEUTRAL});
+                cui_badge_ex(ui, peer_audio_text, &(cui_badge_opts){.tone = peer_audio_tone});
+                cui_badge_ex(ui,
+                    s_model.audio_active ? "音频通道运行中" : "音频通道空闲",
+                    &(cui_badge_opts){.tone = s_model.audio_active ? CUI_TONE_SUCCESS : CUI_TONE_NEUTRAL});
+                if (s_model.audio_unavailable) {
+                    cui_badge_ex(ui, "音频设备或权限不可用", &(cui_badge_opts){.tone = CUI_TONE_WARNING});
+                }
+            }
+
+            cui_separator(ui);
+#ifdef _WIN32
+            cui_muted(ui, "Windows 使用系统进程回环采集系统声音（自动排除 HopDesk 自身播放），端口配置位于「连接与外观」。");
+#else
+            cui_muted(ui, "macOS 发送本机系统声音需要 macOS 14.2+ 并在「系统设置 → 隐私与安全性 → 录屏与系统录音」中允许 HopDesk；仅播放对端声音无需额外权限。");
+#endif
+        }
+
+        cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 10) {
+            if (cui_accordion_begin(ui, "高级音频参数（心跳间隔 / 断流超时 / 发送阻塞上限）", &s_settings.audio_adv_open)) {
+                cui_secondary(ui, "修改后点击顶部「保存设置」生效（断流超时需大于心跳间隔）。");
+                cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_START) {
+                    if (cui_number_ex(ui, "setting-audio-keepalive", &s_settings.audio_keepalive_ms, 200, 10000,
+                        &(cui_number_opts){.label = "音频心跳间隔", .step = 100, .decimals = 0, .suffix = "ms", .width = CUI_GROW(1)}))
+                        settings_mark_dirty();
+                    if (cui_number_ex(ui, "setting-audio-timeout", &s_settings.audio_peer_timeout_ms, 500, 30000,
+                        &(cui_number_opts){.label = "音频断流超时", .step = 200, .decimals = 0, .suffix = "ms", .width = CUI_GROW(1)}))
+                        settings_mark_dirty();
+                    if (cui_number_ex(ui, "setting-audio-send-limit", &s_settings.audio_send_limit_ms, 20, 2000,
+                        &(cui_number_opts){.label = "发送阻塞上限", .step = 20, .decimals = 0, .suffix = "ms", .width = CUI_GROW(1)}))
+                        settings_mark_dirty();
+                }
+                cui_accordion_end(ui);
             }
         }
     }
@@ -1614,8 +1760,9 @@ static void draw_settings(cui_ctx *ui) {
     if (!s_settings.loaded) settings_load();
     switch (s_settings.tab) {
         case 1: draw_settings_input_and_display(ui); break;
-        case 2: draw_settings_transfer(ui); break;
-        case 3: draw_settings_maintenance(ui); break;
+        case 2: draw_settings_audio(ui); break;
+        case 3: draw_settings_transfer(ui); break;
+        case 4: draw_settings_maintenance(ui); break;
         default: draw_settings_connection_and_appearance(ui); break;
     }
 }
@@ -1672,6 +1819,11 @@ void hopdesk_ui_frame(cui_ctx *ui) {
         s_settings.cfg.input_mode = s_model.config.input_mode & HOP_INPUT_MODES;
         s_settings.provide_mouse = (s_settings.cfg.input_mode & HOP_INPUT_MOUSE) != 0;
         s_settings.provide_keyboard = (s_settings.cfg.input_mode & HOP_INPUT_KEYBOARD) != 0;
+    }
+    if (s_settings.loaded && !s_settings.saving &&
+        s_model.config.audio_mode != s_settings.cfg.audio_mode) {
+        s_settings.cfg.audio_mode = s_model.config.audio_mode & HOP_AUDIO_MODES;
+        s_settings.audio_dir = audio_mode_to_dir(s_settings.cfg.audio_mode);
     }
     for (int i = 0; i < s_model.task_count; ++i)
         if (s_model.tasks[i].id == s_selected_task) { found = 1; break; }

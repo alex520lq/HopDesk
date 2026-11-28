@@ -228,12 +228,39 @@ void net_get_peer_capabilities(unsigned *peer_input, unsigned *peer_audio, int *
     }
 }
 
-void net_send_capabilities(unsigned takeover_mask) {
+void net_send_capabilities_ex(unsigned takeover_mask, unsigned flags) {
     uint8_t payload[HOP_CAPABILITIES_BYTES];
     unsigned local_input = net_get_input_mode();
-    if (hop_capabilities_encode(payload, local_input, takeover_mask & HOP_INPUT_MODES,
-                                g_mac.cfg.audio_mode & HOP_AUDIO_MODES))
+    if (hop_capabilities_encode_ex(payload, local_input, takeover_mask & HOP_INPUT_MODES,
+                                   g_mac.cfg.audio_mode & HOP_AUDIO_MODES, flags))
         (void)net_send(HOP_MSG_CAPABILITIES, payload, sizeof(payload));
+}
+
+void net_send_capabilities(unsigned takeover_mask) {
+    net_send_capabilities_ex(takeover_mask, 0u);
+}
+
+void net_apply_audio_mode(unsigned mode, int sync_peer, int persist) {
+    mode &= HOP_AUDIO_MODES;
+    g_mac.cfg.audio_mode = mode;
+    hop_config runtime = g_mac.cfg;
+    (void)hop_audio_set_mode(&runtime, mode);
+    if (persist && g_mac.config_path[0]) {
+        hop_config saved = g_mac.cfg;
+        (void)hop_config_load(&saved, g_mac.config_path);
+        saved.audio_mode = mode;
+        (void)hop_config_save_atomic(&saved, g_mac.config_path);
+    }
+    if (sync_peer) {
+        uint8_t payload[HOP_CAPABILITIES_BYTES];
+        unsigned local_input = net_get_input_mode();
+        int sent = hop_capabilities_encode_ex(payload, local_input, 0u, mode, HOP_CAP_FLAG_AUDIO_SYNC) &&
+                   net_send(HOP_MSG_CAPABILITIES, payload, sizeof(payload));
+        atomic_store_explicit(&s_pending_audio_sync, sent ? 0 : 1, memory_order_release);
+    } else {
+        atomic_store_explicit(&s_pending_audio_sync, 0, memory_order_release);
+        net_send_capabilities_ex(0u, 0u);
+    }
 }
 
 void net_apply_input_mode(unsigned mode, unsigned takeover_mask, int persist) {
@@ -253,11 +280,14 @@ void net_apply_input_mode(unsigned mode, unsigned takeover_mask, int persist) {
 static void set_connected(int on) {
     clipboard_on_link(on);
     if (on) {
+        int sync_audio = atomic_exchange_explicit(&s_pending_audio_sync, 0, memory_order_acq_rel);
+        atomic_store_explicit(&s_audio_sync_on_connect, sync_audio, memory_order_release);
         atomic_store_explicit(&s_peer_caps_known, 0, memory_order_release);
         atomic_store_explicit(&s_peer_input_mode, 0, memory_order_release);
         atomic_store_explicit(&s_peer_audio_mode, 0, memory_order_release);
-        net_send_capabilities(0);
+        net_send_capabilities_ex(0u, sync_audio ? HOP_CAP_FLAG_AUDIO_SYNC : 0u);
     } else {
+        atomic_store_explicit(&s_audio_sync_on_connect, 0, memory_order_release);
         atomic_store_explicit(&s_peer_caps_known, 0, memory_order_release);
         atomic_store_explicit(&s_peer_input_mode, 0, memory_order_release);
         atomic_store_explicit(&s_peer_audio_mode, 0, memory_order_release);

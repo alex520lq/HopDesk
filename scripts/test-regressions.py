@@ -224,10 +224,15 @@ int main(void) {
     assert 'SPLIT_IPC_INPUT_MODE_SET' in (ROOT/'src/mac/split_agent.m').read_text(encoding='utf-8')
     assert 'split_ui_set_input_mode' in mac_ui and 'split_ui_get_capabilities' in mac_ui
 
-    # The same settings UI exposes independent send/play audio capabilities,
-    # and config saves route through each platform's owning agent IPC.
+    # Dedicated Audio settings tab exposes a mutually-exclusive 3-way direction
+    # selector with immediate hot-apply and peer capability sync on both platforms.
     assert 'HOP_AUDIO_SEND' in ui and 'HOP_AUDIO_PLAY' in ui
-    assert '"发送本机系统声音"' in ui and '"播放对端系统声音"' in ui
+    assert '"声音"' in ui and '"发送到对端"' in ui and '"本机播放对端"' in ui
+    assert 'IPC_AUDIO_MODE' in win_split and 'win_split_set_audio_mode' in win_ui
+    assert 'SPLIT_IPC_AUDIO_MODE_SET' in (ROOT/'src/mac/split_agent.m').read_text(encoding='utf-8')
+    assert 'split_ui_set_audio_mode' in mac_ui
+    assert 'hop_audio_reconcile' in (ROOT/'src/win/win_main.c').read_text(encoding='utf-8')
+    assert 'hop_audio_reconcile' in (ROOT/'src/mac/net_client_protocol.inc').read_text(encoding='utf-8')
     assert 'split_ui_save_config' in mac_ui and 'SPLIT_IPC_CONFIG_SAVE' in (ROOT/'src/mac/split_ipc.h').read_text(encoding='utf-8')
     assert 'win_apply_hot_config' in win_split and 'hop_audio_set_mode' in (ROOT/'src/win/win_main.c').read_text(encoding='utf-8')
     assert 'hop_config_validate' in ui and 'hop_config_validate' in win_split

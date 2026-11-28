@@ -286,6 +286,23 @@ static void test_dual_roles(void) {
         CHECK(hop_input_reconcile(HOP_INPUT_MODES, HOP_INPUT_MODES, 0, HOP_ROLE_SERVER) == HOP_INPUT_MODES);
         /* Non-overlapping capabilities stay intact on both sides. */
         CHECK(hop_input_reconcile(HOP_INPUT_MOUSE, HOP_INPUT_KEYBOARD, 0, HOP_ROLE_CLIENT) == HOP_INPUT_MOUSE);
+
+        /* Audio capability sync flag codec & reconciliation. */
+        CHECK(hop_capabilities_encode_ex(wire, HOP_INPUT_MOUSE, 0, HOP_AUDIO_SEND, HOP_CAP_FLAG_AUDIO_SYNC) == HOP_CAPABILITIES_BYTES);
+        CHECK(hop_capabilities_decode(wire, sizeof(wire), &decoded));
+        CHECK(decoded.audio_mode == HOP_AUDIO_SEND && decoded.flags == HOP_CAP_FLAG_AUDIO_SYNC);
+        /* Explicit peer audio direction change assigns complementary role (or both off). */
+        CHECK(hop_audio_reconcile(0, HOP_AUDIO_SEND, HOP_CAP_FLAG_AUDIO_SYNC, HOP_ROLE_SERVER, 0) == HOP_AUDIO_PLAY);
+        CHECK(hop_audio_reconcile(HOP_AUDIO_SEND, HOP_AUDIO_SEND, HOP_CAP_FLAG_AUDIO_SYNC, HOP_ROLE_SERVER, 0) == HOP_AUDIO_PLAY);
+        CHECK(hop_audio_reconcile(0, HOP_AUDIO_PLAY, HOP_CAP_FLAG_AUDIO_SYNC, HOP_ROLE_CLIENT, 0) == HOP_AUDIO_SEND);
+        CHECK(hop_audio_reconcile(HOP_AUDIO_SEND, 0, HOP_CAP_FLAG_AUDIO_SYNC, HOP_ROLE_SERVER, 0) == 0);
+        /* Simultaneous offline audio sync race resolves deterministically: server keeps, client yields. */
+        CHECK(hop_audio_reconcile(HOP_AUDIO_SEND, HOP_AUDIO_SEND, HOP_CAP_FLAG_AUDIO_SYNC, HOP_ROLE_SERVER, 1) == HOP_AUDIO_SEND);
+        CHECK(hop_audio_reconcile(HOP_AUDIO_SEND, HOP_AUDIO_SEND, HOP_CAP_FLAG_AUDIO_SYNC, HOP_ROLE_CLIENT, 1) == HOP_AUDIO_PLAY);
+        /* Passive reconnect SEND+SEND yields on dialing side; PLAY+PLAY never forces capture. */
+        CHECK(hop_audio_reconcile(HOP_AUDIO_SEND, HOP_AUDIO_SEND, 0, HOP_ROLE_CLIENT, 0) == HOP_AUDIO_PLAY);
+        CHECK(hop_audio_reconcile(HOP_AUDIO_SEND, HOP_AUDIO_SEND, 0, HOP_ROLE_SERVER, 0) == HOP_AUDIO_SEND);
+        CHECK(hop_audio_reconcile(HOP_AUDIO_PLAY, HOP_AUDIO_PLAY, 0, HOP_ROLE_CLIENT, 0) == HOP_AUDIO_PLAY);
     }
     CHECK(hop_mac_to_vk(0x00)=='A');
     CHECK(hop_mac_to_vk(0x37)==0xA2); /* Cmd -> Windows Ctrl */

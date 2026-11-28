@@ -31,7 +31,9 @@ void net_set_disconnected(int disconnected); /* pause/resume control & data link
 int  net_is_disconnected(void);
 int  net_protocol_mismatch(void);
 void net_send_capabilities(unsigned takeover_mask);
+void net_send_capabilities_ex(unsigned takeover_mask, unsigned flags);
 void net_apply_input_mode(unsigned mode, unsigned takeover_mask, int persist);
+void net_apply_audio_mode(unsigned mode, int sync_peer, int persist);
 unsigned net_get_input_mode(void);
 void net_get_peer_capabilities(unsigned *peer_input, unsigned *peer_audio, int *known,
                                char *peer_name, size_t peer_name_cap);

@@ -268,13 +268,8 @@ static void serve(int fd) {
     case SPLIT_IPC_AUDIO_MODE_SET: {
         split_ipc_result result = {0};
         if (query.index >= 0 && !((unsigned)query.index & ~HOP_AUDIO_MODES)) {
-            hop_config runtime = g_mac.cfg;
-            runtime.audio_mode = (unsigned)query.index;
-            if (hop_audio_set_mode(&runtime, runtime.audio_mode)) {
-                g_mac.cfg.audio_mode = runtime.audio_mode;
-                net_send_capabilities(0);
-                result.result = 1;
-            }
+            net_apply_audio_mode((unsigned)query.index, 1, 1);
+            result.result = 1;
         }
         (void)reply(fd, &header, true, &result, sizeof(result), NULL, 0, deadline);
         return;

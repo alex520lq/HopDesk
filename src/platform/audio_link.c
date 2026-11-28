@@ -332,12 +332,12 @@ static void stream(const audio_connection *c, const hop_config *cfg) {
     if (audio) hop_native_audio_close(audio);
 }
 
-static void run_worker(const hop_config *cfg) {
+static void run_worker(void) {
     audio_socket listener = BAD_SOCKET;
     int reported_bind = 0;
-    uint16_t port = cfg_audio_port(cfg);
     for (;;) {
         lock_state();
+        hop_config cfg = s_cfg;
         audio_connection c = {.socket = BAD_SOCKET, .revision = s_revision, .requested = s_status.requested};
         if (!c.requested) {
             if (listener != BAD_SOCKET) close_socket(listener);
@@ -347,6 +347,7 @@ static void run_worker(const hop_config *cfg) {
             return;
         }
         unlock_state();
+        uint16_t port = cfg_audio_port(&cfg);
         if (!hop_session_current(&c.session)) {
             if (listener != BAD_SOCKET) {
                 close_socket(listener);
@@ -355,7 +356,7 @@ static void run_worker(const hop_config *cfg) {
             pause_ms(100);
             continue;
         }
-        if (cfg->role == HOP_ROLE_SERVER) {
+        if (cfg.role == HOP_ROLE_SERVER) {
             if (listener == BAD_SOCKET) listener = open_listener(port);
             if (listener == BAD_SOCKET) {
                 mark_unavailable(&c, c.requested);
@@ -372,13 +373,13 @@ static void run_worker(const hop_config *cfg) {
             reported_bind = 0;
             if (wait_socket(listener, 0, 100) > 0) c.socket = accept(listener, NULL, NULL);
             if (c.socket == BAD_SOCKET) continue;
-            if (configure_connection(c.socket)) stream(&c, cfg);
+            if (configure_connection(c.socket)) stream(&c, &cfg);
         } else {
-            c.socket = open_client(&c, cfg->peer_host, port);
-            if (c.socket != BAD_SOCKET) stream(&c, cfg);
+            c.socket = open_client(&c, cfg.peer_host, port);
+            if (c.socket != BAD_SOCKET) stream(&c, &cfg);
         }
         if (c.socket != BAD_SOCKET) close_socket(c.socket);
-        if (cfg->role == HOP_ROLE_CLIENT) pause_ms(RETRY_MS);
+        if (cfg.role == HOP_ROLE_CLIENT) pause_ms(RETRY_MS);
     }
 }
 
@@ -388,8 +389,7 @@ static DWORD WINAPI audio_worker(void *unused) {
 static void *audio_worker(void *unused) {
 #endif
     (void)unused;
-    hop_config cfg = s_cfg; /* Published before starting the worker. */
-    run_worker(&cfg);
+    run_worker();
     return 0;
 }
 
@@ -401,14 +401,22 @@ int hop_audio_set_mode(const hop_config *cfg, unsigned mode) {
         return 0;
     }
     lock_state();
-    if (mode != s_status.requested) {
+    int tuning_changed = 0;
+    if (cfg) {
+        if (s_worker &&
+            (cfg_audio_keepalive_ms(cfg) != cfg_audio_keepalive_ms(&s_cfg) ||
+             cfg_audio_peer_timeout_ms(cfg) != cfg_audio_peer_timeout_ms(&s_cfg) ||
+             cfg_audio_send_limit_ms(cfg) != cfg_audio_send_limit_ms(&s_cfg)))
+            tuning_changed = 1;
+        s_cfg = *cfg;
+    }
+    if (mode != s_status.requested || (mode && tuning_changed)) {
         s_status.requested = mode;
         s_status.active = 0;
         s_status.unavailable = 0;
         ++s_revision;
     }
     if (mode && !s_worker) {
-        s_cfg = *cfg;
 #if defined(_WIN32)
         HANDLE thread = CreateThread(NULL, 0, audio_worker, NULL, 0, NULL);
         if (thread) CloseHandle(thread);

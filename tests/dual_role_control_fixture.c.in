@@ -10,7 +10,7 @@ static struct {hop_config cfg;double screen_w,screen_h;} g_mac;
 static int s_authed,s_rejected,s_manual_disconnect,connected,injected,returned,clip_applied,inject_resets,status_sharing;
 static int clip_offer_received,clip_offer_clear_received,clip_paste_request_received,clip_paste_failed_received;
 static unsigned s_local_input_mode,s_peer_input_mode,s_peer_audio_mode;
-static int s_peer_caps_known,s_protocol_mismatch,s_lock;
+static int s_peer_caps_known,s_protocol_mismatch,s_audio_sync_on_connect,s_lock;
 static char s_peer_name[HOP_NAME_MAX];
 #define atomic_load(p) (*(p))
 #define atomic_store(p, v) (*(p) = (v))

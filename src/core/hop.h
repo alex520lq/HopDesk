@@ -466,7 +466,8 @@ int hop_capabilities_decode(const uint8_t *p, uint32_t len, hop_capabilities_msg
 unsigned hop_input_reconcile(unsigned local_input, unsigned peer_input,
                              unsigned takeover_mask, hop_role local_role);
 unsigned hop_audio_reconcile(unsigned local_audio, unsigned peer_audio,
-                             unsigned flags, hop_role local_role);
+                             unsigned flags, hop_role local_role,
+                             int local_sync_race);
 
 /* HELLO: {tlen, token, nlen, name, w(4), h(4), ver(1)}；指针指向 payload 内部 */
 typedef struct {

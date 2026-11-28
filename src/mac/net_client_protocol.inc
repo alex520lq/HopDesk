@@ -87,8 +87,10 @@ static void dispatch_message(void *user, uint8_t type, const uint8_t *p, uint32_
                             local_input, next);
                     net_apply_input_mode(next, 0, 1);
                 }
+                int sync_race = atomic_load(&s_audio_sync_on_connect);
+                atomic_store(&s_audio_sync_on_connect, 0);
                 unsigned next_audio = hop_audio_reconcile(g_mac.cfg.audio_mode, msg.audio_mode,
-                                                          msg.flags, g_mac.cfg.role);
+                                                          msg.flags, g_mac.cfg.role, sync_race);
                 if (next_audio != g_mac.cfg.audio_mode) {
                     hop_log(HOP_LOG_INFO, "audio: peer capability sync adjusted local audio_mode %u -> %u",
                             g_mac.cfg.audio_mode, next_audio);

@@ -160,10 +160,13 @@ unsigned hop_input_reconcile(unsigned local_input, unsigned peer_input,
 }
 
 unsigned hop_audio_reconcile(unsigned local_audio, unsigned peer_audio,
-                             unsigned flags, hop_role local_role) {
+                             unsigned flags, hop_role local_role,
+                             int local_sync_race) {
     unsigned local = local_audio & HOP_AUDIO_MODES;
     unsigned remote = peer_audio & HOP_AUDIO_MODES;
     if (flags & HOP_CAP_FLAG_AUDIO_SYNC) {
+        if (local_sync_race && local_role == HOP_ROLE_SERVER)
+            return local;
         if (remote == HOP_AUDIO_SEND) return HOP_AUDIO_PLAY;
         if (remote == HOP_AUDIO_PLAY) return HOP_AUDIO_SEND;
         if (remote == 0u) return 0u;

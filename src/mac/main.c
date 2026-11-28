@@ -85,7 +85,7 @@ int mac_apply_hot_config(const hop_config *next) {
     hop_config runtime = g_mac.cfg;
     int ok = hop_audio_set_mode(&runtime, runtime.audio_mode);
     if (next_audio != prev_audio)
-        net_send_capabilities_ex(0u, HOP_CAP_FLAG_AUDIO_SYNC);
+        net_apply_audio_mode(next_audio, 1, 0);
     else if (next_input == prev_input)
         net_send_capabilities(0);
     return ok;

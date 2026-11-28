@@ -21,6 +21,8 @@
 
 win_app g_app;
 static int s_ui_guard;
+static int s_pending_audio_sync;
+static int s_audio_sync_on_connect;
 
 /* 声明为 PerMonitorV2 DPI aware：统一使用物理像素，避免坐标虚拟化混乱。
  * 必须在创建任何窗口 / 取坐标之前调用。 */
@@ -69,7 +71,17 @@ void win_apply_audio_mode(unsigned mode, int sync_peer, int persist) {
         saved.audio_mode = mode;
         (void)hop_config_save_atomic(&saved, g_app.config_path);
     }
-    win_send_capabilities_ex(0u, sync_peer ? HOP_CAP_FLAG_AUDIO_SYNC : 0u);
+    if (sync_peer) {
+        if (g_app.net && net_server_has_client(g_app.net)) {
+            s_pending_audio_sync = 0;
+            win_send_capabilities_ex(0u, HOP_CAP_FLAG_AUDIO_SYNC);
+        } else {
+            s_pending_audio_sync = 1;
+        }
+    } else {
+        s_pending_audio_sync = 0;
+        win_send_capabilities_ex(0u, 0u);
+    }
     ui_refresh(&g_app);
 }
 
@@ -139,7 +151,12 @@ int win_apply_hot_config(const hop_config *next) {
         win_apply_input_mode(next_input, takeover, 0);
     if (next_audio != prev_audio) {
         (void)hop_audio_set_mode(&g_app.cfg, next_audio);
-        win_send_capabilities_ex(0u, HOP_CAP_FLAG_AUDIO_SYNC);
+        if (g_app.net && net_server_has_client(g_app.net)) {
+            s_pending_audio_sync = 0;
+            win_send_capabilities_ex(0u, HOP_CAP_FLAG_AUDIO_SYNC);
+        } else {
+            s_pending_audio_sync = 1;
+        }
     } else if (next_input == prev_input) {
         win_send_capabilities(0);
     }
@@ -150,13 +167,17 @@ int win_apply_hot_config(const hop_config *next) {
 static void on_link(int up) {
     clip_on_link(up != 0);
     if (up) {
+        int sync_audio = s_pending_audio_sync;
+        s_pending_audio_sync = 0;
+        s_audio_sync_on_connect = sync_audio;
         g_app.peer_capabilities_known = 0;
         g_app.peer_input_mode = 0;
         g_app.peer_audio_mode = 0;
         if (up == 2 && g_app.state == HOP_LINK_SHARING) capture_set_sharing(0);
         if (g_app.state == HOP_LINK_DOWN) g_app.state = HOP_LINK_LOCAL;
-        win_send_capabilities(0);
+        win_send_capabilities_ex(0u, sync_audio ? HOP_CAP_FLAG_AUDIO_SYNC : 0u);
     } else {
+        s_audio_sync_on_connect = 0;
         g_app.peer_capabilities_known = 0;
         g_app.peer_input_mode = 0;
         g_app.peer_audio_mode = 0;
@@ -202,8 +223,10 @@ static void on_capabilities(const uint8_t *p, uint32_t len) {
         win_apply_input_mode(next_input, 0, 1);
         changed = 1;
     }
+    int sync_race = s_audio_sync_on_connect;
+    s_audio_sync_on_connect = 0;
     next_audio = hop_audio_reconcile(g_app.cfg.audio_mode, msg.audio_mode,
-                                     msg.flags, g_app.cfg.role);
+                                     msg.flags, g_app.cfg.role, sync_race);
     if (next_audio != g_app.cfg.audio_mode) {
         hop_log(HOP_LOG_INFO, "audio: peer capability sync adjusted local audio_mode %u -> %u",
                 g_app.cfg.audio_mode, next_audio);

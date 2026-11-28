@@ -162,6 +162,8 @@ jobs:
       - name: Verify macOS app and shared branding
         run: |
           bash -n scripts/update-macos.command
+          bash -n scripts/install-macos.command
+          sh -n scripts/install-launchagent.command
           test -d build/HopDesk.app
           test -x build/HopDesk.app/Contents/MacOS/HopDesk
           plutil -lint build/HopDesk.app/Contents/Info.plist

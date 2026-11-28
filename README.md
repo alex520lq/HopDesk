@@ -155,7 +155,7 @@ pwsh scripts/build-win.ps1 -Compiler msvc
 
 1. 登录有权访问源码仓库的 GitHub 账号，打开 [Build HopDesk](https://github.com/alex520lq/HopDesk/actions/workflows/build.yml)，选择 `main` 上最近一次成功的构建，在 **Artifacts** 下载 `hopdesk-macos`。
 2. 解压下载的文件，再解压里面的 `HopDesk-macOS.zip`。进入包含 `HopDesk.app` 和 `install-macos.command` 的目录。
-3. 如果 HopDesk 正在运行，先从 macOS 菜单栏选择「退出」，然后执行以下命令。安装器会将 App 安装到 `~/Applications/HopDesk.app` 并启动，配置和日志保存在 `~/Library/Application Support/HopDesk`。
+3. 执行以下命令。安装器会自动停止正在运行的旧进程，优先安装到 `/Applications/HopDesk.app`（仅 `/Applications` 不可写时回退到 `~/Applications/HopDesk.app`），自动清理 `~/Applications/HopDesk.app` 重复旧副本；如果本机已有固定签名证书（现有 `/Applications/HopDesk.app` 的证书或钥匙串中的 `HopDesk Local Signing`，也可通过 `HOPDESK_CODESIGN_IDENTITY` 指定），会自动沿用同一签名以保留系统权限。配置和日志保存在 `~/Library/Application Support/HopDesk`。
 
    ```sh
    bash ./install-macos.command
@@ -326,7 +326,7 @@ xfer_rate_limit_mib=128
   当前用户登录后由计划任务启动 supervisor，异常退出后按 2–30 秒退避重启；
   托盘正常退出（退出码 0）不重启，直到下次登录。卸载用 `-Uninstall`。
 - macOS：先运行 `install-macos.command` 安装 App，再运行安装包中的
-  `install-launchagent.command`；默认启动 `~/Applications/HopDesk.app`（与现有安装器一致），也可传自定义 App 路径。
+  `install-launchagent.command`；默认启动 `/Applications/HopDesk.app`（不存在时回退 `~/Applications/HopDesk.app`），也可传自定义 App 路径。
   创建当前用户的 `com.hopdesk.agent` LaunchAgent，异常退出由 launchd 重启，正常退出不重启。
   卸载用 `sh install-launchagent.command --uninstall`。
 

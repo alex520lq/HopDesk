@@ -57,6 +57,24 @@ static void apply_theme(int ui_theme, int persist) {
     }
 }
 
+static void detect_win_system_lang(void) {
+    hop_i18n_set_system_lang(
+        PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE ? HOP_LANG_ZH_CN : HOP_LANG_EN);
+}
+
+static void apply_lang(int ui_lang, int persist) {
+    if (ui_lang < HOP_LANG_AUTO || ui_lang > HOP_LANG_EN)
+        ui_lang = HOP_LANG_AUTO;
+    detect_win_system_lang();
+    hop_i18n_set_lang(ui_lang);
+    s_ui_config.ui_lang = ui_lang;
+    if (persist) {
+        (void)win_split_set_lang(ui_lang);
+        s_last_snapshot = 0;
+    }
+    hopdesk_ui_refresh();
+}
+
 static cui_renderer_kind select_renderer(void) {
     const char *env = getenv("CUI_RENDERER");
     if (env && (strcmp(env, "gpu") == 0 || strcmp(env, "d3d12") == 0))
@@ -77,16 +95,16 @@ static void collect_save(void) {
     if (s_save_result) s_ui_config = s_save_config;
     s_last_snapshot = 0;
     hopdesk_ui_save_complete(s_save_result != 0, s_save_result == 1
-        ? "设置已保存。键鼠与声音能力已即时应用；连接方式、端口与认证参数重启后生效。"
-        : s_save_result == 2 ? "设置已保存，但音频后台未能启动。请查看日志。"
-        : "后台保存未确认；请重新打开界面核对配置。");
+        ? hop_tr(HOP_STR_SAVE_OK)
+        : s_save_result == 2 ? hop_tr(HOP_STR_SAVE_AUDIO_WARN)
+        : hop_tr(HOP_STR_SAVE_UNCONFIRMED));
 }
 static void save_config(const hop_config *config) {
     if (!config || s_save_thread) return;
     s_save_config = *config;
     s_save_result = 0;
     s_save_thread = CreateThread(NULL, 0, save_config_worker, NULL, 0, NULL);
-    if (!s_save_thread) hopdesk_ui_save_complete(0, "无法启动设置保存线程。");
+    if (!s_save_thread) hopdesk_ui_save_complete(0, hop_tr(HOP_STR_SAVE_THREAD_FAILED));
 }
 static void snapshot_model(hopdesk_ui_model *model, hop_xfer_task_id selected_task,
                            uint32_t file_offset) {
@@ -104,6 +122,10 @@ static void snapshot_model(hopdesk_ui_model *model, hop_xfer_task_id selected_ta
     s_last_snapshot = now; s_last_task = selected_task; s_last_offset = file_offset;
     if (win_split_snapshot(model, selected_task, file_offset, &page)) {
         s_ui_config = model->config;
+        if (model->config.ui_lang != hop_i18n_get_config_lang()) {
+            detect_win_system_lang();
+            hop_i18n_set_lang(model->config.ui_lang);
+        }
         s_failed_snapshots = 0;
         if (page >= 0 && page < HOPDESK_UI_PAGE_COUNT) hopdesk_ui_show_page(page);
     } else {
@@ -284,6 +306,7 @@ static const hopdesk_ui_ops k_ui_ops = {
     load_cjk_font,
     release_cjk_font,
     apply_theme,
+    apply_lang,
     set_input_mode,
     set_audio_mode,
     set_autostart,
@@ -325,6 +348,8 @@ void main_ui_show_page(int page) {
     s_failed_snapshots = 0;
     s_was_foreground = 0;
     s_last_theme = -1;
+    detect_win_system_lang();
+    hop_i18n_set_lang(s_ui_config.ui_lang);
     hopdesk_ui_set_ops(&k_ui_ops);
     hopdesk_ui_show_page(page);
     memset(&desc, 0, sizeof(desc));

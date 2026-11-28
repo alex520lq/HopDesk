@@ -18,7 +18,7 @@
 #ifndef PIPE_REJECT_REMOTE_CLIENTS
 #define PIPE_REJECT_REMOTE_CLIENTS 0x00000008
 #endif
-#define WIN_SPLIT_VERSION 8u
+#define WIN_SPLIT_VERSION 9u
 #define WIN_SPLIT_IO_MS 1500u
 #define WIN_SPLIT_ACTION_MS 5000u
 #define WIN_SPLIT_ADDR_TTL_MS 10000u
@@ -27,7 +27,7 @@
 enum { IPC_SNAPSHOT = 1, IPC_SAVE, IPC_CANCEL, IPC_RETRY,
        IPC_RECONNECT, IPC_DISCONNECT, IPC_DISPLAY, IPC_UPDATE,
        IPC_INPUT_MODE, IPC_AUDIO_MODE, IPC_AUTOSTART, IPC_PERM_ACTION,
-       IPC_THEME, IPC_CLI_STATUS, IPC_CLI_CONFIG_GET, IPC_CLI_RELOAD };
+       IPC_THEME, IPC_LANG, IPC_CLI_STATUS, IPC_CLI_CONFIG_GET, IPC_CLI_RELOAD };
 typedef struct {
     uint32_t version, op;
     uint64_t task;
@@ -188,10 +188,12 @@ static void agent_snapshot(hopdesk_ui_model *model,
         snprintf(model->peer_label, sizeof(model->peer_label), "%s", g_app.peer_name);
     else if (model->config.role == HOP_ROLE_CLIENT)
         snprintf(model->peer_label, sizeof(model->peer_label), "%s",
-            model->config.peer_host[0] ? model->config.peer_host : "对端地址未配置");
+            model->config.peer_host[0] ? model->config.peer_host : hop_tr(HOP_STR_PEER_UNCONFIGURED));
     else
         snprintf(model->peer_label, sizeof(model->peer_label), "%s",
-            model->connected ? "已连接的对端设备" : (model->manually_disconnected ? "已手动断开" : "等待对端连接"));
+            model->connected ? hop_tr(HOP_STR_PEER_CONNECTED_DEVICE)
+                             : (model->manually_disconnected ? hop_tr(HOP_STR_PEER_MANUALLY_DISCONNECTED)
+                                                             : hop_tr(HOP_STR_PEER_WAITING)));
 
     {
         hop_audio_status audio = hop_audio_get_status();
@@ -393,6 +395,20 @@ void win_split_agent_dispatch(void) {
             }
             s_agent_config.ui_theme = s_request.action;
             g_app.cfg.ui_theme = s_request.action;
+            s_reply.result = hop_config_save_atomic(&s_agent_config, g_app.config_path) ? 1 : 2;
+        }
+        break;
+    case IPC_LANG:
+        if (s_request.action >= HOP_LANG_AUTO && s_request.action <= HOP_LANG_EN) {
+            if (!s_agent_config_loaded) {
+                s_agent_config = g_app.cfg;
+                (void)hop_config_load(&s_agent_config, g_app.config_path);
+                s_agent_config_loaded = 1;
+            }
+            s_agent_config.ui_lang = s_request.action;
+            g_app.cfg.ui_lang = s_request.action;
+            hop_i18n_set_lang(s_request.action);
+            ui_refresh(&g_app);
             s_reply.result = hop_config_save_atomic(&s_agent_config, g_app.config_path) ? 1 : 2;
         }
         break;
@@ -730,6 +746,10 @@ int win_split_update(int action, int channel) {
 }
 int win_split_set_theme(int ui_theme) {
     ipc_request r = {0}; r.op = IPC_THEME; r.action = ui_theme;
+    return client_call(&r, NULL, 0, NULL);
+}
+int win_split_set_lang(int ui_lang) {
+    ipc_request r = {0}; r.op = IPC_LANG; r.action = ui_lang;
     return client_call(&r, NULL, 0, NULL);
 }
 int win_split_set_input_mode(unsigned input_mode) {

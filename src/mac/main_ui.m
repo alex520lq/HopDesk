@@ -167,10 +167,12 @@ static void snapshot_model(hopdesk_ui_model *model,
             snprintf(model->peer_label, sizeof(model->peer_label), "%s", peer_name);
         else if (model->config.role == HOP_ROLE_CLIENT)
             snprintf(model->peer_label, sizeof(model->peer_label), "%s",
-                model->config.peer_host[0] ? model->config.peer_host : "对端地址未配置");
+                model->config.peer_host[0] ? model->config.peer_host : hop_tr(HOP_STR_PEER_UNCONFIGURED));
         else
             snprintf(model->peer_label, sizeof(model->peer_label), "%s",
-                model->connected ? "已连接的对端设备" : (model->manually_disconnected ? "已手动断开" : "等待对端连接"));
+                model->connected ? hop_tr(HOP_STR_PEER_CONNECTED_DEVICE)
+                                 : (model->manually_disconnected ? hop_tr(HOP_STR_PEER_MANUALLY_DISCONNECTED)
+                                                                 : hop_tr(HOP_STR_PEER_WAITING)));
     }
     model->permissions_known = input_permissions(&post, &listen, &accessibility);
     model->permission_post = post;
@@ -265,7 +267,7 @@ static void snapshot_model(hopdesk_ui_model *model,
 static void save_config(const hop_config *config) {
     hop_config copy;
     if (!config) {
-        hopdesk_ui_save_complete(0, "没有可保存的设置。");
+        hopdesk_ui_save_complete(0, hop_tr(HOP_STR_SAVE_NONE));
         return;
     }
     copy = *config;
@@ -281,14 +283,11 @@ static void save_config(const hop_config *config) {
             if (saved > 0) {
                 s_ui_config = copy;
                 if (saved == 1)
-                    hopdesk_ui_save_complete(1,
-                        "设置已保存。支持热生效的参数已即时应用；连接方式与端口参数重启后生效。");
+                    hopdesk_ui_save_complete(1, hop_tr(HOP_STR_SAVE_OK));
                 else
-                    hopdesk_ui_save_complete(1,
-                        "设置已保存，但后台未能应用声音能力。请确认后台运行；重启后会按已保存配置重试。");
+                    hopdesk_ui_save_complete(1, hop_tr(HOP_STR_SAVE_AUDIO_WARN));
             } else {
-                hopdesk_ui_save_complete(0,
-                    "保存失败；原配置未改变。请检查文件权限和磁盘空间。");
+                hopdesk_ui_save_complete(0, hop_tr(HOP_STR_SAVE_FAILED));
             }
             s_save_pending = 0;
         });
@@ -456,12 +455,43 @@ static void apply_theme(int ui_theme, int persist) {
         hop_config copy = s_ui_config;
         s_save_pending = 1;
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-            (void)hop_config_save_atomic(&copy, g_mac.config_path);
+            if (split_ui_is_active())
+                (void)split_ui_save_config(&copy);
+            else if (hop_config_save_atomic(&copy, g_mac.config_path))
+                (void)mac_apply_hot_config(&copy);
             dispatch_async(dispatch_get_main_queue(), ^{
                 s_save_pending = 0;
             });
         });
     }
+}
+
+static void detect_mac_system_lang(void) {
+    NSArray<NSString *> *langs = [NSLocale preferredLanguages];
+    NSString *first = langs.firstObject;
+    hop_i18n_set_system_lang((first && [first hasPrefix:@"zh"]) ? HOP_LANG_ZH_CN : HOP_LANG_EN);
+}
+
+static void apply_lang(int ui_lang, int persist) {
+    if (ui_lang < HOP_LANG_AUTO || ui_lang > HOP_LANG_EN)
+        ui_lang = HOP_LANG_AUTO;
+    detect_mac_system_lang();
+    hop_i18n_set_lang(ui_lang);
+    s_ui_config.ui_lang = ui_lang;
+    if (persist) {
+        hop_config copy = s_ui_config;
+        s_save_pending = 1;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            if (split_ui_is_active())
+                (void)split_ui_save_config(&copy);
+            else if (hop_config_save_atomic(&copy, g_mac.config_path))
+                (void)mac_apply_hot_config(&copy);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                s_save_pending = 0;
+            });
+        });
+    }
+    hopdesk_ui_refresh();
 }
 
 static const hopdesk_ui_ops k_ui_ops = {
@@ -480,6 +510,7 @@ static const hopdesk_ui_ops k_ui_ops = {
     load_cjk_font,
     release_cjk_font,
     apply_theme,
+    apply_lang,
     set_input_mode,
     set_audio_mode,
     set_autostart,
@@ -514,6 +545,8 @@ void main_ui_show_page(int page) {
         (void)hop_config_load(&s_ui_config, g_mac.config_path);
         s_config_loaded = 1;
     }
+    detect_mac_system_lang();
+    hop_i18n_set_lang(s_ui_config.ui_lang);
     hopdesk_ui_set_ops(&k_ui_ops);
     hopdesk_ui_show_page(page);
     memset(&desc, 0, sizeof(desc));

@@ -5,6 +5,12 @@ HopDesk 采用基于 GitHub Releases 的双通道版本发布体系：
 - **稳定版（`stable`）**：正式发布标签 `vMAJOR.MINOR.PATCH`（例如 `v0.1.0`），更新清单位于 `alex520lq/HopDesk` 仓库 `updates` 分支的 `stable.txt`（并同步 `latest.txt`）。
 - **开发版（`dev`）**：预览/测试标签 `vMAJOR.MINOR.PATCH-dev.N`（例如 `v0.2.0-dev.1`），更新清单位于 `alex520lq/HopDesk` 仓库 `updates` 分支的 `dev.txt`，发布为 GitHub Pre-release，与稳定版互不干扰，客户端可自由双向切换。
 
+## [v0.1.1-dev.4] - 2026-11-28
+
+### 亮点
+- **零依赖中英双语支持（简体中文 + English + 跟随系统）**：基于 `locales/zh-CN.lang` 与 `locales/en.lang`（`key=value` 纯文本）编译内嵌静态字符串表，零额外库、单文件不丢语言包；支持在顶部快捷地球图标或「设置 → 连接与外观」一键即时切换语言并自动保存，同步覆盖主界面、显示器目录与托盘/菜单栏菜单。
+- **界面大幅瘦身（Hover 悬停提示替代大段说明文本）**：将页面副标题、卡片大段说明及开关长解释收拢为轻巧的 `?` 悬停卡片（`cui_hover_card`），需要时鼠标悬停即看，整体界面更加干净克制。
+
 ## [v0.1.1-dev.3] - 2026-11-28
 
 ### 亮点

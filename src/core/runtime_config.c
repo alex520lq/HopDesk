@@ -10,9 +10,10 @@
 void hop_runtime_apply_config(const hop_config *c) {
     if (!c) return;
 
-    /* 1. Logging */
+    /* 1. Logging & UI language */
     hop_log_configure((hop_log_level)c->log_level,
                       (long)c->log_rotate_mb * 1024L * 1024L);
+    hop_i18n_set_lang(c->ui_lang);
 
     /* 2. Keymap modifiers */
     hop_keymap_configure(c->mod_ctrl, c->mod_alt, c->mod_win);

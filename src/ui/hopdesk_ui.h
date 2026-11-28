@@ -113,6 +113,7 @@ typedef struct hopdesk_ui_ops {
     cui_font (*load_cjk_font)(cui_ctx *ui);
     void (*release_cjk_font)(void);
     void (*apply_theme)(int ui_theme, int persist);
+    void (*apply_lang)(int ui_lang, int persist);
     void (*set_input_mode)(unsigned input_mode);
     void (*set_audio_mode)(unsigned audio_mode);
     int (*set_autostart)(int enabled);

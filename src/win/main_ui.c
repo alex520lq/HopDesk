@@ -120,7 +120,10 @@ static int retry_file(uint32_t batch, int index) {
 static void reconnect_peer(void) { (void)win_split_reconnect(); s_last_snapshot = 0; }
 static void disconnect_peer(void) { (void)win_split_disconnect(); s_last_snapshot = 0; }
 static void display_action(int action) { (void)win_split_display(action); s_last_snapshot = 0; }
-static void check_updates(void) { (void)win_split_update(); }
+static void update_action(int action, int channel) {
+    (void)win_split_update(action, channel);
+    s_last_snapshot = 0;
+}
 static void set_input_mode(unsigned input_mode) {
     s_ui_config.input_mode = input_mode & HOP_INPUT_MODES;
     (void)win_split_set_input_mode(s_ui_config.input_mode);
@@ -258,7 +261,7 @@ static const hopdesk_ui_ops k_ui_ops = {
     reconnect_peer,
     disconnect_peer,
     display_action,
-    check_updates,
+    update_action,
     NULL,
     load_logs,
     copy_text,

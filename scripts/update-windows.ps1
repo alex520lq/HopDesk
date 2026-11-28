@@ -5,7 +5,7 @@ param(
     [Parameter(Mandatory = $true)][int]$ProcessId,
     [Parameter(Mandatory = $true)][string]$Transaction,
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{32}$')][string]$Nonce,
-    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9]+[.][0-9]+[.][0-9]+$')][string]$ExpectedVersion,
+    [Parameter(Mandatory = $true)][ValidatePattern('^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-dev[.][1-9][0-9]*)?$')][string]$ExpectedVersion,
     [switch]$Quiet
 )
 

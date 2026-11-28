@@ -4,8 +4,12 @@ static void dispatch_message(void *user, uint8_t type, const uint8_t *p, uint32_
     if (!s_authed && g_mac.cfg.role==HOP_ROLE_SERVER) {
         hop_hello_msg hello;
         if(type!=HOP_MSG_HELLO || !hop_hello_decode(p,len,&hello)){
-            hop_log(HOP_LOG_WARN,"net: control handshake rejected: invalid HELLO or incompatible protocol");s_rejected=1;return;
+            hop_log(HOP_LOG_WARN,"net: control handshake rejected: invalid HELLO or incompatible protocol (local ctrl v%d, xfer v%d)",
+                    HOP_CTRL_PROTO_VER, HOP_XFER_PROTO_VER);
+            atomic_store(&s_protocol_mismatch, 1);
+            s_rejected=1;return;
         }
+        atomic_store(&s_protocol_mismatch, 0);
         if(!hop_token_matches(g_mac.cfg.token,hello.token,hello.token_len)){
             hop_log(HOP_LOG_WARN,"net: control handshake rejected: token mismatch");s_rejected=1;return;
         }
@@ -35,10 +39,13 @@ static void dispatch_message(void *user, uint8_t type, const uint8_t *p, uint32_
         hop_session_id session;
         if (type != HOP_MSG_HELLO_ACK ||
             !hop_hello_ack_decode(p, len, &ok, &w, &h, &session) || !ok) {
-            hop_log(HOP_LOG_WARN,"net: control handshake rejected: invalid ACK or incompatible protocol");
+            hop_log(HOP_LOG_WARN,"net: control handshake rejected: invalid ACK or incompatible protocol (local ctrl v%d, xfer v%d)",
+                    HOP_CTRL_PROTO_VER, HOP_XFER_PROTO_VER);
+            atomic_store(&s_protocol_mismatch, 1);
             s_rejected = 1;
             return;
         }
+        atomic_store(&s_protocol_mismatch, 0);
         if (s_manual_disconnect) { s_rejected = 1; return; }
         pthread_mutex_lock(&s_lock);
         if (len >= 2 && p[1] > 0 && 2u + p[1] <= len) {

@@ -9,16 +9,21 @@ MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 ICONSET="$BUILD/HopDesk.iconset"
 PACKAGE="$BUILD/macos-package"
-VERSION="${HOPDESK_VERSION:-0.5.0}"
-case "$VERSION" in
-    *[!0-9.]*|'') echo "Invalid HOPDESK_VERSION: $VERSION" >&2; exit 1 ;;
-esac
-if [ "$(printf '%s' "$VERSION" | tr -cd '.' | wc -c | tr -d ' ')" -ne 2 ]; then
-    echo "HOPDESK_VERSION must be major.minor.patch." >&2
+DEFAULT_VERSION="0.1.0"
+if [ -f "$ROOT/VERSION" ]; then
+    DEFAULT_VERSION="$(tr -d ' \t\r\n' < "$ROOT/VERSION")"
+fi
+VERSION="${HOPDESK_VERSION:-$DEFAULT_VERSION}"
+if ! printf '%s' "$VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-dev\.[1-9][0-9]*)?$'; then
+    echo "Invalid HOPDESK_VERSION: $VERSION (expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-dev.N)" >&2
     exit 1
 fi
+CHANNEL="stable"
+case "$VERSION" in
+    *-dev.*) CHANNEL="dev" ;;
+esac
 VERSION_HEADER="$BUILD/hop_version.h"
-printf '#define HOP_VERSION "%s"\n' "$VERSION" > "$VERSION_HEADER"
+printf '#define HOP_VERSION "%s"\n#define HOP_CHANNEL "%s"\n' "$VERSION" "$CHANNEL" > "$VERSION_HEADER"
 
 rm -rf "$APP" "$ICONSET" "$PACKAGE" "$BUILD/HopDesk-macOS.zip"
 mkdir -p "$MACOS" "$RESOURCES" "$ICONSET" "$PACKAGE"

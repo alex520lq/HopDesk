@@ -7,6 +7,7 @@
 #include "display_switch.h"
 #include "cli.h"
 #include "update_manifest.h"
+#include "update_controller.h"
 #include "xfer_budget.h"
 #include "xfer_task.h"
 #include "xfer_task_history.h"
@@ -675,6 +676,108 @@ static void test_update_manifest_validation(void) {
         "macos_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
         "notes_url=https://github.com/alex520lq/HopDesk-Releases/releases/tag/v0.5.1\n";
     CHECK(!hop_update_manifest_parse(duplicate, sizeof(duplicate) - 1, &parsed));
+
+    /* SemVer -dev.N ordering and strict validation */
+    CHECK(hop_version_compare("0.1.1-dev.1", "0.1.1-dev.2", &valid) < 0 && valid);
+    CHECK(hop_version_compare("0.1.1-dev.2", "0.1.1", &valid) < 0 && valid);
+    CHECK(hop_version_compare("0.1.1", "0.1.1-dev.1", &valid) > 0 && valid);
+    CHECK(hop_version_compare("1.4.1-dev.1", "1.4.0", &valid) > 0 && valid);
+    CHECK(hop_version_compare("0.1.1-dev.0", "0.1.1", &valid) == 0 && !valid);
+    CHECK(hop_version_compare("0.1.1-dev.01", "0.1.1", &valid) == 0 && !valid);
+
+    /* Dual-channel format=2 stable & dev manifests */
+    const char stable_v2[] =
+        "format=2\n"
+        "channel=stable\n"
+        "version=1.4.0\n"
+        "tag=v1.4.0\n"
+        "ctrl_proto=8\n"
+        "xfer_proto=8\n"
+        "windows_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v1.4.0/HopDesk-Windows.zip\n"
+        "windows_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        "macos_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v1.4.0/HopDesk-macOS.zip\n"
+        "macos_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+        "notes_url=https://github.com/alex520lq/HopDesk-Releases/releases/tag/v1.4.0\n"
+        "summary=Stable 1.4.0 release\n";
+    const char dev_v2[] =
+        "format=2\n"
+        "channel=dev\n"
+        "version=1.4.1-dev.1\n"
+        "tag=v1.4.1-dev.1\n"
+        "ctrl_proto=9\n"
+        "xfer_proto=8\n"
+        "windows_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v1.4.1-dev.1/HopDesk-Windows.zip\n"
+        "windows_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n"
+        "macos_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v1.4.1-dev.1/HopDesk-macOS.zip\n"
+        "macos_sha256=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\n"
+        "notes_url=https://github.com/alex520lq/HopDesk-Releases/releases/tag/v1.4.1-dev.1\n"
+        "summary=Dev preview build\n";
+    hop_update_manifest stable_m, dev_m;
+    CHECK(hop_update_manifest_parse(stable_v2, sizeof(stable_v2) - 1, &stable_m));
+    CHECK(stable_m.format == 2 && stable_m.channel == HOP_UPDATE_CHANNEL_STABLE);
+    CHECK(stable_m.ctrl_proto == 8 && stable_m.xfer_proto == 8);
+    CHECK(strcmp(stable_m.summary, "Stable 1.4.0 release") == 0);
+
+    CHECK(hop_update_manifest_parse(dev_v2, sizeof(dev_v2) - 1, &dev_m));
+    CHECK(dev_m.format == 2 && dev_m.channel == HOP_UPDATE_CHANNEL_DEV);
+    CHECK(dev_m.ctrl_proto == 9 && dev_m.xfer_proto == 8);
+
+    /* Reject channel/version spoofing */
+    const char spoofed[] =
+        "format=2\nchannel=stable\nversion=1.4.1-dev.1\ntag=v1.4.1-dev.1\nctrl_proto=8\nxfer_proto=8\n"
+        "windows_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v1.4.1-dev.1/HopDesk-Windows.zip\n"
+        "windows_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n"
+        "macos_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v1.4.1-dev.1/HopDesk-macOS.zip\n"
+        "macos_sha256=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\n"
+        "notes_url=https://github.com/alex520lq/HopDesk-Releases/releases/tag/v1.4.1-dev.1\n";
+    CHECK(!hop_update_manifest_parse(spoofed, sizeof(spoofed) - 1, &parsed));
+
+    /* Evaluation rules: same-channel anti-rollback + cross-channel bidirectional switch */
+    int is_switch = 0;
+    CHECK(hop_update_evaluate("1.3.9", HOP_UPDATE_CHANNEL_STABLE, HOP_UPDATE_CHANNEL_STABLE,
+                              &stable_m, &is_switch, &valid) == 1 && valid && !is_switch);
+    CHECK(hop_update_evaluate("1.4.0", HOP_UPDATE_CHANNEL_STABLE, HOP_UPDATE_CHANNEL_STABLE,
+                              &stable_m, &is_switch, &valid) == 0 && valid && !is_switch);
+    CHECK(hop_update_evaluate("1.5.0", HOP_UPDATE_CHANNEL_STABLE, HOP_UPDATE_CHANNEL_STABLE,
+                              &stable_m, &is_switch, &valid) == 0 && valid && !is_switch);
+    /* Dev 1.4.1-dev.1 -> Stable 1.4.0 cross-channel switch MUST be allowed */
+    CHECK(hop_update_evaluate("1.4.1-dev.1", HOP_UPDATE_CHANNEL_DEV, HOP_UPDATE_CHANNEL_STABLE,
+                              &stable_m, &is_switch, &valid) == 1 && valid && is_switch);
+    /* Stable 1.4.0 -> Dev 1.4.1-dev.1 cross-channel switch MUST be allowed */
+    CHECK(hop_update_evaluate("1.4.0", HOP_UPDATE_CHANNEL_STABLE, HOP_UPDATE_CHANNEL_DEV,
+                              &dev_m, &is_switch, &valid) == 1 && valid && is_switch);
+    /* Manifest channel mismatch rejected */
+    CHECK(hop_update_evaluate("1.4.0", HOP_UPDATE_CHANNEL_STABLE, HOP_UPDATE_CHANNEL_DEV,
+                              &stable_m, &is_switch, &valid) == 0 && !valid);
+
+    /* Update controller state transitions & protocol diff detection */
+    hop_update_snapshot snap;
+    hop_update_snapshot_init(&snap, HOP_UPDATE_CHANNEL_STABLE);
+    CHECK(snap.phase == HOP_UPDATE_IDLE && snap.target_channel == HOP_UPDATE_CHANNEL_STABLE);
+    hop_update_snapshot_set_checking(&snap, HOP_UPDATE_CHANNEL_DEV);
+    CHECK(snap.phase == HOP_UPDATE_CHECKING && snap.target_channel == HOP_UPDATE_CHANNEL_DEV);
+    hop_update_snapshot_set_manifest_result(&snap, "1.4.0", HOP_UPDATE_CHANNEL_STABLE,
+                                            8, 8, HOP_UPDATE_CHANNEL_DEV, &dev_m);
+    CHECK(snap.phase == HOP_UPDATE_AVAILABLE && snap.is_channel_switch == 1 && snap.protocol_changed == 1);
+    CHECK(snap.target_ctrl_proto == 9 && snap.target_xfer_proto == 8);
+    hop_update_snapshot_set_downloading(&snap, 512, 1024);
+    CHECK(snap.phase == HOP_UPDATE_DOWNLOADING && snap.bytes_done == 512 && snap.bytes_total == 1024);
+    hop_update_snapshot_set_ready(&snap, 1024);
+    CHECK(snap.phase == HOP_UPDATE_READY && snap.bytes_done == 1024);
+    hop_update_snapshot_set_applying(&snap);
+    CHECK(snap.phase == HOP_UPDATE_APPLYING);
+    hop_update_snapshot_set_error(&snap, HOP_UPDATE_CHANNEL_STABLE, "network error");
+    CHECK(snap.phase == HOP_UPDATE_ERROR && strcmp(snap.message, "network error") == 0);
+
+    /* update_channel config schema validation */
+    hop_config cfg;
+    char err[128] = {0};
+    hop_config_defaults(&cfg);
+    CHECK(hop_config_set_kv(&cfg, "update_channel", "dev", err, sizeof(err)) == 1);
+    CHECK(cfg.update_channel == HOP_UPDATE_CHANNEL_DEV);
+    CHECK(hop_config_set_kv(&cfg, "update_channel", "stable", err, sizeof(err)) == 1);
+    CHECK(cfg.update_channel == HOP_UPDATE_CHANNEL_STABLE);
+    CHECK(hop_config_set_kv(&cfg, "update_channel", "beta", err, sizeof(err)) == -1);
 }
 
 

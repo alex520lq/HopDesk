@@ -22,7 +22,7 @@ typedef struct {
     double ddc_retries, verify_timeout_ms, poll_ms, monitor_index;
     double chunk_kb, rate_limit, mouse_scale, wheel_scale;
     char disp_win[16], disp_mac[16];
-    int role, server_edge, client_edge, ui_theme, log_level;
+    int role, server_edge, client_edge, ui_theme, log_level, update_channel;
     int tab;
     bool mac_cmd_open, shared_display, sleep_fallback;
     bool provide_mouse, provide_keyboard;
@@ -60,7 +60,10 @@ static const char *const k_theme_icons[] = {
     CUI_ICON_MONITOR, CUI_ICON_SUN, CUI_ICON_MOON
 };
 static const char *const k_settings_tabs[] = {
-    "连接与外观", "键鼠与显示", "文件传输", "维护与日志"
+    "连接与外观", "键鼠与显示", "文件传输", "更新与日志"
+};
+static const char *const k_update_channels[] = {
+    "稳定版 (stable)", "开发版 (dev)"
 };
 static const char *const k_settings_tab_icons[] = {
     CUI_ICON_WIFI, CUI_ICON_KEYBOARD, CUI_ICON_REPEAT, CUI_ICON_TERMINAL
@@ -259,6 +262,39 @@ static const hop_xfer_file_status *selected_file(void) {
     return NULL;
 }
 
+static const char *update_channel_zh(int ch) {
+    return ch == HOP_UPDATE_CHANNEL_DEV ? "开发版" : "稳定版";
+}
+
+static const char *current_channel_zh(void) {
+    return strcmp(HOP_CHANNEL, "dev") == 0 ? "开发版" : "稳定版";
+}
+
+static const char *update_phase_text(int phase) {
+    switch (phase) {
+        case HOP_UPDATE_CHECKING:    return "检查中…";
+        case HOP_UPDATE_UP_TO_DATE:  return "已是最新";
+        case HOP_UPDATE_AVAILABLE:   return "有可用更新";
+        case HOP_UPDATE_DOWNLOADING: return "下载中…";
+        case HOP_UPDATE_READY:       return "待重启安装";
+        case HOP_UPDATE_APPLYING:    return "正在重启安装…";
+        case HOP_UPDATE_ERROR:       return "更新异常";
+        default:                     return "未检查";
+    }
+}
+
+static cui_tone update_phase_tone(int phase) {
+    switch (phase) {
+        case HOP_UPDATE_UP_TO_DATE:  return CUI_TONE_SUCCESS;
+        case HOP_UPDATE_AVAILABLE:   return CUI_TONE_INFO;
+        case HOP_UPDATE_DOWNLOADING: return CUI_TONE_INFO;
+        case HOP_UPDATE_READY:       return CUI_TONE_SUCCESS;
+        case HOP_UPDATE_APPLYING:    return CUI_TONE_WARNING;
+        case HOP_UPDATE_ERROR:       return CUI_TONE_DANGER;
+        default:                     return CUI_TONE_NEUTRAL;
+    }
+}
+
 static void draw_stat_card(cui_ctx *ui, const char *title, const char *value,
                            const char *detail, cui_tone tone) {
     cui_card(ui, .width = CUI_GROW(1), .min_width = 190, .pad = 16, .gap = 8) {
@@ -280,6 +316,39 @@ static void draw_overview(cui_ctx *ui) {
         s_model.audio_active ? "是" : "否");
 
     cui_column(ui, .width = CUI_FILL, .gap = 16) {
+        if (s_model.protocol_mismatch) {
+            char proto_detail[192];
+            snprintf(proto_detail, sizeof(proto_detail),
+                "对端握手因协议版本不兼容被拒绝。本机版本 v%s（%s · 控制 v%d / 数据 v%d），请将两端更新至相同协议版本。",
+                HOP_VERSION, current_channel_zh(), HOP_CTRL_PROTO_VER, HOP_XFER_PROTO_VER);
+            cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 8) {
+                cui_row(ui, .width = CUI_FILL, .justify = CUI_JUSTIFY_BETWEEN, .align = CUI_ALIGN_CENTER) {
+                    cui_heading(ui, "协议版本不匹配", 3);
+                    cui_badge_ex(ui, "需要同步更新", &(cui_badge_opts){.tone = CUI_TONE_WARNING, .dot = true});
+                }
+                cui_text(ui, proto_detail);
+                if (cui_button(ui, "前往检查更新", .variant = CUI_BUTTON_SECONDARY))
+                    open_settings_tab(3);
+            }
+        }
+        if (s_model.update.phase == HOP_UPDATE_READY) {
+            cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 8) {
+                cui_row(ui, .width = CUI_FILL, .justify = CUI_JUSTIFY_BETWEEN, .align = CUI_ALIGN_CENTER) {
+                    cui_heading(ui, "更新已下载就绪", 3);
+                    cui_badge_ex(ui, "待重启安装", &(cui_badge_opts){.tone = CUI_TONE_SUCCESS, .dot = true});
+                }
+                cui_text(ui, s_model.update.message[0] ? s_model.update.message : "已通过 SHA-256 校验，可随时重启安装。");
+                cui_row(ui, .width = CUI_FILL, .gap = 8, .wrap = true) {
+                    if (cui_button(ui, "重启并安装更新", .variant = CUI_BUTTON_PRIMARY,
+                        .disabled = !s_ops || !s_ops->update_action)) {
+                        if (s_ops && s_ops->update_action)
+                            s_ops->update_action(HOP_UPDATE_ACTION_APPLY, s_model.update.target_channel);
+                    }
+                    if (cui_button(ui, "查看更新详情", .variant = CUI_BUTTON_SECONDARY))
+                        open_settings_tab(3);
+                }
+            }
+        }
         cui_row(ui, .width = CUI_FILL, .gap = 12, .wrap = true, .align = CUI_ALIGN_STRETCH) {
             draw_stat_card(ui, "控制连接",
                 link_status_text(),
@@ -723,6 +792,8 @@ static void settings_load(void) {
     s_settings.log_level = (s_model.config.log_level >= HOP_LOG_INFO &&
                             s_model.config.log_level <= HOP_LOG_OFF)
         ? s_model.config.log_level : HOP_LOG_INFO;
+    s_settings.update_channel = (s_model.config.update_channel == HOP_UPDATE_CHANNEL_DEV)
+        ? HOP_UPDATE_CHANNEL_DEV : HOP_UPDATE_CHANNEL_STABLE;
     s_settings.provide_mouse = (s_model.config.input_mode & HOP_INPUT_MOUSE) != 0;
     s_settings.provide_keyboard = (s_model.config.input_mode & HOP_INPUT_KEYBOARD) != 0;
     s_settings.audio_send = (s_model.config.audio_mode & HOP_AUDIO_SEND) != 0;
@@ -801,6 +872,8 @@ static int settings_build_config(hop_config *out) {
     out->log_level = (s_settings.log_level >= HOP_LOG_INFO &&
                       s_settings.log_level <= HOP_LOG_OFF)
         ? s_settings.log_level : HOP_LOG_INFO;
+    out->update_channel = s_settings.update_channel == HOP_UPDATE_CHANNEL_DEV
+        ? HOP_UPDATE_CHANNEL_DEV : HOP_UPDATE_CHANNEL_STABLE;
 
     if (!hop_config_validate(out, 1, err, sizeof(err))) {
         snprintf(s_settings.note, sizeof(s_settings.note), "%s", err[0] ? err : "配置校验失败。");
@@ -1144,19 +1217,119 @@ static void draw_settings_transfer(cui_ctx *ui) {
 }
 
 static void draw_settings_maintenance(cui_ctx *ui) {
+    const hop_update_snapshot *up = &s_model.update;
+    int busy = up->phase == HOP_UPDATE_CHECKING ||
+               up->phase == HOP_UPDATE_DOWNLOADING ||
+               up->phase == HOP_UPDATE_APPLYING;
+    int can_download = !busy && up->target_version[0] &&
+                       (up->phase == HOP_UPDATE_AVAILABLE ||
+                        (up->phase == HOP_UPDATE_ERROR && up->target_tag[0]));
+    int can_apply = up->phase == HOP_UPDATE_READY;
+    char current_info[192], target_info[224], dl_detail[128];
+
+    snprintf(current_info, sizeof(current_info),
+        "当前运行：v%s（%s）  ·  控制协议 v%d / 数据协议 v%d",
+        HOP_VERSION, current_channel_zh(), HOP_CTRL_PROTO_VER, HOP_XFER_PROTO_VER);
+
     cui_column(ui, .width = CUI_FILL, .gap = 14) {
+        cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 12) {
+            cui_row(ui, .width = CUI_FILL, .justify = CUI_JUSTIFY_BETWEEN, .align = CUI_ALIGN_CENTER) {
+                cui_heading(ui, "版本与双通道更新", 3);
+                cui_badge_ex(ui, update_phase_text(up->phase),
+                    &(cui_badge_opts){.tone = update_phase_tone(up->phase), .dot = true});
+            }
+            cui_text(ui, current_info);
+            cui_secondary(ui, "稳定版与开发版完全独立、互不影响。可随时在下方切换目标通道（支持开发版回切至稳定版，或稳定版切入开发版）。");
+            if (cui_segmented_ex(ui, "setting-update-channel", k_update_channels, 2,
+                    &s_settings.update_channel, &(cui_segmented_opts){.full_width = true})) {
+                settings_mark_dirty();
+            }
+
+            if (up->target_version[0]) {
+                if (up->target_ctrl_proto > 0 && up->target_xfer_proto > 0) {
+                    snprintf(target_info, sizeof(target_info),
+                        "目标版本：v%s（%s）  ·  控制协议 v%d / 数据协议 v%d",
+                        up->target_version, update_channel_zh(up->target_channel),
+                        up->target_ctrl_proto, up->target_xfer_proto);
+                } else {
+                    snprintf(target_info, sizeof(target_info),
+                        "目标版本：v%s（%s）",
+                        up->target_version, update_channel_zh(up->target_channel));
+                }
+                cui_separator(ui);
+                cui_text(ui, target_info);
+                cui_row(ui, .width = CUI_FILL, .gap = 8, .wrap = true) {
+                    if (up->is_channel_switch)
+                        cui_badge_ex(ui, "跨通道切换", &(cui_badge_opts){.tone = CUI_TONE_INFO});
+                    if (up->protocol_changed)
+                        cui_badge_ex(ui, "协议版本有变化 · 建议两端同步更新", &(cui_badge_opts){.tone = CUI_TONE_WARNING});
+                }
+                if (up->summary[0]) cui_secondary(ui, up->summary);
+            }
+
+            if (up->message[0]) cui_text(ui, up->message);
+
+            if (up->phase == HOP_UPDATE_DOWNLOADING || up->phase == HOP_UPDATE_READY) {
+                float ratio = up->bytes_total > 0
+                    ? (float)((double)up->bytes_done / (double)up->bytes_total)
+                    : (up->phase == HOP_UPDATE_READY ? 1.0f : 0.0f);
+                char done_str[48], total_str[48];
+                format_bytes(up->bytes_done, done_str, sizeof(done_str));
+                if (up->bytes_total > 0) {
+                    format_bytes(up->bytes_total, total_str, sizeof(total_str));
+                    snprintf(dl_detail, sizeof(dl_detail), "已下载 %s / %s", done_str, total_str);
+                } else {
+                    snprintf(dl_detail, sizeof(dl_detail), "已下载 %s", done_str);
+                }
+                cui_progress_ex(ui, ratio, &(cui_progress_opts){.width = CUI_FILL, .height = 7, .show_value = true});
+                cui_muted(ui, dl_detail);
+            }
+
+            cui_row(ui, .width = CUI_FILL, .gap = 8, .wrap = true) {
+                if (cui_button_ex(ui, up->phase == HOP_UPDATE_CHECKING ? "检查中…" : "检查更新", &(cui_button_opts){
+                        .variant = CUI_BUTTON_SECONDARY,
+                        .icon = CUI_ICON_REFRESH_CW,
+                        .loading = up->phase == HOP_UPDATE_CHECKING,
+                        .disabled = busy || !s_ops || !s_ops->update_action
+                    })) {
+                    if (s_ops && s_ops->update_action)
+                        s_ops->update_action(HOP_UPDATE_ACTION_CHECK, s_settings.update_channel);
+                }
+                if (cui_button_ex(ui, up->phase == HOP_UPDATE_DOWNLOADING ? "下载中…" : "下载更新", &(cui_button_opts){
+                        .variant = can_download ? CUI_BUTTON_PRIMARY : CUI_BUTTON_SECONDARY,
+                        .loading = up->phase == HOP_UPDATE_DOWNLOADING,
+                        .disabled = !can_download || !s_ops || !s_ops->update_action
+                    })) {
+                    if (s_ops && s_ops->update_action)
+                        s_ops->update_action(HOP_UPDATE_ACTION_DOWNLOAD, up->target_channel);
+                }
+                if (cui_button_ex(ui, up->phase == HOP_UPDATE_APPLYING ? "正在重启…" : "重启并安装更新", &(cui_button_opts){
+                        .variant = CUI_BUTTON_PRIMARY,
+                        .loading = up->phase == HOP_UPDATE_APPLYING,
+                        .disabled = !can_apply || !s_ops || !s_ops->update_action
+                    })) {
+                    if (s_ops && s_ops->update_action)
+                        s_ops->update_action(HOP_UPDATE_ACTION_APPLY, up->target_channel);
+                }
+                if (up->notes_url[0]) {
+                    if (cui_button_ex(ui, "复制更新日志链接", &(cui_button_opts){
+                            .variant = CUI_BUTTON_OUTLINE,
+                            .icon = CUI_ICON_COPY,
+                            .disabled = !s_ops || !s_ops->copy_text
+                        }) && s_ops && s_ops->copy_text) {
+                        if (s_ops->copy_text(up->notes_url))
+                            ui_toast("链接已复制", "已复制 GitHub Release 发布页链接，可在浏览器打开查看完整更新日志。", CUI_TONE_SUCCESS);
+                    }
+                }
+            }
+        }
+
         cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 10) {
-            cui_heading(ui, "更新、日志等级与权限", 3);
+            cui_heading(ui, "日志等级与权限", 3);
             if (cui_select_ex(ui, "setting-log-level", k_log_levels, 4, &s_settings.log_level,
                 &(cui_select_opts){.label = "日志记录等级", .width = CUI_FILL}))
                 settings_mark_dirty();
             cui_row(ui, .width = CUI_FILL, .gap = 8, .wrap = true) {
-                if (cui_button_ex(ui, "检查更新", &(cui_button_opts){
-                        .variant = CUI_BUTTON_SECONDARY,
-                        .icon = CUI_ICON_REFRESH_CW,
-                        .disabled = !s_ops || !s_ops->check_updates
-                    }))
-                    if (s_ops && s_ops->check_updates) s_ops->check_updates();
                 if (cui_button_ex(ui, "检查键鼠权限", &(cui_button_opts){
                         .variant = CUI_BUTTON_SECONDARY,
                         .icon = CUI_ICON_SHIELD,
@@ -1235,6 +1408,10 @@ void hopdesk_ui_init(cui_ctx *ui) {
 }
 
 static float next_refresh_interval(void) {
+    if (s_model.update.phase == HOP_UPDATE_CHECKING ||
+        s_model.update.phase == HOP_UPDATE_DOWNLOADING ||
+        s_model.update.phase == HOP_UPDATE_APPLYING)
+        return 0.5f;
     if (s_model.transfer.send.active || s_model.transfer.receive.active)
         return 0.5f;
     for (int i = 0; i < s_model.task_count; ++i) {
@@ -1287,10 +1464,20 @@ void hopdesk_ui_frame(cui_ctx *ui) {
                 hopdesk_ui_show_page(HOPDESK_UI_TRANSFER);
             cui_nav_section(ui, "偏好");
             if (cui_nav_item_ex(ui, "设置", &(cui_nav_opts){.icon = CUI_ICON_SETTINGS, .selected = s_page == HOPDESK_UI_SETTINGS,
-                .badge = s_settings.dirty ? "●" : NULL}))
+                .badge = (s_settings.dirty ||
+                          s_model.update.phase == HOP_UPDATE_AVAILABLE ||
+                          s_model.update.phase == HOP_UPDATE_READY) ? "●" : NULL}))
                 hopdesk_ui_show_page(HOPDESK_UI_SETTINGS);
             cui_spacer(ui);
             cui_separator(ui);
+            {
+                char ver_line[96], proto_line[96];
+                snprintf(ver_line, sizeof(ver_line), "v%s (%s)", HOP_VERSION, current_channel_zh());
+                snprintf(proto_line, sizeof(proto_line), "控制 v%d · 数据 v%d",
+                         HOP_CTRL_PROTO_VER, HOP_XFER_PROTO_VER);
+                cui_secondary(ui, ver_line);
+                cui_muted(ui, proto_line);
+            }
             cui_muted(ui, "轻量 · 跨平台 · 本地优先");
         }
 

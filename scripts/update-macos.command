@@ -57,7 +57,7 @@ trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
 [[ "$NONCE" =~ ^[0-9a-f]{32}$ ]] || fail "Invalid update transaction."
-[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Invalid expected version."
+[[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-dev\.[1-9][0-9]*)?$ ]] || fail "Invalid expected version."
 [[ "$APP_PID" =~ ^[1-9][0-9]*$ ]] || fail "Invalid previous process."
 if [[ ! -f "$ARCHIVE" || ! -d "$TARGET_APP" || ! -d "$TRANSACTION" ]]; then
   fail "Archive, application or transaction directory is missing."
@@ -83,6 +83,13 @@ BUNDLE_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 
 [[ "$BUNDLE_ID" == "com.hopdesk.app" && "$BUNDLE_VERSION" == "$VERSION" ]] || fail "Bundle identity/version mismatch."
 codesign --verify --deep --strict "$NEW_APP" >/dev/null 2>&1 || fail "Invalid code signature structure."
 ditto "$NEW_APP" "$NEXT_APP" || fail "Cannot prepare replacement."
+# Preserve an existing stable local/Developer signing identity (40-hex leaf hash)
+# so macOS TCC keeps Accessibility and Input Monitoring grants across updates.
+SIGN_ID="$(codesign -d -r- "$TARGET_APP" 2>&1 | sed -n 's/.*certificate leaf = H"\([0-9A-Fa-f]\{40\}\)".*/\1/p' | head -n 1 || true)"
+if [[ -n "$SIGN_ID" ]]; then
+  codesign --force --deep --sign "$SIGN_ID" "$NEXT_APP" >/dev/null 2>&1 || fail "Cannot preserve code signature ($SIGN_ID)."
+  codesign --verify --deep --strict "$NEXT_APP" >/dev/null 2>&1 || fail "Invalid preserved code signature."
+fi
 printf '%s\n' "$NONCE" > "$TRANSACTION/prepared.tmp"
 mv "$TRANSACTION/prepared.tmp" "$TRANSACTION/prepared"
 

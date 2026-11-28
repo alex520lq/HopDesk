@@ -30,6 +30,7 @@ static hop_session_id s_control_session; /* control reader owns; registry publis
 static _Atomic int     s_stop;
 static _Atomic int s_drop_requested;
 static _Atomic int s_manual_disconnect;
+static _Atomic int s_protocol_mismatch;
 static _Atomic unsigned s_local_input_mode;
 static _Atomic unsigned s_peer_input_mode;
 static _Atomic unsigned s_peer_audio_mode;

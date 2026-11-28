@@ -10,7 +10,7 @@ static struct {hop_config cfg;double screen_w,screen_h;} g_mac;
 static int s_authed,s_rejected,s_manual_disconnect,connected,injected,returned,clip_applied,inject_resets,status_sharing;
 static int clip_offer_received,clip_offer_clear_received,clip_paste_request_received,clip_paste_failed_received;
 static unsigned s_local_input_mode,s_peer_input_mode,s_peer_audio_mode;
-static int s_peer_caps_known,s_lock;
+static int s_peer_caps_known,s_protocol_mismatch,s_lock;
 static char s_peer_name[HOP_NAME_MAX];
 #define atomic_load(p) (*(p))
 #define atomic_store(p, v) (*(p) = (v))
@@ -50,7 +50,7 @@ static void reset(void){
     hop_session_id old;if(hop_session_current(&old))hop_session_clear(&old);
     memset(&g_mac,0,sizeof(g_mac));g_mac.cfg.role=HOP_ROLE_SERVER;
     g_mac.cfg.input_mode=HOP_INPUT_MODES;s_local_input_mode=HOP_INPUT_MODES;
-    s_peer_input_mode=s_peer_audio_mode=0;s_peer_caps_known=0;s_peer_name[0]='\0';
+    s_peer_input_mode=s_peer_audio_mode=0;s_peer_caps_known=0;s_protocol_mismatch=0;s_peer_name[0]='\0';
     strcpy(g_mac.cfg.token,"secret");strcpy(g_mac.cfg.device_name,"Mac-server");
     g_mac.screen_w=1440;g_mac.screen_h=900;s_authed=s_rejected=s_manual_disconnect=connected=injected=returned=clip_applied=inject_resets=status_sharing=clip_offer_received=clip_offer_clear_received=clip_paste_request_received=clip_paste_failed_received=0;
     sent_type=0;sent_len=0;

@@ -16,6 +16,7 @@
 #include "split_agent.h"
 #include "split_ipc.h"
 #include "../core/config_schema.h"
+#include "../core/update_state.h"
 #include "../platform/audio_link.h"
 #include "../ui/hopdesk_ui.h"
 
@@ -162,6 +163,10 @@ int split_agent_stop_if_idle(void) {
     return 1;
 }
 
+void split_agent_stop_for_update(void) {
+    stop_run_loop();
+}
+
 static void serve(int fd) {
     uid_t uid;
     gid_t gid;
@@ -172,7 +177,7 @@ static void serve(int fd) {
     if (!io_full(fd, &header, sizeof(header), false, deadline) ||
         ntohl(header.version) != SPLIT_IPC_VERSION) return;
     uint32_t operation = ntohl(header.operation);
-    if (operation < SPLIT_IPC_STATUS || operation > SPLIT_IPC_DISPLAY_ACTION) return;
+    if (operation < SPLIT_IPC_STATUS || operation > SPLIT_IPC_UPDATE_ACTION) return;
 
     if (operation == SPLIT_IPC_CONFIG_SAVE) {
         hop_config incoming;
@@ -210,7 +215,7 @@ static void serve(int fd) {
     bool has_query = (operation >= SPLIT_IPC_TASKS_GET && operation <= SPLIT_IPC_FILES_GET) ||
                      operation == SPLIT_IPC_RETRY_FILE || operation == SPLIT_IPC_CANCEL_TASK ||
                      operation == SPLIT_IPC_AUDIO_MODE_SET || operation == SPLIT_IPC_INPUT_MODE_SET ||
-                     operation == SPLIT_IPC_DISPLAY_ACTION;
+                     operation == SPLIT_IPC_DISPLAY_ACTION || operation == SPLIT_IPC_UPDATE_ACTION;
     if (ntohl(header.payload_size) != (has_query ? sizeof(query) : 0)) {
         (void)reply(fd, &header, false, NULL, 0, NULL, 0, deadline);
         return;
@@ -241,10 +246,12 @@ static void serve(int fd) {
             .local_input = (int32_t)net_get_input_mode(),
             .peer_input = (int32_t)peer_input,
             .peer_audio = (int32_t)peer_audio,
-            .peer_caps_known = peer_known
+            .peer_caps_known = peer_known,
+            .protocol_mismatch = net_protocol_mismatch()
         };
         disp_switch_status(status.display_status, sizeof(status.display_status));
         snprintf(status.peer_name, sizeof(status.peer_name), "%s", peer_name);
+        mac_update_get_snapshot(&status.update);
         (void)reply(fd, &header, true, &status, sizeof(status), NULL, 0, deadline);
         return;
     }
@@ -293,6 +300,23 @@ static void serve(int fd) {
             case HOPDESK_UI_DISPLAY_WAKE:       result.result = disp_wake(g_mac.cfg.disp_wake_sec); break;
             case HOPDESK_UI_DISPLAY_SLEEP:      disp_sleep(); result.result = 1; break;
             default: break;
+        }
+        (void)reply(fd, &header, true, &result, sizeof(result), NULL, 0, deadline);
+        return;
+    }
+    case SPLIT_IPC_UPDATE_ACTION: {
+        split_ipc_result result = {0};
+        if (query.direction == HOP_UPDATE_ACTION_DOWNLOAD) {
+            mac_update_download();
+            result.result = 1;
+        } else if (query.direction == HOP_UPDATE_ACTION_APPLY) {
+            mac_update_apply();
+            result.result = 1;
+        } else if (query.direction == HOP_UPDATE_ACTION_CHECK) {
+            int ch = query.index == HOP_UPDATE_CHANNEL_DEV
+                ? HOP_UPDATE_CHANNEL_DEV : HOP_UPDATE_CHANNEL_STABLE;
+            mac_update_check(ch);
+            result.result = 1;
         }
         (void)reply(fd, &header, true, &result, sizeof(result), NULL, 0, deadline);
         return;
@@ -404,6 +428,7 @@ void split_agent_run(void) {
     CFRunLoopTimerRef timer = CFRunLoopTimerCreateWithHandler(NULL, CFAbsoluteTimeGetCurrent() + 1,
         1, 0, 0, ^(CFRunLoopTimerRef heartbeat) {
             (void)heartbeat;
+            hop_update_report_ready(HOP_VERSION);
             hop_watchdog_ping(guard);
         });
     CFRunLoopAddTimer(CFRunLoopGetMain(), timer, kCFRunLoopCommonModes);

@@ -206,6 +206,7 @@ int main(int argc, char **argv) {
     hop_watchdog_end(startup_guard);
     split_agent_set_open_on_launch(!silent_agent);
     split_agent_run();
+    mac_update_shutdown();
     hop_audio_shutdown();
     /* clipboard workers may still own image-temp Reservations; the control
      * reader may still call xfer_kick. Join both before tearing down xfer. */

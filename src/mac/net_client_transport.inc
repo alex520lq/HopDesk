@@ -277,6 +277,10 @@ int net_is_disconnected(void) {
     return atomic_load_explicit(&s_manual_disconnect, memory_order_acquire) != 0;
 }
 
+int net_protocol_mismatch(void) {
+    return atomic_load_explicit(&s_protocol_mismatch, memory_order_acquire) != 0;
+}
+
 void net_set_disconnected(int disconnected) {
     int pause = disconnected ? 1 : 0;
     int prev = atomic_exchange_explicit(&s_manual_disconnect, pause, memory_order_acq_rel);

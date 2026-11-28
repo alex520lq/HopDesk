@@ -370,7 +370,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 case 1005: (void)win_ui_display_action(HOPDESK_UI_DISPLAY_SLEEP); return 0;
                 case 1006: xfer_cancel(); return 0;
                 case 1007: ui_show_transfers(&g_app); return 0;
-                case 1008: update_check_async(g_app.hwnd); return 0;
+                case 1008: update_check_async(g_app.hwnd, g_app.cfg.update_channel); return 0;
                 case 1009: (void)win_ui_display_action(HOPDESK_UI_DISPLAY_WAKE); return 0;
                 case 1010: (void)win_ui_display_action(HOPDESK_UI_DISPLAY_TOGGLE); return 0;
             }
@@ -642,6 +642,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     }
 
     win_split_agent_stop();
+    update_shutdown();
     hop_watchdog_end(s_ui_guard);
     KillTimer(g_app.hwnd, IDT_HOOK);
     win_inject_reset();

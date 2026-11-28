@@ -36,6 +36,7 @@ struct net_server {
     send_item *q_head, *q_tail;
     int q_count, listening;
     volatile LONG disconnected;
+    volatile LONG protocol_mismatch;
     size_t q_bytes;
     unsigned long epoch;
     uint64_t last_ping;

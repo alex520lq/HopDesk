@@ -346,7 +346,11 @@ static const hop_config_spec k_specs[] = {
     { "update_check_enabled", NULL, "maintenance", HOP_CFG_BOOL, HOP_CFG_APPLY_HOT, 0,
       0, 1, NULL, "1",
       "Allow update manifest checks",
-      CFG_FIELD(update_check_enabled) }
+      CFG_FIELD(update_check_enabled) },
+    { "update_channel", NULL, "maintenance", HOP_CFG_ENUM, HOP_CFG_APPLY_HOT, 0,
+      HOP_UPDATE_CHANNEL_STABLE, HOP_UPDATE_CHANNEL_DEV, "stable|dev", "stable",
+      "Release channel for in-app updates (stable or dev)",
+      CFG_FIELD(update_channel) }
 };
 
 static const size_t k_spec_count = sizeof(k_specs) / sizeof(k_specs[0]);
@@ -484,6 +488,8 @@ void hop_config_defaults(hop_config *c) {
     c->log_rotate_mb        = 5;
     c->io_deadline_ms       = (int)HOP_IO_DEADLINE_MS;
     c->update_check_enabled = 1;
+    c->update_channel       = strcmp(HOP_CHANNEL, "dev") == 0
+        ? HOP_UPDATE_CHANNEL_DEV : HOP_UPDATE_CHANNEL_STABLE;
 }
 
 static int parse_long_strict(const char *s, int base, long *out) {

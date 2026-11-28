@@ -45,7 +45,7 @@ typedef struct {
     net_server *net;
     unsigned long epoch;
     HWND hwnd;
-    int requested, target;
+    int requested, target, missing_mode;
     wchar_t device[32], state_path[1100];
 } display_job;
 typedef struct { DWORD version; wchar_t device[32]; DEVMODEW mode; } display_saved;
@@ -112,9 +112,11 @@ static int attach_display(void *ctx, int attached) {
     if (active == attached) return 1;
     DEVMODEW mode = {0}; mode.dmSize = sizeof(mode);
     if (attached) {
+        j->missing_mode = 0;
         if (!load_mode(j, &mode)) {
             if (!EnumDisplaySettingsExW(j->device, ENUM_REGISTRY_SETTINGS, &mode, 0) ||
                 mode.dmPelsWidth == 0 || mode.dmPelsHeight == 0) {
+                j->missing_mode = 1;
                 hop_log(HOP_LOG_ERROR, "display: no saved or registry mode for shared device; extend it in Windows once before setup");
                 return 0;
             }
@@ -202,12 +204,14 @@ static int wait_ddc_match(display_job *j, uint16_t want, int require_peer) {
 }
 static int peer_input(void *ctx, int target) {
     display_job *j = ctx;
+    if (target == HOP_DISPLAY_WINDOWS && j->missing_mode) return 0;
     if (!peer_operation(j, HOP_DISPLAY_INPUT, input_code(j, target))) return 0;
     if (target == HOP_DISPLAY_WINDOWS && !device_is_attached(j)) return 1;
     return wait_ddc_match(j, input_code(j, target), target == HOP_DISPLAY_MAC);
 }
 static int peer_sleep(void *ctx) {
     display_job *j = ctx;
+    if (j->missing_mode) return 0;
     hop_log(HOP_LOG_WARN, "display: trying configured macOS sleep fallback to reclaim Windows screen");
     if (!peer_operation(j, HOP_DISPLAY_SLEEP, 0)) return 0;
     if (!device_is_attached(j)) return 1;
@@ -248,7 +252,8 @@ static DWORD WINAPI switch_worker(LPVOID arg) {
         j->target == HOP_DISPLAY_MAC ? "mac" : "windows", result);
     display_status(result == HOP_DISPLAY_OK ?
         (j->target == HOP_DISPLAY_MAC ? "已验证：共用屏已交给 Mac，Windows 已释放扩展屏" : "已验证：Windows 已恢复扩展屏和输入源") :
-        "共屏切换失败，请检查运行日志、Windows 显示设置与显示器输入源");
+        (j->missing_mode ? "未找到共用屏原模式存档：请先在 Windows 按 Win+P 选择「扩展」一次后再试" :
+         "共屏切换失败，请检查运行日志、Windows 显示设置与显示器输入源"));
     notify_complete(j->net, j->epoch, j->target, result == HOP_DISPLAY_OK);
     PostMessageW(j->hwnd, WM_APP_DISPLAY_DONE, (WPARAM)j->epoch, (LPARAM)result);
     free(j);

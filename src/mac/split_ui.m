@@ -720,6 +720,21 @@ void split_ui_display_status(char *out, size_t cap) {
     else disp_switch_status(out, cap);
 }
 
+int split_ui_display_action(int act) {
+    if (!s_splitUI) {
+        switch (act) {
+            case HOPDESK_UI_DISPLAY_TO_MAC:     return disp_switch_target(1);
+            case HOPDESK_UI_DISPLAY_TO_WINDOWS: return disp_switch_target(0);
+            case HOPDESK_UI_DISPLAY_TOGGLE:     return disp_switch_target(2);
+            case HOPDESK_UI_DISPLAY_WAKE:       return disp_wake(g_mac.cfg.disp_wake_sec);
+            case HOPDESK_UI_DISPLAY_SLEEP:      disp_sleep(); return 1;
+            default: return 0;
+        }
+    }
+    split_ipc_query query = {.index = act};
+    return action(SPLIT_IPC_DISPLAY_ACTION, &query);
+}
+
 int split_ui_protocol_mismatch(void) {
     return s_splitUI ? (s_agentAvailable && s_status.protocol_mismatch != 0) : net_protocol_mismatch();
 }

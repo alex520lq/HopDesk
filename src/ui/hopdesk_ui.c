@@ -23,6 +23,7 @@ typedef struct {
     double chunk_kb, rate_limit, mouse_scale, wheel_scale;
     char disp_win[16], disp_mac[16];
     int role, server_edge, client_edge, ui_theme, log_level, update_channel;
+    int win_input_preset, mac_input_preset;
     int tab;
     bool mac_cmd_open, shared_display, sleep_fallback;
     bool provide_mouse, provide_keyboard;
@@ -783,6 +784,13 @@ static void settings_load(void) {
     s_settings.rate_limit = s_model.config.xfer_rate_limit_mib;
     snprintf(s_settings.disp_win, sizeof(s_settings.disp_win), "0x%02X", (unsigned)s_model.config.disp_win_input);
     snprintf(s_settings.disp_mac, sizeof(s_settings.disp_mac), "0x%02X", (unsigned)s_model.config.disp_mac_input);
+    {
+        int pcount = (int)hop_display_input_preset_count();
+        int wp = hop_display_input_find_preset(s_model.config.disp_win_input);
+        int mp = hop_display_input_find_preset(s_model.config.disp_mac_input);
+        s_settings.win_input_preset = wp >= 0 ? wp : pcount;
+        s_settings.mac_input_preset = mp >= 0 ? mp : pcount;
+    }
     s_settings.role = (int)s_model.config.role;
     s_settings.server_edge = s_model.config.server_edge;
     s_settings.client_edge = s_model.config.client_edge;
@@ -1038,6 +1046,301 @@ static void draw_settings_connection_and_appearance(cui_ctx *ui) {
     }
 }
 
+static void apply_detected_input_source(int for_windows, uint16_t code) {
+    int pcount = (int)hop_display_input_preset_count();
+    int preset = hop_display_input_find_preset(code);
+    char label[64];
+    hop_display_input_format_label(code, label, sizeof(label));
+    if (for_windows) {
+        snprintf(s_settings.disp_win, sizeof(s_settings.disp_win), "0x%02X", (unsigned)code);
+        s_settings.win_input_preset = preset >= 0 ? preset : pcount;
+        ui_toast("已填入 Windows 输入源", label, CUI_TONE_SUCCESS);
+    } else {
+        snprintf(s_settings.disp_mac, sizeof(s_settings.disp_mac), "0x%02X", (unsigned)code);
+        s_settings.mac_input_preset = preset >= 0 ? preset : pcount;
+        ui_toast("已填入 Mac 输入源", label, CUI_TONE_SUCCESS);
+    }
+    settings_mark_dirty();
+}
+
+static void draw_display_settings_card(cui_ctx *ui) {
+    const hop_display_inventory *inv = &s_model.display_inventory;
+    int pcount = (int)hop_display_input_preset_count();
+    const char *input_opts[16];
+    int opt_count = 0;
+    for (int i = 0; i < pcount && opt_count < 15; ++i) {
+        const hop_display_input_preset *p = hop_display_input_preset_at((size_t)i);
+        if (p) input_opts[opt_count++] = p->label;
+    }
+    input_opts[opt_count++] = "自定义输入源…";
+    int custom_idx = opt_count - 1;
+    if (s_settings.win_input_preset < 0 || s_settings.win_input_preset > custom_idx)
+        s_settings.win_input_preset = custom_idx;
+    if (s_settings.mac_input_preset < 0 || s_settings.mac_input_preset > custom_idx)
+        s_settings.mac_input_preset = custom_idx;
+
+    cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 12) {
+        cui_row(ui, .width = CUI_FILL, .justify = CUI_JUSTIFY_BETWEEN, .align = CUI_ALIGN_CENTER) {
+            cui_heading(ui, "显示器切换", 3);
+#ifdef _WIN32
+            cui_badge_ex(ui, s_settings.shared_display ? "共屏切换已开启" : "普通切源模式",
+                &(cui_badge_opts){.tone = s_settings.shared_display ? CUI_TONE_INFO : CUI_TONE_NEUTRAL, .dot = true});
+#else
+            cui_badge_ex(ui, inv->ddc_tool_ready ? "m1ddc 已就绪" : "未检测到 m1ddc",
+                &(cui_badge_opts){.tone = inv->ddc_tool_ready ? CUI_TONE_SUCCESS : CUI_TONE_WARNING, .dot = true});
+#endif
+        }
+        cui_secondary(ui, "点击“识别显示器”可在各屏幕悬浮显示 3 秒编号与型号；点击“探测输入源”可自动读取当前画面对应的显示器接口。");
+
+        cui_row(ui, .width = CUI_FILL, .gap = 8, .wrap = true) {
+            if (cui_button_ex(ui, "识别显示器", &(cui_button_opts){
+                    .variant = CUI_BUTTON_SECONDARY,
+                    .icon = CUI_ICON_MONITOR,
+                    .disabled = !s_ops || !s_ops->display_action
+                })) {
+                if (s_ops && s_ops->display_action)
+                    s_ops->display_action(HOPDESK_UI_DISPLAY_IDENTIFY);
+            }
+            if (cui_button_ex(ui, inv->probing ? "探测中…" : "探测显示器与输入源", &(cui_button_opts){
+                    .variant = CUI_BUTTON_SECONDARY,
+                    .icon = CUI_ICON_REFRESH_CW,
+                    .loading = inv->probing != 0,
+                    .disabled = inv->probing != 0 || !s_ops || !s_ops->display_action
+                })) {
+                if (s_ops && s_ops->display_action)
+                    s_ops->display_action(HOPDESK_UI_DISPLAY_PROBE);
+            }
+#ifndef _WIN32
+            if (!inv->ddc_tool_ready) {
+                if (cui_button_ex(ui, "复制 m1ddc 安装命令", &(cui_button_opts){
+                        .variant = CUI_BUTTON_OUTLINE,
+                        .icon = CUI_ICON_COPY,
+                        .disabled = !s_ops || !s_ops->copy_text
+                    }) && s_ops && s_ops->copy_text) {
+                    if (s_ops->copy_text("brew install m1ddc"))
+                        ui_toast("已复制安装命令", "在终端运行 brew install m1ddc 后再点击“探测显示器与输入源”。", CUI_TONE_INFO);
+                }
+            }
+#endif
+        }
+        if (inv->probe_note[0]) cui_muted(ui, inv->probe_note);
+
+        if (inv->count > 0) {
+            cui_column(ui, .width = CUI_FILL, .gap = 6) {
+                for (int i = 0; i < inv->count && i < HOP_DISPLAY_MAX_DEVICES; ++i) {
+                    char mon_label[192], row_id[40];
+                    hop_display_format_monitor_label(&inv->items[i], mon_label, sizeof(mon_label));
+                    snprintf(row_id, sizeof(row_id), "##disp-inv-%d", i);
+                    cui_push_id(ui, row_id);
+                    cui_row(ui, .width = CUI_FILL, .justify = CUI_JUSTIFY_BETWEEN, .align = CUI_ALIGN_CENTER, .gap = 8) {
+                        cui_text(ui, mon_label);
+                        if (inv->items[i].current_input >= 0 && inv->items[i].current_input <= 65535) {
+#ifdef _WIN32
+                            if (cui_button_ex(ui, "设为 Windows 输入源", &(cui_button_opts){
+                                    .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM })) {
+                                apply_detected_input_source(1, (uint16_t)inv->items[i].current_input);
+                            }
+#else
+                            if (cui_button_ex(ui, "设为 Mac 输入源", &(cui_button_opts){
+                                    .variant = CUI_BUTTON_OUTLINE, .size = CUI_SIZE_SM })) {
+                                apply_detected_input_source(0, (uint16_t)inv->items[i].current_input);
+                            }
+#endif
+                        }
+                    }
+                    cui_pop_id(ui);
+                }
+            }
+        }
+
+        cui_separator(ui);
+
+#ifdef _WIN32
+        if (cui_switch(ui, "Windows 与 Mac 共用一块外接显示器", &s_settings.shared_display,
+            .description = "切到 Mac 时自动释放所选扩展屏，切回 Windows 时恢复扩展屏与输入源（主屏不可选）"))
+            settings_mark_dirty();
+        if (s_settings.shared_display) {
+            char mon_bufs[HOP_DISPLAY_MAX_DEVICES + 1][192];
+            char mon_devs[HOP_DISPLAY_MAX_DEVICES + 1][32];
+            const char *mon_ptrs[HOP_DISPLAY_MAX_DEVICES + 1];
+            int mon_count = 0;
+            int mon_sel = 0;
+            int matched_saved = 0;
+
+            for (int i = 0; i < inv->count && i < HOP_DISPLAY_MAX_DEVICES; ++i) {
+                if (inv->items[i].is_primary) continue;
+                hop_display_format_monitor_label(&inv->items[i], mon_bufs[mon_count], sizeof(mon_bufs[mon_count]));
+                snprintf(mon_devs[mon_count], sizeof(mon_devs[mon_count]), "%s", inv->items[i].device_id);
+                mon_ptrs[mon_count] = mon_bufs[mon_count];
+                if (strcmp(mon_devs[mon_count], s_settings.cfg.disp_device) == 0) {
+                    mon_sel = mon_count;
+                    matched_saved = 1;
+                }
+                ++mon_count;
+            }
+            if (s_settings.cfg.disp_device[0] && !matched_saved) {
+                snprintf(mon_bufs[mon_count], sizeof(mon_bufs[mon_count]),
+                         "已保存的扩展屏（%s · 当前未连接或已切至 Mac）", s_settings.cfg.disp_device);
+                snprintf(mon_devs[mon_count], sizeof(mon_devs[mon_count]), "%s", s_settings.cfg.disp_device);
+                mon_ptrs[mon_count] = mon_bufs[mon_count];
+                mon_sel = mon_count;
+                ++mon_count;
+            }
+            if (mon_count > 0) {
+                if (!s_settings.cfg.disp_device[0]) {
+                    snprintf(s_settings.cfg.disp_device, sizeof(s_settings.cfg.disp_device),
+                             "%s", mon_devs[0]);
+                }
+                if (cui_select_ex(ui, "setting-shared-monitor", mon_ptrs, mon_count, &mon_sel,
+                    &(cui_select_opts){.label = "选择共用外接显示器", .width = CUI_FILL})) {
+                    snprintf(s_settings.cfg.disp_device, sizeof(s_settings.cfg.disp_device),
+                             "%s", mon_devs[mon_sel]);
+                    settings_mark_dirty();
+                }
+            } else {
+                cui_secondary(ui, "暂未检测到可选择的扩展屏。请先在 Windows 按 Win+P 选择「扩展」启用共用屏，再点击上方「探测显示器与输入源」。");
+            }
+        }
+#else
+        {
+            char mac_bufs[HOP_DISPLAY_MAX_DEVICES + 2][192];
+            int mac_indices[HOP_DISPLAY_MAX_DEVICES + 2];
+            const char *mac_ptrs[HOP_DISPLAY_MAX_DEVICES + 2];
+            int mac_count = 0;
+            int parsed_idx = hop_display_mac_parse_input_cmd_index(s_settings.cfg.mac_input_cmd);
+            int mac_sel = -1;
+
+            for (int i = 0; i < inv->count && i < HOP_DISPLAY_MAX_DEVICES; ++i) {
+                if (inv->items[i].is_builtin) continue;
+                int m1_idx = inv->items[i].device_id[0] ? atoi(inv->items[i].device_id) : 0;
+                if (m1_idx < 1 || m1_idx > 16) m1_idx = mac_count + 1;
+                hop_display_format_monitor_label(&inv->items[i], mac_bufs[mac_count], sizeof(mac_bufs[mac_count]));
+                mac_indices[mac_count] = m1_idx;
+                mac_ptrs[mac_count] = mac_bufs[mac_count];
+                if (parsed_idx > 0 && mac_indices[mac_count] == parsed_idx) mac_sel = mac_count;
+                ++mac_count;
+            }
+            if (mac_count == 0) {
+                for (int n = 1; n <= 4; ++n) {
+                    snprintf(mac_bufs[mac_count], sizeof(mac_bufs[mac_count]), "外接显示器 %d（m1ddc display %d）", n, n);
+                    mac_indices[mac_count] = n;
+                    mac_ptrs[mac_count] = mac_bufs[mac_count];
+                    if (parsed_idx == n) mac_sel = mac_count;
+                    ++mac_count;
+                }
+            }
+            snprintf(mac_bufs[mac_count], sizeof(mac_bufs[mac_count]), "%s", "自定义切源命令（在下方高级参数编辑）");
+            mac_indices[mac_count] = 0;
+            mac_ptrs[mac_count] = mac_bufs[mac_count];
+            if (mac_sel < 0) mac_sel = mac_count;
+            ++mac_count;
+
+            if (cui_select_ex(ui, "setting-mac-target-display", mac_ptrs, mac_count, &mac_sel,
+                &(cui_select_opts){.label = "Mac 目标外接显示器", .width = CUI_FILL})) {
+                if (mac_indices[mac_sel] > 0) {
+                    hop_display_mac_build_input_cmd(mac_indices[mac_sel],
+                        s_settings.cfg.mac_input_cmd, sizeof(s_settings.cfg.mac_input_cmd));
+                    settings_mark_dirty();
+                } else {
+                    s_settings.mac_cmd_open = true;
+                }
+            }
+            cui_muted(ui, "共屏拓扑由 Windows 端统一协调；概览页切屏按钮会优先通知 Windows，断线时自动回落本机切源。");
+        }
+#endif
+
+        cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_START) {
+            if (cui_select_ex(ui, "setting-disp-win-preset", input_opts, opt_count, &s_settings.win_input_preset,
+                &(cui_select_opts){.label = "Windows 端输入源", .width = CUI_GROW(1)})) {
+                if (s_settings.win_input_preset < pcount) {
+                    const hop_display_input_preset *p = hop_display_input_preset_at((size_t)s_settings.win_input_preset);
+                    if (p) snprintf(s_settings.disp_win, sizeof(s_settings.disp_win), "0x%02X", (unsigned)p->code);
+                }
+                settings_mark_dirty();
+            }
+            if (cui_select_ex(ui, "setting-disp-mac-preset", input_opts, opt_count, &s_settings.mac_input_preset,
+                &(cui_select_opts){.label = "Mac 端输入源", .width = CUI_GROW(1)})) {
+                if (s_settings.mac_input_preset < pcount) {
+                    const hop_display_input_preset *p = hop_display_input_preset_at((size_t)s_settings.mac_input_preset);
+                    if (p) snprintf(s_settings.disp_mac, sizeof(s_settings.disp_mac), "0x%02X", (unsigned)p->code);
+                }
+                settings_mark_dirty();
+            }
+        }
+        if (s_settings.win_input_preset == custom_idx || s_settings.mac_input_preset == custom_idx) {
+            cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_START) {
+                if (s_settings.win_input_preset == custom_idx) {
+                    if (cui_input(ui, "setting-disp-win", s_settings.disp_win, sizeof(s_settings.disp_win),
+                        .label = "自定义 Windows 输入源代码（十进制或 0x 十六进制）",
+                        .placeholder = "例如 0x0F", .width = CUI_GROW(1)) & CUI_CHANGED)
+                        settings_mark_dirty();
+                }
+                if (s_settings.mac_input_preset == custom_idx) {
+                    if (cui_input(ui, "setting-disp-mac", s_settings.disp_mac, sizeof(s_settings.disp_mac),
+                        .label = "自定义 Mac 输入源代码（十进制或 0x 十六进制）",
+                        .placeholder = "例如 0x11", .width = CUI_GROW(1)) & CUI_CHANGED)
+                        settings_mark_dirty();
+                }
+            }
+        }
+
+        if (cui_accordion_begin(ui, "高级切换参数（唤醒时长 / 重试超时 / 手动设备名与命令）", &s_settings.mac_cmd_open)) {
+            cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_START) {
+                if (cui_number_ex(ui, "setting-wake-sec", &s_settings.wake_sec, 1, 3600,
+                    &(cui_number_opts){.label = "显示器唤醒时长", .step = 60, .decimals = 0, .suffix = "秒", .width = CUI_GROW(1)}))
+                    settings_mark_dirty();
+                if (cui_number_ex(ui, "setting-ddc-retries", &s_settings.ddc_retries, 1, 10,
+                    &(cui_number_opts){.label = "DDC 写入重试", .step = 1, .decimals = 0, .suffix = "次", .width = CUI_GROW(1)}))
+                    settings_mark_dirty();
+                if (cui_number_ex(ui, "setting-verify-timeout", &s_settings.verify_timeout_ms, 1000, 30000,
+                    &(cui_number_opts){.label = "回读/拓扑验证超时", .step = 500, .decimals = 0, .suffix = "ms", .width = CUI_GROW(1)}))
+                    settings_mark_dirty();
+            }
+            cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_START) {
+                if (cui_number_ex(ui, "setting-disp-poll", &s_settings.poll_ms, 50, 2000,
+                    &(cui_number_opts){.label = "验证轮询间隔", .step = 50, .decimals = 0, .suffix = "ms", .width = CUI_GROW(1)}))
+                    settings_mark_dirty();
+                if (cui_number_ex(ui, "setting-wake-settle", &s_settings.wake_settle_ms, 0, 10000,
+                    &(cui_number_opts){.label = "共屏唤醒确认后延迟", .step = 50, .decimals = 0, .suffix = "ms", .width = CUI_GROW(1)}))
+                    settings_mark_dirty();
+                if (cui_number_ex(ui, "setting-wake-timeout", &s_settings.wake_timeout_ms, 1000, 30000,
+                    &(cui_number_opts){.label = "对端应答超时", .step = 500, .decimals = 0, .suffix = "ms", .width = CUI_GROW(1)}))
+                    settings_mark_dirty();
+            }
+            cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_START) {
+                if (cui_number_ex(ui, "setting-wake-delay", &s_settings.wake_delay_ms, 0, 10000,
+                    &(cui_number_opts){.label = "普通模式唤醒延迟", .step = 100, .decimals = 0, .suffix = "ms", .width = CUI_GROW(1)}))
+                    settings_mark_dirty();
+#ifdef _WIN32
+                if (cui_number_ex(ui, "setting-disp-monitor-index", &s_settings.monitor_index, 0, 15,
+                    &(cui_number_opts){.label = "普通模式 DDC 序号（0=主屏）", .step = 1, .decimals = 0, .width = CUI_GROW(1)}))
+                    settings_mark_dirty();
+#endif
+            }
+#ifdef _WIN32
+            if (cui_switch(ui, "切回 Windows 失败时允许休眠 Mac 显示器兜底", &s_settings.sleep_fallback,
+                .description = "仅当 Windows DDC 与 Mac 切源命令都失败时，向 Mac 发送睡眠命令断掉信号强制回落"))
+                settings_mark_dirty();
+            if (cui_input(ui, "setting-shared-device", s_settings.cfg.disp_device,
+                sizeof(s_settings.cfg.disp_device), .label = "手动指定 Windows 设备名（高级覆盖）",
+                .placeholder = "例如 \\\\.\\DISPLAY2", .width = CUI_FILL) & CUI_CHANGED)
+                settings_mark_dirty();
+#endif
+            cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_START) {
+                if (cui_input(ui, "setting-mac-input-cmd", s_settings.cfg.mac_input_cmd,
+                    sizeof(s_settings.cfg.mac_input_cmd), .label = "Mac 切源命令",
+                    .placeholder = "例如 m1ddc display 1 set input", .width = CUI_GROW(1)) & CUI_CHANGED)
+                    settings_mark_dirty();
+                if (cui_input(ui, "setting-mac-sleep-cmd", s_settings.cfg.mac_sleep_cmd,
+                    sizeof(s_settings.cfg.mac_sleep_cmd), .label = "Mac 睡眠命令",
+                    .placeholder = "例如 pmset displaysleepnow", .width = CUI_GROW(1)) & CUI_CHANGED)
+                    settings_mark_dirty();
+            }
+            cui_accordion_end(ui);
+        }
+    }
+}
+
 static void draw_settings_input_and_display(cui_ctx *ui) {
     int peer_mouse = s_model.connected && (s_model.peer_input_mode & HOP_INPUT_MOUSE) != 0;
     int peer_keyboard = s_model.connected && (s_model.peer_input_mode & HOP_INPUT_KEYBOARD) != 0;
@@ -1114,78 +1417,7 @@ static void draw_settings_input_and_display(cui_ctx *ui) {
                 settings_mark_dirty();
         }
 
-        cui_card(ui, .width = CUI_FILL, .pad = 16, .gap = 12) {
-            cui_heading(ui, "显示器切换（DDC/CI）", 3);
-#ifdef _WIN32
-            if (cui_switch(ui, "Windows 与 Mac 共用一块显示器", &s_settings.shared_display,
-                .description = "切到 Mac 时释放选定扩展屏，切回 Windows 时恢复并释放 Mac 唤醒保活；首次设置前请先在 Windows 中启用扩展"))
-                settings_mark_dirty();
-            if (s_settings.shared_display) {
-                if (cui_input(ui, "setting-shared-device", s_settings.cfg.disp_device,
-                    sizeof(s_settings.cfg.disp_device), .label = "Windows 共用扩展屏设备名",
-                    .placeholder = "例如 \\\\.\\DISPLAY2", .width = CUI_FILL) & CUI_CHANGED)
-                    settings_mark_dirty();
-                if (s_model.display_devices[0]) cui_text(ui, s_model.display_devices);
-                if (cui_switch(ui, "切回 Windows 失败时允许休眠 Mac 显示器兜底", &s_settings.sleep_fallback,
-                    .description = "仅当 Windows DDC 与 Mac 切源命令都失败时，向 Mac 发送睡眠命令断掉信号强制回落"))
-                    settings_mark_dirty();
-                cui_text(ui, "请确认设备名对应共用屏；主屏不允许释放。两端还需分别配置正确的显示器输入源和 Mac 切源命令。");
-            }
-#else
-            cui_text(ui, "共屏开关与 Windows 目标扩展屏在 Windows 端设置。概览页切屏按钮会请求 Windows 统一协调；断线时自动回落为本机切源。");
-#endif
-            cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_START) {
-                if (cui_input(ui, "setting-disp-win", s_settings.disp_win, sizeof(s_settings.disp_win),
-                    .label = "Windows 显示器输入源", .placeholder = "例如 0x0F", .width = CUI_GROW(1)) & CUI_CHANGED)
-                    settings_mark_dirty();
-                if (cui_input(ui, "setting-disp-mac", s_settings.disp_mac, sizeof(s_settings.disp_mac),
-                    .label = "Mac 显示器输入源", .placeholder = "例如 0x11", .width = CUI_GROW(1)) & CUI_CHANGED)
-                    settings_mark_dirty();
-                if (cui_number_ex(ui, "setting-wake-sec", &s_settings.wake_sec, 1, 3600,
-                    &(cui_number_opts){.label = "显示器唤醒时长", .step = 60, .decimals = 0, .suffix = "秒", .width = CUI_GROW(1)}))
-                    settings_mark_dirty();
-            }
-            if (cui_accordion_begin(ui, "高级切换参数（重试 / 超时 / 延迟 / Mac 命令）", &s_settings.mac_cmd_open)) {
-                cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_START) {
-                    if (cui_number_ex(ui, "setting-ddc-retries", &s_settings.ddc_retries, 1, 10,
-                        &(cui_number_opts){.label = "DDC 写入重试", .step = 1, .decimals = 0, .suffix = "次", .width = CUI_GROW(1)}))
-                        settings_mark_dirty();
-                    if (cui_number_ex(ui, "setting-verify-timeout", &s_settings.verify_timeout_ms, 1000, 30000,
-                        &(cui_number_opts){.label = "回读/拓扑验证超时", .step = 500, .decimals = 0, .suffix = "ms", .width = CUI_GROW(1)}))
-                        settings_mark_dirty();
-                    if (cui_number_ex(ui, "setting-disp-poll", &s_settings.poll_ms, 50, 2000,
-                        &(cui_number_opts){.label = "验证轮询间隔", .step = 50, .decimals = 0, .suffix = "ms", .width = CUI_GROW(1)}))
-                        settings_mark_dirty();
-                }
-                cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_START) {
-                    if (cui_number_ex(ui, "setting-wake-settle", &s_settings.wake_settle_ms, 0, 10000,
-                        &(cui_number_opts){.label = "共屏唤醒确认后延迟", .step = 50, .decimals = 0, .suffix = "ms", .width = CUI_GROW(1)}))
-                        settings_mark_dirty();
-                    if (cui_number_ex(ui, "setting-wake-timeout", &s_settings.wake_timeout_ms, 1000, 30000,
-                        &(cui_number_opts){.label = "对端应答超时", .step = 500, .decimals = 0, .suffix = "ms", .width = CUI_GROW(1)}))
-                        settings_mark_dirty();
-                    if (cui_number_ex(ui, "setting-wake-delay", &s_settings.wake_delay_ms, 0, 10000,
-                        &(cui_number_opts){.label = "普通模式唤醒延迟", .step = 100, .decimals = 0, .suffix = "ms", .width = CUI_GROW(1)}))
-                        settings_mark_dirty();
-                }
-#ifdef _WIN32
-                if (cui_number_ex(ui, "setting-disp-monitor-index", &s_settings.monitor_index, 0, 15,
-                    &(cui_number_opts){.label = "普通模式 Windows DDC 显示器序号（0=主屏）", .step = 1, .decimals = 0, .width = CUI_FILL}))
-                    settings_mark_dirty();
-#endif
-                cui_row(ui, .width = CUI_FILL, .gap = 12, .align = CUI_ALIGN_START) {
-                    if (cui_input(ui, "setting-mac-input-cmd", s_settings.cfg.mac_input_cmd,
-                        sizeof(s_settings.cfg.mac_input_cmd), .label = "Mac 切源命令",
-                        .placeholder = "例如 m1ddc display 1 set input", .width = CUI_GROW(1)) & CUI_CHANGED)
-                        settings_mark_dirty();
-                    if (cui_input(ui, "setting-mac-sleep-cmd", s_settings.cfg.mac_sleep_cmd,
-                        sizeof(s_settings.cfg.mac_sleep_cmd), .label = "Mac 睡眠命令",
-                        .placeholder = "例如 pmset displaysleepnow", .width = CUI_GROW(1)) & CUI_CHANGED)
-                        settings_mark_dirty();
-                }
-                cui_accordion_end(ui);
-            }
-        }
+        draw_display_settings_card(ui);
     }
 }
 
@@ -1408,6 +1640,8 @@ void hopdesk_ui_init(cui_ctx *ui) {
 }
 
 static float next_refresh_interval(void) {
+    if (s_model.display_inventory.probing)
+        return 0.5f;
     if (s_model.update.phase == HOP_UPDATE_CHECKING ||
         s_model.update.phase == HOP_UPDATE_DOWNLOADING ||
         s_model.update.phase == HOP_UPDATE_APPLYING)

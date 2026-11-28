@@ -5,6 +5,7 @@
 #define MAC_APP_H
 
 #include "hop.h"
+#include "../core/display_catalog.h"
 #include "../core/update_controller.h"
 
 typedef struct {
@@ -83,6 +84,9 @@ void mac_display_enqueue(const uint8_t *p, uint32_t len);
 void disp_switch_shutdown(void);
 void disp_switch_status(char *out, size_t cap);
 void disp_set_input(uint16_t vcp);
+void mac_display_get_inventory(hop_display_inventory *out);
+int  mac_display_probe_async(void);
+int  mac_display_identify(void);
 
 /* update.m */
 void mac_update_get_snapshot(hop_update_snapshot *out);

@@ -5,6 +5,7 @@
 #include "hop.h"
 #include "config_schema.h"
 #include "display_switch.h"
+#include "display_catalog.h"
 #include "cli.h"
 #include "update_manifest.h"
 #include "update_controller.h"
@@ -778,6 +779,45 @@ static void test_update_manifest_validation(void) {
     CHECK(hop_config_set_kv(&cfg, "update_channel", "stable", err, sizeof(err)) == 1);
     CHECK(cfg.update_channel == HOP_UPDATE_CHANNEL_STABLE);
     CHECK(hop_config_set_kv(&cfg, "update_channel", "beta", err, sizeof(err)) == -1);
+}
+
+static void test_display_catalog_helpers(void) {
+    char buf[160];
+    CHECK(hop_display_input_preset_count() >= 5);
+    CHECK(hop_display_input_find_preset(0x0Fu) == 0);
+    CHECK(hop_display_input_find_preset(0x11u) == 2);
+    CHECK(hop_display_input_find_preset(0x1Bu) == 4);
+    CHECK(hop_display_input_find_preset(0xD0u) == -1);
+
+    hop_display_input_format_label(0x0Fu, buf, sizeof(buf));
+    CHECK(strstr(buf, "DisplayPort 1") != NULL && strstr(buf, "0x0F") != NULL);
+    hop_display_input_format_label(0x11u, buf, sizeof(buf));
+    CHECK(strstr(buf, "HDMI 1") != NULL && strstr(buf, "0x11") != NULL);
+    hop_display_input_format_label(0xD0u, buf, sizeof(buf));
+    CHECK(strstr(buf, "0xD0") != NULL);
+
+    hop_display_info info;
+    memset(&info, 0, sizeof(info));
+    info.index = 2;
+    info.is_primary = 0;
+    info.attached = 1;
+    info.width = 3840;
+    info.height = 2160;
+    info.pos_x = 1920;
+    info.current_input = 0x0F;
+    snprintf(info.device_id, sizeof(info.device_id), "%s", "\\\\.\\DISPLAY2");
+    snprintf(info.friendly_name, sizeof(info.friendly_name), "%s", "BenQ PD2700U");
+    hop_display_format_monitor_label(&info, buf, sizeof(buf));
+    CHECK(strstr(buf, "BenQ PD2700U") != NULL);
+    CHECK(strstr(buf, "3840") != NULL && strstr(buf, "2160") != NULL);
+    CHECK(strstr(buf, "DisplayPort 1") != NULL);
+
+    hop_display_mac_build_input_cmd(2, buf, sizeof(buf));
+    CHECK(strcmp(buf, "m1ddc display 2 set input") == 0);
+    CHECK(hop_display_mac_parse_input_cmd_index(buf) == 2);
+    CHECK(hop_display_mac_parse_input_cmd_index("m1ddc display 1 set input") == 1);
+    CHECK(hop_display_mac_parse_input_cmd_index("/usr/local/bin/custom-ddc") == 0);
+    CHECK(hop_display_mac_parse_input_cmd_index("m1ddc display 0 set input") == 0);
 }
 
 
@@ -2255,6 +2295,7 @@ int main(void) {
     RUN_TEST(test_config_defaults_and_loading);
     RUN_TEST(test_dual_roles);
     RUN_TEST(test_display_switch);
+    RUN_TEST(test_display_catalog_helpers);
     RUN_TEST(test_config_schema_and_runtime_apply);
     RUN_TEST(test_cli_engine);
     RUN_TEST(test_keymap);

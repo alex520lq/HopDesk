@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <cui/cui.h>
 #include "../core/hop.h"
+#include "../core/display_catalog.h"
 #include "../core/update_controller.h"
 #include "../core/xfer_status.h"
 #include "../core/xfer_task.h"
@@ -28,7 +29,9 @@ enum {
     HOPDESK_UI_DISPLAY_TO_WINDOWS,
     HOPDESK_UI_DISPLAY_WAKE,
     HOPDESK_UI_DISPLAY_SLEEP,
-    HOPDESK_UI_DISPLAY_TOGGLE
+    HOPDESK_UI_DISPLAY_TOGGLE,
+    HOPDESK_UI_DISPLAY_PROBE,
+    HOPDESK_UI_DISPLAY_IDENTIFY
 };
 
 typedef struct hopdesk_ui_model {
@@ -37,6 +40,7 @@ typedef struct hopdesk_ui_model {
     char peer_label[128];
     char display_status[192];
     char display_devices[768];
+    hop_display_inventory display_inventory;
     int connected;
     int sharing;
     int data_connected;

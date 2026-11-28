@@ -7,6 +7,7 @@ $sources = @(
     (Join-Path $root 'tests/core_tests.c'),
     (Join-Path $root 'src/core/protocol.c'),
     (Join-Path $root 'src/core/display_switch.c'),
+    (Join-Path $root 'src/core/display_catalog.c'),
     (Join-Path $root 'src/core/crc32.c'),
     (Join-Path $root 'src/core/config.c'),
     (Join-Path $root 'src/core/cli.c'),

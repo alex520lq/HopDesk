@@ -288,6 +288,8 @@ static int disp_sleep_mac(void) {
 }
 
 int win_ui_display_action(int action) {
+    if (action == HOPDESK_UI_DISPLAY_IDENTIFY)
+        return shared_display_identify_async();
     if (shared_display_busy()) {
         hop_log(HOP_LOG_WARN, "display: switch in progress; retry after completion");
         return 0;
@@ -298,6 +300,7 @@ int win_ui_display_action(int action) {
         case HOPDESK_UI_DISPLAY_TOGGLE: return disp_switch_toggle();
         case HOPDESK_UI_DISPLAY_WAKE: return disp_wake_mac();
         case HOPDESK_UI_DISPLAY_SLEEP: return disp_sleep_mac();
+        case HOPDESK_UI_DISPLAY_PROBE: return shared_display_probe_async();
         default: return 0;
     }
 }

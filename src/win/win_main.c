@@ -47,11 +47,30 @@ static void beside(wchar_t *out, int n, const wchar_t *name) {
     if (p) wcscpy(p + 1, name);
 }
 
-void win_send_capabilities(unsigned takeover_mask) {
+void win_send_capabilities_ex(unsigned takeover_mask, unsigned flags) {
     uint8_t payload[HOP_CAPABILITIES_BYTES];
     if (!g_app.net || !net_server_has_client(g_app.net)) return;
-    if (hop_capabilities_encode(payload, g_app.cfg.input_mode, takeover_mask, g_app.cfg.audio_mode))
+    if (hop_capabilities_encode_ex(payload, g_app.cfg.input_mode, takeover_mask,
+                                   g_app.cfg.audio_mode, flags))
         (void)net_server_send(g_app.net, HOP_MSG_CAPABILITIES, payload, sizeof(payload));
+}
+
+void win_send_capabilities(unsigned takeover_mask) {
+    win_send_capabilities_ex(takeover_mask, 0u);
+}
+
+void win_apply_audio_mode(unsigned mode, int sync_peer, int persist) {
+    mode &= HOP_AUDIO_MODES;
+    g_app.cfg.audio_mode = mode;
+    (void)hop_audio_set_mode(&g_app.cfg, mode);
+    if (persist) {
+        hop_config saved = g_app.cfg;
+        (void)hop_config_load(&saved, g_app.config_path);
+        saved.audio_mode = mode;
+        (void)hop_config_save_atomic(&saved, g_app.config_path);
+    }
+    win_send_capabilities_ex(0u, sync_peer ? HOP_CAP_FLAG_AUDIO_SYNC : 0u);
+    ui_refresh(&g_app);
 }
 
 void win_apply_input_mode(unsigned mode, unsigned takeover_mask, int persist) {
@@ -87,7 +106,9 @@ void win_apply_input_mode(unsigned mode, unsigned takeover_mask, int persist) {
 int win_apply_hot_config(const hop_config *next) {
     if (!next) return 0;
     unsigned prev_input = g_app.cfg.input_mode;
+    unsigned prev_audio = g_app.cfg.audio_mode;
     unsigned next_input = next->input_mode & HOP_INPUT_MODES;
+    unsigned next_audio = next->audio_mode & HOP_AUDIO_MODES;
     unsigned takeover = next_input & ~prev_input;
 
     /* Preserve transport-binding fields that require restart to rebind safely;
@@ -111,12 +132,17 @@ int win_apply_hot_config(const hop_config *next) {
     g_app.cfg.xfer_rx_queue_slots = live_rx_slots;
     g_app.cfg.xfer_rx_queue_mb = live_rx_mb;
     g_app.cfg.input_mode = prev_input;
+    g_app.cfg.audio_mode = next_audio;
 
     hop_runtime_apply_config(&g_app.cfg);
     if (next_input != prev_input)
         win_apply_input_mode(next_input, takeover, 0);
-    else
+    if (next_audio != prev_audio) {
+        (void)hop_audio_set_mode(&g_app.cfg, next_audio);
+        win_send_capabilities_ex(0u, HOP_CAP_FLAG_AUDIO_SYNC);
+    } else if (next_input == prev_input) {
         win_send_capabilities(0);
+    }
     ui_refresh(&g_app);
     return hop_audio_set_mode(&g_app.cfg, g_app.cfg.audio_mode);
 }
@@ -162,20 +188,29 @@ static void on_hello(const uint8_t *p, uint32_t len) {
 
 static void on_capabilities(const uint8_t *p, uint32_t len) {
     hop_capabilities_msg msg;
-    unsigned next;
+    unsigned next_input, next_audio;
+    int changed = 0;
     if (!hop_capabilities_decode(p, len, &msg)) return;
     g_app.peer_input_mode = msg.input_mode;
     g_app.peer_audio_mode = msg.audio_mode;
     g_app.peer_capabilities_known = 1;
-    next = hop_input_reconcile(g_app.cfg.input_mode, msg.input_mode,
-                               msg.takeover_mask, g_app.cfg.role);
-    if (next != g_app.cfg.input_mode) {
+    next_input = hop_input_reconcile(g_app.cfg.input_mode, msg.input_mode,
+                                     msg.takeover_mask, g_app.cfg.role);
+    if (next_input != g_app.cfg.input_mode) {
         hop_log(HOP_LOG_INFO, "input: peer capability sync adjusted local input_mode %u -> %u",
-                g_app.cfg.input_mode, next);
-        win_apply_input_mode(next, 0, 1);
-    } else {
-        ui_refresh(&g_app);
+                g_app.cfg.input_mode, next_input);
+        win_apply_input_mode(next_input, 0, 1);
+        changed = 1;
     }
+    next_audio = hop_audio_reconcile(g_app.cfg.audio_mode, msg.audio_mode,
+                                     msg.flags, g_app.cfg.role);
+    if (next_audio != g_app.cfg.audio_mode) {
+        hop_log(HOP_LOG_INFO, "audio: peer capability sync adjusted local audio_mode %u -> %u",
+                g_app.cfg.audio_mode, next_audio);
+        win_apply_audio_mode(next_audio, 0, 1);
+        changed = 1;
+    }
+    if (!changed) ui_refresh(&g_app);
 }
 
 static void on_recv(hop_recv *r) {

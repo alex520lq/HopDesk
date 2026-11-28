@@ -228,12 +228,30 @@ void net_get_peer_capabilities(unsigned *peer_input, unsigned *peer_audio, int *
     }
 }
 
-void net_send_capabilities(unsigned takeover_mask) {
+void net_send_capabilities_ex(unsigned takeover_mask, unsigned flags) {
     uint8_t payload[HOP_CAPABILITIES_BYTES];
     unsigned local_input = net_get_input_mode();
-    if (hop_capabilities_encode(payload, local_input, takeover_mask & HOP_INPUT_MODES,
-                                g_mac.cfg.audio_mode & HOP_AUDIO_MODES))
+    if (hop_capabilities_encode_ex(payload, local_input, takeover_mask & HOP_INPUT_MODES,
+                                   g_mac.cfg.audio_mode & HOP_AUDIO_MODES, flags))
         (void)net_send(HOP_MSG_CAPABILITIES, payload, sizeof(payload));
+}
+
+void net_send_capabilities(unsigned takeover_mask) {
+    net_send_capabilities_ex(takeover_mask, 0u);
+}
+
+void net_apply_audio_mode(unsigned mode, int sync_peer, int persist) {
+    mode &= HOP_AUDIO_MODES;
+    g_mac.cfg.audio_mode = mode;
+    hop_config runtime = g_mac.cfg;
+    (void)hop_audio_set_mode(&runtime, mode);
+    if (persist && g_mac.config_path[0]) {
+        hop_config saved = g_mac.cfg;
+        (void)hop_config_load(&saved, g_mac.config_path);
+        saved.audio_mode = mode;
+        (void)hop_config_save_atomic(&saved, g_mac.config_path);
+    }
+    net_send_capabilities_ex(0u, sync_peer ? HOP_CAP_FLAG_AUDIO_SYNC : 0u);
 }
 
 void net_apply_input_mode(unsigned mode, unsigned takeover_mask, int persist) {

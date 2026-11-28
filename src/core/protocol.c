@@ -118,17 +118,23 @@ int hop_clip_paste_failed_decode(const uint8_t *p, uint32_t len,
     return 1;
 }
 
-uint32_t hop_capabilities_encode(uint8_t out[HOP_CAPABILITIES_BYTES],
-                                 unsigned input_mode, unsigned takeover_mask,
-                                 unsigned audio_mode) {
+uint32_t hop_capabilities_encode_ex(uint8_t out[HOP_CAPABILITIES_BYTES],
+                                    unsigned input_mode, unsigned takeover_mask,
+                                    unsigned audio_mode, unsigned flags) {
     if (!out || (input_mode & ~HOP_INPUT_MODES) ||
         (takeover_mask & ~HOP_INPUT_MODES) ||
         (audio_mode & ~HOP_AUDIO_MODES)) return 0;
     out[0] = (uint8_t)input_mode;
     out[1] = (uint8_t)takeover_mask;
     out[2] = (uint8_t)audio_mode;
-    out[3] = 0;
+    out[3] = (uint8_t)(flags & 0xFFu);
     return HOP_CAPABILITIES_BYTES;
+}
+
+uint32_t hop_capabilities_encode(uint8_t out[HOP_CAPABILITIES_BYTES],
+                                 unsigned input_mode, unsigned takeover_mask,
+                                 unsigned audio_mode) {
+    return hop_capabilities_encode_ex(out, input_mode, takeover_mask, audio_mode, 0u);
 }
 
 int hop_capabilities_decode(const uint8_t *p, uint32_t len, hop_capabilities_msg *out) {
@@ -138,6 +144,7 @@ int hop_capabilities_decode(const uint8_t *p, uint32_t len, hop_capabilities_msg
     out->input_mode = p[0];
     out->takeover_mask = p[1];
     out->audio_mode = p[2];
+    out->flags = p[3];
     return 1;
 }
 
@@ -150,6 +157,22 @@ unsigned hop_input_reconcile(unsigned local_input, unsigned peer_input,
     if ((next & remote) && local_role == HOP_ROLE_CLIENT)
         next &= ~remote;
     return next;
+}
+
+unsigned hop_audio_reconcile(unsigned local_audio, unsigned peer_audio,
+                             unsigned flags, hop_role local_role) {
+    unsigned local = local_audio & HOP_AUDIO_MODES;
+    unsigned remote = peer_audio & HOP_AUDIO_MODES;
+    if (flags & HOP_CAP_FLAG_AUDIO_SYNC) {
+        if (remote == HOP_AUDIO_SEND) return HOP_AUDIO_PLAY;
+        if (remote == HOP_AUDIO_PLAY) return HOP_AUDIO_SEND;
+        if (remote == 0u) return 0u;
+        return local;
+    }
+    if (local == HOP_AUDIO_SEND && remote == HOP_AUDIO_SEND &&
+        local_role == HOP_ROLE_CLIENT)
+        return HOP_AUDIO_PLAY;
+    return local;
 }
 
 /* ---- 字节序 ---- */

@@ -21,6 +21,10 @@ static void net_apply_input_mode(unsigned mode,unsigned takeover,int persist){
     s_local_input_mode=mode & HOP_INPUT_MODES;
     g_mac.cfg.input_mode=s_local_input_mode;
 }
+static void net_apply_audio_mode(unsigned mode,int sync_peer,int persist){
+    (void)sync_peer;(void)persist;
+    g_mac.cfg.audio_mode=mode & HOP_AUDIO_MODES;
+}
 static uint64_t s_last_rx;
 static hop_session_id s_control_session;
 static uint8_t sent_type,sent[256];static uint32_t sent_len;
@@ -72,10 +76,11 @@ int main(void){
     dispatch_message(NULL,HOP_MSG_EDGE_LEAVE,payload,1);assert(returned==1);
     /* Peer claims mouse: local automatically yields mouse while keeping keyboard. */
     uint8_t caps[HOP_CAPABILITIES_BYTES];
-    assert(hop_capabilities_encode(caps,HOP_INPUT_MOUSE,HOP_INPUT_MOUSE,HOP_AUDIO_SEND)==HOP_CAPABILITIES_BYTES);
+    assert(hop_capabilities_encode_ex(caps,HOP_INPUT_MOUSE,HOP_INPUT_MOUSE,HOP_AUDIO_SEND,HOP_CAP_FLAG_AUDIO_SYNC)==HOP_CAPABILITIES_BYTES);
     dispatch_message(NULL,HOP_MSG_CAPABILITIES,caps,sizeof(caps));
     assert(s_peer_caps_known && s_peer_input_mode==HOP_INPUT_MOUSE && s_peer_audio_mode==HOP_AUDIO_SEND);
     assert(s_local_input_mode==HOP_INPUT_KEYBOARD);
+    assert(g_mac.cfg.audio_mode==HOP_AUDIO_PLAY);
     dispatch_message(NULL,HOP_MSG_MOUSE_ENTER,payload,2);assert(injected==1);
     dispatch_message(NULL,HOP_MSG_KEY_DOWN,payload,2);assert(injected==1);
     hop_put_be32(payload,HOP_DEV_CLIENT);memcpy(payload+4,"hello",5);

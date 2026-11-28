@@ -129,6 +129,11 @@ static void set_input_mode(unsigned input_mode) {
     (void)win_split_set_input_mode(s_ui_config.input_mode);
     s_last_snapshot = 0;
 }
+static void set_audio_mode(unsigned audio_mode) {
+    s_ui_config.audio_mode = audio_mode & HOP_AUDIO_MODES;
+    (void)win_split_set_audio_mode(s_ui_config.audio_mode);
+    s_last_snapshot = 0;
+}
 
 static int load_logs(char *out, size_t capacity) {
     FILE *file;
@@ -269,7 +274,8 @@ static const hopdesk_ui_ops k_ui_ops = {
     load_cjk_font,
     release_cjk_font,
     apply_theme,
-    set_input_mode
+    set_input_mode,
+    set_audio_mode
 };
 
 static void draw_frame(cui_ctx *ui, void *user) {

@@ -183,6 +183,10 @@ static void snapshot_model(hopdesk_ui_model *model,
         model->audio_requested = audio.requested;
         model->audio_active = audio.active;
         model->audio_unavailable = audio.unavailable;
+        if (!split_ui_is_active() || split_ui_agent_connected()) {
+            s_ui_config.audio_mode = audio.requested & HOP_AUDIO_MODES;
+            model->config.audio_mode = s_ui_config.audio_mode;
+        }
     }
 
     if (split_ui_get_transfer_state(&state)) {
@@ -306,6 +310,12 @@ static void disconnect_peer(void) {
 static void set_input_mode(unsigned input_mode) {
     s_ui_config.input_mode = input_mode & HOP_INPUT_MODES;
     (void)split_ui_set_input_mode(s_ui_config.input_mode);
+}
+
+static void set_audio_mode(unsigned audio_mode) {
+    s_ui_config.audio_mode = audio_mode & HOP_AUDIO_MODES;
+    (void)split_ui_set_audio_mode(s_ui_config.audio_mode);
+    hopdesk_ui_refresh();
 }
 
 static void display_action(int action) {
@@ -454,7 +464,8 @@ static const hopdesk_ui_ops k_ui_ops = {
     load_cjk_font,
     release_cjk_font,
     apply_theme,
-    set_input_mode
+    set_input_mode,
+    set_audio_mode
 };
 
 static void draw_frame(cui_ctx *ui, void *user) {

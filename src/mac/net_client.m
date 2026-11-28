@@ -4,6 +4,7 @@
  * ===================================================================== */
 #include "mac_app.h"
 #include "xfer.h"
+#include "../platform/audio_link.h"
 #include <dispatch/dispatch.h>
 #include <fcntl.h>
 #include <stdatomic.h>

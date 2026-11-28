@@ -100,6 +100,7 @@ typedef struct hopdesk_ui_ops {
     void (*release_cjk_font)(void);
     void (*apply_theme)(int ui_theme, int persist);
     void (*set_input_mode)(unsigned input_mode);
+    void (*set_audio_mode)(unsigned audio_mode);
 } hopdesk_ui_ops;
 
 void hopdesk_ui_set_ops(const hopdesk_ui_ops *ops);

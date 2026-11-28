@@ -449,17 +449,24 @@ int hop_xfer_hello_bound(const uint8_t *p, uint32_t len, const char *token,
 
 /* Peer capability sync & takeover payload (HOP_MSG_CAPABILITIES). */
 #define HOP_CAPABILITIES_BYTES 4u
+#define HOP_CAP_FLAG_AUDIO_SYNC 1u
 typedef struct {
     unsigned input_mode;
     unsigned takeover_mask;
     unsigned audio_mode;
+    unsigned flags;
 } hop_capabilities_msg;
 uint32_t hop_capabilities_encode(uint8_t out[HOP_CAPABILITIES_BYTES],
                                  unsigned input_mode, unsigned takeover_mask,
                                  unsigned audio_mode);
+uint32_t hop_capabilities_encode_ex(uint8_t out[HOP_CAPABILITIES_BYTES],
+                                    unsigned input_mode, unsigned takeover_mask,
+                                    unsigned audio_mode, unsigned flags);
 int hop_capabilities_decode(const uint8_t *p, uint32_t len, hop_capabilities_msg *out);
 unsigned hop_input_reconcile(unsigned local_input, unsigned peer_input,
                              unsigned takeover_mask, hop_role local_role);
+unsigned hop_audio_reconcile(unsigned local_audio, unsigned peer_audio,
+                             unsigned flags, hop_role local_role);
 
 /* HELLO: {tlen, token, nlen, name, w(4), h(4), ver(1)}；指针指向 payload 内部 */
 typedef struct {

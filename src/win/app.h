@@ -48,7 +48,9 @@ typedef struct {
 extern win_app g_app;
 void local_addresses(char *out,size_t cap);
 void win_send_capabilities(unsigned takeover_mask);
+void win_send_capabilities_ex(unsigned takeover_mask, unsigned flags);
 void win_apply_input_mode(unsigned mode, unsigned takeover_mask, int persist);
+void win_apply_audio_mode(unsigned mode, int sync_peer, int persist);
 int  win_apply_hot_config(const hop_config *next);
 
 /* mouse_capture.c */

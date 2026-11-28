@@ -344,9 +344,8 @@ static int action(split_ipc_operation operation, split_ipc_query *query) {
 int split_ui_set_audio_mode(unsigned mode) {
     if (mode & ~HOP_AUDIO_MODES) return 0;
     if (!s_splitUI) {
-        g_mac.cfg.audio_mode = mode;
-        hop_config runtime = g_mac.cfg;
-        return hop_audio_set_mode(&runtime, mode);
+        net_apply_audio_mode(mode, 1, 1);
+        return 1;
     }
     g_mac.cfg.audio_mode = mode;
     split_ipc_query query = {.index = (int32_t)mode};
@@ -365,16 +364,13 @@ void split_ui_get_audio_status(hop_audio_status *out) {
     }
     *out = (hop_audio_status){0};
     if (s_agentAvailable) {
-        out->requested = (unsigned)s_status.audio_requested;
-        out->active = (unsigned)s_status.audio_active;
-        out->unavailable = (unsigned)s_status.audio_unavailable;
-        if (!out->requested && g_mac.cfg.audio_mode) {
-            out->requested = g_mac.cfg.audio_mode;
-            out->unavailable = g_mac.cfg.audio_mode;
-        }
+        out->requested = (unsigned)s_status.audio_requested & HOP_AUDIO_MODES;
+        out->active = (unsigned)s_status.audio_active & HOP_AUDIO_MODES;
+        out->unavailable = (unsigned)s_status.audio_unavailable & HOP_AUDIO_MODES;
+        g_mac.cfg.audio_mode = out->requested;
     } else {
-        out->requested = g_mac.cfg.audio_mode;
-        out->unavailable = g_mac.cfg.audio_mode;
+        out->requested = g_mac.cfg.audio_mode & HOP_AUDIO_MODES;
+        out->unavailable = g_mac.cfg.audio_mode & HOP_AUDIO_MODES;
     }
 }
 

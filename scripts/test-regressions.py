@@ -185,6 +185,9 @@ int main(void) {
     assert 'void (*apply_lang)(int ui_lang, int persist);' in ui_header
     assert 's_ops->apply_lang(' in ui and 'CUI_ICON_GLOBE' in ui
     assert 'IPC_LANG' in win_split and 'win_split_set_lang' in win_ui
+    assert 'detect_win_system_lang' in win_ui and 'hop_i18n_get_config_lang' in win_ui
+    assert 'windows.h' not in (ROOT/'src/core/i18n.c').read_text(encoding='utf-8')
+    assert 'CAP_INPUT_MOUSE_LOCAL_KBD_PEER' in ui and 'CAP_INPUT_MOUSE_PEER_KBD_LOCAL' in ui
     assert 'detect_mac_system_lang' in mac_ui and 'hop_i18n_set_lang' in mac_ui
 
     # UI data stays bounded: live task/history summaries are capped and file

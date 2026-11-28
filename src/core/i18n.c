@@ -4,10 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(_WIN32)
-#include <windows.h>
-#endif
-
 static volatile int s_cfg_lang = HOP_LANG_AUTO;
 static volatile int s_sys_idx = -1; /* -1 = not overridden by platform adapter */
 static volatile int s_active_idx = 0; /* 0 = zh-CN, 1 = en */
@@ -15,16 +11,11 @@ static volatile int s_initialized = 0;
 
 static int detect_system_lang_idx(void) {
     if (s_sys_idx == 0 || s_sys_idx == 1) return s_sys_idx;
-#if defined(_WIN32)
-    LANGID lid = GetUserDefaultUILanguage();
-    return PRIMARYLANGID(lid) == LANG_CHINESE ? 0 : 1;
-#else
     const char *env = getenv("LC_ALL");
     if (!env || !env[0]) env = getenv("LC_MESSAGES");
     if (!env || !env[0]) env = getenv("LANG");
     if (env && (strncmp(env, "zh", 2) == 0 || strncmp(env, "ZH", 2) == 0)) return 0;
     return 1;
-#endif
 }
 
 void hop_i18n_set_system_lang(int active_lang) {

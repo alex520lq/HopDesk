@@ -175,6 +175,8 @@ static const char *input_summary_text(void) {
     int pk = s_model.connected && (s_model.peer_input_mode & HOP_INPUT_KEYBOARD) != 0;
     if (lm && lk) return T(CAP_INPUT_BOTH_LOCAL);
     if (pm && pk) return T(CAP_INPUT_BOTH_PEER);
+    if (lm && pk) return T(CAP_INPUT_MOUSE_LOCAL_KBD_PEER);
+    if (pm && lk) return T(CAP_INPUT_MOUSE_PEER_KBD_LOCAL);
     if (lm) return T(CAP_INPUT_MOUSE_LOCAL);
     if (lk) return T(CAP_INPUT_KBD_LOCAL);
     if (pm) return T(CAP_INPUT_MOUSE_PEER);

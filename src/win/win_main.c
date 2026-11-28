@@ -652,6 +652,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     }
     snprintf(g_app.config_path, sizeof(g_app.config_path), "%s", conf_utf8);
     hop_config_load(&g_app.cfg, conf_utf8);
+    hop_i18n_set_system_lang(
+        PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE ? HOP_LANG_ZH_CN : HOP_LANG_EN);
     hop_runtime_apply_config(&g_app.cfg);
 
     wchar_t log_path[MAX_PATH];

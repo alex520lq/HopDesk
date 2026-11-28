@@ -72,6 +72,8 @@ typedef enum {
     HOP_STR_CAP_INPUT_MOUSE_LOCAL,
     HOP_STR_CAP_INPUT_KBD_LOCAL,
     HOP_STR_CAP_INPUT_BOTH_PEER,
+    HOP_STR_CAP_INPUT_MOUSE_LOCAL_KBD_PEER,
+    HOP_STR_CAP_INPUT_MOUSE_PEER_KBD_LOCAL,
     HOP_STR_CAP_INPUT_MOUSE_PEER,
     HOP_STR_CAP_INPUT_KBD_PEER,
     HOP_STR_CAP_INPUT_NONE,
@@ -538,6 +540,8 @@ static const char *const k_hop_i18n[2][HOP_STR_COUNT] = {
         "本机提供鼠标", /* cap.input.mouse_local */
         "本机提供键盘", /* cap.input.kbd_local */
         "对端提供键鼠", /* cap.input.both_peer */
+        "本机鼠标 · 对端键盘", /* cap.input.mouse_local_kbd_peer */
+        "对端鼠标 · 本机键盘", /* cap.input.mouse_peer_kbd_local */
         "对端提供鼠标", /* cap.input.mouse_peer */
         "对端提供键盘", /* cap.input.kbd_peer */
         "未开启共享", /* cap.input.none */
@@ -1000,6 +1004,8 @@ static const char *const k_hop_i18n[2][HOP_STR_COUNT] = {
         "Local Mouse", /* cap.input.mouse_local */
         "Local Keyboard", /* cap.input.kbd_local */
         "Peer Mouse & Keyboard", /* cap.input.both_peer */
+        "Local Mouse · Peer Keyboard", /* cap.input.mouse_local_kbd_peer */
+        "Peer Mouse · Local Keyboard", /* cap.input.mouse_peer_kbd_local */
         "Peer Mouse", /* cap.input.mouse_peer */
         "Peer Keyboard", /* cap.input.kbd_peer */
         "Sharing Off", /* cap.input.none */

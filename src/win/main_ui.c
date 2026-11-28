@@ -57,9 +57,15 @@ static void apply_theme(int ui_theme, int persist) {
     }
 }
 
+static void detect_win_system_lang(void) {
+    hop_i18n_set_system_lang(
+        PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE ? HOP_LANG_ZH_CN : HOP_LANG_EN);
+}
+
 static void apply_lang(int ui_lang, int persist) {
     if (ui_lang < HOP_LANG_AUTO || ui_lang > HOP_LANG_EN)
         ui_lang = HOP_LANG_AUTO;
+    detect_win_system_lang();
     hop_i18n_set_lang(ui_lang);
     s_ui_config.ui_lang = ui_lang;
     if (persist) {
@@ -116,6 +122,10 @@ static void snapshot_model(hopdesk_ui_model *model, hop_xfer_task_id selected_ta
     s_last_snapshot = now; s_last_task = selected_task; s_last_offset = file_offset;
     if (win_split_snapshot(model, selected_task, file_offset, &page)) {
         s_ui_config = model->config;
+        if (model->config.ui_lang != hop_i18n_get_config_lang()) {
+            detect_win_system_lang();
+            hop_i18n_set_lang(model->config.ui_lang);
+        }
         s_failed_snapshots = 0;
         if (page >= 0 && page < HOPDESK_UI_PAGE_COUNT) hopdesk_ui_show_page(page);
     } else {
@@ -338,6 +348,7 @@ void main_ui_show_page(int page) {
     s_failed_snapshots = 0;
     s_was_foreground = 0;
     s_last_theme = -1;
+    detect_win_system_lang();
     hop_i18n_set_lang(s_ui_config.ui_lang);
     hopdesk_ui_set_ops(&k_ui_ops);
     hopdesk_ui_show_page(page);

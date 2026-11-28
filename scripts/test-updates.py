@@ -22,20 +22,20 @@ def load_policy():
 
 def manifest(version,hashchar='a'):
     return ('format=1\nversion='+version+'\ntag=v'+version+'\n'+
-        'windows_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v'+version+'/HopDesk-Windows.zip\n'+
+        'windows_url=https://github.com/alex520lq/HopDesk/releases/download/v'+version+'/HopDesk-Windows.zip\n'+
         'windows_sha256='+hashchar*64+'\n'+
-        'macos_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v'+version+'/HopDesk-macOS.zip\n'+
+        'macos_url=https://github.com/alex520lq/HopDesk/releases/download/v'+version+'/HopDesk-macOS.zip\n'+
         'macos_sha256='+'b'*64+'\n'+
-        'notes_url=https://github.com/alex520lq/HopDesk-Releases/releases/tag/v'+version+'\n')
+        'notes_url=https://github.com/alex520lq/HopDesk/releases/tag/v'+version+'\n')
 
 def manifest_v2(version,channel,ctrl=8,xfer=8,summary='Test release',hashchar='a'):
     return ('format=2\nchannel='+channel+'\nversion='+version+'\ntag=v'+version+'\n'+
         f'ctrl_proto={ctrl}\nxfer_proto={xfer}\n'+
-        'windows_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v'+version+'/HopDesk-Windows.zip\n'+
+        'windows_url=https://github.com/alex520lq/HopDesk/releases/download/v'+version+'/HopDesk-Windows.zip\n'+
         'windows_sha256='+hashchar*64+'\n'+
-        'macos_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/v'+version+'/HopDesk-macOS.zip\n'+
+        'macos_url=https://github.com/alex520lq/HopDesk/releases/download/v'+version+'/HopDesk-macOS.zip\n'+
         'macos_sha256='+'b'*64+'\n'+
-        'notes_url=https://github.com/alex520lq/HopDesk-Releases/releases/tag/v'+version+'\n'+
+        'notes_url=https://github.com/alex520lq/HopDesk/releases/tag/v'+version+'\n'+
         'summary='+summary+'\n')
 
 with tempfile.TemporaryDirectory(prefix='hopdesk-updates-') as tmp:

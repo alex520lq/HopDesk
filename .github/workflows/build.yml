@@ -204,6 +204,8 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [windows, macos]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     concurrency:
       group: hopdesk-release-publish
       cancel-in-progress: false
@@ -257,11 +259,11 @@ jobs:
             echo "tag=$TAG"
             echo "ctrl_proto=$CTRL_PROTO"
             echo "xfer_proto=$XFER_PROTO"
-            echo "windows_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/$TAG/HopDesk-Windows.zip"
+            echo "windows_url=https://github.com/alex520lq/HopDesk/releases/download/$TAG/HopDesk-Windows.zip"
             echo "windows_sha256=$WIN_SHA"
-            echo "macos_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/$TAG/HopDesk-macOS.zip"
+            echo "macos_url=https://github.com/alex520lq/HopDesk/releases/download/$TAG/HopDesk-macOS.zip"
             echo "macos_sha256=$MAC_SHA"
-            echo "notes_url=https://github.com/alex520lq/HopDesk-Releases/releases/tag/$TAG"
+            echo "notes_url=https://github.com/alex520lq/HopDesk/releases/tag/$TAG"
             if [ -n "$SUMMARY" ]; then
               echo "summary=$SUMMARY"
             fi
@@ -272,11 +274,11 @@ jobs:
               echo "format=1"
               echo "version=$VERSION"
               echo "tag=$TAG"
-              echo "windows_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/$TAG/HopDesk-Windows.zip"
+              echo "windows_url=https://github.com/alex520lq/HopDesk/releases/download/$TAG/HopDesk-Windows.zip"
               echo "windows_sha256=$WIN_SHA"
-              echo "macos_url=https://github.com/alex520lq/HopDesk-Releases/releases/download/$TAG/HopDesk-macOS.zip"
+              echo "macos_url=https://github.com/alex520lq/HopDesk/releases/download/$TAG/HopDesk-macOS.zip"
               echo "macos_sha256=$MAC_SHA"
-              echo "notes_url=https://github.com/alex520lq/HopDesk-Releases/releases/tag/$TAG"
+              echo "notes_url=https://github.com/alex520lq/HopDesk/releases/tag/$TAG"
             } > release-assets/latest.txt
           fi
           {
@@ -285,18 +287,9 @@ jobs:
             echo "channel_file=$CHANNEL_FILE"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Validate public release repository credentials
-        env:
-          RELEASE_TOKEN: ${{ secrets.HOPDESK_RELEASE_TOKEN }}
-        run: |
-          if [ -z "$RELEASE_TOKEN" ]; then
-            echo "::error::Create the public alex520lq/HopDesk-Releases repository and add HOPDESK_RELEASE_TOKEN (Contents: read/write) to this private repository's Actions secrets."
-            exit 1
-          fi
-
       - name: Guard existing version assets before publication
         env:
-          GH_TOKEN: ${{ secrets.HOPDESK_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CHANNEL: ${{ steps.meta.outputs.channel }}
           CHANNEL_FILE: ${{ steps.meta.outputs.channel_file }}
         shell: bash
@@ -306,22 +299,29 @@ jobs:
           # never overwrite assets before discovering a same-version hash change.
           status="$(curl --silent --show-error -o existing-release.json -w '%{http_code}' \
             -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/alex520lq/HopDesk-Releases/releases/tags/$GITHUB_REF_NAME")"
+            "https://api.github.com/repos/alex520lq/HopDesk/releases/tags/$GITHUB_REF_NAME")"
           case "$status" in
             404) ;;
             200)
               if ! curl --fail --location --silent --show-error \
-                "https://github.com/alex520lq/HopDesk-Releases/releases/download/$GITHUB_REF_NAME/manifest.txt" \
+                "https://github.com/alex520lq/HopDesk/releases/download/$GITHUB_REF_NAME/manifest.txt" \
                 -o published-version.txt; then
                 curl --fail --location --silent --show-error \
-                  "https://github.com/alex520lq/HopDesk-Releases/releases/download/$GITHUB_REF_NAME/latest.txt" \
+                  "https://github.com/alex520lq/HopDesk/releases/download/$GITHUB_REF_NAME/latest.txt" \
                   -o published-version.txt
               fi
               python3 -c 'import sys; sys.path.insert(0,"scripts"); from update_manifest_policy import parse; from pathlib import Path; assert parse(Path("release-assets/manifest.txt").read_text(encoding="utf-8")) == parse(Path("published-version.txt").read_text(encoding="utf-8")), "Published tag assets are immutable; use a new version"'
               ;;
             *) echo "::error::Cannot verify existing release (HTTP $status)."; exit 1 ;;
           esac
-          git clone --depth 1 --branch main "https://x-access-token:$GH_TOKEN@github.com/alex520lq/HopDesk-Releases.git" release-repo
+          REPO_URL="https://x-access-token:$GH_TOKEN@github.com/alex520lq/HopDesk.git"
+          if git ls-remote --exit-code --heads "$REPO_URL" updates >/dev/null 2>&1; then
+            git clone --depth 1 --branch updates "$REPO_URL" release-repo
+          else
+            mkdir -p release-repo
+            git -C release-repo init -b updates
+            git -C release-repo remote add origin "$REPO_URL"
+          fi
           python3 scripts/update_manifest_policy.py "release-assets/$CHANNEL_FILE" "release-repo/$CHANNEL_FILE"
           if [ "$CHANNEL" = "stable" ]; then
             python3 scripts/update_manifest_policy.py release-assets/latest.txt release-repo/latest.txt
@@ -330,10 +330,8 @@ jobs:
       - name: Publish GitHub Release assets
         uses: softprops/action-gh-release@v2
         with:
-          repository: alex520lq/HopDesk-Releases
-          token: ${{ secrets.HOPDESK_RELEASE_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: ${{ github.ref_name }}
-          target_commitish: main
           prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
           body_path: release-assets/release-notes.md
           files: |
@@ -345,7 +343,6 @@ jobs:
 
       - name: Update public channel manifest
         env:
-          RELEASE_TOKEN: ${{ secrets.HOPDESK_RELEASE_TOKEN }}
           CHANNEL: ${{ steps.meta.outputs.channel }}
           CHANNEL_FILE: ${{ steps.meta.outputs.channel_file }}
         shell: bash
@@ -361,5 +358,5 @@ jobs:
           fi
           if ! git diff --cached --quiet; then
             git commit -m "release: update $CHANNEL HopDesk manifest ($GITHUB_REF_NAME)"
-            git push origin main
+            git push origin updates
           fi

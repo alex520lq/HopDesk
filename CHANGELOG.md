@@ -2,8 +2,8 @@
 
 HopDesk 采用基于 GitHub Releases 的双通道版本发布体系：
 
-- **稳定版（`stable`）**：正式发布标签 `vMAJOR.MINOR.PATCH`（例如 `v0.1.0`），更新清单位于 `HopDesk-Releases` 的 `stable.txt`（并同步 `latest.txt`）。
-- **开发版（`dev`）**：预览/测试标签 `vMAJOR.MINOR.PATCH-dev.N`（例如 `v0.2.0-dev.1`），更新清单位于 `HopDesk-Releases` 的 `dev.txt`，发布为 GitHub Pre-release，与稳定版互不干扰，客户端可自由双向切换。
+- **稳定版（`stable`）**：正式发布标签 `vMAJOR.MINOR.PATCH`（例如 `v0.1.0`），更新清单位于 `alex520lq/HopDesk` 仓库 `updates` 分支的 `stable.txt`（并同步 `latest.txt`）。
+- **开发版（`dev`）**：预览/测试标签 `vMAJOR.MINOR.PATCH-dev.N`（例如 `v0.2.0-dev.1`），更新清单位于 `alex520lq/HopDesk` 仓库 `updates` 分支的 `dev.txt`，发布为 GitHub Pre-release，与稳定版互不干扰，客户端可自由双向切换。
 
 ## [v0.1.0] - 2026-11-28
 

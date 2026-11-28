@@ -77,11 +77,11 @@ static int utf8_wide(const char *src, wchar_t *dst, int cap) {
 static int host_allowed(const wchar_t *host, const wchar_t *path, int manifest) {
     if (manifest) {
         return _wcsicmp(host, L"raw.githubusercontent.com") == 0 &&
-               (wcscmp(path, L"/alex520lq/HopDesk-Releases/main/stable.txt") == 0 ||
-                wcscmp(path, L"/alex520lq/HopDesk-Releases/main/dev.txt") == 0 ||
-                wcscmp(path, L"/alex520lq/HopDesk-Releases/main/latest.txt") == 0);
+               (wcscmp(path, L"/alex520lq/HopDesk/updates/stable.txt") == 0 ||
+                wcscmp(path, L"/alex520lq/HopDesk/updates/dev.txt") == 0 ||
+                wcscmp(path, L"/alex520lq/HopDesk/updates/latest.txt") == 0);
     }
-    static const wchar_t prefix[] = L"/alex520lq/HopDesk-Releases/releases/download/v";
+    static const wchar_t prefix[] = L"/alex520lq/HopDesk/releases/download/v";
     return _wcsicmp(host, L"github.com") == 0 &&
            wcsncmp(path, prefix, wcslen(prefix)) == 0;
 }

@@ -18,7 +18,7 @@
 #ifndef PIPE_REJECT_REMOTE_CLIENTS
 #define PIPE_REJECT_REMOTE_CLIENTS 0x00000008
 #endif
-#define WIN_SPLIT_VERSION 7u
+#define WIN_SPLIT_VERSION 8u
 #define WIN_SPLIT_IO_MS 1500u
 #define WIN_SPLIT_ACTION_MS 5000u
 #define WIN_SPLIT_ADDR_TTL_MS 10000u
@@ -26,8 +26,8 @@
 #define WIN_CTRL_PIPE_NAME L"\\\\.\\pipe\\HopDesk.Control.v1"
 enum { IPC_SNAPSHOT = 1, IPC_SAVE, IPC_CANCEL, IPC_RETRY,
        IPC_RECONNECT, IPC_DISCONNECT, IPC_DISPLAY, IPC_UPDATE,
-       IPC_INPUT_MODE, IPC_AUDIO_MODE, IPC_THEME, IPC_CLI_STATUS,
-       IPC_CLI_CONFIG_GET, IPC_CLI_RELOAD };
+       IPC_INPUT_MODE, IPC_AUDIO_MODE, IPC_AUTOSTART, IPC_PERM_ACTION,
+       IPC_THEME, IPC_CLI_STATUS, IPC_CLI_CONFIG_GET, IPC_CLI_RELOAD };
 typedef struct {
     uint32_t version, op;
     uint64_t task;
@@ -180,6 +180,10 @@ static void agent_snapshot(hopdesk_ui_model *model,
     model->protocol_mismatch = g_app.net ? net_server_protocol_mismatch(g_app.net) : 0;
     update_get_snapshot(&model->update);
     model->permissions_known = 0;
+    model->permission_elevated = win_is_elevated();
+    model->autostart_supported = 1;
+    model->autostart_enabled = win_autostart_is_enabled();
+    win_get_app_path(model->app_path, sizeof(model->app_path));
     if (model->connected && g_app.peer_name[0])
         snprintf(model->peer_label, sizeof(model->peer_label), "%s", g_app.peer_name);
     else if (model->config.role == HOP_ROLE_CLIENT)
@@ -373,6 +377,12 @@ void win_split_agent_dispatch(void) {
             win_apply_audio_mode(next_audio, 1, 1);
             s_reply.result = 1;
         }
+        break;
+    case IPC_AUTOSTART:
+        s_reply.result = win_autostart_set_enabled(s_request.action != 0) ? 1 : 0;
+        break;
+    case IPC_PERM_ACTION:
+        s_reply.result = win_permission_action(s_request.action) ? 1 : 0;
         break;
     case IPC_THEME:
         if (s_request.action >= HOP_THEME_SYSTEM && s_request.action <= HOP_THEME_DARK) {
@@ -728,6 +738,14 @@ int win_split_set_input_mode(unsigned input_mode) {
 }
 int win_split_set_audio_mode(unsigned audio_mode) {
     ipc_request r = {0}; r.op = IPC_AUDIO_MODE; r.action = (int32_t)(audio_mode & HOP_AUDIO_MODES);
+    return client_call(&r, NULL, 0, NULL);
+}
+int win_split_set_autostart(int enabled) {
+    ipc_request r = {0}; r.op = IPC_AUTOSTART; r.action = enabled ? 1 : 0;
+    return client_call(&r, NULL, 0, NULL);
+}
+int win_split_permission_action(int action) {
+    ipc_request r = {0}; r.op = IPC_PERM_ACTION; r.action = action;
     return client_call(&r, NULL, 0, NULL);
 }
 

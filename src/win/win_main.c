@@ -587,6 +587,20 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show) {
     const int silent_agent = cmdline_has_flag(cmd, L"--agent") ||
         GetEnvironmentVariableW(L"HOPDESK_UPDATE_READY", NULL, 0) > 0;
 
+    if (cmd) {
+        const wchar_t *wp = wcsstr(cmd, L"--wait-pid ");
+        if (wp) {
+            unsigned long old_pid = wcstoul(wp + 11, NULL, 10);
+            if (old_pid && old_pid != GetCurrentProcessId()) {
+                HANDLE old_proc = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)old_pid);
+                if (old_proc) {
+                    WaitForSingleObject(old_proc, 8000);
+                    CloseHandle(old_proc);
+                }
+            }
+        }
+    }
+
     /* ---- 单实例 ----
      * 两个实例会同时 bind 24817/24818，而 Windows 的 SO_REUSEADDR 允许
      * 后来者绑上同一个端口并把连接抢走 —— 表现是"对端连上了，但键鼠时灵时不灵"，

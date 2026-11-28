@@ -134,6 +134,16 @@ static void set_audio_mode(unsigned audio_mode) {
     (void)win_split_set_audio_mode(s_ui_config.audio_mode);
     s_last_snapshot = 0;
 }
+static int set_autostart(int enabled) {
+    int ok = win_split_set_autostart(enabled);
+    s_last_snapshot = 0;
+    return ok;
+}
+static int permission_action(int action) {
+    int ok = win_split_permission_action(action);
+    s_last_snapshot = 0;
+    return ok;
+}
 
 static int load_logs(char *out, size_t capacity) {
     FILE *file;
@@ -275,7 +285,9 @@ static const hopdesk_ui_ops k_ui_ops = {
     release_cjk_font,
     apply_theme,
     set_input_mode,
-    set_audio_mode
+    set_audio_mode,
+    set_autostart,
+    permission_action
 };
 
 static void draw_frame(cui_ctx *ui, void *user) {

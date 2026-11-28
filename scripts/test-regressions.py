@@ -233,6 +233,13 @@ int main(void) {
     assert 'split_ui_set_audio_mode' in mac_ui
     assert 'hop_audio_reconcile' in (ROOT/'src/win/win_main.c').read_text(encoding='utf-8')
     assert 'hop_audio_reconcile' in (ROOT/'src/mac/net_client_protocol.inc').read_text(encoding='utf-8')
+    # Cross-platform autostart switch and system permission actions.
+    win_sys = (ROOT/'src/win/system_integration.c').read_text(encoding='utf-8')
+    mac_sys = (ROOT/'src/mac/system_integration.m').read_text(encoding='utf-8')
+    assert '"开机自动启动 HopDesk"' in ui and 's_ops->set_autostart' in ui and 's_ops->permission_action' in ui
+    assert 'IPC_AUTOSTART' in win_split and 'IPC_PERM_ACTION' in win_split
+    assert 'win_autostart_set_enabled' in win_sys and 'win_permission_action' in win_sys
+    assert 'mac_autostart_set_enabled' in mac_sys and 'mac_permission_action' in mac_sys
     assert 'split_ui_save_config' in mac_ui and 'SPLIT_IPC_CONFIG_SAVE' in (ROOT/'src/mac/split_ipc.h').read_text(encoding='utf-8')
     assert 'win_apply_hot_config' in win_split and 'hop_audio_set_mode' in (ROOT/'src/win/win_main.c').read_text(encoding='utf-8')
     assert 'hop_config_validate' in ui and 'hop_config_validate' in win_split

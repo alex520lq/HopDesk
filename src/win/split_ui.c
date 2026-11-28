@@ -18,7 +18,7 @@
 #ifndef PIPE_REJECT_REMOTE_CLIENTS
 #define PIPE_REJECT_REMOTE_CLIENTS 0x00000008
 #endif
-#define WIN_SPLIT_VERSION 5u
+#define WIN_SPLIT_VERSION 6u
 #define WIN_SPLIT_IO_MS 1500u
 #define WIN_SPLIT_ACTION_MS 5000u
 #define WIN_SPLIT_ADDR_TTL_MS 10000u
@@ -165,6 +165,7 @@ static void agent_snapshot(hopdesk_ui_model *model,
     model->config = s_agent_config;
     shared_display_status(model->display_status, sizeof(model->display_status));
     shared_display_devices(model->display_devices, sizeof(model->display_devices));
+    shared_display_get_inventory(&model->display_inventory);
     snprintf(model->local_addresses, sizeof(model->local_addresses), "%s",
         s_cached_addresses[0] ? s_cached_addresses : "No active LAN IPv4 address");
 
@@ -392,7 +393,7 @@ void win_split_agent_dispatch(void) {
         break;
     case IPC_DISPLAY:
         if (s_request.action >= HOPDESK_UI_DISPLAY_TO_MAC &&
-            s_request.action <= HOPDESK_UI_DISPLAY_TOGGLE) {
+            s_request.action <= HOPDESK_UI_DISPLAY_IDENTIFY) {
             s_reply.result = win_ui_display_action(s_request.action) ? 1 : 0;
         }
         break;

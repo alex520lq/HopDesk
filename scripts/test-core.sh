@@ -8,6 +8,7 @@ clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -fno-
   "$ROOT/tests/core_tests.c" \
   "$ROOT/src/core/protocol.c" \
   "$ROOT/src/core/display_switch.c" \
+  "$ROOT/src/core/display_catalog.c" \
   "$ROOT/src/core/crc32.c" \
   "$ROOT/src/core/config.c" \
   "$ROOT/src/core/cli.c" \

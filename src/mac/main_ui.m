@@ -142,6 +142,7 @@ static void snapshot_model(hopdesk_ui_model *model,
         }
     }
     split_ui_display_status(model->display_status, sizeof(model->display_status));
+    mac_display_get_inventory(&model->display_inventory);
     model->protocol_mismatch = split_ui_protocol_mismatch();
     split_ui_get_update_snapshot(&model->update);
     if (model->update.phase == HOP_UPDATE_APPLYING) s_update_applying_seen = 1;
@@ -308,28 +309,17 @@ static void set_input_mode(unsigned input_mode) {
 }
 
 static void display_action(int action) {
-    switch (action) {
-        case HOPDESK_UI_DISPLAY_TO_MAC:
-            if (split_ui_is_active()) (void)mac_cli_agent_action(NULL, HOP_CLI_ACTION_DISPLAY_MAC);
-            else (void)disp_switch_target(1);
-            break;
-        case HOPDESK_UI_DISPLAY_TO_WINDOWS:
-            if (split_ui_is_active()) (void)mac_cli_agent_action(NULL, HOP_CLI_ACTION_DISPLAY_WIN);
-            else (void)disp_switch_target(0);
-            break;
-        case HOPDESK_UI_DISPLAY_TOGGLE:
-            if (split_ui_is_active()) (void)mac_cli_agent_action(NULL, HOP_CLI_ACTION_DISPLAY_TOGGLE);
-            else (void)disp_switch_target(2);
-            break;
-        case HOPDESK_UI_DISPLAY_WAKE:
-            if (split_ui_is_active()) (void)mac_cli_agent_action(NULL, HOP_CLI_ACTION_DISPLAY_WAKE);
-            else (void)disp_wake(s_ui_config.disp_wake_sec);
-            break;
-        case HOPDESK_UI_DISPLAY_SLEEP:
-            if (split_ui_is_active()) (void)mac_cli_agent_action(NULL, HOP_CLI_ACTION_DISPLAY_SLEEP);
-            else disp_sleep();
-            break;
+    if (action == HOPDESK_UI_DISPLAY_IDENTIFY) {
+        (void)mac_display_identify();
+        return;
     }
+    if (action == HOPDESK_UI_DISPLAY_PROBE) {
+        (void)mac_display_probe_async();
+        hopdesk_ui_refresh();
+        return;
+    }
+    (void)split_ui_display_action(action);
+    hopdesk_ui_refresh();
 }
 
 static void update_action(int action, int channel) {

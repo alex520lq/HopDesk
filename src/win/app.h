@@ -7,6 +7,7 @@
 #include <windows.h>
 #include "hop.h"
 #include "net_server.h"
+#include "../core/display_catalog.h"
 
 #define WM_APP_TRAY    (WM_APP + 3)
 #define WM_APP_STATE   (WM_APP + 4)   /* 状态变化，刷新 UI */
@@ -107,6 +108,9 @@ void shared_display_shutdown(void); /* join before stopping network */
 int shared_display_busy(void);
 void shared_display_status(char *out, size_t cap);
 void shared_display_devices(char *out, size_t cap);
+void shared_display_get_inventory(hop_display_inventory *out);
+int  shared_display_probe_async(void);
+int  shared_display_identify_async(void);
 void capture_topology_changed(void);
 
 /* ui.c */

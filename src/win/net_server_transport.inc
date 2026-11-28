@@ -334,3 +334,11 @@ int net_server_send(net_server *s, uint8_t type, const void *payload, uint32_t l
     int ok = s->client != INVALID_SOCKET && queue_push(s, type, payload, len);
     LeaveCriticalSection(&s->lock); return ok;
 }
+int net_server_send_epoch(net_server *s, unsigned long expected_epoch,
+                          uint8_t type, const void *payload, uint32_t len) {
+    if (!s || !expected_epoch || len > HOP_MAX_PAYLOAD || (len && !payload)) return 0;
+    EnterCriticalSection(&s->lock);
+    int ok = s->client != INVALID_SOCKET && s->epoch == expected_epoch &&
+             queue_push(s, type, payload, len);
+    LeaveCriticalSection(&s->lock); return ok;
+}

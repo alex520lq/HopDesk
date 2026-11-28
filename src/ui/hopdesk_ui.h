@@ -26,13 +26,16 @@ enum {
     HOPDESK_UI_DISPLAY_TO_MAC = 0,
     HOPDESK_UI_DISPLAY_TO_WINDOWS,
     HOPDESK_UI_DISPLAY_WAKE,
-    HOPDESK_UI_DISPLAY_SLEEP
+    HOPDESK_UI_DISPLAY_SLEEP,
+    HOPDESK_UI_DISPLAY_TOGGLE
 };
 
 typedef struct hopdesk_ui_model {
     hop_config config;
     char local_addresses[512];
     char peer_label[128];
+    char display_status[192];
+    char display_devices[768];
     int connected;
     int sharing;
     int data_connected;

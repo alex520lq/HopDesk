@@ -243,6 +243,7 @@ static void serve(int fd) {
             .peer_audio = (int32_t)peer_audio,
             .peer_caps_known = peer_known
         };
+        disp_switch_status(status.display_status, sizeof(status.display_status));
         snprintf(status.peer_name, sizeof(status.peer_name), "%s", peer_name);
         (void)reply(fd, &header, true, &status, sizeof(status), NULL, 0, deadline);
         return;
@@ -286,9 +287,10 @@ static void serve(int fd) {
     case SPLIT_IPC_DISPLAY_ACTION: {
         split_ipc_result result = {0};
         switch (query.index) {
-            case HOPDESK_UI_DISPLAY_TO_MAC:     disp_set_input(g_mac.cfg.disp_mac_input); result.result = 1; break;
-            case HOPDESK_UI_DISPLAY_TO_WINDOWS: disp_set_input(g_mac.cfg.disp_win_input); result.result = 1; break;
-            case HOPDESK_UI_DISPLAY_WAKE:       disp_wake(g_mac.cfg.disp_wake_sec); result.result = 1; break;
+            case HOPDESK_UI_DISPLAY_TO_MAC:     result.result = disp_switch_target(1); break;
+            case HOPDESK_UI_DISPLAY_TO_WINDOWS: result.result = disp_switch_target(0); break;
+            case HOPDESK_UI_DISPLAY_TOGGLE:     result.result = disp_switch_target(2); break;
+            case HOPDESK_UI_DISPLAY_WAKE:       result.result = disp_wake(g_mac.cfg.disp_wake_sec); break;
             case HOPDESK_UI_DISPLAY_SLEEP:      disp_sleep(); result.result = 1; break;
             default: break;
         }

@@ -38,7 +38,7 @@ static fn_setvcp  p_setvcp;
 static fn_getvcp  p_getvcp;
 
 static int dx_load(void) {
-    if (s_dll) return p_setvcp != NULL;
+    if (s_dll) return p_getnum && p_getphys && p_destroy && p_setvcp;
     s_dll = LoadLibraryW(L"dxva2.dll");
     if (!s_dll) {
         hop_log(HOP_LOG_ERROR, "dxva2.dll not found, DDC unavailable");
@@ -70,7 +70,17 @@ static BOOL CALLBACK disp_pick_proc(HMONITOR mon, HDC hdc, LPRECT rc, LPARAM lp)
     return TRUE;
 }
 
-static DWORD open_primary(PHYS_MON **out) {
+struct device_pick { const wchar_t *name; HMONITOR mon; };
+static BOOL CALLBACK device_pick_proc(HMONITOR mon, HDC dc, LPRECT rc, LPARAM arg) {
+    (void)dc; (void)rc;
+    struct device_pick *p = (struct device_pick *)arg;
+    MONITORINFOEXW info = {0}; info.cbSize = sizeof(info);
+    if (GetMonitorInfoW(mon, (MONITORINFO *)&info) && !wcscmp(info.szDevice, p->name)) {
+        p->mon = mon; return FALSE;
+    }
+    return TRUE;
+}
+static DWORD open_target(const wchar_t *device, PHYS_MON **out) {
     POINT pt;
     HMONITOR mon = NULL;
     DWORD n = 0;
@@ -79,7 +89,12 @@ static DWORD open_primary(PHYS_MON **out) {
     *out = NULL;
     if (!dx_load()) return 0;
 
-    if (g_app.cfg.disp_monitor_index > 0) {
+    if (device) {
+        struct device_pick pick = {device, NULL};
+        EnumDisplayMonitors(NULL, NULL, device_pick_proc, (LPARAM)&pick);
+        mon = pick.mon;
+        if (!mon) return 0; /* Never silently operate on the primary instead. */
+    } else if (g_app.cfg.disp_monitor_index > 0) {
         struct disp_pick_ctx ctx = { g_app.cfg.disp_monitor_index, 0, NULL };
         EnumDisplayMonitors(NULL, NULL, disp_pick_proc, (LPARAM)&ctx);
         mon = ctx.picked;
@@ -100,9 +115,9 @@ static DWORD open_primary(PHYS_MON **out) {
     return n;
 }
 
-static int disp_set_input_sync(uint16_t vcp) {
+static int set_target_input_unlocked(const wchar_t *device, uint16_t vcp) {
     PHYS_MON *pm = NULL;
-    DWORD n = open_primary(&pm);
+    DWORD n = open_target(device, &pm);
     DWORD i;
     int ok = 0;
 
@@ -124,22 +139,35 @@ static int disp_set_input_sync(uint16_t vcp) {
     return ok;
 }
 
-int disp_get_input(uint16_t *out) {
+static int get_target_input_unlocked(const wchar_t *device, uint16_t *out) {
     PHYS_MON *pm = NULL;
-    DWORD n = open_primary(&pm);
-    DWORD cur = 0, max = 0;
-    int vct = 0;
+    DWORD n = open_target(device, &pm);
+    DWORD cur = 0, max = 0, vct = 0;
     int ok = 0;
 
     if (n == 0) return 0;
     if (p_getvcp &&
         p_getvcp(pm[0].hPhysicalMonitor, VCP_INPUT_SOURCE,
-                 (LPDWORD)&vct, &cur, &max)) {
+                 &vct, &cur, &max)) {
         *out = (uint16_t)cur;
         ok = 1;
     }
     p_destroy(n, pm);
     free(pm);
+    return ok;
+}
+
+static SRWLOCK s_ddc_lock = SRWLOCK_INIT;
+static int set_target_input(const wchar_t *device, uint16_t vcp) {
+    AcquireSRWLockExclusive(&s_ddc_lock);
+    int ok = set_target_input_unlocked(device, vcp);
+    ReleaseSRWLockExclusive(&s_ddc_lock);
+    return ok;
+}
+static int get_target_input(const wchar_t *device, uint16_t *out) {
+    AcquireSRWLockExclusive(&s_ddc_lock);
+    int ok = get_target_input_unlocked(device, out);
+    ReleaseSRWLockExclusive(&s_ddc_lock);
     return ok;
 }
 
@@ -160,7 +188,7 @@ static DWORD WINAPI display_worker(LPVOID arg) {
         uint16_t vcp = s_desired; s_pending = 0;
         ReleaseSRWLockExclusive(&s_work_lock);
         int guard = hop_watchdog_begin("DDC operation", HOP_IO_DEADLINE_MS);
-        disp_set_input_sync(vcp);
+        set_target_input(NULL, vcp);
         hop_watchdog_end(guard);
     }
 }
@@ -175,4 +203,47 @@ int disp_set_input(uint16_t vcp) {
     }
     ReleaseSRWLockExclusive(&s_work_lock);
     return 1; /* accepted, not proof that the monitor switched */
+}
+
+int disp_get_input(uint16_t *out) { return get_target_input(NULL, out); }
+int disp_input_read(const wchar_t *device, uint16_t *out) {
+    return out ? get_target_input(device, out) : 0;
+}
+static int vcp_matches(uint16_t current, uint16_t want) {
+    return current == want || (want <= 0xFFu && (current & 0xFFu) == want);
+}
+int disp_input_matches(const wchar_t *device, uint16_t vcp) {
+    uint16_t current;
+    return get_target_input(device, &current) && vcp_matches(current, vcp);
+}
+/* Worker only. Re-enumerate handles on every read after a source/topology change. */
+int disp_input_verified(const wchar_t *device, uint16_t vcp,
+                        int retries, int timeout_ms, int poll_ms) {
+    if (retries < 1) retries = 1;
+    if (retries > 10) retries = 10;
+    if (timeout_ms < 1000) timeout_ms = 1000;
+    if (timeout_ms > 30000) timeout_ms = 30000;
+    if (poll_ms < 50) poll_ms = 50;
+    if (poll_ms > 2000) poll_ms = 2000;
+
+    if (disp_input_matches(device, vcp)) return 1;
+    int wrote = 0;
+    for (int attempt = 0; attempt < retries; ++attempt) {
+        if (set_target_input(device, vcp)) { wrote = 1; break; }
+        if (attempt + 1 < retries) Sleep(800);
+    }
+    if (!wrote) return 0;
+    DWORD start = GetTickCount();
+    do {
+        if (disp_input_matches(device, vcp)) return 1;
+        Sleep((DWORD)poll_ms);
+    } while ((DWORD)(GetTickCount() - start) < (DWORD)timeout_ms);
+    return 0;
+}
+
+int disp_input_busy(void) {
+    AcquireSRWLockExclusive(&s_work_lock);
+    int busy = s_working;
+    ReleaseSRWLockExclusive(&s_work_lock);
+    return busy;
 }

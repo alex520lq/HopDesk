@@ -7,7 +7,7 @@
 - 两端均支持双向文本、图片和文件剪贴板；文件使用 Offer → Paste Request → 按需传输，不在普通本地复制时创建传输任务。
 - `role=server|client` 在启动时读取；它只决定键鼠捕获/注入与网络连接拓扑，不决定音频方向。设置保存到独立草稿，角色变更重启生效。
 - 音频 SEND/PLAY 是每台设备独立的本地能力配置，与 server/client 无关；旧配置缺少 `audio_mode` 时 Windows 默认 PLAY、macOS 默认 SEND。音频模式保存后热应用。
-- 固定双设备局域网，不做多设备发现。两端几何在控制握手交换；当前控制协议为 v7，数据协议为 v8。
+- 固定双设备局域网，不做多设备发现。两端几何在控制握手交换；当前控制协议为 v8，数据协议为 v8。
 
 ## 2. 模块划分
 
@@ -110,7 +110,7 @@ src/
 
 当前数据协议 v8 的每个非 HELLO 数据帧均在下表载荷前加 `session(16) + batch(4)`（共 20 字节）。
 CHUNK/END 因而也有显式批次。已有类型体内的 batch 必须与前缀一致；会话错误关闭连接，
-旧批次的 CHUNK/END 被忽略。控制协议当前为 v7，控制握手版本与数据协议版本分别校验；数据协议 v7 的 ABORT 增加目标方向，v8 增加 `XFER_DONE_ACK` 批次完成回执。任一协议版本不匹配都拒绝连接，Windows 与 macOS 必须一起升级。DONE_ACK 表示接收端已完成批次收尾并发起剪贴板处理，不保证系统剪贴板更新或目标应用粘贴成功；断线或回执超时且无法确认时，发送端显示结果不确定。
+旧批次的 CHUNK/END 被忽略。控制协议当前为 v8，控制握手版本与数据协议版本分别校验；数据协议 v7 的 ABORT 增加目标方向，v8 增加 `XFER_DONE_ACK` 批次完成回执。任一协议版本不匹配都拒绝连接，Windows 与 macOS 必须一起升级。DONE_ACK 表示接收端已完成批次收尾并发起剪贴板处理，不保证系统剪贴板更新或目标应用粘贴成功；断线或回执超时且无法确认时，发送端显示结果不确定。
 
 | 类型 | 方向 | 类型体载荷（不含公共前缀） |
 |---|---|---|
@@ -225,7 +225,7 @@ macOS 在访达中按 Command+V 时从键盘焦点确认粘贴区域。桌面焦
 
 复用现有 `display-switch.ps1` 的成熟时序，仅把控制通道从 SSH 换成 HopDesk 连接：
 
-- Windows：`dxva2.dll` 的 `SetVCPFeature(0x60, ...)` 写 DDC、`DisplaySwitch.exe /external|/extend`。
+- Windows：`dxva2.dll` 的 `SetVCPFeature(0x60, ...)` 写 DDC、共屏模式按指定非主屏调用 `ChangeDisplaySettingsExW` 释放／恢复拓扑，保存原模式并回读 DDC；见 [共屏切换](SHARED_DISPLAY_SWITCH.md)。
 - macOS：
   - 唤醒：`IOPMAssertionCreateWithDescription`（IOKit，纯 C，等价 caffeinate）；
   - 切源：`posix_spawn` 调 `m1ddc`（不重写 DDC over IOKit）；

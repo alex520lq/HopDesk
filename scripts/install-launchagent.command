@@ -1,5 +1,5 @@
 #!/bin/sh
-# Opt-in per-user LaunchAgent. Invoke after installing ~/Applications/HopDesk.app and quitting the app.
+# Opt-in per-user LaunchAgent. Invoke after installing /Applications/HopDesk.app and quitting the app.
 set -eu
 LABEL=com.hopdesk.agent
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
@@ -10,7 +10,13 @@ if [ "${1:-}" = "--uninstall" ]; then
     echo "HopDesk LaunchAgent removed."
     exit 0
 fi
-APP="${1:-$HOME/Applications/HopDesk.app}"
+if [ -n "${1:-}" ]; then
+    APP="$1"
+elif [ -d "/Applications/HopDesk.app" ]; then
+    APP="/Applications/HopDesk.app"
+else
+    APP="$HOME/Applications/HopDesk.app"
+fi
 [ -d "$APP" ] || { echo "Not an installed HopDesk app: $APP" >&2; exit 1; }
 APP=$(cd "$APP" && pwd -P)
 if /usr/bin/pgrep -x HopDesk >/dev/null 2>&1; then
@@ -36,4 +42,4 @@ chmod 600 "$TARGET"
 mv -f "$TARGET" "$PLIST"
 launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
 launchctl bootstrap "$DOMAIN" "$PLIST"
-echo "Installed and started. Abnormal exits restart; normal menu exit stops until next sign-in."
+echo "Installed and started ($BIN). Abnormal exits restart; normal menu exit stops until next sign-in."

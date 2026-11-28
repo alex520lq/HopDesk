@@ -42,6 +42,7 @@ static void clipboard_on_remote_file_offer_clear(const uint8_t *p,uint32_t len){
 static void clipboard_on_paste_request(const uint8_t *p,uint32_t len){(void)p;(void)len;clip_paste_request_received++;}
 static void clipboard_on_paste_failed(const uint8_t *p,uint32_t len){(void)p;(void)len;clip_paste_failed_received++;}
 static void disp_wake(int s){(void)s;}
+static void mac_display_enqueue(const uint8_t *p,uint32_t n){(void)p;(void)n;}
 static void disp_set_input(uint16_t n){(void)n;}
 static void disp_sleep(void){}
 @DISPATCH@

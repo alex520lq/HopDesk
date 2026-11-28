@@ -10,7 +10,7 @@
 #include "../core/xfer_status.h"
 #include "xfer.h"
 
-#define SPLIT_IPC_VERSION 5u
+#define SPLIT_IPC_VERSION 7u
 #define SPLIT_IPC_ERROR 0x80000000u
 #define SPLIT_IPC_TIMEOUT_MS 200u
 #define SPLIT_IPC_MAX_PAYLOAD (16u * 1024u * 1024u)
@@ -22,6 +22,7 @@ typedef struct {
     int32_t disconnected;
     int32_t local_input, peer_input, peer_audio, peer_caps_known;
     char peer_name[HOP_NAME_MAX];
+    char display_status[192];
 } split_ipc_status;
 typedef struct {
     uint64_t id;

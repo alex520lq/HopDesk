@@ -5,7 +5,7 @@
 - 托盘图标与极简弹窗（`Shell_NotifyIcon` / Win32 窗口）
 - 输入捕获：`WH_MOUSE_LL` / `WH_KEYBOARD_LL` 低级钩子、相对位移、边缘检测
 - 剪贴板：`AddClipboardFormatListener` + `WM_CLIPBOARDUPDATE`
-- 显示：`dxva2.dll` DDC（`SetVCPFeature`）、`DisplaySwitch.exe`
+- 显示：`dxva2.dll` DDC（`SetVCPFeature`）、按指定非主屏保存／恢复模式的 `ChangeDisplaySettingsExW`，详见 `docs/SHARED_DISPLAY_SWITCH.md`
 - 网络：Winsock2 TCP 服务端
 - 单实例：命名 Mutex
 

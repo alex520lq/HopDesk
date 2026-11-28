@@ -137,6 +137,9 @@ static void dispatch_message(void *user, uint8_t type, const uint8_t *p, uint32_
                 }
             }
             break;
+        case HOP_MSG_DISP_SWITCH:
+            mac_display_enqueue(p, len);
+            break;
         case HOP_MSG_DISP_WAKE:
             if (len >= 4) disp_wake((int)hop_get_be32(p));
             break;

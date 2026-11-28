@@ -69,6 +69,7 @@ typedef enum {
     HOP_MSG_DISP_WAKE    = 40,  /* S -> C: seconds(uint32)         */
     HOP_MSG_DISP_INPUT   = 41,  /* S -> C: vcp(uint16)             */
     HOP_MSG_DISP_SLEEP   = 42,
+    HOP_MSG_DISP_SWITCH  = 43,  /* bidirectional: display_switch.h transaction */
 
     /* ---- 数据通道（port+1，只跑文件/图片字节） ----
      * 与控制通道分开，是为了让大载荷不挤占鼠标/键盘帧：
@@ -154,7 +155,7 @@ typedef struct {
 #define HOP_DONE_ACK_PARTIAL  1
 #define HOP_DONE_ACK_FAILED   2
 #define HOP_DONE_ACK_SLOT UINT32_MAX
-#define HOP_CTRL_PROTO_VER   7
+#define HOP_CTRL_PROTO_VER   8 /* acknowledged shared-display switching; upgrade both peers */
 
 /* ---- XFER_ABORT 的 reason ---- */
 #define HOP_ABORT_CRC        1
@@ -279,8 +280,16 @@ typedef struct {
     uint16_t disp_win_input;       /* DDC/CI 0x60 值：Windows 侧的输入源 */
     uint16_t disp_mac_input;       /* DDC/CI 0x60 值：Mac 侧的输入源 */
     int      disp_wake_sec;        /* DISP_WAKE 保持多久（秒） */
-    int      disp_wake_delay_ms;   /* 唤醒后延迟多久切源（ms） */
+    int      disp_wake_delay_ms;   /* 普通模式唤醒后延迟多久切源（ms） */
     int      disp_monitor_index;   /* Windows DDC 目标显示器索引（0=主屏） */
+    int      disp_shared;          /* explicitly configured shared physical monitor */
+    char     disp_device[32];      /* Windows display device, e.g. \\.\DISPLAY2 */
+    int      disp_ddc_retries;     /* Windows DDC 写输入源重试次数（1..10） */
+    int      disp_verify_timeout_ms; /* DDC 回读 / 拓扑变化验证超时（ms） */
+    int      disp_poll_ms;         /* DDC 回读 / 拓扑轮询间隔（ms） */
+    int      disp_wake_settle_ms;  /* 共屏模式收到 Mac 唤醒确认后的等待（ms） */
+    int      disp_wake_timeout_ms; /* 等待 Mac 唤醒/切源应答超时（ms） */
+    int      disp_sleep_fallback;  /* 切回 Windows 失败时允许休眠 Mac 屏兜底 */
     char     mac_input_cmd[96];    /* Mac 端切源命令前缀，DDC 值追加在后 */
     char     mac_sleep_cmd[64];    /* Mac 端显示睡眠命令 */
 

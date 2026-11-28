@@ -6,7 +6,7 @@
 
 ### 协议、会话与基础能力
 
-- `hop.h` / `protocol.c`：公共消息类型、配置/状态契约与 TCP 帧编解码。当前控制协议 v7、数据协议 v8。
+- `hop.h` / `protocol.c`：公共消息类型、配置/状态契约与 TCP 帧编解码。当前控制协议 v8、数据协议 v8。
 - `session.c`：共享 session 身份与 compare-and-clear 规则。
 - `config.c` / `config_migrate.h`：配置读取、校验、迁移和原子保存规则。
 - `crc32.c`、`clock.c`、`watchdog.c`、`log.c`、`keymap.c`：校验、时钟、看门狗、日志与键码映射等基础能力。

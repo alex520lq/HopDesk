@@ -14,6 +14,12 @@
 | Writer | 共享 RX Queue accounting、Buffer Pool | 平台 Writer Queue/Worker/IO 持有原生锁、线程、文件句柄和实际磁盘操作 |
 | UI | Windows Win32 与 macOS Cocoa 原生四页主窗口；托盘/菜单栏显示连接/共享/传输状态（PR #20/#21） | 不引入 Electron、Qt 或 WebView；空闲刷新避免触碰大块文件明细（PR #22） |
 
+### 1.3 原生平台与共享 Core：显示器切换边界
+
+共屏切换的顺序、失败回滚策略和事务帧校验由 `src/core/display_switch.c` 唯一实现。Windows Adapter 持有工作线程、事件、连接 epoch、目标设备、原模式文件和 DDC/显示拓扑 API；Mac Adapter 持有唤醒断言、命令子进程和 session 快照。两端原生 UI 复用原有按钮，Windows 为共屏拓扑唯一协调者。普通模式保留平台输入源行为。
+
+本切片增加共享生产规则，删除切屏按钮在共屏场景下各自独立操作的路径；Windows 新增的原生拓扑操作留在 Adapter，未引入运行时或附加依赖，也未更改资源目标。自动化只证明流程/协议和编译正确，性能优劣与真实显示器效果须实测。详见 [共屏切换](SHARED_DISPLAY_SWITCH.md)。
+
 ## 2. 当前主干验证
 
 - PR #22 合并提交：`6e94d8699be6f11730fdf9b14a6df99ad90090d2`。

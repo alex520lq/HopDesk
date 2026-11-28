@@ -6,6 +6,7 @@ $out = Join-Path $build 'hopdesk-core-tests.exe'
 $sources = @(
     (Join-Path $root 'tests/core_tests.c'),
     (Join-Path $root 'src/core/protocol.c'),
+    (Join-Path $root 'src/core/display_switch.c'),
     (Join-Path $root 'src/core/crc32.c'),
     (Join-Path $root 'src/core/config.c'),
     (Join-Path $root 'src/core/cli.c'),
@@ -37,6 +38,8 @@ if ($LASTEXITCODE -ne 0) { throw "Core test compilation failed ($LASTEXITCODE)" 
 if ($LASTEXITCODE -ne 0) { throw "Core tests failed ($LASTEXITCODE)" }
 & python (Join-Path $root 'scripts/test-regressions.py')
 if ($LASTEXITCODE -ne 0) { throw "Targeted regression tests failed ($LASTEXITCODE)" }
+& python (Join-Path $root 'scripts/test-display-switch.py')
+if ($LASTEXITCODE -ne 0) { throw "Shared display regression tests failed ($LASTEXITCODE)" }
 $resilience = Join-Path $build 'hopdesk-resilience-tests.exe'
 $resilienceSources = @(
     (Join-Path $root 'tests/resilience_tests.c'),

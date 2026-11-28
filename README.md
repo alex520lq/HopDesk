@@ -25,7 +25,7 @@ HopDesk 采用 **单主干 + 单活动修复分支** 的迭代方式，避免多
 |---|---|
 | 键鼠共享 | 两端均可选择服务器（捕获输入）或客户端（注入输入） |
 | 鼠标跨屏 | 支持边缘移交、反向收回、相对位移、点击和滚轮 |
-| 键盘映射 | 共享键码映射与修饰键释放；当前控制协议 v7、数据协议 v8 |
+| 键盘映射 | 共享键码映射与修饰键释放；当前控制协议 v8、数据协议 v8 |
 | 剪贴板文本 | 双向文本同步，并抑制同步回环 |
 | 文件与文件夹 | 通过独立数据通道传输，支持目录递归和空目录 |
 | 图片 | 通过数据通道传输像素数据 |
@@ -155,7 +155,7 @@ pwsh scripts/build-win.ps1 -Compiler msvc
 
 1. 登录有权访问源码仓库的 GitHub 账号，打开 [Build HopDesk](https://github.com/alex520lq/HopDesk/actions/workflows/build.yml)，选择 `main` 上最近一次成功的构建，在 **Artifacts** 下载 `hopdesk-macos`。
 2. 解压下载的文件，再解压里面的 `HopDesk-macOS.zip`。进入包含 `HopDesk.app` 和 `install-macos.command` 的目录。
-3. 如果 HopDesk 正在运行，先从 macOS 菜单栏选择「退出」，然后执行以下命令。安装器会将 App 安装到 `~/Applications/HopDesk.app` 并启动，配置和日志保存在 `~/Library/Application Support/HopDesk`。
+3. 执行以下命令。安装器会自动停止正在运行的旧进程，优先安装到 `/Applications/HopDesk.app`（仅 `/Applications` 不可写时回退到 `~/Applications/HopDesk.app`），自动清理 `~/Applications/HopDesk.app` 重复旧副本；如果本机已有固定签名证书（现有 `/Applications/HopDesk.app` 的证书或钥匙串中的 `HopDesk Local Signing`，也可通过 `HOPDESK_CODESIGN_IDENTITY` 指定），会自动沿用同一签名以保留系统权限。配置和日志保存在 `~/Library/Application Support/HopDesk`。
 
    ```sh
    bash ./install-macos.command
@@ -265,6 +265,8 @@ xfer_rate_limit_mib=128
 
 显示器相关配置包括 `disp_win_input`、`disp_mac_input`、`disp_wake_sec`、`mac_input_cmd` 和 `mac_sleep_cmd`。其中 DDC/CI 输入源值依赖显示器型号；macOS 默认切源命令使用 `m1ddc`，请确认命令已安装且适用于你的设备。
 
+共用同一块显示器时，在 Windows 设置中开启共屏模式并指定目标扩展屏。原有切屏按钮会同时处理输入源和 Windows 扩展屏的释放／恢复，见 [共用显示器切换](docs/SHARED_DISPLAY_SWITCH.md)。控制协议 v8 要求两端同时更新并重启后台。
+
 ## 运行前检查
 
 1. 确保 Windows 与 macOS 位于可互通的网络中。
@@ -305,7 +307,7 @@ xfer_rate_limit_mib=128
 - **落盘在独立线程**，文件句柄由写线程独占。剪贴板只在单文件 `FILE_ACK` 成功之后
   才登记，不会出现"粘贴出一个写了一半的文件"。
 
-当前控制协议版本为 **v7**，数据协议版本为 **v8**，两者在各自握手时独立校验。数据通道 HELLO 携带数据协议版本、共享 token 和控制握手生成的 128 位 session ID；
+当前控制协议版本为 **v8**，数据协议版本为 **v8**，两者在各自握手时独立校验。数据通道 HELLO 携带数据协议版本、共享 token 和控制握手生成的 128 位 session ID；
 所有非 HELLO 数据帧都带 `session(16) + batch(4)` 前缀，CHUNK/END 不再仅靠隐式活动文件状态。数据 v7 增加带目标方向的 ABORT，v8 增加批次完成 `DONE_ACK` 回执。
 旧会话或不匹配批次不能写入当前传输；临时文件按 session/batch 分目录，避免重启后批次号复用覆盖旧结果。协议版本不匹配时拒绝连接；**Windows 与 macOS 必须一起升级**。
 
@@ -324,7 +326,7 @@ xfer_rate_limit_mib=128
   当前用户登录后由计划任务启动 supervisor，异常退出后按 2–30 秒退避重启；
   托盘正常退出（退出码 0）不重启，直到下次登录。卸载用 `-Uninstall`。
 - macOS：先运行 `install-macos.command` 安装 App，再运行安装包中的
-  `install-launchagent.command`；默认启动 `~/Applications/HopDesk.app`（与现有安装器一致），也可传自定义 App 路径。
+  `install-launchagent.command`；默认启动 `/Applications/HopDesk.app`（不存在时回退 `~/Applications/HopDesk.app`），也可传自定义 App 路径。
   创建当前用户的 `com.hopdesk.agent` LaunchAgent，异常退出由 launchd 重启，正常退出不重启。
   卸载用 `sh install-launchagent.command --uninstall`。
 

@@ -157,3 +157,7 @@ Record commit SHA, macOS version, bundle path and signing requirement for each r
 5. Replace an ad-hoc build with a different build at the same path. If TCC retains an enabled but stale entry, remove/re-add that App and restart. Then repeat an update signed with the same configured Developer ID identity to verify permission continuity separately.
 
 These checks remain pending until performed on the changed build. Do not revoke working user permissions just to run automated regressions.
+
+## Shared monitor switching (control protocol v8)
+
+Pending physical Windows + macOS validation: configure the same non-primary monitor and its two input sources; initiate both directions from either UI; verify actual image, Windows topology, original position/resolution/refresh and pointer handoff. Repeat with a virtual display, denied DDC, sleeping/disconnected Mac, repeated clicks, reconnect/quit during switching and agent restart while detached. Confirm failure status and Windows rollback; never count queue admission as successful switching. Record both build SHAs and evidence. Details: [shared display guide](SHARED_DISPLAY_SWITCH.md).
